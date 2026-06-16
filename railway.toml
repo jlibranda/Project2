@@ -1,7 +1,11 @@
 [build]
 builder = "NIXPACKS"
+buildCommand = "npm install"
 
 [deploy]
 startCommand = "node server.js"
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
+
+[[services]]
+port = 3000
