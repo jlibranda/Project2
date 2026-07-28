@@ -353,6 +353,133 @@
       '<div style="font-size:10px;color:var(--txt3);margin-top:10px">AI output is decision support, not legal or tax advice. Statutory filings still require authorized review.</div></div>';
   };
 
+  /*
+   * Configurable attendance request catalog. Administrators control which
+   * employee-facing forms are available without removing historical requests.
+   */
+  var ATTENDANCE_FORM_CONFIG = [
+    {key:'daily_time',label:'Daily Time Entry',short:'DTR',description:'File a manual time-in and time-out record.',kind:'time',visible:true,core:true},
+    {key:'missing_punch',label:'Missing Punch',short:'MP',description:'Supply a missing time-in or time-out for review.',kind:'time',visible:true},
+    {key:'attendance_correction',label:'Attendance Correction',short:'AC',description:'Request a correction to an existing attendance record.',kind:'time',visible:true},
+    {key:'overtime',label:'Overtime Request',short:'OT',description:'Request approval for work beyond the regular schedule.',kind:'hours',visible:true},
+    {key:'official_business',label:'Official Business / Field Work',short:'OB',description:'Document approved work performed away from the office.',kind:'range',visible:true},
+    {key:'work_from_home',label:'Work From Home',short:'WFH',description:'Request or document an approved remote-work schedule.',kind:'range',visible:true},
+    {key:'rest_day_holiday',label:'Rest Day / Holiday Work',short:'RD',description:'Request approval for work on a rest day or holiday.',kind:'hours',visible:true},
+    {key:'undertime',label:'Undertime Request',short:'UT',description:'Declare an early departure or reduced work schedule.',kind:'minutes',visible:true}
+  ];
+  if(COMPANY.attendanceForms&&COMPANY.attendanceForms.length){
+    ATTENDANCE_FORM_CONFIG.forEach(function(f){
+      var saved=COMPANY.attendanceForms.find(function(x){return x.key===f.key;});
+      if(saved)f.visible=saved.visible!==false;
+    });
+  }
+
+  function saveAttendanceFormConfig(){
+    COMPANY.attendanceForms=ATTENDANCE_FORM_CONFIG.map(function(f){return {key:f.key,visible:f.visible};});
+    queueSync('Field_Config');
+  }
+
+  window.toggleAttendanceForm=function(key){
+    if(!(user.role==='admin'||isPlatformAdmin)){toast('Only administrators can change form visibility.','warning');return;}
+    var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===key;});
+    if(!form)return;
+    form.visible=!form.visible;
+    saveAttendanceFormConfig();
+    toast(form.label+' is now '+(form.visible?'visible':'hidden')+' to employees.','success');
+    render();
+  };
+
+  window.setAttendanceFormVisibility=function(visible){
+    if(!(user.role==='admin'||isPlatformAdmin)){toast('Only administrators can change form visibility.','warning');return;}
+    ATTENDANCE_FORM_CONFIG.forEach(function(f){f.visible=!!visible;});
+    saveAttendanceFormConfig();
+    toast(visible?'All attendance forms are visible.':'All attendance forms are hidden.','success');
+    render();
+  };
+
+  function renderAttendanceFormManager(){
+    var visible=ATTENDANCE_FORM_CONFIG.filter(function(f){return f.visible;}).length;
+    return '<div class="card attendance-form-manager" style="margin-top:1rem">'+
+      '<div class="card-hd"><div><div class="card-title">Attendance Form Visibility</div><div class="card-sub">Admin-only configuration · '+visible+' of '+ATTENDANCE_FORM_CONFIG.length+' forms visible to employees</div></div>'+
+      '<div class="action-row"><button class="btn btn-sm" onclick="setAttendanceFormVisibility(true)">Show all</button><button class="btn btn-sm" onclick="setAttendanceFormVisibility(false)">Hide all</button></div></div>'+
+      '<div class="attendance-form-grid">'+ATTENDANCE_FORM_CONFIG.map(function(f){
+        return '<div class="attendance-form-setting '+(f.visible?'is-visible':'is-hidden')+'"><div class="attendance-form-mark">'+f.short+'</div>'+
+          '<div style="flex:1"><div style="font-weight:700">'+esc(f.label)+'</div><div class="card-sub">'+esc(f.description)+'</div></div>'+
+          '<label class="attendance-switch" title="'+(f.visible?'Hide':'Show')+' '+esc(f.label)+'"><input type="checkbox" '+(f.visible?'checked':'')+' onchange="toggleAttendanceForm(\''+f.key+'\')"><span></span></label>'+
+          '<span class="badge '+(f.visible?'b-approved':'b-rejected')+'">'+(f.visible?'Visible':'Hidden')+'</span></div>';
+      }).join('')+'</div>'+
+      '<div style="font-size:11px;color:var(--txt3);margin-top:12px">Visibility only affects the employee filing catalog. Existing requests and attendance records remain available to administrators and approvers.</div></div>';
+  }
+
+  window.openAttendanceForm=function(key){
+    var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===key&&f.visible;});
+    if(!form){toast('This attendance form is not currently available.','warning');return;}
+    window._attendanceFormKey=key;tab=1;render();
+  };
+
+  function attendanceFormFields(form){
+    var timeFields=(form.kind==='time')?'<div class="form-row"><div class="field"><label>Time In</label><input type="time" id="att-form-in"></div><div class="field"><label>Time Out</label><input type="time" id="att-form-out"></div></div>':'';
+    var hoursFields=(form.kind==='hours')?'<div class="form-row"><div class="field"><label>Start Time</label><input type="time" id="att-form-in"></div><div class="field"><label>Requested Hours</label><input type="number" id="att-form-hours" min=".25" max="24" step=".25" value="1"></div></div>':'';
+    var minuteFields=(form.kind==='minutes')?'<div class="field"><label>Undertime Minutes</label><input type="number" id="att-form-minutes" min="1" max="480" step="1" value="30"></div>':'';
+    var rangeFields=(form.kind==='range')?'<div class="form-row"><div class="field"><label>End Date</label><input type="date" id="att-form-end" value="'+today()+'"></div><div class="field"><label>Work Location</label><input id="att-form-location" placeholder="Client site, home, or field location"></div></div>':'';
+    return '<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+today()+'"></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>'+
+      rangeFields+timeFields+hoursFields+minuteFields+
+      '<div class="field"><label>Reason and supporting details</label><textarea id="att-form-reason" rows="4" placeholder="Explain the request and include the expected correction or approval."></textarea></div>';
+  }
+
+  function renderEmployeeAttendanceForms(){
+    var selected=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===window._attendanceFormKey&&f.visible;});
+    var visible=ATTENDANCE_FORM_CONFIG.filter(function(f){return f.visible;});
+    var body=selected?
+      '<div style="max-width:760px"><button class="btn btn-sm" style="margin-bottom:14px" onclick="window._attendanceFormKey=null;render()">Back to forms</button>'+
+      '<div class="section-header">'+esc(selected.label)+'</div><div class="card-sub" style="margin-bottom:14px">'+esc(selected.description)+'</div>'+
+      attendanceFormFields(selected)+'<div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">Your request will be routed to HR Operations for review and will not affect payroll until approved.</div>'+
+      '<div class="action-row"><button class="btn btn-primary" onclick="submitAttendanceFormRequest()">Submit for approval</button><button class="btn" onclick="window._attendanceFormKey=null;render()">Cancel</button></div></div>':
+      (visible.length?'<div class="attendance-catalog">'+visible.map(function(f){
+        return '<button class="attendance-form-card" onclick="openAttendanceForm(\''+f.key+'\')"><span class="attendance-form-mark">'+f.short+'</span><span><strong>'+esc(f.label)+'</strong><small>'+esc(f.description)+'</small></span><span class="attendance-form-arrow">›</span></button>';
+      }).join('')+'</div>':'<div class="empty-state"><div style="font-weight:700;margin-bottom:5px">No attendance forms are currently available.</div>Please contact HR if you need an attendance correction or special request.</div>');
+    return '<div class="page-header"><div><div class="page-title">Attendance</div><div class="page-sub">Employee attendance records and approval-controlled requests</div></div></div>'+
+      '<div class="tabs"><div class="tab" onclick="window._attendanceFormKey=null;goTab(0)">My Records</div><div class="tab active">Attendance Forms</div></div><div class="card">'+body+'</div>';
+  }
+
+  window.submitAttendanceFormRequest=function(){
+    var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===window._attendanceFormKey&&f.visible;});
+    if(!form){toast('This attendance form is not currently available.','warning');return;}
+    var value=function(id){return ((document.getElementById(id)||{}).value||'').trim();};
+    var date=value('att-form-date'),reason=value('att-form-reason');
+    if(!date||!reason){toast('Request date and supporting details are required.','warning');return;}
+    var tin=value('att-form-in'),tout=value('att-form-out'),hours=parseFloat(value('att-form-hours'))||0;
+    if(form.kind==='time'&&!tin&&!tout){toast('Enter at least a time-in or time-out.','warning');return;}
+    if(form.key==='daily_time'){
+      ATT.push({id:nAtt++,eid:user.id,date:date,tin:tin,tout:tout,status:'present',ot:0,nd:0,notes:form.label+': '+reason,approvalStatus:'pending',filedBy:user.name,filedAt:new Date().toISOString(),source:'attendance-form'});
+      queueSync('Attendance');
+    }else{
+      var linked=ATT.find(function(a){return a.eid===user.id&&a.date===date;});
+      var details=['Request date: '+date];
+      if(value('att-form-end'))details.push('End date: '+value('att-form-end'));
+      if(tin)details.push('Start / time in: '+tin);
+      if(tout)details.push('Time out: '+tout);
+      if(hours)details.push('Hours: '+hours);
+      if(value('att-form-minutes'))details.push('Minutes: '+value('att-form-minutes'));
+      if(value('att-form-location'))details.push('Location: '+value('att-form-location'));
+      details.push('Details: '+reason);
+      var id=nextCaseId++,due=new Date();due.setDate(due.getDate()+((form.key==='overtime'||form.key==='rest_day_holiday')?2:4));
+      RESOLUTION_CASES.push({id:id,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(id).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:details.join('\n'),priority:(form.key==='overtime'||form.key==='rest_day_holiday')?'high':'normal',status:'open',linkedType:linked?'attendance':'',linkedId:linked?linked.id:null,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:due.toISOString().slice(0,10),resolution:''});
+    }
+    window._attendanceFormKey=null;
+    toast(form.label+' submitted for approval.','success');
+    tab=0;render();
+  };
+
+  var baseAttendance=window.pgAttendance;
+  window.pgAttendance=pgAttendance=function(){
+    var admin=user.role==='admin'||isPlatformAdmin;
+    if(!admin&&tab===1)return renderEmployeeAttendanceForms();
+    var html=baseAttendance();
+    if(!admin)html=html.replace('File Attendance','Attendance Forms');
+    return html+(admin?renderAttendanceFormManager():'');
+  };
+
   /* Extend payroll approval: approved runs release payslips and create audit events. */
   var baseApprove=window.approvePayroll;
   window.approvePayroll=function(runId){
@@ -362,7 +489,7 @@
   };
 
   var style=document.createElement('style');
-  style.textContent='@media(max-width:900px){.metrics[style*="repeat(5"]{grid-template-columns:repeat(2,1fr)!important}.content{padding:1rem}.card{overflow-x:auto}}';
+  style.textContent='.attendance-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.attendance-form-setting{display:flex;align-items:center;gap:10px;border:1px solid var(--border);border-radius:10px;padding:11px;background:var(--card)}.attendance-form-setting.is-hidden{opacity:.65;background:var(--bg)}.attendance-form-mark{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;flex:0 0 38px;border-radius:9px;background:var(--accent-bg);color:var(--accent-txt);font-size:11px;font-weight:800}.attendance-switch{position:relative;width:38px;height:22px;flex:0 0 38px}.attendance-switch input{opacity:0;width:0;height:0}.attendance-switch span{position:absolute;inset:0;border-radius:20px;background:var(--border);cursor:pointer;transition:.2s}.attendance-switch span:before{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0003;transition:.2s}.attendance-switch input:checked+span{background:var(--green)}.attendance-switch input:checked+span:before{transform:translateX(16px)}.attendance-catalog{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.attendance-form-card{display:flex;align-items:center;gap:12px;width:100%;padding:15px;border:1px solid var(--border);border-radius:11px;background:var(--card);color:var(--txt);text-align:left;cursor:pointer;font:inherit}.attendance-form-card:hover{border-color:var(--accent);box-shadow:0 4px 14px #0000000d}.attendance-form-card strong{display:block;margin-bottom:3px}.attendance-form-card small{display:block;color:var(--txt3);line-height:1.35}.attendance-form-arrow{margin-left:auto;color:var(--txt3);font-size:24px}@media(max-width:900px){.metrics[style*="repeat(5"]{grid-template-columns:repeat(2,1fr)!important}.content{padding:1rem}.card{overflow-x:auto}.attendance-form-grid,.attendance-catalog{grid-template-columns:1fr}}';
   document.head.appendChild(style);
   render();
 }());

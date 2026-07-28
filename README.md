@@ -6,6 +6,7 @@ A full-featured Philippine HR and payroll system built as a single-page applicat
 - Employee 201 Management
 - Payroll Groups with criteria-based assignment
 - Attendance filing with administrator approval and payroll gating
+- Admin-controlled attendance form catalog with employee visibility toggles
 - Payroll preparation, approval, locking, and audit trail
 - Payroll Computation (2025 SSS, 2025 PhilHealth, 2024+ Pag-IBIG, BIR Annex E 2023 onwards)
 - Pay Calendar & Cut-off Management
