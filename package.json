@@ -1,0 +1,17 @@
+{
+  "name": "sproutripple-ph",
+  "version": "1.0.0",
+  "description": "SproutRipple PH — Philippine HR & Payroll Platform",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "build": "node scripts/build-sites.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
