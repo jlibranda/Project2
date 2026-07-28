@@ -108,6 +108,10 @@
     if(decision==='resolved'&&(c.attendanceRequestType==='overtime'||c.attendanceRequestType==='rest_day_holiday')&&!actualLogForDate(c.employeeId,c.requestDate)){
       toast('A completed actual Time In and Time Out log is required before approval.','warning');return;
     }
+    if(decision==='resolved'&&c.attendanceRequestType==='work_from_home'){
+      var missingLogs=requestDates(c.requestDate,c.requestEndDate).filter(function(d){return !actualLogForDate(c.employeeId,d);});
+      if(missingLogs.length){toast('WFH approval requires completed Time In and Time Out logs for: '+missingLogs.join(', ')+'.','warning');return;}
+    }
     var notes=prompt('Resolution notes / basis:');
     if(notes===null)return;
     if(!notes.trim()){toast('Resolution notes are required for the audit trail.','warning');return;}
@@ -124,6 +128,27 @@
         else corrected.tin=c.correctedTime;
         corrected.approvalStatus='approved';corrected.reviewedBy=user.name;corrected.reviewedAt=c.resolvedAt;
         queueSync('Attendance');
+      }else if(c.attendanceRequestType==='official_business'){
+        var obRecords=[];
+        requestDates(c.requestDate,c.requestEndDate).forEach(function(d){
+          var ob=ATT.find(function(x){return x.eid===c.employeeId&&x.date===d;});
+          if(!ob){
+            ob={id:nAtt++,eid:c.employeeId,date:d,tin:c.requestedStart,tout:c.requestedEnd,status:'present',ot:0,nd:0,notes:'Approved Official Business',source:'official-business'};
+            ATT.push(ob);
+          }else{
+            ob.tin=c.requestedStart;ob.tout=c.requestedEnd;ob.status='present';ob.notes=(ob.notes?ob.notes+' · ':'')+'Approved Official Business';
+          }
+          ob.approvalStatus='approved';ob.reviewedBy=user.name;ob.reviewedAt=c.resolvedAt;obRecords.push(ob.id);
+        });
+        c.attendanceRecordIds=obRecords;queueSync('Attendance');
+      }else if(c.attendanceRequestType==='work_from_home'){
+        var wfhRecords=[];
+        requestDates(c.requestDate,c.requestEndDate).forEach(function(d){
+          var wfh=actualLogForDate(c.employeeId,d);
+          wfh.status='present';wfh.approvalStatus='approved';wfh.reviewedBy=user.name;wfh.reviewedAt=c.resolvedAt;
+          wfh.notes=(wfh.notes?wfh.notes+' · ':'')+'Approved Work From Home';wfhRecords.push(wfh.id);
+        });
+        c.attendanceRecordIds=wfhRecords;queueSync('Attendance');
       }else if(c.attendanceRequestType==='overtime'||c.attendanceRequestType==='rest_day_holiday'){
         var eligible=calculateEligibleHours(c.employeeId,c.requestDate,c.requestedStart,c.requestedEnd);
         var actual=eligible.log;
@@ -386,8 +411,8 @@
   var ATTENDANCE_FORM_CONFIG = [
     {key:'time_correction',label:'Time In / Time Out Correction',short:'TC',description:'File one missing or incorrect Time In or Time Out punch.',kind:'punch',visible:true,core:true},
     {key:'overtime',label:'Overtime Request',short:'OT',description:'Request an OT interval; payable hours are capped by actual logs.',kind:'interval',visible:true},
-    {key:'official_business',label:'Official Business / Field Work',short:'OB',description:'Document approved work performed away from the office.',kind:'range',visible:true},
-    {key:'work_from_home',label:'Work From Home',short:'WFH',description:'Request or document an approved remote-work schedule.',kind:'range',visible:true},
+    {key:'official_business',label:'Official Business / Field Work',short:'OB',description:'Enter the OB Time In and Time Out; approval automatically tags attendance as Present.',kind:'ob',visible:true},
+    {key:'work_from_home',label:'Work From Home',short:'WFH',description:'Request remote work; completed actual Time In and Time Out logs are still required.',kind:'wfh',visible:true},
     {key:'rest_day_holiday',label:'Rest Day / Holiday Work',short:'RD',description:'Request a work interval; payable hours are capped by actual logs.',kind:'interval',visible:true},
     {key:'undertime',label:'Undertime Request',short:'UT',description:'Declare an early departure or reduced work schedule.',kind:'minutes',visible:true}
   ];
@@ -445,6 +470,13 @@
     return logs.length?logs[logs.length-1]:null;
   }
 
+  function requestDates(start,end){
+    var dates=[],cursor=new Date((start||today())+'T00:00:00Z'),last=new Date((end||start||today())+'T00:00:00Z');
+    if(last<cursor)last=new Date(cursor);
+    while(cursor<=last&&dates.length<366){dates.push(cursor.toISOString().slice(0,10));cursor.setUTCDate(cursor.getUTCDate()+1);}
+    return dates;
+  }
+
   function calculateEligibleHours(employeeId,date,requestedStart,requestedEnd){
     var log=actualLogForDate(employeeId,date);
     var reqStart=minutesFromTime(requestedStart),reqEnd=minutesFromTime(requestedEnd);
@@ -476,9 +508,11 @@
     var punchFields=(form.kind==='punch')?'<div class="form-row"><div class="field"><label>Punch to File / Correct</label><select id="att-form-punch"><option value="time_in">Time In</option><option value="time_out">Time Out</option></select></div><div class="field"><label>Correct Time</label><input type="time" id="att-form-time"></div></div>':'';
     var intervalFields=(form.kind==='interval')?'<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" oninput="previewEligibleHours()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" oninput="previewEligibleHours()"></div></div><div id="att-eligible-preview" style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px"><strong>Enter a start and end time.</strong><br>Eligible hours will be limited to the employee’s actual Time In and Time Out.</div>':'';
     var minuteFields=(form.kind==='minutes')?'<div class="field"><label>Undertime Minutes</label><input type="number" id="att-form-minutes" min="1" max="480" step="1" value="30"></div>':'';
-    var rangeFields=(form.kind==='range')?'<div class="form-row"><div class="field"><label>End Date</label><input type="date" id="att-form-end" value="'+today()+'"></div><div class="field"><label>Work Location</label><input id="att-form-location" placeholder="Client site, home, or field location"></div></div>':'';
+    var rangeFields=(form.kind==='range'||form.kind==='ob'||form.kind==='wfh')?'<div class="form-row"><div class="field"><label>End Date</label><input type="date" id="att-form-end" value="'+today()+'"></div><div class="field"><label>Work Location</label><input id="att-form-location" placeholder="Client site, home, or field location"></div></div>':'';
+    var obFields=(form.kind==='ob')?'<div class="form-row"><div class="field"><label>OB Time In</label><input type="time" id="att-form-in"></div><div class="field"><label>OB Time Out</label><input type="time" id="att-form-out"></div></div><div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">Once approved, these OB times will create or update a Present attendance record for every covered date.</div>':'';
+    var wfhNotice=(form.kind==='wfh')?'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;margin-bottom:12px"><strong>Bundy is still required.</strong> You must have completed actual Time In and Time Out logs for every covered WFH date before HR can approve this request.</div>':'';
     return '<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+today()+'" '+(form.kind==='interval'?'oninput="previewEligibleHours()"':'')+'></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>'+
-      rangeFields+punchFields+intervalFields+minuteFields+
+      rangeFields+punchFields+intervalFields+obFields+wfhNotice+minuteFields+
       '<div class="field"><label>Reason and supporting details</label><textarea id="att-form-reason" rows="4" placeholder="Explain the request and include the expected correction or approval."></textarea></div>';
   }
 
@@ -506,19 +540,22 @@
     var tin=value('att-form-in'),tout=value('att-form-out');
     if(form.kind==='punch'&&!value('att-form-time')){toast('Enter the corrected punch time.','warning');return;}
     if(form.kind==='interval'&&(!tin||!tout)){toast('Start time and end time are required.','warning');return;}
+    if(form.kind==='ob'&&(!tin||!tout)){toast('OB Time In and Time Out are required.','warning');return;}
+    if(value('att-form-end')&&value('att-form-end')<date){toast('End date cannot be earlier than the request date.','warning');return;}
     var linked=actualLogForDate(user.id,date)||ATT.find(function(a){return a.eid===user.id&&a.date===date;});
       var details=['Request date: '+date];
       if(value('att-form-end'))details.push('End date: '+value('att-form-end'));
       if(form.kind==='punch')details.push('Punch: '+(value('att-form-punch')==='time_out'?'Time Out':'Time In'), 'Correct time: '+value('att-form-time'));
-      if(tin)details.push('Requested start: '+tin);
-      if(tout)details.push('Requested end: '+tout);
+      if(tin)details.push((form.kind==='ob'?'OB Time In':'Requested start')+': '+tin);
+      if(tout)details.push((form.kind==='ob'?'OB Time Out':'Requested end')+': '+tout);
+      if(form.kind==='wfh')details.push('Attendance rule: Completed actual Time In and Time Out logs required for every covered date');
       var eligibility=form.kind==='interval'?calculateEligibleHours(user.id,date,tin,tout):null;
       if(eligibility)details.push('Actual log at filing: '+(eligibility.log?(eligibility.log.tin+' – '+eligibility.log.tout):'No completed log'), 'Estimated eligible hours: '+eligibility.hours.toFixed(2));
       if(value('att-form-minutes'))details.push('Minutes: '+value('att-form-minutes'));
       if(value('att-form-location'))details.push('Location: '+value('att-form-location'));
       details.push('Details: '+reason);
       var id=nextCaseId++,due=new Date();due.setDate(due.getDate()+((form.key==='overtime'||form.key==='rest_day_holiday')?2:4));
-      RESOLUTION_CASES.push({id:id,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(id).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:details.join('\n'),priority:(form.key==='overtime'||form.key==='rest_day_holiday')?'high':'normal',status:'open',linkedType:linked?'attendance':'',linkedId:linked?linked.id:null,attendanceRequestType:form.key,requestDate:date,requestedStart:tin,requestedEnd:tout,punchType:value('att-form-punch'),correctedTime:value('att-form-time'),eligibleHours:eligibility?eligibility.hours:null,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:due.toISOString().slice(0,10),resolution:''});
+      RESOLUTION_CASES.push({id:id,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(id).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:details.join('\n'),priority:(form.key==='overtime'||form.key==='rest_day_holiday')?'high':'normal',status:'open',linkedType:linked?'attendance':'',linkedId:linked?linked.id:null,attendanceRequestType:form.key,requestDate:date,requestEndDate:value('att-form-end')||date,requestedStart:tin,requestedEnd:tout,punchType:value('att-form-punch'),correctedTime:value('att-form-time'),eligibleHours:eligibility?eligibility.hours:null,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:due.toISOString().slice(0,10),resolution:''});
     window._attendanceFormKey=null;
     toast(form.label+' submitted for approval.','success');
     tab=0;render();

@@ -8,6 +8,7 @@ A full-featured Philippine HR and payroll system built as a single-page applicat
 - Attendance filing with administrator approval and payroll gating
 - Admin-controlled attendance form catalog with visibility toggles under Company Settings
 - Time In/Out correction filing and actual-log-capped OT/rest-day hour validation
+- WFH approval requiring completed actual logs and OB approval creating Present attendance from declared OB times
 - Payroll preparation, approval, locking, and audit trail
 - Payroll Computation (2025 SSS, 2025 PhilHealth, 2024+ Pag-IBIG, BIR Annex E 2023 onwards)
 - Pay Calendar & Cut-off Management
