@@ -10,6 +10,11 @@ A full-featured Philippine HR and payroll system built as a single-page applicat
 - Payroll Computation (2025 SSS, 2025 PhilHealth, 2024+ Pag-IBIG, BIR Annex E 2023 onwards)
 - Pay Calendar & Cut-off Management
 - Downloadable SSS R3, PhilHealth RF-1, Pag-IBIG MCRF, BIR 1601-C, BIR 2316, and bank worksheets
+- Resolution Center for attendance, leave, payroll, payslip, and employee-service cases
+- Approval-aware payslip release with employee questions and downloadable statements
+- Compliance health scoring and connected workforce analytics
+- Recruitment requisitions, performance goals, check-ins, and calibration
+- Workforce AI Copilot for payroll readiness, compliance risk, talent, and workforce summaries
 - Leave & Attendance Management
 - Loans Module
 - Bulk Upload (Employees, Adjustments, Income/Deduction Types)
