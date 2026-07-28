@@ -105,13 +105,39 @@
 
   window.resolveCase=function(id,decision) {
     var c=RESOLUTION_CASES.find(function(x){return x.id===id;});if(!c)return;
+    if(decision==='resolved'&&(c.attendanceRequestType==='overtime'||c.attendanceRequestType==='rest_day_holiday')&&!actualLogForDate(c.employeeId,c.requestDate)){
+      toast('A completed actual Time In and Time Out log is required before approval.','warning');return;
+    }
     var notes=prompt('Resolution notes / basis:');
     if(notes===null)return;
     if(!notes.trim()){toast('Resolution notes are required for the audit trail.','warning');return;}
     c.status=decision==='resolved'?'resolved':'rejected';
     c.resolution=notes.trim();c.resolvedBy=user.name;c.resolvedAt=new Date().toISOString();
     if(decision==='resolved'){
-      if(c.linkedType==='attendance'){
+      if(c.attendanceRequestType==='time_correction'){
+        var corrected=ATT.find(function(x){return x.id===c.linkedId;});
+        if(!corrected){
+          corrected={id:nAtt++,eid:c.employeeId,date:c.requestDate,tin:'',tout:'',status:'present',ot:0,nd:0,notes:'Approved '+c.subject,source:'attendance-correction'};
+          ATT.push(corrected);
+        }
+        if(c.punchType==='time_out')corrected.tout=c.correctedTime;
+        else corrected.tin=c.correctedTime;
+        corrected.approvalStatus='approved';corrected.reviewedBy=user.name;corrected.reviewedAt=c.resolvedAt;
+        queueSync('Attendance');
+      }else if(c.attendanceRequestType==='overtime'||c.attendanceRequestType==='rest_day_holiday'){
+        var eligible=calculateEligibleHours(c.employeeId,c.requestDate,c.requestedStart,c.requestedEnd);
+        var actual=eligible.log;
+        c.eligibleHours=eligible.hours;
+        c.actualTimeIn=actual&&actual.tin||'';
+        c.actualTimeOut=actual&&actual.tout||'';
+        if(actual){
+          actual.approvalStatus='approved';actual.reviewedBy=user.name;actual.reviewedAt=c.resolvedAt;
+          if(c.attendanceRequestType==='overtime')actual.ot=eligible.hours;
+          else actual.restDayHolidayHours=eligible.hours;
+          c.linkedType='attendance';c.linkedId=actual.id;
+          queueSync('Attendance');
+        }
+      }else if(c.linkedType==='attendance'){
         var a=ATT.find(function(x){return x.id===c.linkedId;});
         if(a){a.approvalStatus='approved';a.reviewedBy=user.name;a.reviewedAt=c.resolvedAt;}
       }else if(c.linkedType==='leave'){
@@ -358,13 +384,11 @@
    * employee-facing forms are available without removing historical requests.
    */
   var ATTENDANCE_FORM_CONFIG = [
-    {key:'daily_time',label:'Daily Time Entry',short:'DTR',description:'File a manual time-in and time-out record.',kind:'time',visible:true,core:true},
-    {key:'missing_punch',label:'Missing Punch',short:'MP',description:'Supply a missing time-in or time-out for review.',kind:'time',visible:true},
-    {key:'attendance_correction',label:'Attendance Correction',short:'AC',description:'Request a correction to an existing attendance record.',kind:'time',visible:true},
-    {key:'overtime',label:'Overtime Request',short:'OT',description:'Request approval for work beyond the regular schedule.',kind:'hours',visible:true},
+    {key:'time_correction',label:'Time In / Time Out Correction',short:'TC',description:'File one missing or incorrect Time In or Time Out punch.',kind:'punch',visible:true,core:true},
+    {key:'overtime',label:'Overtime Request',short:'OT',description:'Request an OT interval; payable hours are capped by actual logs.',kind:'interval',visible:true},
     {key:'official_business',label:'Official Business / Field Work',short:'OB',description:'Document approved work performed away from the office.',kind:'range',visible:true},
     {key:'work_from_home',label:'Work From Home',short:'WFH',description:'Request or document an approved remote-work schedule.',kind:'range',visible:true},
-    {key:'rest_day_holiday',label:'Rest Day / Holiday Work',short:'RD',description:'Request approval for work on a rest day or holiday.',kind:'hours',visible:true},
+    {key:'rest_day_holiday',label:'Rest Day / Holiday Work',short:'RD',description:'Request a work interval; payable hours are capped by actual logs.',kind:'interval',visible:true},
     {key:'undertime',label:'Undertime Request',short:'UT',description:'Declare an early departure or reduced work schedule.',kind:'minutes',visible:true}
   ];
   if(COMPANY.attendanceForms&&COMPANY.attendanceForms.length){
@@ -411,6 +435,37 @@
       '<div style="font-size:11px;color:var(--txt3);margin-top:12px">Visibility only affects the employee filing catalog. Existing requests and attendance records remain available to administrators and approvers.</div></div>';
   }
 
+  function minutesFromTime(value){
+    var parts=(value||'').split(':');
+    return parts.length===2?(parseInt(parts[0],10)*60+parseInt(parts[1],10)):null;
+  }
+
+  function actualLogForDate(employeeId,date){
+    var logs=ATT.filter(function(a){return a.eid===employeeId&&a.date===date&&a.tin&&a.tout&&a.approvalStatus!=='rejected';});
+    return logs.length?logs[logs.length-1]:null;
+  }
+
+  function calculateEligibleHours(employeeId,date,requestedStart,requestedEnd){
+    var log=actualLogForDate(employeeId,date);
+    var reqStart=minutesFromTime(requestedStart),reqEnd=minutesFromTime(requestedEnd);
+    if(!log||reqStart===null||reqEnd===null)return {hours:0,minutes:0,log:log};
+    var actualStart=minutesFromTime(log.tin),actualEnd=minutesFromTime(log.tout);
+    if(actualStart===null||actualEnd===null)return {hours:0,minutes:0,log:log};
+    if(reqEnd<=reqStart)reqEnd+=1440;
+    if(actualEnd<=actualStart)actualEnd+=1440;
+    var eligible=Math.max(0,Math.min(reqEnd,actualEnd)-Math.max(reqStart,actualStart));
+    return {hours:Math.round(eligible/60*100)/100,minutes:eligible,log:log};
+  }
+
+  window.previewEligibleHours=function(){
+    var box=document.getElementById('att-eligible-preview');if(!box)return;
+    var value=function(id){return ((document.getElementById(id)||{}).value||'').trim();};
+    var result=calculateEligibleHours(user.id,value('att-form-date'),value('att-form-in'),value('att-form-out'));
+    box.innerHTML=result.log?
+      '<strong>Actual log: '+esc(result.log.tin)+' – '+esc(result.log.tout)+'</strong><br>Estimated eligible hours: <strong>'+result.hours.toFixed(2)+'</strong>. The approved value will be recalculated from the latest actual log.':
+      '<strong>No completed actual log found for this date.</strong><br>Estimated eligible hours: <strong>0.00</strong>. HR will recalculate when a completed actual log is available.';
+  };
+
   window.openAttendanceForm=function(key){
     var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===key&&f.visible;});
     if(!form){toast('This attendance form is not currently available.','warning');return;}
@@ -418,12 +473,12 @@
   };
 
   function attendanceFormFields(form){
-    var timeFields=(form.kind==='time')?'<div class="form-row"><div class="field"><label>Time In</label><input type="time" id="att-form-in"></div><div class="field"><label>Time Out</label><input type="time" id="att-form-out"></div></div>':'';
-    var hoursFields=(form.kind==='hours')?'<div class="form-row"><div class="field"><label>Start Time</label><input type="time" id="att-form-in"></div><div class="field"><label>Requested Hours</label><input type="number" id="att-form-hours" min=".25" max="24" step=".25" value="1"></div></div>':'';
+    var punchFields=(form.kind==='punch')?'<div class="form-row"><div class="field"><label>Punch to File / Correct</label><select id="att-form-punch"><option value="time_in">Time In</option><option value="time_out">Time Out</option></select></div><div class="field"><label>Correct Time</label><input type="time" id="att-form-time"></div></div>':'';
+    var intervalFields=(form.kind==='interval')?'<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" oninput="previewEligibleHours()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" oninput="previewEligibleHours()"></div></div><div id="att-eligible-preview" style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px"><strong>Enter a start and end time.</strong><br>Eligible hours will be limited to the employee’s actual Time In and Time Out.</div>':'';
     var minuteFields=(form.kind==='minutes')?'<div class="field"><label>Undertime Minutes</label><input type="number" id="att-form-minutes" min="1" max="480" step="1" value="30"></div>':'';
     var rangeFields=(form.kind==='range')?'<div class="form-row"><div class="field"><label>End Date</label><input type="date" id="att-form-end" value="'+today()+'"></div><div class="field"><label>Work Location</label><input id="att-form-location" placeholder="Client site, home, or field location"></div></div>':'';
-    return '<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+today()+'"></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>'+
-      rangeFields+timeFields+hoursFields+minuteFields+
+    return '<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+today()+'" '+(form.kind==='interval'?'oninput="previewEligibleHours()"':'')+'></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>'+
+      rangeFields+punchFields+intervalFields+minuteFields+
       '<div class="field"><label>Reason and supporting details</label><textarea id="att-form-reason" rows="4" placeholder="Explain the request and include the expected correction or approval."></textarea></div>';
   }
 
@@ -448,24 +503,22 @@
     var value=function(id){return ((document.getElementById(id)||{}).value||'').trim();};
     var date=value('att-form-date'),reason=value('att-form-reason');
     if(!date||!reason){toast('Request date and supporting details are required.','warning');return;}
-    var tin=value('att-form-in'),tout=value('att-form-out'),hours=parseFloat(value('att-form-hours'))||0;
-    if(form.kind==='time'&&!tin&&!tout){toast('Enter at least a time-in or time-out.','warning');return;}
-    if(form.key==='daily_time'){
-      ATT.push({id:nAtt++,eid:user.id,date:date,tin:tin,tout:tout,status:'present',ot:0,nd:0,notes:form.label+': '+reason,approvalStatus:'pending',filedBy:user.name,filedAt:new Date().toISOString(),source:'attendance-form'});
-      queueSync('Attendance');
-    }else{
-      var linked=ATT.find(function(a){return a.eid===user.id&&a.date===date;});
+    var tin=value('att-form-in'),tout=value('att-form-out');
+    if(form.kind==='punch'&&!value('att-form-time')){toast('Enter the corrected punch time.','warning');return;}
+    if(form.kind==='interval'&&(!tin||!tout)){toast('Start time and end time are required.','warning');return;}
+    var linked=actualLogForDate(user.id,date)||ATT.find(function(a){return a.eid===user.id&&a.date===date;});
       var details=['Request date: '+date];
       if(value('att-form-end'))details.push('End date: '+value('att-form-end'));
-      if(tin)details.push('Start / time in: '+tin);
-      if(tout)details.push('Time out: '+tout);
-      if(hours)details.push('Hours: '+hours);
+      if(form.kind==='punch')details.push('Punch: '+(value('att-form-punch')==='time_out'?'Time Out':'Time In'), 'Correct time: '+value('att-form-time'));
+      if(tin)details.push('Requested start: '+tin);
+      if(tout)details.push('Requested end: '+tout);
+      var eligibility=form.kind==='interval'?calculateEligibleHours(user.id,date,tin,tout):null;
+      if(eligibility)details.push('Actual log at filing: '+(eligibility.log?(eligibility.log.tin+' – '+eligibility.log.tout):'No completed log'), 'Estimated eligible hours: '+eligibility.hours.toFixed(2));
       if(value('att-form-minutes'))details.push('Minutes: '+value('att-form-minutes'));
       if(value('att-form-location'))details.push('Location: '+value('att-form-location'));
       details.push('Details: '+reason);
       var id=nextCaseId++,due=new Date();due.setDate(due.getDate()+((form.key==='overtime'||form.key==='rest_day_holiday')?2:4));
-      RESOLUTION_CASES.push({id:id,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(id).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:details.join('\n'),priority:(form.key==='overtime'||form.key==='rest_day_holiday')?'high':'normal',status:'open',linkedType:linked?'attendance':'',linkedId:linked?linked.id:null,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:due.toISOString().slice(0,10),resolution:''});
-    }
+      RESOLUTION_CASES.push({id:id,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(id).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:details.join('\n'),priority:(form.key==='overtime'||form.key==='rest_day_holiday')?'high':'normal',status:'open',linkedType:linked?'attendance':'',linkedId:linked?linked.id:null,attendanceRequestType:form.key,requestDate:date,requestedStart:tin,requestedEnd:tout,punchType:value('att-form-punch'),correctedTime:value('att-form-time'),eligibleHours:eligibility?eligibility.hours:null,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:due.toISOString().slice(0,10),resolution:''});
     window._attendanceFormKey=null;
     toast(form.label+' submitted for approval.','success');
     tab=0;render();
@@ -477,7 +530,12 @@
     if(!admin&&tab===1)return renderEmployeeAttendanceForms();
     var html=baseAttendance();
     if(!admin)html=html.replace('File Attendance','Attendance Forms');
-    return html+(admin?renderAttendanceFormManager():'');
+    return html;
+  };
+
+  var baseCompanySettings=window.pgCompanySettings;
+  window.pgCompanySettings=pgCompanySettings=function(){
+    return baseCompanySettings()+((user.role==='admin'||isPlatformAdmin)?renderAttendanceFormManager():'');
   };
 
   /* Extend payroll approval: approved runs release payslips and create audit events. */
