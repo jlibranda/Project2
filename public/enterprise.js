@@ -149,6 +149,13 @@
           wfh.notes=(wfh.notes?wfh.notes+' · ':'')+'Approved Work From Home';wfhRecords.push(wfh.id);
         });
         c.attendanceRecordIds=wfhRecords;queueSync('Attendance');
+      }else if(c.attendanceRequestType==='schedule_adjustment'){
+        var scheduleEmployee=USERS.find(function(e){return e.id===c.employeeId;});
+        if(scheduleEmployee){
+          if(!scheduleEmployee.scheduleAdjustments)scheduleEmployee.scheduleAdjustments=[];
+          scheduleEmployee.scheduleAdjustments.push({id:c.id,from:c.requestDate,to:c.requestEndDate,start:c.requestedStart,end:c.requestedEnd,status:'approved',approvedBy:user.name,approvedAt:c.resolvedAt});
+          queueSync('Employees','Schedule_Adjustments');
+        }
       }else if(c.attendanceRequestType==='overtime'||c.attendanceRequestType==='rest_day_holiday'){
         var eligible=calculateEligibleHours(c.employeeId,c.requestDate,c.requestedStart,c.requestedEnd);
         var actual=eligible.log;
@@ -408,8 +415,77 @@
    * Configurable attendance request catalog. Administrators control which
    * employee-facing forms are available without removing historical requests.
    */
+  var SHIFT_DEFINITIONS=(COMPANY.shifts&&COMPANY.shifts.length?COMPANY.shifts:[
+    {id:1,name:'Regular Day Shift',start:'08:00',end:'17:00',breakMinutes:60,graceMinutes:5,active:true},
+    {id:2,name:'Early Shift',start:'06:00',end:'15:00',breakMinutes:60,graceMinutes:5,active:true},
+    {id:3,name:'Night Shift',start:'22:00',end:'06:00',breakMinutes:60,graceMinutes:5,active:true}
+  ]);
+  var nextShiftId=SHIFT_DEFINITIONS.reduce(function(max,s){return Math.max(max,s.id||0);},0)+1;
+  USERS.filter(function(e){return e.role==='employee';}).forEach(function(e){if(!e.shiftId)e.shiftId=1;});
+
+  function saveShiftConfig(){
+    COMPANY.shifts=SHIFT_DEFINITIONS;
+    queueSync('Shift_Config');
+  }
+
+  function validShiftTime(value){return /^([01]\d|2[0-3]):[0-5]\d$/.test(value||'');}
+
+  window.addShift=function(){
+    if(!(user.role==='admin'||isPlatformAdmin))return;
+    var name=prompt('Shift name:');if(!name||!name.trim())return;
+    var start=prompt('Shift start (24-hour HH:MM):','08:00');if(!validShiftTime(start)){toast('Use a valid HH:MM start time.','warning');return;}
+    var end=prompt('Shift end (24-hour HH:MM):','17:00');if(!validShiftTime(end)){toast('Use a valid HH:MM end time.','warning');return;}
+    var breakMinutes=parseInt(prompt('Unpaid break minutes:','60'),10);if(isNaN(breakMinutes)||breakMinutes<0){toast('Enter valid break minutes.','warning');return;}
+    var graceMinutes=parseInt(prompt('Late grace period in minutes:','5'),10);if(isNaN(graceMinutes)||graceMinutes<0){toast('Enter a valid grace period.','warning');return;}
+    SHIFT_DEFINITIONS.push({id:nextShiftId++,name:name.trim(),start:start,end:end,breakMinutes:breakMinutes,graceMinutes:graceMinutes,active:true});
+    saveShiftConfig();toast('Shift created.','success');render();
+  };
+
+  window.editShift=function(id){
+    if(!(user.role==='admin'||isPlatformAdmin))return;
+    var s=SHIFT_DEFINITIONS.find(function(x){return x.id===id;});if(!s)return;
+    var name=prompt('Shift name:',s.name);if(!name||!name.trim())return;
+    var start=prompt('Shift start (24-hour HH:MM):',s.start);if(!validShiftTime(start)){toast('Use a valid HH:MM start time.','warning');return;}
+    var end=prompt('Shift end (24-hour HH:MM):',s.end);if(!validShiftTime(end)){toast('Use a valid HH:MM end time.','warning');return;}
+    var breakMinutes=parseInt(prompt('Unpaid break minutes:',s.breakMinutes),10);
+    var graceMinutes=parseInt(prompt('Late grace period in minutes:',s.graceMinutes),10);
+    if(isNaN(breakMinutes)||breakMinutes<0||isNaN(graceMinutes)||graceMinutes<0){toast('Break and grace minutes must be zero or greater.','warning');return;}
+    Object.assign(s,{name:name.trim(),start:start,end:end,breakMinutes:breakMinutes,graceMinutes:graceMinutes});
+    saveShiftConfig();toast('Shift updated.','success');render();
+  };
+
+  window.toggleShift=function(id){
+    if(!(user.role==='admin'||isPlatformAdmin))return;
+    var s=SHIFT_DEFINITIONS.find(function(x){return x.id===id;});if(!s)return;
+    s.active=!s.active;saveShiftConfig();render();
+  };
+
+  window.deleteShift=function(id){
+    if(!(user.role==='admin'||isPlatformAdmin))return;
+    var assigned=USERS.filter(function(e){return e.shiftId===id;}).length;
+    if(assigned){toast('Reassign '+assigned+' employee(s) before deleting this shift.','warning');return;}
+    var index=SHIFT_DEFINITIONS.findIndex(function(s){return s.id===id;});if(index<0)return;
+    if(!confirm('Delete this shift?'))return;
+    SHIFT_DEFINITIONS.splice(index,1);saveShiftConfig();render();
+  };
+
+  window.assignEmployeeShift=function(employeeId,shiftId){
+    if(!(user.role==='admin'||isPlatformAdmin))return;
+    var employee=USERS.find(function(e){return e.id===employeeId;}),shift=SHIFT_DEFINITIONS.find(function(s){return s.id===shiftId;});
+    if(!employee||!shift)return;
+    employee.shiftId=shiftId;queueSync('Employees','Employee_Shifts');toast(shift.name+' assigned to '+employee.name+'.','success');render();
+  };
+
+  function renderShiftManager(){
+    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Shift Setup</div><div class="card-sub">Create reusable employee schedules and assign them from each employee profile</div></div><button class="btn btn-primary btn-sm" onclick="addShift()">+ Add Shift</button></div>'+
+      '<div style="overflow-x:auto"><table><thead><tr><th>Shift</th><th>Schedule</th><th>Break</th><th>Grace</th><th>Employees</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
+      SHIFT_DEFINITIONS.map(function(s){var count=USERS.filter(function(e){return e.role==='employee'&&e.shiftId===s.id;}).length;return '<tr><td style="font-weight:700">'+esc(s.name)+'</td><td class="mono">'+s.start+' – '+s.end+'</td><td>'+s.breakMinutes+' min</td><td>'+s.graceMinutes+' min</td><td>'+count+'</td><td><span class="badge '+(s.active?'b-approved':'b-rejected')+'">'+(s.active?'Active':'Inactive')+'</span></td><td><div class="action-row"><button class="btn btn-sm" onclick="editShift('+s.id+')">Edit</button><button class="btn btn-sm" onclick="toggleShift('+s.id+')">'+(s.active?'Deactivate':'Activate')+'</button><button class="btn btn-sm btn-danger" onclick="deleteShift('+s.id+')">Delete</button></div></td></tr>';}).join('')+
+      '</tbody></table></div></div>';
+  }
+
   var ATTENDANCE_FORM_CONFIG = [
-    {key:'time_correction',label:'Time In / Time Out Correction',short:'TC',description:'File one missing or incorrect Time In or Time Out punch.',kind:'punch',visible:true,core:true},
+    {key:'time_correction',label:'Time In / Time Out Correction',short:'TC',description:'File multiple missing or incorrect punches in one batch.',kind:'punch',visible:true,core:true},
+    {key:'schedule_adjustment',label:'Schedule Adjustment',short:'SA',description:'Request a temporary change to the assigned shift schedule.',kind:'schedule',visible:true},
     {key:'overtime',label:'Overtime Request',short:'OT',description:'Request an OT interval; payable hours are capped by actual logs.',kind:'interval',visible:true},
     {key:'official_business',label:'Official Business / Field Work',short:'OB',description:'Enter the OB Time In and Time Out; approval automatically tags attendance as Present.',kind:'ob',visible:true},
     {key:'work_from_home',label:'Work From Home',short:'WFH',description:'Request remote work; completed actual Time In and Time Out logs are still required.',kind:'wfh',visible:true},
@@ -425,7 +501,7 @@
 
   function saveAttendanceFormConfig(){
     COMPANY.attendanceForms=ATTENDANCE_FORM_CONFIG.map(function(f){return {key:f.key,visible:f.visible};});
-    queueSync('Field_Config');
+    queueSync('Attendance_Form_Config');
   }
 
   window.toggleAttendanceForm=function(key){
@@ -501,18 +577,49 @@
   window.openAttendanceForm=function(key){
     var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===key&&f.visible;});
     if(!form){toast('This attendance form is not currently available.','warning');return;}
+    if(key==='time_correction')window._correctionRows=[{date:today(),punchType:'time_in',correctedTime:''}];
     window._attendanceFormKey=key;tab=1;render();
   };
 
+  window.addCorrectionRow=function(){
+    if(!window._correctionRows)window._correctionRows=[];
+    window._correctionRows.push({date:today(),punchType:'time_in',correctedTime:''});render();
+  };
+  window.removeCorrectionRow=function(index){
+    if(!window._correctionRows||window._correctionRows.length<=1){toast('At least one correction row is required.','warning');return;}
+    window._correctionRows.splice(index,1);render();
+  };
+  window.updateCorrectionRow=function(index,key,value){
+    if(window._correctionRows&&window._correctionRows[index])window._correctionRows[index][key]=value;
+  };
+
+  function correctionRowsFields(){
+    var rows=window._correctionRows||[{date:today(),punchType:'time_in',correctedTime:''}];
+    window._correctionRows=rows;
+    return '<div class="card-sub" style="margin-bottom:8px">Add as many Time In or Time Out corrections as needed. Each row becomes a separate approval item.</div>'+
+      '<div style="display:grid;gap:8px">'+rows.map(function(row,i){return '<div class="correction-row"><div class="field"><label>Date</label><input type="date" value="'+esc(row.date)+'" onchange="updateCorrectionRow('+i+',\'date\',this.value)"></div>'+
+        '<div class="field"><label>Punch</label><select onchange="updateCorrectionRow('+i+',\'punchType\',this.value)"><option value="time_in" '+(row.punchType==='time_in'?'selected':'')+'>Time In</option><option value="time_out" '+(row.punchType==='time_out'?'selected':'')+'>Time Out</option></select></div>'+
+        '<div class="field"><label>Correct Time</label><input type="time" value="'+esc(row.correctedTime)+'" onchange="updateCorrectionRow('+i+',\'correctedTime\',this.value)"></div>'+
+        '<button class="btn btn-sm btn-danger" style="align-self:end;margin-bottom:10px" onclick="removeCorrectionRow('+i+')">Remove</button></div>';}).join('')+'</div>'+
+      '<button class="btn btn-sm" type="button" onclick="addCorrectionRow()">+ Add another correction</button>';
+  }
+
+  function assignedShiftText(shiftId){
+    var s=SHIFT_DEFINITIONS.find(function(x){return x.id===shiftId;});
+    return s?s.name+' · '+s.start+' – '+s.end:'No shift assigned';
+  }
+
   function attendanceFormFields(form){
-    var punchFields=(form.kind==='punch')?'<div class="form-row"><div class="field"><label>Punch to File / Correct</label><select id="att-form-punch"><option value="time_in">Time In</option><option value="time_out">Time Out</option></select></div><div class="field"><label>Correct Time</label><input type="time" id="att-form-time"></div></div>':'';
+    var punchFields=(form.kind==='punch')?correctionRowsFields():'';
     var intervalFields=(form.kind==='interval')?'<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" oninput="previewEligibleHours()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" oninput="previewEligibleHours()"></div></div><div id="att-eligible-preview" style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px"><strong>Enter a start and end time.</strong><br>Eligible hours will be limited to the employee’s actual Time In and Time Out.</div>':'';
     var minuteFields=(form.kind==='minutes')?'<div class="field"><label>Undertime Minutes</label><input type="number" id="att-form-minutes" min="1" max="480" step="1" value="30"></div>':'';
-    var rangeFields=(form.kind==='range'||form.kind==='ob'||form.kind==='wfh')?'<div class="form-row"><div class="field"><label>End Date</label><input type="date" id="att-form-end" value="'+today()+'"></div><div class="field"><label>Work Location</label><input id="att-form-location" placeholder="Client site, home, or field location"></div></div>':'';
+    var rangeFields=(form.kind==='range'||form.kind==='ob'||form.kind==='wfh'||form.kind==='schedule')?'<div class="form-row"><div class="field"><label>End Date</label><input type="date" id="att-form-end" value="'+today()+'"></div><div class="field"><label>'+(form.kind==='schedule'?'Adjustment Type':'Work Location')+'</label>'+(form.kind==='schedule'?'<select id="att-form-location"><option>Temporary shift change</option><option>Flexible schedule</option><option>Compressed schedule</option><option>Swap schedule</option></select>':'<input id="att-form-location" placeholder="Client site, home, or field location">')+'</div></div>':'';
     var obFields=(form.kind==='ob')?'<div class="form-row"><div class="field"><label>OB Time In</label><input type="time" id="att-form-in"></div><div class="field"><label>OB Time Out</label><input type="time" id="att-form-out"></div></div><div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">Once approved, these OB times will create or update a Present attendance record for every covered date.</div>':'';
     var wfhNotice=(form.kind==='wfh')?'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;margin-bottom:12px"><strong>Bundy is still required.</strong> You must have completed actual Time In and Time Out logs for every covered WFH date before HR can approve this request.</div>':'';
-    return '<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+today()+'" '+(form.kind==='interval'?'oninput="previewEligibleHours()"':'')+'></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>'+
-      rangeFields+punchFields+intervalFields+obFields+wfhNotice+minuteFields+
+    var assigned=SHIFT_DEFINITIONS.find(function(s){return s.id===user.shiftId;});
+    var scheduleFields=(form.kind==='schedule')?'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;margin-bottom:12px">Current assigned shift: <strong>'+esc(assignedShiftText(user.shiftId))+'</strong></div><div class="form-row"><div class="field"><label>Requested Shift Start</label><input type="time" id="att-form-in" value="'+(assigned?assigned.start:'08:00')+'"></div><div class="field"><label>Requested Shift End</label><input type="time" id="att-form-out" value="'+(assigned?assigned.end:'17:00')+'"></div></div>':'';
+    var header=form.kind==='punch'?'<div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div>':'<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+today()+'" '+(form.kind==='interval'?'oninput="previewEligibleHours()"':'')+'></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>';
+    return header+rangeFields+punchFields+intervalFields+obFields+wfhNotice+scheduleFields+minuteFields+
       '<div class="field"><label>Reason and supporting details</label><textarea id="att-form-reason" rows="4" placeholder="Explain the request and include the expected correction or approval."></textarea></div>';
   }
 
@@ -536,11 +643,24 @@
     if(!form){toast('This attendance form is not currently available.','warning');return;}
     var value=function(id){return ((document.getElementById(id)||{}).value||'').trim();};
     var date=value('att-form-date'),reason=value('att-form-reason');
-    if(!date||!reason){toast('Request date and supporting details are required.','warning');return;}
+    if(!reason){toast('Supporting details are required.','warning');return;}
+    if(form.kind==='punch'){
+      var corrections=window._correctionRows||[];
+      if(!corrections.length||corrections.some(function(r){return !r.date||!r.correctedTime;})){toast('Complete the date and corrected time for every row.','warning');return;}
+      var batchId='TC-'+Date.now();
+      corrections.forEach(function(row){
+        var correctionLinked=ATT.find(function(a){return a.eid===user.id&&a.date===row.date;});
+        var correctionId=nextCaseId++,correctionDue=new Date();correctionDue.setDate(correctionDue.getDate()+4);
+        RESOLUTION_CASES.push({id:correctionId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(correctionId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+row.date,description:'Request date: '+row.date+'\nPunch: '+(row.punchType==='time_out'?'Time Out':'Time In')+'\nCorrect time: '+row.correctedTime+'\nDetails: '+reason,priority:'normal',status:'open',linkedType:correctionLinked?'attendance':'',linkedId:correctionLinked?correctionLinked.id:null,attendanceRequestType:'time_correction',requestDate:row.date,requestEndDate:row.date,punchType:row.punchType,correctedTime:row.correctedTime,batchId:batchId,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:correctionDue.toISOString().slice(0,10),resolution:''});
+      });
+      window._correctionRows=null;window._attendanceFormKey=null;
+      toast(corrections.length+' time correction request(s) submitted for approval.','success');tab=0;render();return;
+    }
+    if(!date){toast('Request date is required.','warning');return;}
     var tin=value('att-form-in'),tout=value('att-form-out');
-    if(form.kind==='punch'&&!value('att-form-time')){toast('Enter the corrected punch time.','warning');return;}
     if(form.kind==='interval'&&(!tin||!tout)){toast('Start time and end time are required.','warning');return;}
     if(form.kind==='ob'&&(!tin||!tout)){toast('OB Time In and Time Out are required.','warning');return;}
+    if(form.kind==='schedule'&&(!tin||!tout)){toast('Requested shift start and end are required.','warning');return;}
     if(value('att-form-end')&&value('att-form-end')<date){toast('End date cannot be earlier than the request date.','warning');return;}
     var linked=actualLogForDate(user.id,date)||ATT.find(function(a){return a.eid===user.id&&a.date===date;});
       var details=['Request date: '+date];
@@ -549,6 +669,7 @@
       if(tin)details.push((form.kind==='ob'?'OB Time In':'Requested start')+': '+tin);
       if(tout)details.push((form.kind==='ob'?'OB Time Out':'Requested end')+': '+tout);
       if(form.kind==='wfh')details.push('Attendance rule: Completed actual Time In and Time Out logs required for every covered date');
+      if(form.kind==='schedule')details.push('Assigned shift: '+assignedShiftText(user.shiftId),'Requested schedule: '+tin+' – '+tout);
       var eligibility=form.kind==='interval'?calculateEligibleHours(user.id,date,tin,tout):null;
       if(eligibility)details.push('Actual log at filing: '+(eligibility.log?(eligibility.log.tin+' – '+eligibility.log.tout):'No completed log'), 'Estimated eligible hours: '+eligibility.hours.toFixed(2));
       if(value('att-form-minutes'))details.push('Minutes: '+value('att-form-minutes'));
@@ -570,9 +691,24 @@
     return html;
   };
 
+  function renderEmployeeShiftCard(employee){
+    var shift=SHIFT_DEFINITIONS.find(function(s){return s.id===employee.shiftId;});
+    var adjustments=(employee.scheduleAdjustments||[]).slice().reverse().slice(0,5);
+    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Assigned Work Shift</div><div class="card-sub">Employee profile schedule used for attendance policy and schedule-adjustment requests</div></div><span class="badge '+(shift&&shift.active?'b-approved':'b-pending')+'">'+(shift&&shift.active?'Active shift':'Needs assignment')+'</span></div>'+
+      '<div class="form-row"><div class="field"><label>Shift Assignment</label><select onchange="assignEmployeeShift('+employee.id+',parseInt(this.value,10))">'+SHIFT_DEFINITIONS.filter(function(s){return s.active||s.id===employee.shiftId;}).map(function(s){return '<option value="'+s.id+'" '+(s.id===employee.shiftId?'selected':'')+'>'+esc(s.name)+' · '+s.start+' – '+s.end+(s.active?'':' (inactive)')+'</option>';}).join('')+'</select></div>'+
+      '<div style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;align-self:end;margin-bottom:10px">'+(shift?'<strong>'+esc(shift.name)+'</strong><br>'+shift.start+' – '+shift.end+' · '+shift.breakMinutes+'-minute break · '+shift.graceMinutes+'-minute grace':'No shift is assigned.')+'</div></div>'+
+      (adjustments.length?'<div class="section-header" style="margin-top:8px">Recent approved schedule adjustments</div>'+adjustments.map(function(a){return '<div class="info-row"><span>'+a.from+(a.to&&a.to!==a.from?' – '+a.to:'')+'</span><strong class="mono">'+a.start+' – '+a.end+'</strong></div>';}).join(''):'')+'</div>';
+  }
+
+  var baseEmpDetail=window.pgEmpDetail;
+  window.pgEmpDetail=pgEmpDetail=function(){
+    var html=baseEmpDetail(),employee=USERS.find(function(e){return e.id===detailEmpId;});
+    return html+((employee&&(user.role==='admin'||isPlatformAdmin))?renderEmployeeShiftCard(employee):'');
+  };
+
   var baseCompanySettings=window.pgCompanySettings;
   window.pgCompanySettings=pgCompanySettings=function(){
-    return baseCompanySettings()+((user.role==='admin'||isPlatformAdmin)?renderAttendanceFormManager():'');
+    return baseCompanySettings()+((user.role==='admin'||isPlatformAdmin)?renderShiftManager()+renderAttendanceFormManager():'');
   };
 
   /* Extend payroll approval: approved runs release payslips and create audit events. */
@@ -584,7 +720,7 @@
   };
 
   var style=document.createElement('style');
-  style.textContent='.attendance-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.attendance-form-setting{display:flex;align-items:center;gap:10px;border:1px solid var(--border);border-radius:10px;padding:11px;background:var(--card)}.attendance-form-setting.is-hidden{opacity:.65;background:var(--bg)}.attendance-form-mark{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;flex:0 0 38px;border-radius:9px;background:var(--accent-bg);color:var(--accent-txt);font-size:11px;font-weight:800}.attendance-switch{position:relative;width:38px;height:22px;flex:0 0 38px}.attendance-switch input{opacity:0;width:0;height:0}.attendance-switch span{position:absolute;inset:0;border-radius:20px;background:var(--border);cursor:pointer;transition:.2s}.attendance-switch span:before{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0003;transition:.2s}.attendance-switch input:checked+span{background:var(--green)}.attendance-switch input:checked+span:before{transform:translateX(16px)}.attendance-catalog{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.attendance-form-card{display:flex;align-items:center;gap:12px;width:100%;padding:15px;border:1px solid var(--border);border-radius:11px;background:var(--card);color:var(--txt);text-align:left;cursor:pointer;font:inherit}.attendance-form-card:hover{border-color:var(--accent);box-shadow:0 4px 14px #0000000d}.attendance-form-card strong{display:block;margin-bottom:3px}.attendance-form-card small{display:block;color:var(--txt3);line-height:1.35}.attendance-form-arrow{margin-left:auto;color:var(--txt3);font-size:24px}@media(max-width:900px){.metrics[style*="repeat(5"]{grid-template-columns:repeat(2,1fr)!important}.content{padding:1rem}.card{overflow-x:auto}.attendance-form-grid,.attendance-catalog{grid-template-columns:1fr}}';
+  style.textContent='.attendance-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.attendance-form-setting{display:flex;align-items:center;gap:10px;border:1px solid var(--border);border-radius:10px;padding:11px;background:var(--card)}.attendance-form-setting.is-hidden{opacity:.65;background:var(--bg)}.attendance-form-mark{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;flex:0 0 38px;border-radius:9px;background:var(--accent-bg);color:var(--accent-txt);font-size:11px;font-weight:800}.attendance-switch{position:relative;width:38px;height:22px;flex:0 0 38px}.attendance-switch input{opacity:0;width:0;height:0}.attendance-switch span{position:absolute;inset:0;border-radius:20px;background:var(--border);cursor:pointer;transition:.2s}.attendance-switch span:before{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0003;transition:.2s}.attendance-switch input:checked+span{background:var(--green)}.attendance-switch input:checked+span:before{transform:translateX(16px)}.attendance-catalog{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.attendance-form-card{display:flex;align-items:center;gap:12px;width:100%;padding:15px;border:1px solid var(--border);border-radius:11px;background:var(--card);color:var(--txt);text-align:left;cursor:pointer;font:inherit}.attendance-form-card:hover{border-color:var(--accent);box-shadow:0 4px 14px #0000000d}.attendance-form-card strong{display:block;margin-bottom:3px}.attendance-form-card small{display:block;color:var(--txt3);line-height:1.35}.attendance-form-arrow{margin-left:auto;color:var(--txt3);font-size:24px}.correction-row{display:grid;grid-template-columns:1.2fr 1fr 1fr auto;gap:8px;padding:9px;border:1px solid var(--border);border-radius:9px;background:var(--bg)}@media(max-width:900px){.metrics[style*="repeat(5"]{grid-template-columns:repeat(2,1fr)!important}.content{padding:1rem}.card{overflow-x:auto}.attendance-form-grid,.attendance-catalog{grid-template-columns:1fr}.correction-row{grid-template-columns:1fr 1fr}.correction-row .btn{grid-column:1/-1}}';
   document.head.appendChild(style);
   render();
 }());

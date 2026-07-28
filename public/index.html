@@ -10222,6 +10222,19 @@ function buildSyncPayload(){
     b.selfie?'YES':'NO',b.datetime||''
   ]);
   const zones=OFFICE_ZONES.map(z=>[z.id,z.name,z.lat,z.lng,z.radius,z.address||'']);
+  const shifts=(COMPANY.shifts||[]).map(s=>[
+    s.id,s.name,s.start,s.end,s.breakMinutes||0,s.graceMinutes||0,s.active!==false?'TRUE':'FALSE',new Date().toISOString()
+  ]);
+  const employeeShifts=USERS.filter(u=>u.role==='employee').map(u=>{
+    const s=(COMPANY.shifts||[]).find(x=>x.id===u.shiftId);
+    return[u.eid,u.name||'',u.shiftId||'',s?.name||'',s?.start||'',s?.end||'',new Date().toISOString()];
+  });
+  const scheduleAdjustments=USERS.flatMap(u=>(u.scheduleAdjustments||[]).map(a=>[
+    a.id,u.eid,u.name||'',a.from,a.to,a.start,a.end,a.status||'',a.approvedBy||'',a.approvedAt||''
+  ]));
+  const attendanceFormConfig=(COMPANY.attendanceForms||[]).map(f=>[
+    f.key,f.visible!==false?'TRUE':'FALSE',new Date().toISOString()
+  ]);
   const settings=Object.entries({
     companyName:COMPANY.name,tagline:COMPANY.tagline,initials:COMPANY.initials,
     theme:COMPANY.themeKey,accentColor:COMPANY.accentHex,
@@ -10253,6 +10266,10 @@ function buildSyncPayload(){
     Payroll_Runs:payRuns,Payroll_Items:payItems,
     Loans:loans,Bundy_Logs:bundy,Office_Zones:zones,
     Company_Settings:settings,
+    Shift_Config:shifts,
+    Employee_Shifts:employeeShifts,
+    Schedule_Adjustments:scheduleAdjustments,
+    Attendance_Form_Config:attendanceFormConfig,
     Field_Config:fieldConfig,
     Field_Visibility:fieldVisibility,
   };
