@@ -707,8 +707,21 @@
   };
 
   var baseCompanySettings=window.pgCompanySettings;
+  window.showCompanySettingsTab=function(key){window._companySettingsTab=key;render();};
+  function companySettingsTabs(active){
+    var items=[{key:'general',label:'General & Payroll'},{key:'shifts',label:'Shift Setup'},{key:'attendance',label:'Attendance Forms'}];
+    return '<div class="settings-tabbar" role="tablist" aria-label="Company Settings sections">'+items.map(function(item){return '<button class="settings-tab'+(active===item.key?' active':'')+'" role="tab" aria-selected="'+(active===item.key?'true':'false')+'" onclick="showCompanySettingsTab(\''+item.key+'\')">'+item.label+'</button>';}).join('')+'</div>';
+  }
   window.pgCompanySettings=pgCompanySettings=function(){
-    return baseCompanySettings()+((user.role==='admin'||isPlatformAdmin)?renderShiftManager()+renderAttendanceFormManager():'');
+    var admin=user.role==='admin'||isPlatformAdmin;
+    if(!admin)return baseCompanySettings();
+    var active=window._companySettingsTab||'general',tabs=companySettingsTabs(active);
+    if(active==='general'){
+      var general=baseCompanySettings(),marker='<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">';
+      return general.indexOf(marker)>=0?general.replace(marker,tabs+marker):tabs+general;
+    }
+    var subtitle=active==='shifts'?'Create reusable schedules and manage employee shift assignments.':'Choose which attendance request forms employees can access.';
+    return '<div class="page-header"><div><div class="page-title">Company Settings</div><div class="page-sub">'+subtitle+'</div></div></div>'+tabs+(active==='shifts'?renderShiftManager():renderAttendanceFormManager());
   };
 
   /* Extend payroll approval: approved runs release payslips and create audit events. */
@@ -722,5 +735,8 @@
   var style=document.createElement('style');
   style.textContent='.attendance-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.attendance-form-setting{display:flex;align-items:center;gap:10px;border:1px solid var(--border);border-radius:10px;padding:11px;background:var(--card)}.attendance-form-setting.is-hidden{opacity:.65;background:var(--bg)}.attendance-form-mark{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;flex:0 0 38px;border-radius:9px;background:var(--accent-bg);color:var(--accent-txt);font-size:11px;font-weight:800}.attendance-switch{position:relative;width:38px;height:22px;flex:0 0 38px}.attendance-switch input{opacity:0;width:0;height:0}.attendance-switch span{position:absolute;inset:0;border-radius:20px;background:var(--border);cursor:pointer;transition:.2s}.attendance-switch span:before{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0003;transition:.2s}.attendance-switch input:checked+span{background:var(--green)}.attendance-switch input:checked+span:before{transform:translateX(16px)}.attendance-catalog{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.attendance-form-card{display:flex;align-items:center;gap:12px;width:100%;padding:15px;border:1px solid var(--border);border-radius:11px;background:var(--card);color:var(--txt);text-align:left;cursor:pointer;font:inherit}.attendance-form-card:hover{border-color:var(--accent);box-shadow:0 4px 14px #0000000d}.attendance-form-card strong{display:block;margin-bottom:3px}.attendance-form-card small{display:block;color:var(--txt3);line-height:1.35}.attendance-form-arrow{margin-left:auto;color:var(--txt3);font-size:24px}.correction-row{display:grid;grid-template-columns:1.2fr 1fr 1fr auto;gap:8px;padding:9px;border:1px solid var(--border);border-radius:9px;background:var(--bg)}@media(max-width:900px){.metrics[style*="repeat(5"]{grid-template-columns:repeat(2,1fr)!important}.content{padding:1rem}.card{overflow-x:auto}.attendance-form-grid,.attendance-catalog{grid-template-columns:1fr}.correction-row{grid-template-columns:1fr 1fr}.correction-row .btn{grid-column:1/-1}}';
   document.head.appendChild(style);
+  var settingsStyle=document.createElement('style');
+  settingsStyle.textContent='.settings-tabbar{display:flex;gap:6px;margin:0 0 1rem;padding:5px;background:var(--bg);border:1px solid var(--border);border-radius:11px;overflow-x:auto}.settings-tab{border:0;background:transparent;color:var(--txt3);padding:9px 14px;border-radius:8px;font:inherit;font-size:12px;font-weight:700;white-space:nowrap;cursor:pointer}.settings-tab:hover{color:var(--txt);background:var(--card)}.settings-tab.active{background:var(--card);color:var(--accent);box-shadow:0 1px 4px #00000012}';
+  document.head.appendChild(settingsStyle);
   render();
 }());
