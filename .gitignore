@@ -1,6 +1,8 @@
 node_modules/
 .pnpm-store/
-.npm-cache/
+.npm-cache*/
+.site-upload.tar.gz
+payroll/
 dist/
 .env
 .env.local

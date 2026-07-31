@@ -18,7 +18,7 @@
 
   function snapshot() {
     return {
-      schemaVersion:1,savedAt:new Date().toISOString(),org:ORG,lookups:LOOKUPS,users:USERS,
+      schemaVersion:1,org:ORG,lookups:LOOKUPS,users:USERS,
       attendance:ATT,leaves:LEAVES,loans:LOANS,payrolls:PAYROLLS,payrollDraft:PAYROLL_DRAFT,
       candidates:CANDIDATES,performance:PERF,onboarding:ONBOARD,accessLevels:ACCESS_LEVELS,
       changeRequests:CHANGE_REQUESTS,bundyLogs:BUNDY_LOGS,officeZones:OFFICE_ZONES,company:COMPANY,
