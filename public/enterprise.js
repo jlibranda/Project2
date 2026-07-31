@@ -108,6 +108,9 @@
     if(decision==='resolved'&&(c.attendanceRequestType==='overtime'||c.attendanceRequestType==='rest_day_holiday')&&!actualLogForDate(c.employeeId,c.requestDate)){
       toast('A completed actual Time In and Time Out log is required before approval.','warning');return;
     }
+    if(decision==='resolved'&&c.attendanceRequestType==='undertime'&&!actualLogForDate(c.employeeId,c.requestDate)){
+      toast('A completed actual Time In and Time Out log is required before approving undertime.','warning');return;
+    }
     if(decision==='resolved'&&c.attendanceRequestType==='work_from_home'){
       var missingLogs=requestDates(c.requestDate,c.requestEndDate).filter(function(d){return !actualLogForDate(c.employeeId,d);});
       if(missingLogs.length){toast('WFH approval requires completed Time In and Time Out logs for: '+missingLogs.join(', ')+'.','warning');return;}
@@ -119,25 +122,18 @@
     c.resolution=notes.trim();c.resolvedBy=user.name;c.resolvedAt=new Date().toISOString();
     if(decision==='resolved'){
       if(c.attendanceRequestType==='time_correction'){
-        var corrected=ATT.find(function(x){return x.id===c.linkedId;});
-        if(!corrected){
-          corrected={id:nAtt++,eid:c.employeeId,date:c.requestDate,tin:'',tout:'',status:'present',ot:0,nd:0,notes:'Approved '+c.subject,source:'attendance-correction'};
-          ATT.push(corrected);
-        }
+        var linkedCorrection=TimekeepingCore.validateLinkedRecord(ATT,c);
+        var corrected=upsertAttendance(c.employeeId,c.requestDate,linkedCorrection?{}:{tin:'',tout:'',status:'present',ot:0,nd:0,notes:'Approved '+c.subject,source:'attendance-correction'});
         if(c.punchType==='time_out')corrected.tout=c.correctedTime;
         else corrected.tin=c.correctedTime;
         corrected.approvalStatus='approved';corrected.reviewedBy=user.name;corrected.reviewedAt=c.resolvedAt;
+        c.linkedType='attendance';c.linkedId=corrected.id;
         queueSync('Attendance');
       }else if(c.attendanceRequestType==='official_business'){
         var obRecords=[];
         requestDates(c.requestDate,c.requestEndDate).forEach(function(d){
-          var ob=ATT.find(function(x){return x.eid===c.employeeId&&x.date===d;});
-          if(!ob){
-            ob={id:nAtt++,eid:c.employeeId,date:d,tin:c.requestedStart,tout:c.requestedEnd,status:'present',ot:0,nd:0,notes:'Approved Official Business',source:'official-business'};
-            ATT.push(ob);
-          }else{
-            ob.tin=c.requestedStart;ob.tout=c.requestedEnd;ob.status='present';ob.notes=(ob.notes?ob.notes+' · ':'')+'Approved Official Business';
-          }
+          var current=attendanceRecord(c.employeeId,d);
+          var ob=upsertAttendance(c.employeeId,d,{tin:c.requestedStart,tout:c.requestedEnd,status:'present',ot:current&&current.ot||0,nd:current&&current.nd||0,notes:(current&&current.notes?current.notes+' · ':'')+'Approved Official Business',source:'official-business'});
           ob.approvalStatus='approved';ob.reviewedBy=user.name;ob.reviewedAt=c.resolvedAt;obRecords.push(ob.id);
         });
         c.attendanceRecordIds=obRecords;queueSync('Attendance');
@@ -156,6 +152,12 @@
           scheduleEmployee.scheduleAdjustments.push({id:c.id,from:c.requestDate,to:c.requestEndDate,start:c.requestedStart,end:c.requestedEnd,status:'approved',approvedBy:user.name,approvedAt:c.resolvedAt});
           queueSync('Employees','Schedule_Adjustments');
         }
+      }else if(c.attendanceRequestType==='undertime'){
+        var undertime=actualLogForDate(c.employeeId,c.requestDate);
+        undertime.undertimeMinutes=Math.max(Number(undertime.undertimeMinutes||0),Number(c.requestedMinutes||0));
+        undertime.approvalStatus='approved';undertime.reviewedBy=user.name;undertime.reviewedAt=c.resolvedAt;
+        undertime.notes=(undertime.notes?undertime.notes+' · ':'')+'Approved undertime: '+undertime.undertimeMinutes+' minute(s)';
+        c.linkedType='attendance';c.linkedId=undertime.id;queueSync('Attendance');
       }else if(c.attendanceRequestType==='overtime'||c.attendanceRequestType==='rest_day_holiday'){
         var eligible=calculateEligibleHours(c.employeeId,c.requestDate,c.requestedStart,c.requestedEnd);
         var actual=eligible.log;
@@ -170,7 +172,7 @@
           queueSync('Attendance');
         }
       }else if(c.linkedType==='attendance'){
-        var a=ATT.find(function(x){return x.id===c.linkedId;});
+        var a=TimekeepingCore.validateLinkedRecord(ATT,c);
         if(a){a.approvalStatus='approved';a.reviewedBy=user.name;a.reviewedAt=c.resolvedAt;}
       }else if(c.linkedType==='leave'){
         var l=LEAVES.find(function(x){return x.id===c.linkedId;});
@@ -549,8 +551,8 @@
   }
 
   function actualLogForDate(employeeId,date){
-    var logs=ATT.filter(function(a){return a.eid===employeeId&&a.date===date&&a.tin&&a.tout&&a.approvalStatus!=='rejected';});
-    return logs.length?logs[logs.length-1]:null;
+    var log=TimekeepingCore.consolidate(ATT,employeeId,date);
+    return log&&log.tin&&log.tout&&log.approvalStatus!=='rejected'?log:null;
   }
 
   function requestDates(start,end){
@@ -656,7 +658,7 @@
       if(!corrections.length||corrections.some(function(r){return !r.date||!r.correctedTime;})){toast('Complete the date and corrected time for every row.','warning');return;}
       var batchId='TC-'+Date.now();
       corrections.forEach(function(row){
-        var correctionLinked=ATT.find(function(a){return a.eid===user.id&&a.date===row.date;});
+        var correctionLinked=attendanceRecord(user.id,row.date);
         var correctionId=nextCaseId++,correctionDue=new Date();correctionDue.setDate(correctionDue.getDate()+4);
         RESOLUTION_CASES.push({id:correctionId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(correctionId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+row.date,description:'Request date: '+row.date+'\nPunch: '+(row.punchType==='time_out'?'Time Out':'Time In')+'\nCorrect time: '+row.correctedTime+'\nDetails: '+reason,priority:'normal',status:'open',linkedType:correctionLinked?'attendance':'',linkedId:correctionLinked?correctionLinked.id:null,attendanceRequestType:'time_correction',requestDate:row.date,requestEndDate:row.date,punchType:row.punchType,correctedTime:row.correctedTime,batchId:batchId,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:correctionDue.toISOString().slice(0,10),resolution:''});
       });
@@ -668,8 +670,9 @@
     if(form.kind==='interval'&&(!tin||!tout)){toast('Start time and end time are required.','warning');return;}
     if(form.kind==='ob'&&(!tin||!tout)){toast('OB Time In and Time Out are required.','warning');return;}
     if(form.kind==='schedule'&&(!tin||!tout)){toast('Requested shift start and end are required.','warning');return;}
+    if(form.kind==='minutes'&&Number(value('att-form-minutes'))<=0){toast('Enter valid undertime minutes.','warning');return;}
     if(value('att-form-end')&&value('att-form-end')<date){toast('End date cannot be earlier than the request date.','warning');return;}
-    var linked=actualLogForDate(user.id,date)||ATT.find(function(a){return a.eid===user.id&&a.date===date;});
+    var linked=actualLogForDate(user.id,date)||attendanceRecord(user.id,date);
       var details=['Request date: '+date];
       if(value('att-form-end'))details.push('End date: '+value('att-form-end'));
       if(form.kind==='punch')details.push('Punch: '+(value('att-form-punch')==='time_out'?'Time Out':'Time In'), 'Correct time: '+value('att-form-time'));
@@ -683,7 +686,7 @@
       if(value('att-form-location'))details.push('Location: '+value('att-form-location'));
       details.push('Details: '+reason);
       var id=nextCaseId++,due=new Date();due.setDate(due.getDate()+((form.key==='overtime'||form.key==='rest_day_holiday')?2:4));
-      RESOLUTION_CASES.push({id:id,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(id).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:details.join('\n'),priority:(form.key==='overtime'||form.key==='rest_day_holiday')?'high':'normal',status:'open',linkedType:linked?'attendance':'',linkedId:linked?linked.id:null,attendanceRequestType:form.key,requestDate:date,requestEndDate:value('att-form-end')||date,requestedStart:tin,requestedEnd:tout,punchType:value('att-form-punch'),correctedTime:value('att-form-time'),eligibleHours:eligibility?eligibility.hours:null,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:due.toISOString().slice(0,10),resolution:''});
+      RESOLUTION_CASES.push({id:id,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(id).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:details.join('\n'),priority:(form.key==='overtime'||form.key==='rest_day_holiday')?'high':'normal',status:'open',linkedType:linked?'attendance':'',linkedId:linked?linked.id:null,attendanceRequestType:form.key,requestDate:date,requestEndDate:value('att-form-end')||date,requestedStart:tin,requestedEnd:tout,requestedMinutes:Number(value('att-form-minutes')||0),punchType:value('att-form-punch'),correctedTime:value('att-form-time'),eligibleHours:eligibility?eligibility.hours:null,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:due.toISOString().slice(0,10),resolution:''});
     window._attendanceFormKey=null;
     toast(form.label+' submitted for approval.','success');
     tab=0;render();

@@ -227,6 +227,7 @@ tr:hover td{background:var(--accent-bg) !important}
 </head>
 <body>
 <div id="root"></div>
+<script src="/timekeeping-core.js"></script>
 <script>
 /* ========== DATA ========== */
 /* ---- ORG STRUCTURE (BU → Dept → Team → Subteam) ---- */
@@ -437,6 +438,10 @@ let ATT=[
   {id:10,eid:5,date:'2025-05-19',tin:'08:00',tout:'17:00',status:'present',ot:0,nd:0,notes:''},
   {id:11,eid:5,date:'2025-05-20',tin:'08:10',tout:'17:00',status:'late',ot:0,nd:0,notes:''},
 ];
+function attendanceRecord(eid,date){return TimekeepingCore.canonicalRecord(ATT,eid,date);}
+function attendanceRecords(){return TimekeepingCore.canonicalRecords(ATT);}
+function upsertAttendance(eid,date,patch){return TimekeepingCore.upsert(ATT,eid,date,patch,function(){return nAtt++;});}
+function attendancePeriodSummary(emp,from,to){return TimekeepingCore.periodSummary(ATT,emp,from,to,typeof SHIFT_DEFINITIONS==='undefined'?[]:SHIFT_DEFINITIONS);}
 let LEAVES=[
   {id:1,eid:3,type:'Sick Leave',s:'2025-05-20',e:'2025-05-20',reason:'Fever and flu',status:'approved',filed:'2025-05-19',days:1},
   {id:2,eid:2,type:'Vacation Leave',s:'2025-05-28',e:'2025-05-30',reason:'Family trip',status:'pending',filed:'2025-05-22',days:3},
@@ -1282,7 +1287,7 @@ function zkImport(){
     const tout=g.times.length>1?g.times[g.times.length-1]:'';
     const isLate=tin>='08:30';
     const emp=USERS.find(u=>u.id===g.empId);
-    ATT.push({id:nAtt++,eid:g.empId,date:g.date,tin,tout,status:isLate?'late':'present',ot:0,nd:0,notes:'ZKTeco import'});
+    upsertAttendance(g.empId,g.date,{tin,tout,status:isLate?'late':'present',ot:0,nd:0,notes:'ZKTeco import',source:'zkteco-import'});
     added++;
   });
   alert(`Imported ${added} attendance record${added!==1?'s':''}. Duplicate/unmapped rows skipped.`);
@@ -2376,7 +2381,7 @@ function findAllDuplicates(){
 
 function pgDashboard(){
   const isA=user.role==='admin';
-  const myA=ATT.filter(a=>a.eid===user.id);
+  const myA=attendanceRecords().filter(a=>a.eid===user.id);
   const pr=myA.filter(a=>a.status==='present').length;
   const la=myA.filter(a=>a.status==='late').length;
   const ab=myA.filter(a=>a.status==='absent').length;
@@ -4417,12 +4422,12 @@ function pgAttendance(){
   const tabs=isA?['My Records','All Employees','File Attendance']:['My Records','File Attendance'];
   let body='';
   if(tab===0){
-    const mine=ATT.filter(a=>a.eid===user.id).slice().reverse();
+    const mine=attendanceRecords().filter(a=>a.eid===user.id).slice().reverse();
     body=`<table><thead><tr><th>Date</th><th>Time In</th><th>Time Out</th><th>Status</th><th>OT Hrs</th><th>ND Hrs</th><th>Notes</th></tr></thead>
     <tbody>${mine.length?mine.map(a=>`<tr><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td style="text-align:center;color:${a.ot>0?'var(--accent)':'var(--txt3)'}">${a.ot||'—'}</td><td style="text-align:center;color:${a.nd>0?'var(--purple)':'var(--txt3)'}">${a.nd||'—'}</td><td style="color:var(--txt3)">${a.notes||'—'}</td></tr>`).join(''):'<tr><td colspan="7" class="empty-state">No records</td></tr>'}</tbody></table>`;
   }else if(isA&&tab===1){
     body=`<table><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th>Status</th><th>OT</th><th>ND</th></tr></thead>
-    <tbody>${ATT.slice().reverse().map(a=>{const emp=USERS.find(u=>u.id===a.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td>${a.ot?`<span style="color:var(--accent);font-weight:600">${a.ot}h</span>`:'—'}</td><td>${a.nd?`<span style="color:var(--purple);font-weight:600">${a.nd}h</span>`:'—'}</td></tr>`;}).join('')}</tbody></table>`;
+    <tbody>${attendanceRecords().slice().reverse().map(a=>{const emp=USERS.find(u=>u.id===a.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td>${a.ot?`<span style="color:var(--accent);font-weight:600">${a.ot}h</span>`:'—'}</td><td>${a.nd?`<span style="color:var(--purple);font-weight:600">${a.nd}h</span>`:'—'}</td></tr>`;}).join('')}</tbody></table>`;
   }else{
     body=`${isA?`<div class="field"><label>Employee</label><select id="ae">${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}</select></div>`:''}
     <div class="form-row"><div class="field"><label>Date</label><input type="date" id="adate" value="${today()}"/></div><div class="field"><label>Status</label><select id="ast"><option value="present">Present</option><option value="late">Late</option><option value="absent">Absent</option><option value="leave">On Leave</option></select></div></div>
@@ -4438,8 +4443,9 @@ function submitAtt(isA){
   const eid=isA?parseInt(document.getElementById('ae').value):user.id;
   const date=document.getElementById('adate').value;
   if(!date){alert('Select a date.');return;}
-  ATT.push({id:nAtt++,eid,date,tin:document.getElementById('atin').value,tout:document.getElementById('atout').value,status:document.getElementById('ast').value,ot:parseInt(document.getElementById('aot').value)||0,nd:parseInt(document.getElementById('and').value)||0,notes:document.getElementById('anotes').value});
-  queueSync('Attendance');alert('Attendance filed!');goTab(0);
+  const existing=attendanceRecord(eid,date);
+  upsertAttendance(eid,date,{tin:document.getElementById('atin').value,tout:document.getElementById('atout').value,status:document.getElementById('ast').value,ot:parseFloat(document.getElementById('aot').value)||0,nd:parseFloat(document.getElementById('and').value)||0,notes:document.getElementById('anotes').value,source:isA?'admin-entry':'employee-entry'});
+  queueSync('Attendance');alert(existing?'Attendance updated. The employee now has one authoritative record for this date.':'Attendance filed!');goTab(0);
 }
 
 function pgLeave(){
@@ -4477,7 +4483,7 @@ function submitLeave(){
 
 function pgMyProfile(){
   const emp=user;
-  const att=ATT.filter(a=>a.eid===emp.id);
+  const att=attendanceRecords().filter(a=>a.eid===emp.id);
   const myLoans=LOANS.filter(l=>l.eid===emp.id);
   const ms=emp.rate*22;
   return`<div class="page-header"><div><div class="page-title">My 201 File</div><div class="page-sub">Your personal HR record</div></div>
@@ -4740,6 +4746,7 @@ function pgPayroll(){
           <div style="font-size:10px;color:var(--txt3)">${esc(d.eid||'')} · ${esc(d.pos||'')} · <span class="badge b-info" style="font-size:9px">${esc(d.payType||'monthly')}</span></div>
           ${warns.length?`<div style="font-size:10px;color:var(--amber)">⚠ ${warns.join(' · ')}</div>`:''}
           ${!d.applyStatutory?`<div style="font-size:10px;color:var(--txt3)">Statutory: not this cut-off</div>`:''}
+          ${d.attendanceSummary?`<div style="font-size:10px;color:var(--txt3);margin-top:2px">Timekeeping: ${d.attendanceSummary.presentDays} day(s) · ${d.attendanceSummary.lateMinutes} late min · ${d.attendanceSummary.undertimeMinutes} UT min · ${d.attendanceSummary.otHours} OT hr${d.attendanceDeduction?` · <span style="color:var(--red)">−${fmt(d.attendanceDeduction)}</span>`:''}</div>`:''}
         </td>
         ${[
           ['basic',d.basic,'normal'],['ot',d.ot,'normal'],
@@ -5630,8 +5637,16 @@ function buildDraftRow(emp,grp,period){
   const basic=computeBasicByPayType(emp,grp,period);
   const applyStatutory=shouldDeductStatutory(grp,period);
   const taxFreq=grp.taxMethod||'monthly';
-  /* Gross = basic (attendance adjustments and OT left for override) */
-  const gross=+basic.toFixed(2);
+  const attendance=period&&period.from&&period.to?attendancePeriodSummary(emp,period.from,period.to):{presentDays:0,lateMinutes:0,undertimeMinutes:0,absentDays:0,otHours:0,ndHours:0,records:[]};
+  const dailyRate=Number(emp.rate||0);
+  const hourlyRate=dailyRate/8;
+  const ot=+(hourlyRate*1.25*attendance.otHours).toFixed(2);
+  const nd=+(hourlyRate*0.10*attendance.ndHours).toFixed(2);
+  const absentDeduction=ATTENDANCE_ADJ.absent.active?dailyRate*attendance.absentDays:0;
+  const lateDeduction=ATTENDANCE_ADJ.late.active?(dailyRate/480)*attendance.lateMinutes:0;
+  const undertimeDeduction=ATTENDANCE_ADJ.undertime.active?(dailyRate/480)*attendance.undertimeMinutes:0;
+  const attendanceDeduction=+(absentDeduction+lateDeduction+undertimeDeduction).toFixed(2);
+  const gross=+(basic+ot+nd).toFixed(2);
   /* Statutory contributions — based on monthly salary */
   const pm=emp.salaryPM||(emp.rate*(emp.dailyDivisor||COMPANY.dailyDivisor||22));
   const ms=+pm.toFixed(2);
@@ -5643,11 +5658,11 @@ function buildDraftRow(emp,grp,period){
   const tax  =+birTaxByFreq(grossIncome,taxFreq).toFixed(2);
   /* Active loans */
   const loan =+(LOANS.filter(l=>l.eid===emp.id&&l.status==='active').reduce((s,l)=>s+(l.monthly||0),0)).toFixed(2);
-  const totalDed=+(sss+ph+pi+tax+loan).toFixed(2);
+  const totalDed=+(sss+ph+pi+tax+loan+attendanceDeduction).toFixed(2);
   const net  =+Math.max(0,gross-totalDed).toFixed(2);
   return{empId:emp.id,name:emp.name,eid:emp.eid,pos:emp.pos,payType:emp.payType,
-    basic,ot:0,nd:0,gross,sss,ph,pi,tax,loan,totalDed,net,
-    applyStatutory,taxFreq,ms,_edited:false};
+    basic,ot,nd,gross,sss,ph,pi,tax,loan,attendanceDeduction,totalDed,net,
+    attendanceSummary:attendance,applyStatutory,taxFreq,ms,_edited:false};
 }
 
 /* ── Preview: build all draft rows for selected employees ───────────────── */
@@ -5663,7 +5678,7 @@ function previewPayroll(){
   if(!emps.length){toast('Select at least one employee.','warning');return;}
   PAYROLL_DRAFT={};
   emps.forEach(function(emp){
-    PAYROLL_DRAFT[emp.id]=buildDraftRow(emp,grp,period);
+    PAYROLL_DRAFT[emp.id]=buildDraftRow(emp,grp,period||{from:from,to:to});
   });
   window._prPreview=true;
   render();
@@ -5674,7 +5689,7 @@ function previewPayroll(){
 function updateDraftNet(empId){
   const d=PAYROLL_DRAFT[empId];if(!d)return;
   d.gross=+((d.basic||0)+(d.ot||0)+(d.nd||0)).toFixed(2);
-  d.totalDed=+((d.sss||0)+(d.ph||0)+(d.pi||0)+(d.tax||0)+(d.loan||0)).toFixed(2);
+  d.totalDed=+((d.sss||0)+(d.ph||0)+(d.pi||0)+(d.tax||0)+(d.loan||0)+(d.attendanceDeduction||0)).toFixed(2);
   d.net=+Math.max(0,d.gross-d.totalDed).toFixed(2);
   d._edited=true;
   /* Update DOM cells without full render */
@@ -5709,14 +5724,14 @@ function runPayroll(){
     const selPeriodId=window._prPeriod;
     const period=PAY_PERIODS.find(p=>p.id===selPeriodId)||null;
     items=emps.map(e=>{
-      const a=ATT.filter(x=>x.eid===e.id&&x.date>=from&&x.date<=to);
+      const a=attendanceRecords().filter(x=>x.eid===e.id&&x.date>=from&&x.date<=to);
       const pr=Math.max(a.filter(x=>x.status==='present').length,1);
       const la=a.filter(x=>x.status==='late').length;
       const ab=a.filter(x=>x.status==='absent').length;
       const otH=a.reduce((s,x)=>s+(x.ot||0),0);
       const ndH=a.reduce((s,x)=>s+(x.nd||0),0);
       const extras=PAY_OVERRIDES[e.eid]||null;
-      const d=buildDraftRow(e,grp,period);
+      const d=buildDraftRow(e,grp,period||{from:from,to:to});
       const adjItems=PAYROLL_ADJ.filter(x=>x.empId===e.id&&x.status==='approved');
       const adjTotal=adjItems.reduce((s,x)=>s+x.amount,0);
       adjItems.forEach(x=>{x.status='applied';});
@@ -7173,7 +7188,8 @@ function pgAnalytics(){
   const emps=USERS.filter(u=>u.role==='employee');
   const totalMonthly=emps.reduce((s,e)=>s+e.rate*22,0);
   const byDept={};emps.forEach(e=>{if(!byDept[e.dept])byDept[e.dept]=0;byDept[e.dept]++;});
-  const attByStatus={present:ATT.filter(a=>a.status==='present').length,late:ATT.filter(a=>a.status==='late').length,absent:ATT.filter(a=>a.status==='absent').length,leave:ATT.filter(a=>a.status==='leave').length};
+  const canonicalAttendance=attendanceRecords();
+  const attByStatus={present:canonicalAttendance.filter(a=>a.status==='present').length,late:canonicalAttendance.filter(a=>a.status==='late').length,absent:canonicalAttendance.filter(a=>a.status==='absent').length,leave:canonicalAttendance.filter(a=>a.status==='leave').length};
   return`<div class="page-header"><div class="page-title">Analytics</div></div>
   <div class="metrics">
     <div class="metric"><div class="metric-label">Total Monthly Payroll</div><div class="metric-val" style="font-size:17px;color:var(--green)">${fmt(totalMonthly)}</div></div>
@@ -9397,9 +9413,9 @@ function startRealtime(){
         if(empId){
           const dup=ATT.some(a=>a.eid===empId&&a.date===d.date&&a.tin===d.time);
           if(!dup){
-            const existing=ATT.find(a=>a.eid===empId&&a.date===d.date);
-            if(existing){existing.tout=d.time;}
-            else{ATT.push({id:nAtt++,eid:empId,date:d.date,tin:d.time,tout:'',status:d.time>='08:30'?'late':'present',ot:0,nd:0,notes:'ZKTeco realtime'});}
+            const existing=attendanceRecord(empId,d.date);
+            if(existing){upsertAttendance(empId,d.date,{tout:d.time,source:'zkteco-realtime'});}
+            else{upsertAttendance(empId,d.date,{tin:d.time,tout:'',status:d.time>='08:30'?'late':'present',ot:0,nd:0,notes:'ZKTeco realtime',source:'zkteco-realtime'});}
             ZK.lastSync=new Date().toISOString();render();
           }
         }
@@ -10007,11 +10023,12 @@ async function doBundy(type){
     withinZone:geoSt.zoneResult?.within||false,selfie:selfieData};
   BUNDY_LOGS.push(entry);
   /* Sync to attendance */
-  const existing=ATT.find(a=>a.eid===user.id&&a.date===today());
+  const existing=attendanceRecord(user.id,today());
   if(type==='in'&&!existing){
     const late=now.getHours()>8||(now.getHours()===8&&now.getMinutes()>=30);
-    ATT.push({id:nAtt++,eid:user.id,date:today(),tin:entry.time,tout:'',status:late?'late':'present',ot:0,nd:0,notes:'Web Bundy'});
-  }else if(type==='out'&&existing&&!existing.tout){existing.tout=entry.time;}
+    upsertAttendance(user.id,today(),{tin:entry.time,tout:'',status:late?'late':'present',ot:0,nd:0,notes:'Web Bundy',source:'web-bundy'});
+  }else if(type==='in'&&existing&&!existing.tin){upsertAttendance(user.id,today(),{tin:entry.time,source:'web-bundy'});
+  }else if(type==='out'&&existing&&!existing.tout){upsertAttendance(user.id,today(),{tout:entry.time,source:'web-bundy'});}
   queueSync('Bundy_Logs','Attendance');selfieData=null;
   const zoneNote=entry.withinZone?'\n\u2705 Within office zone':'\n\u26A0 You are outside the office zone';
   alert((type==='in'?'Clocked IN at '+entry.time:'Clocked OUT at '+entry.time)+zoneNote);
