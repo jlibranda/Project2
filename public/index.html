@@ -223,7 +223,7 @@ tr:hover td{background:var(--accent-bg) !important}
 .check-item{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer}
 .check-item input{width:auto;accent-color:var(--accent)}
 </style>
-<link rel="stylesheet" href="/modern-ui.css?v=20260731d"/>
+<link rel="stylesheet" href="/modern-ui.css?v=payroll-20260731"/>
 </head>
 <body>
 <div id="root"></div>
@@ -4506,8 +4506,27 @@ function pgMyProfile(){
   </div>`;
 }
 
+function filterPayrollEmployees(value){
+  const q=(value||'').trim().toLowerCase();
+  document.querySelectorAll('[data-payroll-employee]').forEach(row=>{row.style.display=!q||row.dataset.payrollEmployee.includes(q)?'flex':'none';});
+}
+function updatePayrollSelectionCount(){
+  const total=document.querySelectorAll('[id^="pe"]:checked').length;
+  const el=document.getElementById('payroll-selected-count');
+  if(el)el.textContent=total+' selected';
+}
+function setPayrollSelection(mode,groupId){
+  document.querySelectorAll('[id^="pe"]').forEach(c=>{
+    if(mode==='all')c.checked=true;
+    else if(mode==='none')c.checked=false;
+    else{const eid=c.id.replace('pe',''),e=USERS.find(u=>u.id==eid);c.checked=!!e&&e.payGroupId===groupId;}
+  });
+  updatePayrollSelectionCount();
+}
+
 function pgPayroll(){
   const tabs=['Dashboard','Compute','Adjustments','13th Month','Final Pay','Reports','Configuration'];
+  const tabIcons=['analytics','peso','edit','file','file','chart','settings'];
   let body='';
 
   /* ── TAB 0: DASHBOARD ─────────────────────────────────────────────────── */
@@ -4520,10 +4539,27 @@ function pgPayroll(){
     const noBank=allEmps.filter(e=>!e.bankAccount||!e.bank).length;
     const noGovt=allEmps.filter(e=>!e.sss||!e.ph||!e.pi||!e.tin).length;
     const alerts=noBank+noGovt;
+    const nextPeriod=PAY_PERIODS.find(p=>p.status==='open');
+    const nextGroup=nextPeriod?PAYROLL_GROUPS.find(g=>g.id===nextPeriod.groupId):null;
+    const latestRun=PAYROLLS[PAYROLLS.length-1];
 
     body=`
+    <div class="payroll-cycle-banner">
+      <div class="payroll-cycle-main">
+        <div class="payroll-cycle-icon">${ico('peso',22)}</div>
+        <div><span class="payroll-eyebrow">Current payroll cycle</span>
+          <h3>${nextPeriod?esc(nextPeriod.label):'No open payroll period'}</h3>
+          <p>${nextPeriod?`${esc(nextGroup?.name||'Standard group')} · Release ${esc(nextPeriod.releaseDate||'Not set')}`:'Open a pay period in Configuration to begin processing.'}</p>
+        </div>
+      </div>
+      <div class="payroll-cycle-status">
+        <span class="payroll-status-dot ${nextPeriod?'ready':'muted'}"></span>
+        <div><strong>${nextPeriod?'Ready to prepare':'Setup required'}</strong><small>${latestRun?'Last finalized '+latestRun.from+' – '+latestRun.to:'No finalized runs yet'}</small></div>
+      </div>
+      <button class="btn btn-primary" onclick="${nextPeriod?`window._prGroup=${nextPeriod.groupId};window._prPeriod=${nextPeriod.id};`:''}goTab(1)" ${nextPeriod?'':'disabled'}>${ico('peso',14)} Prepare payroll</button>
+    </div>
     <!-- Metric Cards -->
-    <div class="metrics" style="grid-template-columns:repeat(4,1fr);margin-bottom:1.25rem">
+    <div class="metrics payroll-metrics">
       <div class="metric" style="border-left:3px solid var(--accent)">
         <div class="metric-label">Last Payroll Net</div>
         <div class="metric-val" style="font-size:22px;color:var(--accent)">${PAYROLLS.length?fmt(totalNet):'—'}</div>
@@ -4546,7 +4582,7 @@ function pgPayroll(){
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:1rem">
+    <div class="payroll-dashboard-grid">
       <!-- Payroll Groups Status -->
       <div class="card" style="margin-bottom:0">
         <div class="card-hd"><div class="card-title">Payroll Groups & Periods</div>
@@ -4570,7 +4606,7 @@ function pgPayroll(){
       </div>
 
       <!-- Quick Actions + Alerts -->
-      <div style="display:flex;flex-direction:column;gap:.75rem">
+      <div class="payroll-side-stack">
         ${alerts?`<div class="card" style="margin-bottom:0;border-left:3px solid var(--red)">
           <div class="card-title" style="color:var(--red);margin-bottom:8px">⚠ Payroll Readiness Issues</div>
           ${noBank?`<div style="font-size:12px;color:var(--txt2);margin-bottom:4px">• ${noBank} employee(s) missing bank details</div>`:''}
@@ -4579,12 +4615,12 @@ function pgPayroll(){
         </div>`:'<div class="card" style="margin-bottom:0;border-left:3px solid var(--green)"><div style="color:var(--green);font-weight:600;font-size:13px">✓ All employees payroll-ready</div></div>'}
         <div class="card" style="margin-bottom:0">
           <div class="card-title" style="margin-bottom:10px">Quick Actions</div>
-          <div style="display:grid;gap:6px">
-            <button class="btn" style="justify-content:flex-start;font-size:12px" onclick="goTab(1)">${ico('peso',14)} Run Payroll</button>
-            <button class="btn" style="justify-content:flex-start;font-size:12px" onclick="goTab(2)">${ico('file',14)} Add Adjustment</button>
-            <button class="btn" style="justify-content:flex-start;font-size:12px" onclick="goTab(3)">${ico('file',14)} Compute 13th Month</button>
-            <button class="btn" style="justify-content:flex-start;font-size:12px" onclick="goTab(4)">${ico('file',14)} Process Final Pay</button>
-            <button class="btn" style="justify-content:flex-start;font-size:12px" onclick="goTab(5)">${ico('file',14)} Government Reports</button>
+          <div class="payroll-quick-grid">
+            <button class="payroll-quick-action" onclick="goTab(1)"><span>${ico('peso',15)}</span><div><strong>Run payroll</strong><small>Compute a pay period</small></div></button>
+            <button class="payroll-quick-action" onclick="goTab(2)"><span>${ico('edit',15)}</span><div><strong>Add adjustment</strong><small>Earnings or deductions</small></div></button>
+            <button class="payroll-quick-action" onclick="goTab(3)"><span>${ico('file',15)}</span><div><strong>13th month</strong><small>Review computation</small></div></button>
+            <button class="payroll-quick-action" onclick="goTab(4)"><span>${ico('file',15)}</span><div><strong>Final pay</strong><small>Process separation</small></div></button>
+            <button class="payroll-quick-action" onclick="goTab(5)"><span>${ico('chart',15)}</span><div><strong>Reports</strong><small>Register and government</small></div></button>
           </div>
         </div>
         ${PAYROLL_ADJ.filter(a=>a.status==='pending').length?`<div class="card" style="margin-bottom:0;border-left:3px solid var(--amber)">
@@ -4629,8 +4665,14 @@ function pgPayroll(){
     const isPreview=window._prPreview&&Object.keys(PAYROLL_DRAFT).length>0;
 
     body=`
+    <div class="payroll-stepper">
+      <div class="payroll-step active"><span>1</span><div><strong>Set payroll period</strong><small>Choose group and cutoff</small></div></div>
+      <div class="payroll-step ${isPreview?'done':'active'}"><span>${isPreview?'✓':'2'}</span><div><strong>Select employees</strong><small>Confirm included staff</small></div></div>
+      <div class="payroll-step ${isPreview?'active':''}"><span>3</span><div><strong>Review computation</strong><small>Check earnings and deductions</small></div></div>
+      <div class="payroll-step"><span>4</span><div><strong>Finalize</strong><small>Lock and generate outputs</small></div></div>
+    </div>
     <!-- Group + Period selectors -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:1rem">
+    <div class="payroll-setup-grid">
       <div class="field" style="margin:0"><label>Payroll Group</label>
         <select class="finput" onchange="window._prGroup=parseInt(this.value);window._prPeriod=null;window._prPreview=false;PAYROLL_DRAFT={};render()">
           ${PAYROLL_GROUPS.filter(g=>g.active).map(g=>`<option value="${g.id}" ${g.id===selGroup?'selected':''}>${esc(g.name)} (${g.freq}) — ${USERS.filter(u=>u.role==='employee'&&u.payGroupId===g.id).length} employees</option>`).join('')}
@@ -4647,7 +4689,7 @@ function pgPayroll(){
     </div>`:`<div style="display:none"><input type="date" id="pf" value="${period?.from||today()}"/><input type="date" id="pt" value="${period?.to||today()}"/></div>`}
 
     <!-- Info strip -->
-    <div style="padding:8px 12px;background:var(--accent-bg);border-radius:8px;font-size:12px;color:var(--accent-txt);margin-bottom:1rem;display:flex;gap:16px;flex-wrap:wrap">
+    <div class="payroll-info-strip">
       <span>📋 Tax Table: <strong>${({'monthly':'Monthly','semi-monthly':'Semi-Monthly','weekly':'Weekly','daily':'Daily','annual':'Annual'}[grp?.taxMethod]||'Monthly')}</strong></span>
       <span>📅 Statutory: <strong>${grp?.statutoryTiming==='every-1st'?'Every 1st':grp?.statutoryTiming==='every-2nd'?'Every 2nd':'Every Cut-off'}</strong></span>
       <span>💰 This period: <strong>${applyStatutory?'✓ Statutory applies':'✗ No statutory this cut-off'}</strong></span>
@@ -4727,26 +4769,27 @@ function pgPayroll(){
     </div>`
     :`
     <!-- ── EMPLOYEE SELECTOR ── -->
-    <div class="card" style="margin-bottom:1rem;padding:.875rem">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+    <div class="card payroll-employee-selector">
+      <div class="payroll-selector-head">
         <div>
           <div class="card-title">Select Employees</div>
           <div style="font-size:11px;color:var(--txt3);margin-top:2px">
-            <strong>${groupEmps.length}</strong> in this group · ${allEmps.length-groupEmps.length} in other groups
+            <strong>${groupEmps.length}</strong> in this group · ${allEmps.length-groupEmps.length} in other groups · <strong id="payroll-selected-count">${groupEmps.length} selected</strong>
           </div>
         </div>
-        <div style="display:flex;gap:6px">
-          <button class="btn btn-sm btn-primary" onclick="document.querySelectorAll('[id^=pe]').forEach(c=>c.checked=true)">All</button>
-          <button class="btn btn-sm" onclick="document.querySelectorAll('[id^=pe]').forEach(function(c){var eid=c.id.replace('pe','');var e=USERS.find(function(u){return u.id==eid;});c.checked=e&&e.payGroupId===${selGroup};})">Group Only</button>
-          <button class="btn btn-sm" onclick="document.querySelectorAll('[id^=pe]').forEach(c=>c.checked=false)">None</button>
+        <div class="payroll-selector-tools">
+          <div class="payroll-employee-search">${ico('search',14)}<input type="search" placeholder="Search employees" oninput="filterPayrollEmployees(this.value)"/></div>
+          <button class="btn btn-sm btn-primary" onclick="setPayrollSelection('all',${selGroup})">All</button>
+          <button class="btn btn-sm" onclick="setPayrollSelection('group',${selGroup})">Group only</button>
+          <button class="btn btn-sm" onclick="setPayrollSelection('none',${selGroup})">None</button>
         </div>
       </div>
-      <div style="display:grid;gap:4px;max-height:280px;overflow-y:auto">
+      <div class="payroll-employee-list">
         ${allEmps.map(e=>{
           const warns=validate(e);
           const isMatch=e.payGroupId===selGroup;
-          return`<label style="display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:7px;cursor:pointer;border:1px solid ${isMatch?'var(--accent)':'var(--border)'};background:${isMatch?'var(--accent-bg)':'var(--bg)'}">
-            <input type="checkbox" id="pe${e.id}" style="width:auto;accent-color:var(--accent)" ${isMatch?'checked':''}/>
+          return`<label class="payroll-employee-row${isMatch?' selected':''}" data-payroll-employee="${esc((e.name+' '+(e.pos||'')+' '+(e.eid||'')).toLowerCase())}">
+            <input type="checkbox" id="pe${e.id}" style="width:auto;accent-color:var(--accent)" ${isMatch?'checked':''} onchange="this.closest('.payroll-employee-row').classList.toggle('selected',this.checked);updatePayrollSelectionCount()"/>
             <div class="avatar sm">${ini(e.name)}</div>
             <div style="flex:1">
               <div style="font-weight:500;font-size:13px">${esc(e.name)}</div>
@@ -5164,14 +5207,14 @@ function pgPayroll(){
   }
 
   return`<div class="page-header" style="align-items:center">
-    <div><div class="page-title">Payroll</div><div class="page-sub">Philippine Payroll Management</div></div>
+    <div><div class="page-title">Payroll</div><div class="page-sub">Process pay accurately, resolve exceptions, and release compliant payroll outputs.</div></div>
     <div style="display:flex;gap:8px">
       <button class="btn" onclick="goTab(0)">${ico('analytics',14)} Dashboard</button>
       <button class="btn btn-primary" onclick="goTab(1)">${ico('peso',14)} Run Payroll</button>
     </div>
   </div>
-  <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
-  <div class="card">${body}</div>`;
+  <div class="tabs payroll-tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${ico(tabIcons[i],13)}<span>${t}</span></div>`).join('')}</div>
+  ${tab===0?`<div class="payroll-dashboard">${body}</div>`:`<div class="card payroll-content-card">${body}</div>`}`;
 }
 
 /* ── PAYROLL HELPER RENDER FUNCTIONS ──────────────────────────────────── */
