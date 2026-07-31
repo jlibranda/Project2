@@ -1157,6 +1157,7 @@ let _syncQueue=new Set();
 let _syncTimer=null;
 
 function queueSync(...sheets){
+  if(window.queueDatabaseSave)window.queueDatabaseSave();
   if(!GS.autoSync||GS.status!=='connected')return;
   sheets.forEach(s=>_syncQueue.add(s));
   clearTimeout(_syncTimer);
@@ -1590,10 +1591,18 @@ const pendingLeaves=()=>LEAVES.filter(l=>l.status==='pending').length;
 /* ========== AUTH ========== */
 let GOD_PASS='godmode2026'; /* God Admin password — changeable from Settings */
 
-function doLogin(){
+async function doLogin(){
   const e=document.getElementById('le').value.trim();
   const p=document.getElementById('lp').value.trim();
   const errEl=document.getElementById('lerr');
+
+  errEl.style.display='none';
+  try{
+    if(window.connectDatabaseAfterLogin)await window.connectDatabaseAfterLogin(e,p);
+  }catch(error){
+    errEl.textContent=error.message||'Unable to connect to the secure data service.';
+    errEl.style.display='block';return;
+  }
 
   /* ── Platform God Admin ── */
   if(e==='god@sproutripple.com'&&p===GOD_PASS){
@@ -1640,6 +1649,7 @@ function doLogin(){
   errEl.textContent='Invalid email or password.';errEl.style.display='block';
 }
 function doLogout(){
+  if(window.disconnectDatabaseSession)window.disconnectDatabaseSession();
   /* If inside a client company, save their data and restore demo state */
   if(activeClientId&&activeClientId!==1&&_savedAppState){
     const c=PLATFORM_CLIENTS.find(x=>x.id===activeClientId);
@@ -10916,6 +10926,7 @@ function saveCompany(){
   const mult=parseFloat(document.getElementById('co-multiplier')?.value);
   if(!isNaN(mult)&&mult>0)COMPANY.salaryMultiplier=mult;
   document.title=COMPANY.name+' — HR & Payroll';
+  queueSync('Company_Settings');
   toast('Settings saved!','success');
   render();
 }
@@ -12470,5 +12481,6 @@ render = function() {
 </script>
 <script src="/compliance.js"></script>
 <script src="/enterprise.js?v=sidebar-20260731"></script>
+<script src="/persistence.js?v=20260801"></script>
 </body>
 </html>

@@ -739,6 +739,20 @@
     if(r&&r.status==='approved'){r.payslipsReleased=true;r.payslipsReleasedAt=new Date().toISOString();r.payslipsReleasedBy=user.name;}
   };
 
+  window.collectEnterpriseState=function(){
+    return {resolutionCases:RESOLUTION_CASES,performanceGoals:PERFORMANCE_GOALS,jobRequisitions:JOB_REQUISITIONS,aiHistory:AI_HISTORY};
+  };
+  window.applyEnterpriseState=function(saved){
+    if(!saved)return;
+    if(Array.isArray(saved.resolutionCases)){RESOLUTION_CASES=saved.resolutionCases;nextCaseId=RESOLUTION_CASES.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;}
+    if(Array.isArray(saved.performanceGoals)){PERFORMANCE_GOALS=saved.performanceGoals;nextGoalId=PERFORMANCE_GOALS.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;}
+    if(Array.isArray(saved.jobRequisitions))JOB_REQUISITIONS=saved.jobRequisitions;
+    if(Array.isArray(saved.aiHistory))AI_HISTORY=saved.aiHistory;
+    SHIFT_DEFINITIONS=(COMPANY.shifts&&COMPANY.shifts.length)?COMPANY.shifts:SHIFT_DEFINITIONS;
+    nextShiftId=SHIFT_DEFINITIONS.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
+    if(COMPANY.attendanceForms){ATTENDANCE_FORM_CONFIG.forEach(function(form){var item=COMPANY.attendanceForms.find(function(savedForm){return savedForm.key===form.key;});if(item)form.visible=item.visible!==false;});}
+  };
+
   var style=document.createElement('style');
   style.textContent='.attendance-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.attendance-form-setting{display:flex;align-items:center;gap:10px;border:1px solid var(--border);border-radius:10px;padding:11px;background:var(--card)}.attendance-form-setting.is-hidden{opacity:.65;background:var(--bg)}.attendance-form-mark{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;flex:0 0 38px;border-radius:9px;background:var(--accent-bg);color:var(--accent-txt);font-size:11px;font-weight:800}.attendance-switch{position:relative;width:38px;height:22px;flex:0 0 38px}.attendance-switch input{opacity:0;width:0;height:0}.attendance-switch span{position:absolute;inset:0;border-radius:20px;background:var(--border);cursor:pointer;transition:.2s}.attendance-switch span:before{content:"";position:absolute;width:16px;height:16px;left:3px;top:3px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0003;transition:.2s}.attendance-switch input:checked+span{background:var(--green)}.attendance-switch input:checked+span:before{transform:translateX(16px)}.attendance-catalog{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.attendance-form-card{display:flex;align-items:center;gap:12px;width:100%;padding:15px;border:1px solid var(--border);border-radius:11px;background:var(--card);color:var(--txt);text-align:left;cursor:pointer;font:inherit}.attendance-form-card:hover{border-color:var(--accent);box-shadow:0 4px 14px #0000000d}.attendance-form-card strong{display:block;margin-bottom:3px}.attendance-form-card small{display:block;color:var(--txt3);line-height:1.35}.attendance-form-arrow{margin-left:auto;color:var(--txt3);font-size:24px}.correction-row{display:grid;grid-template-columns:1.2fr 1fr 1fr auto;gap:8px;padding:9px;border:1px solid var(--border);border-radius:9px;background:var(--bg)}@media(max-width:900px){.metrics[style*="repeat(5"]{grid-template-columns:repeat(2,1fr)!important}.content{padding:1rem}.card{overflow-x:auto}.attendance-form-grid,.attendance-catalog{grid-template-columns:1fr}.correction-row{grid-template-columns:1fr 1fr}.correction-row .btn{grid-column:1/-1}}';
   document.head.appendChild(style);
