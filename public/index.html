@@ -223,7 +223,7 @@ tr:hover td{background:var(--accent-bg) !important}
 .check-item{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer}
 .check-item input{width:auto;accent-color:var(--accent)}
 </style>
-<link rel="stylesheet" href="/modern-ui.css?v=20260731b"/>
+<link rel="stylesheet" href="/modern-ui.css?v=20260731c"/>
 </head>
 <body>
 <div id="root"></div>
@@ -2389,7 +2389,7 @@ function pgDashboard(){
     <div class="metric"><div class="metric-label">Pending Leaves</div><div class="metric-val" style="color:var(--blue)">${LEAVES.filter(l=>l.eid===user.id&&l.status==='pending').length}</div></div>
     `}
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+  <div class="dashboard-main-grid">
     ${isA?(()=>{
       const dupes=findAllDuplicates();
       if(!dupes.size)return'';

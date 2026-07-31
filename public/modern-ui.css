@@ -409,3 +409,54 @@ tbody tr:last-child td{border-bottom:0}
   .login-heading h2{font-size:29px}
   .demo-account-list{grid-template-columns:1fr}
 }
+
+/* Full-width authenticated workspace */
+.shell{width:100%;max-width:none}
+.topbar{height:60px;padding-right:14px}
+.topbar>div:first-child{min-width:220px}
+.topbar>button{max-width:520px!important}
+.brand{padding-left:10px}
+.brand-mark{width:34px;height:34px;min-width:34px}
+.sidebar{top:60px;width:228px}
+.sidebar-tools{padding:12px 10px 10px}
+.sidebar-nav{padding:7px 7px 12px}
+.nav-section-block{margin-bottom:4px}
+.nav-section{padding:7px 8px 4px}
+.nav-link{min-height:36px;padding:7px 9px;margin:1px 0}
+.sidebar-footer{padding:8px 10px 10px}
+.sidebar-user{padding:8px;margin-bottom:5px}
+.content{
+  width:auto;max-width:none;margin-left:228px;margin-top:60px;
+  min-height:calc(100vh - 60px);padding:18px 20px 30px;
+}
+.page-header{margin-bottom:16px}
+.page-title{font-size:22px}
+.page-title::after{margin-top:7px!important}
+.metrics{grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin-bottom:12px}
+.metric{padding:15px 16px;min-height:112px}
+.metric-val{font-size:27px}
+.card{padding:16px;margin-bottom:12px;border-radius:14px}
+.card-hd{margin-bottom:12px}
+.content table{width:100%}
+.dashboard-main-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(320px,.75fr);gap:12px;align-items:start}
+.dashboard-main-grid>.card{height:100%;margin-bottom:0}
+.dashboard-main-grid>.card[style*="grid-column"]{height:auto;margin-bottom:0}
+.content>.tabs{margin-bottom:14px}
+.content [style*="display:grid"]{column-gap:12px}
+
+@media(min-width:1600px){
+  .content{padding-left:24px;padding-right:24px}
+  .metrics{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .dashboard-main-grid{grid-template-columns:minmax(0,1.8fr) minmax(360px,.7fr)}
+}
+
+@media(max-width:1100px){
+  .dashboard-main-grid{grid-template-columns:1fr}
+  .dashboard-main-grid>.card[style*="grid-column"]{grid-column:auto!important}
+}
+
+@media(max-width:900px){
+  .topbar{height:60px}
+  .sidebar{top:60px;width:min(82vw,268px)}
+  .content{margin-left:0!important;margin-top:60px;padding:16px 14px 26px}
+}
