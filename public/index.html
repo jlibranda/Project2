@@ -223,6 +223,7 @@ tr:hover td{background:var(--accent-bg) !important}
 .check-item{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer}
 .check-item input{width:auto;accent-color:var(--accent)}
 </style>
+<link rel="stylesheet" href="/modern-ui.css?v=20260731"/>
 </head>
 <body>
 <div id="root"></div>
@@ -1117,7 +1118,7 @@ let PAYROLL_AUDIT=[];
 USERS.forEach((u,i)=>{u.active=true;u.accessLevelId=u.role==='admin'?1:5;});
 
 let user=null,view='dashboard',tab=0,modal=null,aiText='',aiLoad=false;
-let sidebarCollapsed=false; /* collapsible sidebar state */
+let sidebarCollapsed=window.innerWidth<=900; /* collapsible sidebar state */
 let sidebarSectionState={Overview:true,People:true,'Time & Attendance':true,Payroll:true,Talent:true,Setup:false,Tools:true};
 function toggleNavSection(title){sidebarSectionState[title]=!(sidebarSectionState[title]!==false);render();}
 function filterSidebarNav(input){
