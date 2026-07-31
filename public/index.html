@@ -223,7 +223,7 @@ tr:hover td{background:var(--accent-bg) !important}
 .check-item{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer}
 .check-item input{width:auto;accent-color:var(--accent)}
 </style>
-<link rel="stylesheet" href="/modern-ui.css?v=20260731"/>
+<link rel="stylesheet" href="/modern-ui.css?v=20260731b"/>
 </head>
 <body>
 <div id="root"></div>
@@ -2178,44 +2178,61 @@ const ico=(k,sz=16,col)=>`<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" 
 /* ========== LOGIN ========== */
 function renderDemoAccounts(){
   const accounts=[
-    ['admin@ph.com','Admin — Full access','👑','admin123'],
-    ['juan@ph.com','Employee — Engineering','👤','emp123'],
-    ['carla@ph.com','Employee — Probationary','👤','emp123'],
-    ['god@sproutripple.com','God Admin — Platform Console','🌐',GOD_PASS],
-    ['admin@techcorp.ph','TechCorp Philippines (Enterprise)','🏢','admin123'],
-    ['admin@mav.ph','Mindanao Agri Ventures (Starter)','🏢','admin123'],
+    ['admin@ph.com','Company Admin','AD','admin123','violet'],
+    ['juan@ph.com','Engineering Employee','JE','emp123','blue'],
+    ['carla@ph.com','Probationary Employee','CE','emp123','cyan'],
+    ['god@sproutripple.com','Platform Administrator','GA',GOD_PASS,'amber'],
+    ['admin@techcorp.ph','TechCorp Enterprise','TC','admin123','green'],
+    ['admin@mav.ph','MAV Starter','MV','admin123','rose'],
   ];
-  return'<div style="font-size:11px;color:var(--txt3);margin-bottom:3px">Company admin accounts use password: admin123</div>'+
+  return'<div class="demo-hint">Select an account to autofill its demo credentials.</div><div class="demo-account-list">'+
     accounts.map(function(a){
-      var e=a[0],l=a[1],ic=a[2],p=a[3];
-      var isGod=e.indexOf('god')>=0;
-      var base='padding:5px 8px;border-radius:6px;cursor:pointer;font-size:12px;margin-bottom:2px;';
-      var style=base+(isGod?'border:1px solid var(--amber);background:var(--amber-bg);color:var(--amber-txt)':'color:var(--txt2)');
-      return'<div onclick="document.getElementById(\'le\').value=\''+e+'\';document.getElementById(\'lp\').value=\''+p+'\'" style="'+style+'" onmouseover="this.style.background=\'var(--bg)\'" onmouseout="this.style.background=\''+(isGod?'var(--amber-bg)':'')+'\'">'+ic+' '+e+' — '+l+'</div>';
-    }).join('');
+      var e=a[0],l=a[1],abbr=a[2],p=a[3],tone=a[4];
+      return'<button type="button" class="demo-account" onclick="document.getElementById(\'le\').value=\''+e+'\';document.getElementById(\'lp\').value=\''+p+'\';document.getElementById(\'le\').focus()">'+
+        '<span class="demo-avatar '+tone+'">'+abbr+'</span><span class="demo-account-copy"><strong>'+e+'</strong><small>'+l+'</small></span><span class="demo-arrow">→</span></button>';
+    }).join('')+'</div>';
 }
 
-function renderLogin(){return`<div class="login-wrap" style="flex-direction:column;gap:0">
-  <div class="login-box">
-    <div style="text-align:center;margin-bottom:1.75rem">
-      <div style="width:64px;height:64px;background:${COMPANY.logo?'transparent':'var(--accent)'};border-radius:12px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:800;font-size:22px;margin:0 auto 12px;overflow:hidden">${COMPANY.logo?`<img src="${COMPANY.logo}" style="width:100%;height:100%;object-fit:contain" alt="logo"/>`:(esc(COMPANY.initials)||'S')}</div>
-      <div style="font-size:20px;font-weight:800;letter-spacing:-.4px">${esc(COMPANY.name)}</div>
-      <div style="font-size:13px;color:var(--txt3);margin-top:4px">${esc(COMPANY.tagline)}</div>
+function toggleLoginPassword(){const p=document.getElementById('lp'),b=document.getElementById('login-password-toggle');if(!p||!b)return;p.type=p.type==='password'?'text':'password';b.textContent=p.type==='password'?'Show':'Hide';}
+
+function renderLogin(){return`<main class="login-wrap">
+  <section class="login-showcase" aria-label="SproutRipple platform overview">
+    <div class="login-glow login-glow-one"></div><div class="login-glow login-glow-two"></div>
+    <div class="login-showcase-inner">
+      <div class="login-brand">
+        <div class="login-brand-mark">${COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'S')}</div>
+        <div><strong>${esc(COMPANY.name)}</strong><span>People Operations Cloud</span></div>
+      </div>
+      <div class="login-hero">
+        <div class="login-eyebrow"><span></span> Built for Philippine teams</div>
+        <h1>People operations,<br/><em>beautifully connected.</em></h1>
+        <p>Run attendance, approvals, payroll, and statutory compliance in one secure workspace designed for growing organizations.</p>
+        <div class="login-feature-grid">
+          <div class="login-feature"><span>${ico('clock',18)}</span><div><strong>Smart attendance</strong><small>Logs, corrections and approvals</small></div></div>
+          <div class="login-feature"><span>${ico('peso',18)}</span><div><strong>Confident payroll</strong><small>Accurate and approval-ready</small></div></div>
+          <div class="login-feature"><span>${ico('shield',18)}</span><div><strong>PH compliance</strong><small>SSS, PhilHealth, Pag-IBIG and BIR</small></div></div>
+          <div class="login-feature"><span>${ico('chart',18)}</span><div><strong>Clear insights</strong><small>Reports that support decisions</small></div></div>
+        </div>
+      </div>
+      <div class="login-trust"><span>SSS</span><span>PhilHealth</span><span>Pag-IBIG</span><span>BIR Ready</span></div>
     </div>
-    <div class="field"><label>Email address</label><input id="le" type="email" value="admin@ph.com"/></div>
-    <div class="field"><label>Password</label><input id="lp" type="password" value="admin123"/></div>
-    <p id="lerr" style="display:none;color:var(--red);font-size:12px;margin-bottom:8px">Invalid email or password.</p>
-    <button class="btn btn-primary" style="width:100%;padding:9px;font-size:14px;font-weight:600;margin-top:4px" onclick="doLogin()">Sign in</button>
-    ${COMPANY.bundyPublicAccess?`<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;text-align:center">
-      <button class="btn" style="width:100%;font-size:13px" onclick="doGuestBundy()">📍 Web Bundy — Clock in/out</button>
-      <div style="font-size:11px;color:var(--txt3);margin-top:5px">No login required · Geotagged</div>
-    </div>`:''}
-    <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
-      <p style="font-size:11px;font-weight:600;color:var(--txt3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Demo accounts</p>
-      ${renderDemoAccounts()}
+  </section>
+  <section class="login-panel">
+    <div class="login-panel-inner">
+      <div class="login-mobile-brand"><div class="login-brand-mark">${esc(COMPANY.initials)||'S'}</div><strong>${esc(COMPANY.name)}</strong></div>
+      <div class="login-heading"><span class="login-kicker">Secure workspace</span><h2>Welcome back</h2><p>Sign in to continue to your HR and payroll workspace.</p></div>
+      <form class="login-form" onsubmit="event.preventDefault();doLogin()">
+        <div class="field"><label for="le">Work email</label><div class="login-input-wrap"><span>${ico('people',17)}</span><input id="le" type="email" value="admin@ph.com" autocomplete="username"/></div></div>
+        <div class="field"><div class="login-label-row"><label for="lp">Password</label><span>Protected access</span></div><div class="login-input-wrap"><span>${ico('shield',17)}</span><input id="lp" type="password" value="admin123" autocomplete="current-password"/><button id="login-password-toggle" type="button" onclick="toggleLoginPassword()" aria-label="Show or hide password">Show</button></div></div>
+        <p id="lerr" class="login-error">Invalid email or password. Please check your details and try again.</p>
+        <button class="login-submit" type="submit"><span>Sign in to workspace</span><span>→</span></button>
+      </form>
+      ${COMPANY.bundyPublicAccess?`<button class="login-bundy" type="button" onclick="doGuestBundy()"><span class="login-bundy-icon">${ico('clock',18)}</span><span><strong>Open Web Bundy</strong><small>Clock in or out without signing in</small></span><span>→</span></button>`:''}
+      <details class="demo-accounts"><summary><span>Explore demo accounts</span><span class="demo-summary-icon">+</span></summary><div class="demo-accounts-body">${renderDemoAccounts()}</div></details>
+      <div class="login-security">${ico('shield',13)} Your session is protected with role-based access.</div>
     </div>
-  </div>
-</div>`;}
+  </section>
+</main>`;}
 
 function doGuestBundy(){
   /* Public bundy access — ask for employee email to identify */
