@@ -426,9 +426,10 @@ tbody tr:last-child td{border-bottom:0}
 .sidebar-footer{padding:8px 10px 10px}
 .sidebar-user{padding:8px;margin-bottom:5px}
 .content{
-  width:auto;max-width:none;margin-left:228px;margin-top:60px;
+  flex:1 1 calc(100% - 228px);width:calc(100% - 228px);max-width:none;min-width:0;margin-left:228px;margin-top:60px;
   min-height:calc(100vh - 60px);padding:18px 20px 30px;
 }
+.content[style*="margin-left:0"]{flex-basis:100%;width:100%}
 .page-header{margin-bottom:16px}
 .page-title{font-size:22px}
 .page-title::after{margin-top:7px!important}
@@ -458,5 +459,5 @@ tbody tr:last-child td{border-bottom:0}
 @media(max-width:900px){
   .topbar{height:60px}
   .sidebar{top:60px;width:min(82vw,268px)}
-  .content{margin-left:0!important;margin-top:60px;padding:16px 14px 26px}
+  .content{flex-basis:100%;width:100%;margin-left:0!important;margin-top:60px;padding:16px 14px 26px}
 }
