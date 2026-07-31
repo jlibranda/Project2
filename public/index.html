@@ -2277,7 +2277,7 @@ function renderSidebar(){
   ].filter(s=>s.items.length>0);
   return`<aside class="sidebar" aria-label="Main navigation" style="${sidebarCollapsed?'width:0;min-width:0;overflow:hidden;border-right:none':'transition:width .25s'}">
     <div class="sidebar-tools">
-      <div class="sidebar-label"><span>Workspace</span><span>${sections.reduce((n,s)=>n+s.items.length,0)+(typeof RESOLUTION_CASES!=='undefined'?1:0)} modules</span></div>
+      <div class="sidebar-label"><span>Workspace</span><span>${sections.reduce((n,s)=>n+s.items.length,0)} modules</span></div>
       <label class="sidebar-search" title="Find a module">
         ${ico('search',14)}
         <input type="search" placeholder="Find a module…" oninput="filterSidebarNav(this)" aria-label="Find a module">
