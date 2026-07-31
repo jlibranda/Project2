@@ -11,7 +11,12 @@ fs.rmSync(dist, {recursive: true, force: true});
 fs.mkdirSync(client, {recursive: true});
 fs.mkdirSync(server, {recursive: true});
 fs.mkdirSync(metadata, {recursive: true});
-fs.cpSync(path.join(root, 'public'), client, {recursive: true});
+fs.cpSync(path.join(root, 'public'), client, {
+  recursive: true,
+  filter(source) {
+    return path.basename(source) !== '.vercel';
+  },
+});
 fs.copyFileSync(path.join(root, '.openai', 'hosting.json'), path.join(metadata, 'hosting.json'));
 
 fs.writeFileSync(path.join(server, 'index.js'), `const INDEX_PATH = '/index.html';
