@@ -165,6 +165,62 @@
     run.reopenRequest={status:'pending',reason:reason.trim(),requestedBy:user.name,requestedAt:new Date().toISOString()};PAYROLL_AUDIT.push({runId:run.id,action:'reopen_requested',by:user.name,at:run.reopenRequest.requestedAt,notes:reason.trim()});queueSync('Payroll_Runs','Payroll_Audit');toast('Reopen request submitted. Posted results remain unchanged.','info');render();
   };
 
+  function canManagePayrollCalendar(){
+    return !!(user&&(user.role==='admin'||isPlatformAdmin||canAccess('payroll_approve')));
+  }
+  function periodAudit(action,period,notes,runId){
+    PAYROLL_AUDIT.push({runId:runId||period.runId||null,periodId:period.id,action:action,by:user.name,at:new Date().toISOString(),notes:notes||period.label});
+  }
+  window.lockPayPeriod=function(periodId){
+    var period=PAY_PERIODS.find(function(item){return item.id===periodId;});
+    if(!period||period.status!=='open')return;
+    if(!canManagePayrollCalendar()){toast('You do not have permission to lock payroll calendars.','error');return;}
+    period.status='locked';period.lockedBy=user.email||user.name;period.lockedAt=new Date().toISOString();
+    periodAudit('pay_period_locked',period,'Calendar manually locked');
+    queueSync('Payroll_Calendar','Payroll_Audit');toast('Payroll calendar locked.','success');render();
+  };
+  window.unlockPayPeriod=function(periodId){
+    var period=PAY_PERIODS.find(function(item){return item.id===periodId;});
+    if(!period||period.status!=='locked')return;
+    if(!canManagePayrollCalendar()){toast('You do not have permission to unlock payroll calendars.','error');return;}
+    var reason=prompt('Reason for unlocking this payroll calendar:');
+    if(reason===null)return;
+    if(!reason.trim()){toast('An unlock reason is required for the audit trail.','warning');return;}
+    period.status='open';period.lockedBy=null;period.lockedAt=null;
+    periodAudit('pay_period_unlocked',period,reason.trim());
+    queueSync('Payroll_Calendar','Payroll_Audit');toast('Payroll calendar unlocked. You may now edit or delete it.','info');render();
+  };
+  window.reopenClosedPayPeriod=function(periodId){
+    var period=PAY_PERIODS.find(function(item){return item.id===periodId;});
+    if(!period||period.status!=='closed')return;
+    if(!canManagePayrollCalendar()){toast('Payroll approval permission is required to reopen a closed calendar.','error');return;}
+    var reason=prompt('Reason for voiding the posted payroll and reopening this calendar:');
+    if(reason===null)return;
+    if(!reason.trim()){toast('A reason is required for the audit trail.','warning');return;}
+    if(!confirm('Void the linked payroll and reopen "'+period.label+'"?\n\nThe original payroll will remain in the audit history as VOIDED. This action cannot silently erase posted results.'))return;
+    var linkedRunId=period.runId;
+    var run=PAYROLLS.find(function(item){return item.id===linkedRunId;});
+    var at=new Date().toISOString();
+    if(run){
+      run.status='voided';run.voidedBy=user.name;run.voidedAt=at;run.voidReason=reason.trim();run.immutable=true;
+      run.reopenRequest={status:'approved',reason:reason.trim(),requestedBy:user.name,requestedAt:at,approvedBy:user.name,approvedAt:at};
+    }
+    period.status='open';period.runId=null;period.lockedBy=null;period.lockedAt=null;period.reopenedBy=user.name;period.reopenedAt=at;period.reopenReason=reason.trim();
+    periodAudit('payroll_voided_period_reopened',period,reason.trim(),linkedRunId);
+    queueSync('Payroll_Calendar','Payroll_Runs','Payroll_Items','Payroll_Audit');
+    toast('Posted payroll voided and calendar reopened. The audit history was preserved.','success',5500);render();
+  };
+  window.deletePayPeriod=function(periodId){
+    var period=PAY_PERIODS.find(function(item){return item.id===periodId;});
+    if(!period)return;
+    if(!canManagePayrollCalendar()){toast('You do not have permission to delete payroll calendars.','error');return;}
+    if(period.status!=='open'||period.runId){toast('Unlock or safely void and reopen this period before deleting it.','warning');return;}
+    if(!confirm('Delete payroll calendar "'+period.label+'"? This removes the calendar only; audit and voided payroll history are retained.'))return;
+    periodAudit('pay_period_deleted',period,'Deleted open payroll calendar');
+    PAY_PERIODS.splice(PAY_PERIODS.findIndex(function(item){return item.id===periodId;}),1);
+    queueSync('Payroll_Calendar','Payroll_Audit');toast('Payroll calendar deleted and saved.','success');render();
+  };
+
   window.createPayrollRuleVersion=function(code){
     var latest=PAYROLL_RULEBOOK.filter(function(rule){return rule.code===code;}).sort(function(a,b){return b.version-a.version;})[0];if(!latest)return;
     var effective=prompt('Effective-from date (YYYY-MM-DD):',today());if(!effective)return;

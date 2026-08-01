@@ -5051,9 +5051,10 @@ function pgPayroll(){
         <td><span class="badge ${statusBadge[p.status]||'b-info'}">${p.status}</span></td>
         <td><div style="display:flex;gap:4px">
           ${!isLocked?`<button class="btn btn-sm" title="Edit period" onclick="modal={type:'editPayPeriod',period:JSON.parse(JSON.stringify(PAY_PERIODS.find(x=>x.id===${p.id})))};render()">✎ Edit</button>`:''}
-          ${p.status==='open'?`<button class="btn btn-sm btn-amber" onclick="PAY_PERIODS.find(x=>x.id===${p.id}).status='locked';toast('Period locked','success');render()">🔒 Lock</button>`:''}
-          ${p.status==='locked'?`<button class="btn btn-sm" onclick="PAY_PERIODS.find(x=>x.id===${p.id}).status='open';toast('Period unlocked','info');render()">🔓 Unlock</button>`:''}
-          ${!isLocked?`<button class="btn btn-sm btn-danger" title="Delete period" onclick="if(confirm('Delete this pay period?')){PAY_PERIODS.splice(PAY_PERIODS.findIndex(x=>x.id===${p.id}),1);toast('Period deleted','success');render();}">🗑</button>`:''}
+          ${p.status==='open'?`<button class="btn btn-sm btn-amber" onclick="lockPayPeriod(${p.id})">🔒 Lock</button>`:''}
+          ${p.status==='locked'?`<button class="btn btn-sm" onclick="unlockPayPeriod(${p.id})">🔓 Unlock</button>`:''}
+          ${p.status==='closed'&&(user.role==='admin'||isPlatformAdmin||canAccess('payroll_approve'))?`<button class="btn btn-sm btn-amber" title="Void the linked payroll while preserving its audit history, then reopen this period" onclick="reopenClosedPayPeriod(${p.id})">↩ Void & Reopen</button>`:''}
+          ${!isLocked?`<button class="btn btn-sm btn-danger" title="Delete period" onclick="deletePayPeriod(${p.id})">🗑 Delete</button>`:''}
         </div></td>
       </tr>`;}).join('')}</tbody></table>`
     :cfgTab===2?`
