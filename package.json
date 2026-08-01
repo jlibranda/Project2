@@ -7,7 +7,8 @@
     "start": "node server.js",
     "dev": "node server.js",
     "build": "node scripts/build-sites.js",
-    "test:timekeeping": "node scripts/test-timekeeping.js"
+    "test:timekeeping": "node scripts/test-timekeeping.js",
+    "test:payroll": "node scripts/test-payroll-engine.js"
   },
   "dependencies": {
     "express": "^4.18.2",

@@ -120,12 +120,13 @@
     var rows = canonicalRecords(records).filter(function (record) {
       return record.eid === employee.id && record.date >= from && record.date <= to && record.approvalStatus !== 'rejected';
     });
-    var summary = { records: rows, presentDays: 0, lateMinutes: 0, undertimeMinutes: 0, absentDays: 0, otHours: 0, ndHours: 0 };
+    var summary = { records: rows, presentDays: 0, lateMinutes: 0, undertimeMinutes: 0, absentDays: 0, otHours: 0, ndHours: 0, restDayHolidayHours: 0 };
     rows.forEach(function (record) {
       if (record.status === 'present' || record.status === 'late') summary.presentDays += 1;
       if (record.status === 'absent') summary.absentDays += 1;
       summary.otHours += Number(record.ot || 0);
       summary.ndHours += Number(record.nd || 0);
+      summary.restDayHolidayHours += Number(record.restDayHolidayHours || 0);
       var schedule = scheduleForDate(employee, record.date, shifts);
       var actualIn = minutes(record.tin);
       var actualOut = minutes(record.tout);

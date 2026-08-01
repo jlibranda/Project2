@@ -126,13 +126,13 @@
   }
 
   function approvedAttendance(empId, from, to) {
-    return ATT.filter(function (a) {
+    return attendanceRecords().filter(function (a) {
       return a.eid === empId && a.date >= from && a.date <= to && a.approvalStatus === 'approved';
     });
   }
 
   function periodPendingAttendance(empIds, from, to) {
-    return ATT.filter(function (a) {
+    return attendanceRecords().filter(function (a) {
       return empIds.indexOf(a.eid) >= 0 && a.date >= from && a.date <= to && a.approvalStatus === 'pending';
     });
   }
@@ -149,7 +149,7 @@
   };
 
   window.approveAllAttendance = function () {
-    var pending = ATT.filter(function (a) { return a.approvalStatus === 'pending'; });
+    var pending = attendanceRecords().filter(function (a) { return a.approvalStatus === 'pending'; });
     pending.forEach(function (a) {
       a.approvalStatus = 'approved';
       a.reviewedBy = user ? user.name : 'Administrator';
@@ -166,7 +166,7 @@
     var body = '';
 
     if (isA && tab === 0) {
-      var pending = ATT.filter(function (a) { return a.approvalStatus === 'pending'; }).sort(function (a,b) {
+      var pending = attendanceRecords().filter(function (a) { return a.approvalStatus === 'pending'; }).sort(function (a,b) {
         return (b.date+b.id).localeCompare(a.date+a.id);
       });
       body = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'+
@@ -184,7 +184,7 @@
         }).join('') : '<tr><td colspan="8" class="empty-state">No pending attendance records.</td></tr>')+
         '</tbody></table></div>';
     } else if ((!isA && tab === 0) || (isA && tab === 1)) {
-      var mine = ATT.filter(function (a) { return a.eid === user.id; }).slice().reverse();
+      var mine = attendanceRecords().filter(function (a) { return a.eid === user.id; }).slice().reverse();
       body = '<div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Time In</th><th>Time Out</th><th>Work status</th><th>Approval</th><th>OT</th><th>ND</th><th>Notes</th></tr></thead><tbody>'+
         (mine.length ? mine.map(function (a) {
           return '<tr><td class="mono">'+a.date+'</td><td class="mono">'+(a.tin || '—')+'</td><td class="mono">'+(a.tout || '—')+'</td>'+
@@ -193,7 +193,7 @@
         }).join('') : '<tr><td colspan="8" class="empty-state">No attendance records.</td></tr>')+'</tbody></table></div>';
     } else if (isA && tab === 2) {
       body = '<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th>Work status</th><th>Approval</th><th>OT</th><th>ND</th><th>Reviewed by</th></tr></thead><tbody>'+
-        ATT.slice().reverse().map(function (a) {
+        attendanceRecords().slice().reverse().map(function (a) {
           var emp = USERS.find(function (u) { return u.id === a.eid; });
           return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(emp ? emp.name : '?')+'</div>'+esc(emp ? emp.name : '?')+'</div></td>'+
             '<td class="mono">'+a.date+'</td><td class="mono">'+(a.tin || '—')+'</td><td class="mono">'+(a.tout || '—')+'</td>'+
@@ -215,7 +215,7 @@
         '<button class="btn btn-primary" onclick="submitAtt('+isA+')">Submit Attendance</button>';
     }
 
-    var pendingCount = ATT.filter(function (a) { return a.approvalStatus === 'pending'; }).length;
+    var pendingCount = attendanceRecords().filter(function (a) { return a.approvalStatus === 'pending'; }).length;
     return '<div class="page-header"><div><div class="page-title">Attendance</div><div class="page-sub">Approval-controlled time records · '+pendingCount+' pending</div></div></div>'+
       '<div class="tabs">'+tabs.map(function (t,i) { return '<div class="tab'+(tab===i?' active':'')+'" onclick="goTab('+i+')">'+t+(i===0&&isA&&pendingCount?' ('+pendingCount+')':'')+'</div>'; }).join('')+'</div>'+
       '<div class="card">'+body+'</div>';
@@ -225,10 +225,8 @@
     var eid = isA ? parseInt(document.getElementById('ae').value, 10) : user.id;
     var date = document.getElementById('adate').value;
     if (!date) { toast('Select a date.', 'warning'); return; }
-    var duplicate = ATT.find(function (a) { return a.eid === eid && a.date === date && a.approvalStatus !== 'rejected'; });
-    if (duplicate && !confirm('An active record already exists for this employee and date. Add another record?')) return;
-    ATT.push({
-      id:nAtt++, eid:eid, date:date,
+    var duplicate = attendanceRecord(eid,date);
+    upsertAttendance(eid,date,{
       tin:document.getElementById('atin').value, tout:document.getElementById('atout').value,
       status:document.getElementById('ast').value,
       ot:parseFloat(document.getElementById('aot').value) || 0,
@@ -239,7 +237,7 @@
       reviewedBy:isA ? user.name : '', reviewedAt:isA ? new Date().toISOString() : ''
     });
     queueSync('Attendance');
-    toast(isA ? 'Attendance saved and approved.' : 'Attendance submitted for approval.', 'success');
+    toast(isA ? (duplicate?'Authoritative attendance updated and approved.':'Attendance saved and approved.') : (duplicate?'Attendance update submitted for approval.':'Attendance submitted for approval.'), 'success');
     tab = isA ? 2 : 0;
     render();
   };

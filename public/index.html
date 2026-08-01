@@ -228,6 +228,7 @@ tr:hover td{background:var(--accent-bg) !important}
 <body>
 <div id="root"></div>
 <script src="/timekeeping-core.js"></script>
+<script src="/payroll-rule-engine.js"></script>
 <script>
 /* ========== DATA ========== */
 /* ---- ORG STRUCTURE (BU → Dept → Team → Subteam) ---- */
@@ -1287,7 +1288,7 @@ function zkImport(){
     const tout=g.times.length>1?g.times[g.times.length-1]:'';
     const isLate=tin>='08:30';
     const emp=USERS.find(u=>u.id===g.empId);
-    upsertAttendance(g.empId,g.date,{tin,tout,status:isLate?'late':'present',ot:0,nd:0,notes:'ZKTeco import',source:'zkteco-import'});
+    upsertAttendance(g.empId,g.date,{tin,tout,status:isLate?'late':'present',ot:0,nd:0,notes:'ZKTeco import',source:'zkteco-import',approvalStatus:'approved',filedBy:'ZKTeco import'});
     added++;
   });
   alert(`Imported ${added} attendance record${added!==1?'s':''}. Duplicate/unmapped rows skipped.`);
@@ -9414,8 +9415,8 @@ function startRealtime(){
           const dup=ATT.some(a=>a.eid===empId&&a.date===d.date&&a.tin===d.time);
           if(!dup){
             const existing=attendanceRecord(empId,d.date);
-            if(existing){upsertAttendance(empId,d.date,{tout:d.time,source:'zkteco-realtime'});}
-            else{upsertAttendance(empId,d.date,{tin:d.time,tout:'',status:d.time>='08:30'?'late':'present',ot:0,nd:0,notes:'ZKTeco realtime',source:'zkteco-realtime'});}
+            if(existing){upsertAttendance(empId,d.date,{tout:d.time,source:'zkteco-realtime',approvalStatus:'approved',filedBy:'ZKTeco realtime'});}
+            else{upsertAttendance(empId,d.date,{tin:d.time,tout:'',status:d.time>='08:30'?'late':'present',ot:0,nd:0,notes:'ZKTeco realtime',source:'zkteco-realtime',approvalStatus:'approved',filedBy:'ZKTeco realtime'});}
             ZK.lastSync=new Date().toISOString();render();
           }
         }
@@ -10026,9 +10027,9 @@ async function doBundy(type){
   const existing=attendanceRecord(user.id,today());
   if(type==='in'&&!existing){
     const late=now.getHours()>8||(now.getHours()===8&&now.getMinutes()>=30);
-    upsertAttendance(user.id,today(),{tin:entry.time,tout:'',status:late?'late':'present',ot:0,nd:0,notes:'Web Bundy',source:'web-bundy'});
-  }else if(type==='in'&&existing&&!existing.tin){upsertAttendance(user.id,today(),{tin:entry.time,source:'web-bundy'});
-  }else if(type==='out'&&existing&&!existing.tout){upsertAttendance(user.id,today(),{tout:entry.time,source:'web-bundy'});}
+    upsertAttendance(user.id,today(),{tin:entry.time,tout:'',status:late?'late':'present',ot:0,nd:0,notes:'Web Bundy',source:'web-bundy',approvalStatus:'approved',filedBy:user.name});
+  }else if(type==='in'&&existing&&!existing.tin){upsertAttendance(user.id,today(),{tin:entry.time,source:'web-bundy',approvalStatus:'approved',filedBy:user.name});
+  }else if(type==='out'&&existing&&!existing.tout){upsertAttendance(user.id,today(),{tout:entry.time,source:'web-bundy',approvalStatus:'approved',filedBy:user.name});}
   queueSync('Bundy_Logs','Attendance');selfieData=null;
   const zoneNote=entry.withinZone?'\n\u2705 Within office zone':'\n\u26A0 You are outside the office zone';
   alert((type==='in'?'Clocked IN at '+entry.time:'Clocked OUT at '+entry.time)+zoneNote);
@@ -12498,6 +12499,7 @@ render = function() {
 </script>
 <script src="/compliance.js"></script>
 <script src="/enterprise.js?v=sidebar-20260731"></script>
+<script src="/payroll-governance.js?v=20260801"></script>
 <script src="/persistence.js?v=20260801"></script>
 </body>
 </html>

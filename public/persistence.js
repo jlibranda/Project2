@@ -27,7 +27,8 @@
       overtimeRates:OT_RATES,payrollGroups:PAYROLL_GROUPS,payPeriods:PAY_PERIODS,
       payrollAdjustments:PAYROLL_ADJ,finalPayList:FINAL_PAY_LIST,payrollAudit:PAYROLL_AUDIT,
       governmentRates:GOVT_RATES,platformClients:PLATFORM_CLIENTS,
-      enterprise:window.collectEnterpriseState?window.collectEnterpriseState():null
+      enterprise:window.collectEnterpriseState?window.collectEnterpriseState():null,
+      payrollGovernance:window.collectPayrollGovernanceState?window.collectPayrollGovernanceState():null
     };
   }
 
@@ -46,6 +47,7 @@
     replaceArray(PAYROLL_ADJ,saved.payrollAdjustments);replaceArray(FINAL_PAY_LIST,saved.finalPayList);replaceArray(PAYROLL_AUDIT,saved.payrollAudit);
     if(saved.governmentRates)GOVT_RATES=saved.governmentRates;replaceArray(PLATFORM_CLIENTS,saved.platformClients);
     if(window.applyEnterpriseState)window.applyEnterpriseState(saved.enterprise);
+    if(window.applyPayrollGovernanceState)window.applyPayrollGovernanceState(saved.payrollGovernance);
     nAtt=ATT.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
     nLeave=LEAVES.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
     nLoan=LOANS.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
