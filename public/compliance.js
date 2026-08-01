@@ -243,12 +243,7 @@
   };
 
   function statutoryFactor(grp, period) {
-    if (!shouldDeductStatutory(grp, period)) return 0;
-    if ((grp.statutoryTiming || '') !== 'every-cutoff') return 1;
-    if (grp.freq === 'semi-monthly') return 0.5;
-    if (grp.freq === 'weekly') return 12 / 52;
-    if (grp.freq === 'bi-weekly') return 12 / 26;
-    return 1;
+    return PayrollRuleEngine.statutoryFactor(grp,period || {});
   }
 
   window.buildDraftRow = buildDraftRow = function (emp, grp, period) {
@@ -277,7 +272,7 @@
     var taxableCompensation = Math.max(0, gross - sss - ph - pi);
     var tax = +birTaxByFreq(taxableCompensation, taxFreq).toFixed(2);
     var loan = +(LOANS.filter(function (l) { return l.eid === emp.id && l.status === 'active'; }).reduce(function (s,l) {
-      return s + (Number(l.monthly) || 0) * (grp.freq === 'semi-monthly' ? 0.5 : 1);
+      return s + (Number(l.monthly) || 0) * PayrollRuleEngine.frequencyFactor(grp);
     }, 0)).toFixed(2);
     var totalDed = +(sss + ph + pi + tax + loan).toFixed(2);
     var net = +Math.max(0, gross - totalDed).toFixed(2);

@@ -38,10 +38,26 @@
     if (frequency === 'bi-weekly') return 12 / 26;
     return 1;
   }
+  function cutoffNumber(group, period) {
+    period = period || {};
+    var first = period.cutoff1 === true;
+    var second = period.cutoff2 === true;
+    if (first && !second) return 1;
+    if (second && !first) return 2;
+    var fromDay = period.from ? Number(String(period.from).slice(8,10)) : 0;
+    var toDay = period.to ? Number(String(period.to).slice(8,10)) : 0;
+    if ((group && group.freq) === 'semi-monthly') {
+      if (toDay && toDay <= 15) return 1;
+      if (fromDay > 15) return 2;
+    }
+    if (first && second) return 'both';
+    return null;
+  }
   function statutoryFactor(group, period) {
     var timing = group.statutoryTiming || 'every-cutoff';
-    if (timing === 'every-1st' && !period.cutoff1) return 0;
-    if (timing === 'every-2nd' && !period.cutoff2) return 0;
+    var cutoff = cutoffNumber(group,period);
+    if (timing === 'every-1st') return cutoff === 1 || cutoff === 'both' ? 1 : 0;
+    if (timing === 'every-2nd') return cutoff === 2 || cutoff === 'both' ? 1 : 0;
     return timing === 'every-cutoff' ? frequencyFactor(group) : 1;
   }
   function addLine(lines, input) {
@@ -162,8 +178,9 @@
     var mandatory = statutory.sssEE+statutory.phEE+statutory.piEE+tax;
     var protectedNetRule = ruleValue(rules,'PROTECTED_NET_PAY',date,context,0);
     var capacity = credits-attendanceDeductions-mandatory-protectedNetRule.value;
-    var loanResult = maxLoanDeduction(input.loans,frequencyFactor(group),capacity);
-    if (loanResult.amount) addLine(lines,{code:'LOAN',name:'Loan Amortization',type:'deduction',amount:loanResult.amount,formula:'Minimum of scheduled amortization, balance, and deduction capacity',ruleCode:'LOAN_WATERFALL',ruleVersion:1,legalSource:'Loan authorization / company policy'});
+    var loanFrequencyFactor = frequencyFactor(group);
+    var loanResult = maxLoanDeduction(input.loans,loanFrequencyFactor,capacity);
+    if (loanResult.amount) addLine(lines,{code:'LOAN',name:'Loan Amortization',type:'deduction',amount:loanResult.amount,formula:(group.freq==='semi-monthly'?'Monthly amortization × 50% per cutoff':'Monthly amortization × payroll-frequency factor')+'; capped by balance and deduction capacity',ruleCode:'LOAN_WATERFALL',ruleVersion:1,legalSource:'Loan authorization / company policy'});
     var totalDeductions = money(attendanceDeductions+mandatory+loanResult.amount);
     var net = money(Math.max(0,credits-totalDeductions));
     var employerContributions = money(statutory.sssER+statutory.phER+statutory.piER);
@@ -178,5 +195,5 @@
       taxableCompensation:money(taxableCompensation),employerContributions:employerContributions,employerCost:money(credits+employerContributions),statutoryFactor:statFactor
     };
   }
-  return { money:money, selectRule:selectRule, frequencyFactor:frequencyFactor, statutoryFactor:statutoryFactor, validateEmployee:validateEmployee, validateAttendance:validateAttendance, calculate:calculate };
+  return { money:money, selectRule:selectRule, frequencyFactor:frequencyFactor, cutoffNumber:cutoffNumber, statutoryFactor:statutoryFactor, validateEmployee:validateEmployee, validateAttendance:validateAttendance, calculate:calculate };
 });

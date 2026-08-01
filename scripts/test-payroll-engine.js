@@ -14,6 +14,9 @@ const rules = [
 ];
 
 assert.equal(engine.selectRule(rules,'OT_REGULAR_DAY','2026-08-15',{employee,group,period}).version,2,'latest effective rule must be selected');
+assert.equal(engine.statutoryFactor(group,period),0,'Every 2nd cutoff must not deduct contributions on the first cutoff');
+assert.equal(engine.statutoryFactor(group,{from:'2026-08-16',to:'2026-08-31',cutoff1:false,cutoff2:true}),1,'Every 2nd cutoff must deduct the full monthly contribution on the second cutoff');
+assert.equal(engine.statutoryFactor(group,{from:'2026-08-01',to:'2026-08-15',cutoff1:true,cutoff2:true}),0,'Semi-monthly dates must resolve an invalid dual-cutoff first period as cutoff 1');
 const result = engine.calculate({
   employee,group,period,rules,baseBasic:11000,defaultDivisor:22,
   attendance:{records:[],presentDays:10,absentDays:1,lateMinutes:30,undertimeMinutes:15,otHours:2,ndHours:4,restDayHolidayHours:0},
@@ -31,5 +34,22 @@ assert.equal(result.net,5000,'protected minimum net pay must be honored');
 assert.ok(result.lines.every(line=>line.ruleCode&&line.ruleVersion&&line.legalSource),'every result line must retain a calculation source');
 assert.ok(result.lines.some(line=>line.code==='ADJUST'&&line.sourceTransaction===1),'retro adjustment must keep its source transaction');
 assert.equal(result.employerCost,result.gross,'employer cost must reconcile when employer contributions are zero');
+
+const loanBase = {
+  employee,period,rules:[],baseBasic:11000,defaultDivisor:22,
+  attendance:{records:[],presentDays:10,absentDays:0,lateMinutes:0,undertimeMinutes:0,otHours:0,ndHours:0,restDayHolidayHours:0},
+  adjustments:[],loans:[{id:2,type:'Company Loan',status:'active',monthly:1000,balance:5000}],
+  statutory:()=>({sssEE:0,sssER:0,phEE:0,phER:0,piEE:0,piER:0}),tax:()=>0
+};
+const semiMonthlyLoan = engine.calculate({...loanBase,group});
+const monthlyLoan = engine.calculate({...loanBase,group:{code:'MNTH',freq:'monthly',taxMethod:'monthly',statutoryTiming:'every-cutoff'},period:{from:'2026-08-01',to:'2026-08-31',cutoff1:true,cutoff2:true},baseBasic:22000});
+assert.equal(semiMonthlyLoan.loan,500,'Semi-monthly payroll must deduct half of the monthly loan amortization per cutoff');
+assert.equal(monthlyLoan.loan,1000,'Monthly payroll must deduct the full monthly loan amortization');
+
+const contributionByFactor = (monthly,factor)=>({sssEE:1000*factor,sssER:2000*factor,phEE:500*factor,phER:500*factor,piEE:200*factor,piER:200*factor});
+const firstCutoffStatutory = engine.calculate({...loanBase,group,loans:[],statutory:contributionByFactor});
+const secondCutoffStatutory = engine.calculate({...loanBase,group,period:{from:'2026-08-16',to:'2026-08-31',cutoff1:false,cutoff2:true},loans:[],statutory:contributionByFactor});
+assert.deepEqual([firstCutoffStatutory.sss,firstCutoffStatutory.ph,firstCutoffStatutory.pi],[0,0,0],'First cutoff statutory contributions must all be zero for Every 2nd timing');
+assert.deepEqual([secondCutoffStatutory.sss,secondCutoffStatutory.ph,secondCutoffStatutory.pi],[1000,500,200],'Second cutoff must deduct the full monthly statutory contributions');
 
 console.log('Payroll rule engine tests passed.');

@@ -228,7 +228,7 @@ tr:hover td{background:var(--accent-bg) !important}
 <body>
 <div id="root"></div>
 <script src="/timekeeping-core.js"></script>
-<script src="/payroll-rule-engine.js"></script>
+<script src="/payroll-rule-engine.js?v=20260801-cutoff-loan"></script>
 <script>
 /* ========== DATA ========== */
 /* ---- ORG STRUCTURE (BU → Dept → Team → Subteam) ---- */
@@ -5627,11 +5627,7 @@ function computeBasicByPayType(emp,grp,period){
 
 /* ── Should statutory deductions apply for this cutoff? ─────────────────── */
 function shouldDeductStatutory(grp,period){
-  const timing=grp.statutoryTiming||'every-cutoff';
-  if(timing==='every-cutoff') return true;
-  if(timing==='every-1st')    return !!(period&&period.cutoff1);
-  if(timing==='every-2nd')    return !!(period&&period.cutoff2);
-  return true;
+  return PayrollRuleEngine.statutoryFactor(grp,period||{})>0;
 }
 
 /* ── Build draft row for one employee ───────────────────────────────────── */
@@ -5659,7 +5655,8 @@ function buildDraftRow(emp,grp,period){
   const grossIncome=grp.freq==='monthly'?ms:grp.freq==='semi-monthly'?ms/2:grp.freq==='weekly'?ms*12/52:grp.freq==='bi-weekly'?ms*12/26:ms;
   const tax  =+birTaxByFreq(grossIncome,taxFreq).toFixed(2);
   /* Active loans */
-  const loan =+(LOANS.filter(l=>l.eid===emp.id&&l.status==='active').reduce((s,l)=>s+(l.monthly||0),0)).toFixed(2);
+  const loanFactor=PayrollRuleEngine.frequencyFactor(grp);
+  const loan =+(LOANS.filter(l=>l.eid===emp.id&&l.status==='active').reduce((s,l)=>s+(l.monthly||0)*loanFactor,0)).toFixed(2);
   const totalDed=+(sss+ph+pi+tax+loan+attendanceDeduction).toFixed(2);
   const net  =+Math.max(0,gross-totalDed).toFixed(2);
   return{empId:emp.id,name:emp.name,eid:emp.eid,pos:emp.pos,payType:emp.payType,
@@ -12498,7 +12495,7 @@ render = function() {
 
 
 </script>
-<script src="/compliance.js"></script>
+<script src="/compliance.js?v=20260801-cutoff-loan"></script>
 <script src="/enterprise.js?v=sidebar-20260731"></script>
 <script src="/payroll-governance.js?v=20260801"></script>
 <script src="/persistence.js?v=20260801"></script>
