@@ -535,7 +535,7 @@ const PERM_DEFS=[
   {grp:'Time & Attendance',   k:'bundyadmin',         l:'Bundy Admin Logs',                 desc:'View all company-wide clock-in/out raw logs',                                         sub:false},
 
   /* ── PAYROLL ──────────────────────────────────────────────── */
-  {grp:'Payroll',             k:'payroll',            l:'View & Run Payroll',               desc:'Access the payroll module and run computation',                                        sub:false},
+  {grp:'Payroll',             k:'payroll',            l:'View & Process Payroll',           desc:'Access the payroll module and process computation',                                    sub:false},
   {grp:'Payroll',             k:'payroll_approve',    l:'Approve / Lock Payroll',           desc:'Final review and sign-off before payroll is released',                                 sub:true},
   {grp:'Payroll',             k:'government',         l:"Gov't Remittances",                desc:'SSS, PhilHealth, Pag-IBIG, and BIR computation and filing',                           sub:false},
   {grp:'Payroll',             k:'myslips',            l:'My Payslips',                      desc:'View own payslips and personal pay history',                                           sub:false},
@@ -2390,7 +2390,7 @@ function pgDashboard(){
   const activeLoans=LOANS.filter(l=>l.status==='active').length;
   return`
   <div class="page-header"><div><div class="page-title">Dashboard</div><div class="page-sub">Welcome back, ${user.name.split(' ')[0]}! Here's your overview.</div></div>
-  ${isA?`<div class="action-row"><button class="btn btn-primary" onclick="goView('payroll')">${ico('peso',14)} Run Payroll</button><button class="btn" onclick="goView('onboarding')">${ico('onboard',14)} Onboard</button></div>`:''}
+  ${isA?`<div class="action-row"><button class="btn btn-primary" onclick="goView('payroll')">${ico('peso',14)} Process Payroll</button><button class="btn" onclick="goView('onboarding')">${ico('onboard',14)} Onboard</button></div>`:''}
   </div>
   <div class="metrics">
     ${isA?`
@@ -4604,7 +4604,7 @@ function pgPayroll(){
       <!-- Payroll Groups Status -->
       <div class="card" style="margin-bottom:0">
         <div class="card-hd"><div class="card-title">Payroll Groups & Periods</div>
-          <button class="btn btn-sm btn-primary" onclick="goTab(1)">+ Run Payroll</button></div>
+          <button class="btn btn-sm btn-primary" onclick="goTab(1)">+ Process Payroll</button></div>
         <table><thead><tr><th>Group</th><th>Frequency</th><th>Open Periods</th><th>Last Run</th><th>Status</th></tr></thead>
         <tbody>${PAYROLL_GROUPS.filter(g=>g.active).map(g=>{
           const periods=PAY_PERIODS.filter(p=>p.groupId===g.id);
@@ -4634,7 +4634,7 @@ function pgPayroll(){
         <div class="card" style="margin-bottom:0">
           <div class="card-title" style="margin-bottom:10px">Quick Actions</div>
           <div class="payroll-quick-grid">
-            <button class="payroll-quick-action" onclick="goTab(1)"><span>${ico('peso',15)}</span><div><strong>Run payroll</strong><small>Compute a pay period</small></div></button>
+            <button class="payroll-quick-action" onclick="goTab(1)"><span>${ico('peso',15)}</span><div><strong>Process payroll</strong><small>Compute a pay period</small></div></button>
             <button class="payroll-quick-action" onclick="goTab(2)"><span>${ico('edit',15)}</span><div><strong>Add adjustment</strong><small>Earnings or deductions</small></div></button>
             <button class="payroll-quick-action" onclick="goTab(3)"><span>${ico('file',15)}</span><div><strong>13th month</strong><small>Review computation</small></div></button>
             <button class="payroll-quick-action" onclick="goTab(4)"><span>${ico('file',15)}</span><div><strong>Final pay</strong><small>Process separation</small></div></button>
@@ -4687,7 +4687,7 @@ function pgPayroll(){
       <div class="payroll-step active"><span>1</span><div><strong>Set payroll period</strong><small>Choose group and cutoff</small></div></div>
       <div class="payroll-step ${isPreview?'done':'active'}"><span>${isPreview?'✓':'2'}</span><div><strong>Select employees</strong><small>Confirm included staff</small></div></div>
       <div class="payroll-step ${isPreview?'active':''}"><span>3</span><div><strong>Review computation</strong><small>Check earnings and deductions</small></div></div>
-      <div class="payroll-step"><span>4</span><div><strong>Finalize</strong><small>Lock and generate outputs</small></div></div>
+      <div class="payroll-step"><span>4</span><div><strong>Submit</strong><small>Send for approval</small></div></div>
     </div>
     <!-- Group + Period selectors -->
     <div class="payroll-setup-grid">
@@ -4719,7 +4719,7 @@ function pgPayroll(){
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
       <div>
         <div style="font-weight:700;font-size:15px">Payroll Preview — ${esc(grp?.name||'')} · ${period?esc(period.label):'Custom'}</div>
-        <div style="font-size:11px;color:var(--txt3);margin-top:2px">Edit any amount then click ✓ Finalize. Changes are highlighted.</div>
+        <div style="font-size:11px;color:var(--txt3);margin-top:2px">Review the computation, reprocess if source data changed, then submit it for approval.</div>
       </div>
       <button class="btn btn-sm" onclick="window._prPreview=false;PAYROLL_DRAFT={};render()">← Back</button>
     </div>
@@ -4782,8 +4782,9 @@ function pgPayroll(){
       <td style="padding:8px 10px;text-align:right;color:var(--green);font-weight:700;font-size:14px;font-family:monospace">${fmt(Object.values(PAYROLL_DRAFT).reduce((s,d)=>s+d.net,0))}</td>
     </tr></tfoot>
     </table></div>
-    <div style="display:flex;gap:8px">
-      <button class="btn btn-primary" style="padding:9px 18px" onclick="runPayroll()">${ico('peso',14)} ✓ Finalize Payroll</button>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="btn" style="padding:9px 18px" onclick="processPayroll()">${ico('peso',14)} Process Payroll</button>
+      <button class="btn btn-primary" style="padding:9px 18px" onclick="runPayroll()">✓ Submit for Approval</button>
       <button class="btn" onclick="window._prPreview=false;PAYROLL_DRAFT={};render()">✕ Cancel</button>
     </div>`
     :`
@@ -4825,7 +4826,7 @@ function pgPayroll(){
       </div>
     </div>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="btn btn-primary" style="padding:9px 18px" onclick="previewPayroll()">${ico('peso',14)} Preview & Edit Payroll</button>
+      <button class="btn btn-primary" style="padding:9px 18px" onclick="processPayroll()">${ico('peso',14)} Process Payroll</button>
     </div>
     <div id="payroll-bulk-preview" style="margin-top:10px"></div>`}`;
   }
@@ -5244,7 +5245,7 @@ function pgPayroll(){
     <div><div class="page-title">Payroll</div><div class="page-sub">Process pay accurately, resolve exceptions, and release compliant payroll outputs.</div></div>
     <div style="display:flex;gap:8px">
       <button class="btn" onclick="goTab(0)">${ico('analytics',14)} Dashboard</button>
-      <button class="btn btn-primary" onclick="goTab(1)">${ico('peso',14)} Run Payroll</button>
+      <button class="btn btn-primary" onclick="goTab(1)">${ico('peso',14)} Process Payroll</button>
     </div>
   </div>
   <div class="tabs payroll-tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${ico(tabIcons[i],13)}<span>${t}</span></div>`).join('')}</div>
@@ -5350,7 +5351,7 @@ function renderGovtReports(){
 }
 
 function renderBankFile(){
-  if(!PAYROLLS.length)return`<div class="empty-state"><div class="ei">🏦</div>Run payroll first to generate bank files.</div>`;
+  if(!PAYROLLS.length)return`<div class="empty-state"><div class="ei">🏦</div>Process and approve payroll first to generate bank files.</div>`;
   const r=PAYROLLS[PAYROLLS.length-1];
   const banks=['UnionBank','BDO','BPI','Metrobank','Security Bank','Land Bank','PNB'];
   return`<div style="margin-bottom:1rem">
@@ -5731,7 +5732,7 @@ function buildDraftRow(emp,grp,period){
 }
 
 /* ── Preview: build all draft rows for selected employees ───────────────── */
-function previewPayroll(){
+function processPayroll(){
   const from=document.getElementById('pf')?.value;
   const to=document.getElementById('pt')?.value;
   if(!from||!to){toast('Please select a pay period.','warning');return;}
@@ -5739,7 +5740,8 @@ function previewPayroll(){
   const grp=PAYROLL_GROUPS.find(g=>g.id===grpId)||PAYROLL_GROUPS[0];
   const selPeriodId=window._prPeriod;
   const period=PAY_PERIODS.find(p=>p.id===selPeriodId)||null;
-  const emps=USERS.filter(u=>u.role==='employee'&&document.getElementById('pe'+u.id)?.checked);
+  const priorIds=new Set(Object.keys(PAYROLL_DRAFT).map(Number));
+  const emps=USERS.filter(u=>u.role==='employee'&&(document.getElementById('pe'+u.id)?.checked||priorIds.has(u.id)));
   if(!emps.length){toast('Select at least one employee.','warning');return;}
   PAYROLL_DRAFT={};
   emps.forEach(function(emp){
@@ -5747,8 +5749,9 @@ function previewPayroll(){
   });
   window._prPreview=true;
   render();
-  toast('Preview ready — review and edit amounts before finalizing.','info');
+  toast('Payroll processed — review the computation, then submit for approval.','success');
 }
+function previewPayroll(){return processPayroll();}
 
 /* ── Recalculate net for one draft row ──────────────────────────────────── */
 function updateDraftNet(empId){
@@ -12584,7 +12587,7 @@ function renderFAB() {
   var isA = user.role === 'admin' || isPlatformAdmin;
   var acts = [];
   if (isA || canAccess('emp_add'))       acts.push({l:'Add Employee',  ic:'👤', v:'employees', t:1});
-  if (isA || canAccess('payroll'))       acts.push({l:'Run Payroll',   ic:'💰', v:'payroll'});
+  if (isA || canAccess('payroll'))       acts.push({l:'Process Payroll',ic:'💰', v:'payroll'});
   if (isA || canAccess('leave_approve')) acts.push({l:'Approve Leave', ic:'📋', v:'leave'});
   if (isA || canAccess('reports'))       acts.push({l:'Reports',       ic:'📊', v:'reports'});
   if (isA || canAccess('assistant'))     acts.push({l:'HR Assistant',  ic:'🤖', v:'assistant'});
