@@ -103,10 +103,11 @@
     return PayrollRuleEngine.recurringAllowanceFactor(record,group,period);
   }
   function effectiveRecurringAllowances(emp,group,period){
-    if(period.includeRecurringAllowances===false)return[];
+    var selectedCodes=period.recurringAllowanceCodes;
+    if(Array.isArray(selectedCodes)&&!selectedCodes.length)return[];
+    if(!Array.isArray(selectedCodes)&&period.includeRecurringAllowances===false)return[];
     migrateRecurringAllowances(emp);
     return (emp.recurringAllowances||[]).filter(function(record){
-      var selectedCodes=period.recurringAllowanceCodes;
       var selected=!Array.isArray(selectedCodes)||selectedCodes.indexOf(record.payItemCode)>=0;
       return selected&&record.active!==false&&(!record.effectiveFrom||record.effectiveFrom<=period.to)&&(!record.effectiveTo||record.effectiveTo>=period.from);
     }).map(function(record){

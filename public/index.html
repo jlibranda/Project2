@@ -4723,6 +4723,20 @@ function pgPayroll(){
       </div>
       <button class="btn btn-sm" onclick="window._prPreview=false;PAYROLL_DRAFT={};render()">← Back</button>
     </div>
+    ${(()=>{
+      const drafts=Object.values(PAYROLL_DRAFT);
+      const attendanceCount=drafts.reduce((sum,d)=>sum+Number(d.attendanceApproved||0),0);
+      const allowanceLines=drafts.reduce((sum,d)=>sum+(Array.isArray(d.recurringAllowances)?d.recurringAllowances.length:0),0);
+      const selectedCodes=period&&!recurringAllowancesEnabled(period)?[]:(Array.isArray(period?.recurringAllowanceCodes)?period.recurringAllowanceCodes:recurringAllowanceTypes().map(t=>t.code));
+      const appliedCodes=[...new Set(drafts.flatMap(d=>(d.recurringAllowances||[]).map(a=>a.payItemCode)).filter(Boolean))];
+      const unapplied=selectedCodes.filter(code=>!appliedCodes.includes(code));
+      return `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px 12px;margin-bottom:12px;background:var(--bg);border:1px solid var(--border);border-radius:10px;font-size:11px;color:var(--txt2)">
+        <span class="badge b-approved">✓ ${attendanceCount} approved timekeeping record${attendanceCount===1?'':'s'}</span>
+        <span class="badge ${allowanceLines?'b-approved':'b-pending'}">${allowanceLines} recurring allowance line${allowanceLines===1?'':'s'} applied</span>
+        <span>Selected allowances: <strong>${selectedCodes.length?selectedCodes.map(esc).join(', '):'None'}</strong></span>
+        ${unapplied.length?`<span style="color:var(--amber)">⚠ Not payable for this period: ${unapplied.map(esc).join(', ')}. Check employee setup, schedule, and effective dates.</span>`:''}
+      </div>`;
+    })()}
     <div style="overflow-x:auto;margin-bottom:1rem">
     <table style="min-width:900px;font-size:12px">
     <thead><tr style="background:var(--bg)">
@@ -5062,7 +5076,7 @@ function pgPayroll(){
         <td>${cutoffBadge}</td>
         <td class="mono" style="font-size:11px">${fmtShort(p.from)} → ${fmtShort(p.to)}</td>
         <td class="mono" style="font-size:11px">${p.attendanceFrom||p.from?fmtShort(p.attendanceFrom||p.from)+' → '+fmtShort(p.attendanceTo||p.to):'—'}</td>
-        <td>${p.includeRecurringAllowances===false?'<span class="badge b-absent" style="font-size:10px">Excluded</span>':Array.isArray(p.recurringAllowanceCodes)?p.recurringAllowanceCodes.map(code=>`<span class="badge b-approved" style="font-size:9px;margin:1px">${esc(code)}</span>`).join(''):'<span class="badge b-approved" style="font-size:10px">All allowances</span>'}</td>
+        <td>${!recurringAllowancesEnabled(p)?'<span class="badge b-absent" style="font-size:10px">Excluded</span>':Array.isArray(p.recurringAllowanceCodes)?p.recurringAllowanceCodes.map(code=>`<span class="badge b-approved" style="font-size:9px;margin:1px">${esc(code)}</span>`).join(''):'<span class="badge b-approved" style="font-size:10px">All allowances</span>'}</td>
         <td style="font-size:12px">${fmtDate(p.releaseDate)}</td>
         <td><span class="badge ${statusBadge[p.status]||'b-info'}">${p.status}</span></td>
         <td><div style="display:flex;gap:4px">
@@ -5738,18 +5752,33 @@ function processPayroll(){
   if(!from||!to){toast('Please select a pay period.','warning');return;}
   const grpId=window._prGroup||PAYROLL_GROUPS[0]?.id||1;
   const grp=PAYROLL_GROUPS.find(g=>g.id===grpId)||PAYROLL_GROUPS[0];
-  const selPeriodId=window._prPeriod;
+  const defaultOpenPeriod=PAY_PERIODS.find(p=>p.groupId===grpId&&p.status==='open');
+  const selPeriodId=window._prPeriod||defaultOpenPeriod?.id||null;
   const period=PAY_PERIODS.find(p=>p.id===selPeriodId)||null;
   const priorIds=new Set(Object.keys(PAYROLL_DRAFT).map(Number));
   const emps=USERS.filter(u=>u.role==='employee'&&(document.getElementById('pe'+u.id)?.checked||priorIds.has(u.id)));
   if(!emps.length){toast('Select at least one employee.','warning');return;}
+  const calculationPeriod=period||{from:from,to:to,attendanceFrom:from,attendanceTo:to};
+  const attendanceFrom=calculationPeriod.attendanceFrom||calculationPeriod.from;
+  const attendanceTo=calculationPeriod.attendanceTo||calculationPeriod.to;
+  const employeeIds=new Set(emps.map(e=>e.id));
+  const pendingAttendance=attendanceRecords().filter(r=>employeeIds.has(r.eid)&&r.date>=attendanceFrom&&r.date<=attendanceTo&&r.approvalStatus==='pending');
+  if(pendingAttendance.length){
+    toast('Payroll cannot be processed yet: '+pendingAttendance.length+' timekeeping record(s) are still pending approval.','warning',6500);
+    return;
+  }
   PAYROLL_DRAFT={};
   emps.forEach(function(emp){
-    PAYROLL_DRAFT[emp.id]=buildDraftRow(emp,grp,period||{from:from,to:to});
+    PAYROLL_DRAFT[emp.id]=buildDraftRow(emp,grp,calculationPeriod);
   });
+  const drafts=Object.values(PAYROLL_DRAFT);
+  const allowanceLines=drafts.reduce((sum,d)=>sum+(Array.isArray(d.recurringAllowances)?d.recurringAllowances.length:0),0);
+  const attendanceCount=drafts.reduce((sum,d)=>sum+Number(d.attendanceApproved||0),0);
+  if(period)window._prPeriod=period.id;
   window._prPreview=true;
+  window._payrollTraceEmployee=emps[0]?.id||null;
   render();
-  toast('Payroll processed — review the computation, then submit for approval.','success');
+  toast('Payroll processed fresh — '+emps.length+' employee(s), '+allowanceLines+' allowance line(s), and '+attendanceCount+' approved timekeeping record(s).','success',6000);
 }
 function previewPayroll(){return processPayroll();}
 
@@ -8467,13 +8496,13 @@ function renderModal(){
       </div>
     </div>
     <label style="display:flex;align-items:flex-start;gap:9px;padding:10px 12px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;margin-bottom:10px;cursor:pointer">
-      <input type="checkbox" id="pp-recurring" style="width:auto;accent-color:var(--accent);margin-top:2px" checked/>
+      <input type="checkbox" id="pp-recurring" style="width:auto;accent-color:var(--accent);margin-top:2px" checked onchange="toggleRecurringAllowanceSelection(this,'.pp-ra-code')"/>
       <span><strong style="font-size:12px;color:var(--accent-txt)">Include recurring allowances</strong><br><span style="font-size:10px;color:var(--txt3)">Pull eligible employee recurring allowances into this payroll period.</span></span>
     </label>
     <div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin:-3px 0 10px">
       <div style="font-size:11px;font-weight:700;color:var(--txt2);margin-bottom:7px">Select allowance types to include</div>
       <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px">
-        ${recurringAllowanceTypes().map(t=>`<label style="display:flex;align-items:center;gap:7px;font-size:11px"><input type="checkbox" class="pp-ra-code" value="${esc(t.code)}" style="width:auto;accent-color:var(--accent)" checked/><span><strong>${esc(t.code)}</strong> · ${esc(t.name)}</span></label>`).join('')}
+        ${recurringAllowanceTypes().map(t=>`<label style="display:flex;align-items:center;gap:7px;font-size:11px"><input type="checkbox" class="pp-ra-code" value="${esc(t.code)}" style="width:auto;accent-color:var(--accent)" checked onchange="syncRecurringAllowanceMaster('pp-recurring','.pp-ra-code')"/><span><strong>${esc(t.code)}</strong> · ${esc(t.name)}</span></label>`).join('')}
       </div>
     </div>
     <div class="field"><label>Release Date</label><input id="pp-rel" type="date" class="finput"/></div>
@@ -8489,12 +8518,11 @@ function renderModal(){
         const attTo=document.getElementById('pp-att-to')?.value||to;
         const co1=document.getElementById('pp-co1')?.checked||false;
         const co2=document.getElementById('pp-co2')?.checked||false;
-        const includeRecurringAllowances=document.getElementById('pp-recurring')?.checked!==false;
         const recurringAllowanceCodes=[...document.querySelectorAll('.pp-ra-code:checked')].map(x=>x.value);
+        const includeRecurringAllowances=recurringAllowanceCodes.length>0;
         if(!from||!to||!rel){toast('All dates required','warning');return;}
         if(from>to){toast('Period From must be before Period To','warning');return;}
         if(!co1&&!co2){toast('Select at least one cut-off (1st or 2nd)','warning');return;}
-        if(includeRecurringAllowances&&!recurringAllowanceCodes.length){toast('Select at least one recurring allowance type, or turn off recurring allowances','warning');return;}
         PAY_PERIODS.push({id:nPayPeriod++,groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,recurringAllowanceCodes,status:'open',runId:null});
         closeM();queueSync('Payroll_Periods');toast('Pay period added!','success');render()">
         ✓ Add Period</button>
@@ -8502,6 +8530,7 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='editPayPeriod'){
     const p=modal.period;
+    const recurringEnabled=recurringAllowancesEnabled(p);
     const validGroups=PAYROLL_GROUPS.filter(g=>g.active);
     inner=`<div class="modal-title">✎ Edit Pay Period
       <button class="close-x" onclick="closeM()">×</button></div>
@@ -8542,13 +8571,13 @@ function renderModal(){
       </div>
     </div>
     <label style="display:flex;align-items:flex-start;gap:9px;padding:10px 12px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;margin-bottom:10px;cursor:pointer">
-      <input type="checkbox" id="epp-recurring" style="width:auto;accent-color:var(--accent);margin-top:2px" ${p.includeRecurringAllowances!==false?'checked':''}/>
+      <input type="checkbox" id="epp-recurring" style="width:auto;accent-color:var(--accent);margin-top:2px" ${recurringEnabled?'checked':''} onchange="toggleRecurringAllowanceSelection(this,'.epp-ra-code')"/>
       <span><strong style="font-size:12px;color:var(--accent-txt)">Include recurring allowances</strong><br><span style="font-size:10px;color:var(--txt3)">Turn off to exclude all recurring allowances from this period.</span></span>
     </label>
     <div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin:-3px 0 10px">
       <div style="font-size:11px;font-weight:700;color:var(--txt2);margin-bottom:7px">Select allowance types to include</div>
       <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px">
-        ${recurringAllowanceTypes().map(t=>`<label style="display:flex;align-items:center;gap:7px;font-size:11px"><input type="checkbox" class="epp-ra-code" value="${esc(t.code)}" style="width:auto;accent-color:var(--accent)" ${!Array.isArray(p.recurringAllowanceCodes)||p.recurringAllowanceCodes.includes(t.code)?'checked':''}/><span><strong>${esc(t.code)}</strong> · ${esc(t.name)}</span></label>`).join('')}
+        ${recurringAllowanceTypes().map(t=>`<label style="display:flex;align-items:center;gap:7px;font-size:11px"><input type="checkbox" class="epp-ra-code" value="${esc(t.code)}" style="width:auto;accent-color:var(--accent)" ${recurringEnabled&&(!Array.isArray(p.recurringAllowanceCodes)||p.recurringAllowanceCodes.includes(t.code))?'checked':''} onchange="syncRecurringAllowanceMaster('epp-recurring','.epp-ra-code')"/><span><strong>${esc(t.code)}</strong> · ${esc(t.name)}</span></label>`).join('')}
       </div>
     </div>
     <div class="field"><label>Release Date</label><input id="epp-rel" type="date" class="finput" value="${p.releaseDate||''}"/></div>
@@ -8564,11 +8593,10 @@ function renderModal(){
         const attTo=document.getElementById('epp-att-to')?.value||to;
         const co1=document.getElementById('epp-co1')?.checked||false;
         const co2=document.getElementById('epp-co2')?.checked||false;
-        const includeRecurringAllowances=document.getElementById('epp-recurring')?.checked!==false;
         const recurringAllowanceCodes=[...document.querySelectorAll('.epp-ra-code:checked')].map(x=>x.value);
+        const includeRecurringAllowances=recurringAllowanceCodes.length>0;
         if(!from||!to||!rel){toast('All dates required','warning');return;}
         if(from>to){toast('Period From must be before Period To','warning');return;}
-        if(includeRecurringAllowances&&!recurringAllowanceCodes.length){toast('Select at least one recurring allowance type, or turn off recurring allowances','warning');return;}
         const pp=PAY_PERIODS.find(x=>x.id===${p.id});
         if(pp){Object.assign(pp,{groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,recurringAllowanceCodes});}
         closeM();queueSync('Payroll_Periods');toast('Pay period updated!','success');render();">
@@ -11160,6 +11188,19 @@ function numFmt(v){
 function recurringAllowanceTypes(){
   return INCOME_TYPES.filter(t=>!t.isStatutory&&(t.cat==='allowance'||t.cat==='deminimis'));
 }
+function recurringAllowancesEnabled(period){
+  if(Array.isArray(period?.recurringAllowanceCodes))return period.recurringAllowanceCodes.length>0;
+  return period?.includeRecurringAllowances!==false;
+}
+function toggleRecurringAllowanceSelection(master,selector){
+  const items=[...document.querySelectorAll(selector)];
+  items.forEach(item=>{item.checked=master.checked;});
+}
+function syncRecurringAllowanceMaster(masterId,selector){
+  const master=document.getElementById(masterId);
+  if(!master)return;
+  master.checked=[...document.querySelectorAll(selector)].some(item=>item.checked);
+}
 function employeeRecurringAllowances(emp){
   if(!Array.isArray(emp.recurringAllowances))emp.recurringAllowances=[];
   const grp=PAYROLL_GROUPS.find(g=>g.id===emp.payGroupId);
@@ -12703,7 +12744,7 @@ render = function() {
 </script>
 <script src="/compliance.js?v=20260801-cutoff-loan"></script>
 <script src="/enterprise.js?v=sidebar-20260731"></script>
-<script src="/payroll-governance.js?v=20260801-adjustment-process"></script>
+<script src="/payroll-governance.js?v=20260803-payroll-process-inputs"></script>
 <script src="/persistence.js?v=20260801"></script>
 </body>
 </html>
