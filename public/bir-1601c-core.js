@@ -63,7 +63,9 @@
           otherNonTaxable: money(Math.max(0, totalNonTaxable - mandatory)),
           totalNonTaxable: totalNonTaxable,
           taxable: taxable,
-          tax: money(item.tax || 0)
+          tax: money(item.tax || 0),
+          taxRefund: money(item.taxRefund || 0),
+          netTax: money((item.tax || 0) - (item.taxRefund || 0))
         });
       });
     });
@@ -76,17 +78,22 @@
         releaseDate: record.releaseDate || '', gross: money(record.grossFP), mandatory: 0,
         otherNonTaxable: money(record.nonTaxableCompensation),
         totalNonTaxable: money(record.nonTaxableCompensation),
-        taxable: money(record.taxableCompensation), tax: money(record.taxWithheld)
+        taxable: money(record.taxableCompensation), tax: money(record.taxWithheld),
+        taxRefund: money(record.taxRefund),
+        netTax: money((record.taxWithheld || 0) - (record.taxRefund || 0))
       });
     });
     function sum(key) { return money(entries.reduce(function (total, row) { return total + (Number(row[key]) || 0); }, 0)); }
+    var netTax = sum('netTax');
     return {
       month: month, entries: entries,
       regularRunCount: new Set(entries.filter(function (e) { return e.source !== 'Final Pay'; }).map(function (e) { return e.sourceId; })).size,
       finalPayCount: entries.filter(function (e) { return e.source === 'Final Pay'; }).length,
       totalCompensation: sum('gross'), mandatoryContributions: sum('mandatory'),
       otherNonTaxable: sum('otherNonTaxable'), totalNonTaxable: sum('totalNonTaxable'),
-      taxableCompensation: sum('taxable'), totalTaxesWithheld: sum('tax'), taxRequiredForRemittance: sum('tax')
+      taxableCompensation: sum('taxable'), totalTaxesWithheld: sum('tax'),
+      annualizationRefunds: sum('taxRefund'), taxRequiredForRemittance: money(Math.max(0, netTax)),
+      excessAnnualizationCredit: money(Math.max(0, -netTax))
     };
   }
 

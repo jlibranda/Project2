@@ -38,6 +38,7 @@
     });
   }
   function ensureEffectiveData(){
+    if(typeof ensureAnnualizedTaxConfig==='function')ensureAnnualizedTaxConfig();
     var componentUpdates={RICE:{dmLimit:2500,limitPeriod:'monthly'},CLOTH:{dmLimit:8000,limitPeriod:'annual'},XMAS:{dmLimit:6000,limitPeriod:'annual'},MEDICAL:{dmLimit:12000,limitPeriod:'annual'}};
     Object.keys(componentUpdates).forEach(function(code){var component=INCOME_TYPES.find(function(item){return item.code===code;});if(component)Object.assign(component,componentUpdates[code]);});
     USERS.filter(function(emp){return emp.role==='employee';}).forEach(function(emp){
@@ -121,6 +122,24 @@
       return Object.assign({},record,{name:payItem.name,taxable:payItem.taxable!==false,deminimis:!!payItem.deminimis,payoutAmount:PayrollRuleEngine.money(payoutAmount),exemptLimit:PayrollRuleEngine.money(Number(payItem.dmLimit||0)*capFactor),source:'Income Type '+payItem.code+' / employee recurring allowance',formula:record.frequency==='every-payroll'?'Fixed amount every payroll':record.frequency==='quarterly'?'Fixed quarterly amount in configured payout month':'Monthly entitlement × '+PayrollRuleEngine.money(factor)+' schedule factor'});
     }).filter(Boolean);
   }
+  function applyAnnualizedTax(result,emp,period){
+    var event=BIRAnnualizationCore.normalizeEvent(period.taxEvent);
+    result.taxEvent=event;result.taxYear=Number(period.taxYear||String(period.bir1601CMonth||period.to).slice(0,4));result.taxRefund=0;
+    if(event==='regular')return result;
+    if(!COMPANY.taxPolicy||COMPANY.taxPolicy.annualizationEnabled===false){result.issues.push({severity:'blocker',code:'ANNUALIZATION_DISABLED',message:'Annualized withholding is disabled in Company Settings'});return result;}
+    var profile=employeeTaxRecord(emp,result.taxYear,false);
+    BIRAnnualizationCore.validateProfile(profile,result.taxYear,COMPANY.taxPolicy.requireConfirmedTaxRecord!==false).forEach(function(message){result.issues.push({severity:'blocker',code:'TAX_PROFILE_INCOMPLETE',message:message});});
+    profile=profile||{};
+    var ytd=employeeYtdTaxSnapshot(emp.id,result.taxYear,period.bir1601CMonth||String(result.taxYear)+'-12',period.id||null);
+    var reconciliation=BIRAnnualizationCore.reconcile({currentTaxable:result.taxableCompensation,ytdTaxable:ytd.taxable,openingYtdTaxable:profile.openingYtdTaxable,previousEmployerTaxable:profile.previousEmployerTaxable,ytdTaxWithheld:ytd.withheld,openingYtdTaxWithheld:profile.openingYtdTaxWithheld,previousEmployerTaxWithheld:profile.previousEmployerTaxWithheld,taxFunction:function(value){return birTaxByFreq(value,'annual');}});
+    var periodicTax=Number(result.tax||0);
+    result.tax=reconciliation.withholding;result.taxRefund=reconciliation.refund;result.taxAdjustment=reconciliation.adjustment;result.annualizedTaxable=reconciliation.annualTaxable;result.annualTax=reconciliation.annualTax;result.ytdTaxableBefore=reconciliation.ytdTaxable+reconciliation.openingYtdTaxable;result.ytdTaxWithheldBefore=Number(ytd.withheld||0)+Number(profile.openingYtdTaxWithheld||0);result.previousEmployerTaxable=Number(profile.previousEmployerTaxable||0);result.previousEmployerTaxWithheld=Number(profile.previousEmployerTaxWithheld||0);
+    result.totalDed=PayrollRuleEngine.money(Number(result.totalDed||0)-periodicTax+result.tax);result.net=PayrollRuleEngine.money(Math.max(0,Number(result.gross||0)-result.totalDed+result.taxRefund));
+    var taxLine=(result.lines||[]).find(function(line){return line.code==='TAX';});if(taxLine){taxLine.amount=result.tax;taxLine.formula='Annual tax due minus current-employer YTD, opening YTD, and previous-employer tax withheld';taxLine.ruleCode='BIR_ANNUALIZED_RR_11_2018';}
+    if(result.taxRefund)(result.lines||[]).push({code:'TAX_REFUND',name:'Tax Refund from Annualization',type:'tax_refund',amount:result.taxRefund,taxable:false,formula:'Excess tax withheld before the annualization event',ruleCode:'BIR_ANNUALIZED_RR_11_2018',ruleVersion:1,legalSource:'BIR RR 11-2018'});
+    if(result.totalDed>Number(result.gross||0)+result.taxRefund)result.issues.push({severity:'blocker',code:'ANNUALIZED_TAX_EXCEEDS_PAY',message:'Annualized withholding exceeds available pay. Review YTD/previous-employer data and arrange compliant settlement.'});
+    return result;
+  }
   function governanceDraft(emp,grp,period) {
     var p=periodForCalculation(period);
     var from=p.attendanceFrom||p.from,to=p.attendanceTo||p.to;
@@ -129,6 +148,7 @@
     var baseBasic=computeBasicByPayType(appliedEmp,grp,p);
     var recurringAllowances=effectiveRecurringAllowances(emp,grp,p);
     var result=PayrollRuleEngine.calculate({employee:appliedEmp,group:grp,period:p,attendance:attendance,rules:PAYROLL_RULEBOOK,baseBasic:baseBasic,defaultDivisor:COMPANY.dailyDivisor||22,recurringAllowances:recurringAllowances,adjustments:effectiveAdjustments(emp,p),loans:LOANS.filter(function(loan){return loan.eid===emp.id;}),statutory:statutoryAmounts,tax:birTaxByFreq});
+    applyAnnualizedTax(result,emp,p);
     return Object.assign({empId:emp.id,name:emp.name,eid:emp.eid,pos:emp.pos,payType:emp.payType,baseBasic:baseBasic,pr:attendance.presentDays,absentDays:attendance.absentDays,lateMinutes:attendance.lateMinutes,undertimeMinutes:attendance.undertimeMinutes,otH:attendance.otHours,ndH:attendance.ndHours,attendanceSummary:attendance,attendanceFrom:from,attendanceTo:to,attendanceApproved:attendance.records.length,applyStatutory:result.statutoryFactor>0,recurringAllowances:recurringAllowances,taxFreq:grp.taxMethod||grp.freq,ms:result.rates.monthly,calculationTrace:result.lines,validationIssues:result.issues,loanSchedule:result.loanSchedule,employerContributions:result.employerContributions,employerCost:result.employerCost,compensationSnapshot:appliedEmp.appliedCompensationRecord||null,_computed:{basic:result.basic,ot:result.ot,nd:result.nd,sss:result.sss,ph:result.ph,pi:result.pi,tax:result.tax,loan:result.loan},_nonEditableGross:PayrollRuleEngine.money(result.gross-result.basic-result.ot-result.nd),_edited:false},result);
   }
   window.buildDraftRow=buildDraftRow=governanceDraft;
@@ -168,7 +188,7 @@
     var birReportingMonth=sourcePeriod&&sourcePeriod.bir1601CMonth;
     if(!birReportingMonth&&window._prPeriod==='custom')birReportingMonth=prompt('Enter the 1601-C reporting month for this custom payroll (YYYY-MM):','');
     if(!/^\d{4}-\d{2}$/.test(birReportingMonth||'')){toast('A valid manually selected 1601-C reporting month is required.','warning');return;}
-    var run={id:nPay++,from:from,to:to,items:items,on:today(),groupId:groupId,groupName:grp.name||'Standard',periodId:window._prPeriod!=='custom'?window._prPeriod:null,releaseDate:paymentDate,bir1601CMonth:birReportingMonth,includeIn1601C:true,taxEventType:'regular_payroll',status:'pending_approval',approvalStage:1,workflow:[{stage:'maker',label:'HR / Payroll Maker',by:user.name,at:now,status:'completed'}],preparedBy:user.name,preparedAt:now,ruleSnapshot:PAYROLL_RULEBOOK.filter(function(rule){return rule.status==='active';}).map(function(rule){return {id:rule.id,code:rule.code,version:rule.version,effectiveFrom:rule.effectiveFrom,value:rule.value};}),complianceVersion:'Versioned PH Payroll Rule Engine · '+today()};
+    var run={id:nPay++,from:from,to:to,items:items,on:today(),groupId:groupId,groupName:grp.name||'Standard',periodId:window._prPeriod!=='custom'?window._prPeriod:null,releaseDate:paymentDate,bir1601CMonth:birReportingMonth,includeIn1601C:true,taxEventType:(sourcePeriod&&sourcePeriod.taxEvent)||'regular',taxYear:Number(sourcePeriod&&sourcePeriod.taxYear||birReportingMonth.slice(0,4)),status:'pending_approval',approvalStage:1,workflow:[{stage:'maker',label:'HR / Payroll Maker',by:user.name,at:now,status:'completed'}],preparedBy:user.name,preparedAt:now,ruleSnapshot:PAYROLL_RULEBOOK.filter(function(rule){return rule.status==='active';}).map(function(rule){return {id:rule.id,code:rule.code,version:rule.version,effectiveFrom:rule.effectiveFrom,value:rule.value};}),complianceVersion:'Versioned PH Payroll Rule Engine · '+today()};
     PAYROLLS.push(run);PAYROLL_AUDIT.push({runId:run.id,action:'maker_submitted',stage:'maker',by:user.name,at:now});
     items.forEach(function(item){(item.adjustmentIds||[]).forEach(function(id){var adjustment=PAYROLL_ADJ.find(function(a){return a.id===id;});if(adjustment){adjustment.processStatus='submitted_with_payroll';adjustment.payrollRunId=run.id;}});});
     PAYROLL_DRAFT={};window._prPreview=false;window._reprocessRunId=null;queueSync('Payroll_Runs','Payroll_Items','Payroll_Audit','Payroll_Adjustments');toast('Payroll submitted to the Timekeeping Reviewer.','success');tab=0;render();

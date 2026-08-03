@@ -462,14 +462,16 @@
         ['23','Taxable Compensation not subject to withholding (annual compensation <= P250,000)','Review employee annualization before filing'],
         ['24','Net Taxable Compensation',report.taxableCompensation],
         ['25','Total Taxes Withheld',report.totalTaxesWithheld],
-        ['26','Adjustments from prior month(s)','Enter approved BIR adjustment, if any'],
+        ['Annualization control','Tax refunded to employees',report.annualizationRefunds],
+        ['26','Adjustments from prior month(s)',report.annualizationRefunds?'-'+report.annualizationRefunds:'Enter approved BIR adjustment, if any'],
         ['27','Tax Required to be Remitted',report.taxRequiredForRemittance],
+        ['Control','Excess annualization credit for review/carry-forward',report.excessAnnualizationCredit],
         [],
-        ['Source','Release Date','Employee No.','Employee','TIN','Gross Compensation','Mandatory Contributions','Other Non-Taxable','Taxable Compensation','Tax Withheld']
+        ['Source','Release Date','Employee No.','Employee','TIN','Gross Compensation','Mandatory Contributions','Other Non-Taxable','Taxable Compensation','Tax Withheld','Tax Refund','Net Tax']
       ];
       report.entries.forEach(function (entry) {
         var employee = USERS.find(function (u) { return u.id === entry.employeeId; }) || {};
-        birRows.push([entry.source,entry.releaseDate,entry.employeeNo,entry.employeeName,employee.tin||'',entry.gross,entry.mandatory,entry.otherNonTaxable,entry.taxable,entry.tax]);
+        birRows.push([entry.source,entry.releaseDate,entry.employeeNo,entry.employeeName,employee.tin||'',entry.gross,entry.mandatory,entry.otherNonTaxable,entry.taxable,entry.tax,entry.taxRefund,entry.netTax]);
       });
       birRows.push([],['CONTROL NOTE','Items 17, 18, 23 and prior-month adjustments require review against employee-level classifications and annualized records before filing the official return.']);
       downloadCsv('BIR_1601C_Worksheet_'+selectedMonth+'.csv', birRows);
@@ -564,7 +566,7 @@
     ];
     return '<div style="padding:9px 12px;background:var(--green-bg);color:var(--green-txt);border-radius:8px;margin-bottom:12px;font-size:12px">'+
       (run?'Latest approved payroll <strong>'+run.from+' – '+run.to+'</strong> · '+esc(run.complianceVersion || COMPLIANCE_VERSION.label):'Released final-pay records are available for statutory reporting.')+'</div>'+
-      '<div class="card" style="margin-bottom:.75rem;border-left:3px solid var(--red)"><div style="display:flex;gap:12px;align-items:end;justify-content:space-between;flex-wrap:wrap"><div><div class="card-title">BIR 1601-C reporting month</div><div class="card-sub">Manually selected in the payroll calendar or final-pay release; independent from attendance and payment dates.</div></div><div style="min-width:210px"><label style="font-size:11px;font-weight:700">For the Month</label><input type="month" class="finput" value="'+window._bir1601CMonth+'" onchange="window._bir1601CMonth=this.value;render()"/></div></div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px;font-size:11px"><div><span style="color:var(--txt3)">Approved payroll runs</span><div style="font-weight:800">'+birSummary.regularRunCount+'</div></div><div><span style="color:var(--txt3)">Released final pays</span><div style="font-weight:800">'+birSummary.finalPayCount+'</div></div><div><span style="color:var(--txt3)">Tax withheld</span><div class="mono" style="font-weight:800;color:var(--red)">'+fmt(birSummary.totalTaxesWithheld)+'</div></div></div></div>'+
+      '<div class="card" style="margin-bottom:.75rem;border-left:3px solid var(--red)"><div style="display:flex;gap:12px;align-items:end;justify-content:space-between;flex-wrap:wrap"><div><div class="card-title">BIR 1601-C reporting month</div><div class="card-sub">Manually selected in the payroll calendar or final-pay release; independent from attendance and payment dates.</div></div><div style="min-width:210px"><label style="font-size:11px;font-weight:700">For the Month</label><input type="month" class="finput" value="'+window._bir1601CMonth+'" onchange="window._bir1601CMonth=this.value;render()"/></div></div><div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:10px;font-size:11px"><div><span style="color:var(--txt3)">Approved payroll runs</span><div style="font-weight:800">'+birSummary.regularRunCount+'</div></div><div><span style="color:var(--txt3)">Released final pays</span><div style="font-weight:800">'+birSummary.finalPayCount+'</div></div><div><span style="color:var(--txt3)">Tax withheld</span><div class="mono" style="font-weight:800;color:var(--red)">'+fmt(birSummary.totalTaxesWithheld)+'</div></div><div><span style="color:var(--txt3)">Tax refunds</span><div class="mono" style="font-weight:800;color:var(--green)">'+fmt(birSummary.annualizationRefunds)+'</div></div><div><span style="color:var(--txt3)">Net remittance</span><div class="mono" style="font-weight:800;color:var(--red)">'+fmt(birSummary.taxRequiredForRemittance)+'</div></div></div></div>'+
       '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem">'+cards.map(function (c) {
         return '<div class="card" style="margin:0;border-left:3px solid var(--'+c.color+')"><div class="card-title">'+c.name+'</div>'+
           '<div class="card-sub" style="min-height:34px;margin:5px 0 10px">'+c.detail+'</div>'+
