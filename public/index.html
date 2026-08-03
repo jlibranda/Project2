@@ -5061,7 +5061,7 @@ function pgPayroll(){
         <td>${cutoffBadge}</td>
         <td class="mono" style="font-size:11px">${fmtShort(p.from)} → ${fmtShort(p.to)}</td>
         <td class="mono" style="font-size:11px">${p.attendanceFrom||p.from?fmtShort(p.attendanceFrom||p.from)+' → '+fmtShort(p.attendanceTo||p.to):'—'}</td>
-        <td><span class="badge ${p.includeRecurringAllowances===false?'b-absent':'b-approved'}" style="font-size:10px">${p.includeRecurringAllowances===false?'Excluded':'Included'}</span></td>
+        <td>${p.includeRecurringAllowances===false?'<span class="badge b-absent" style="font-size:10px">Excluded</span>':Array.isArray(p.recurringAllowanceCodes)?p.recurringAllowanceCodes.map(code=>`<span class="badge b-approved" style="font-size:9px;margin:1px">${esc(code)}</span>`).join(''):'<span class="badge b-approved" style="font-size:10px">All allowances</span>'}</td>
         <td style="font-size:12px">${fmtDate(p.releaseDate)}</td>
         <td><span class="badge ${statusBadge[p.status]||'b-info'}">${p.status}</span></td>
         <td><div style="display:flex;gap:4px">
@@ -8467,6 +8467,12 @@ function renderModal(){
       <input type="checkbox" id="pp-recurring" style="width:auto;accent-color:var(--accent);margin-top:2px" checked/>
       <span><strong style="font-size:12px;color:var(--accent-txt)">Include recurring allowances</strong><br><span style="font-size:10px;color:var(--txt3)">Pull eligible employee recurring allowances into this payroll period.</span></span>
     </label>
+    <div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin:-3px 0 10px">
+      <div style="font-size:11px;font-weight:700;color:var(--txt2);margin-bottom:7px">Select allowance types to include</div>
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px">
+        ${recurringAllowanceTypes().map(t=>`<label style="display:flex;align-items:center;gap:7px;font-size:11px"><input type="checkbox" class="pp-ra-code" value="${esc(t.code)}" style="width:auto;accent-color:var(--accent)" checked/><span><strong>${esc(t.code)}</strong> · ${esc(t.name)}</span></label>`).join('')}
+      </div>
+    </div>
     <div class="field"><label>Release Date</label><input id="pp-rel" type="date" class="finput"/></div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn btn-primary" onclick="
@@ -8481,10 +8487,12 @@ function renderModal(){
         const co1=document.getElementById('pp-co1')?.checked||false;
         const co2=document.getElementById('pp-co2')?.checked||false;
         const includeRecurringAllowances=document.getElementById('pp-recurring')?.checked!==false;
+        const recurringAllowanceCodes=[...document.querySelectorAll('.pp-ra-code:checked')].map(x=>x.value);
         if(!from||!to||!rel){toast('All dates required','warning');return;}
         if(from>to){toast('Period From must be before Period To','warning');return;}
         if(!co1&&!co2){toast('Select at least one cut-off (1st or 2nd)','warning');return;}
-        PAY_PERIODS.push({id:nPayPeriod++,groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,status:'open',runId:null});
+        if(includeRecurringAllowances&&!recurringAllowanceCodes.length){toast('Select at least one recurring allowance type, or turn off recurring allowances','warning');return;}
+        PAY_PERIODS.push({id:nPayPeriod++,groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,recurringAllowanceCodes,status:'open',runId:null});
         closeM();queueSync('Payroll_Periods');toast('Pay period added!','success');render()">
         ✓ Add Period</button>
       <button class="btn" onclick="closeM()">Cancel</button>
@@ -8534,6 +8542,12 @@ function renderModal(){
       <input type="checkbox" id="epp-recurring" style="width:auto;accent-color:var(--accent);margin-top:2px" ${p.includeRecurringAllowances!==false?'checked':''}/>
       <span><strong style="font-size:12px;color:var(--accent-txt)">Include recurring allowances</strong><br><span style="font-size:10px;color:var(--txt3)">Turn off to exclude all recurring allowances from this period.</span></span>
     </label>
+    <div style="padding:10px 12px;border:1px solid var(--border);border-radius:8px;margin:-3px 0 10px">
+      <div style="font-size:11px;font-weight:700;color:var(--txt2);margin-bottom:7px">Select allowance types to include</div>
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px">
+        ${recurringAllowanceTypes().map(t=>`<label style="display:flex;align-items:center;gap:7px;font-size:11px"><input type="checkbox" class="epp-ra-code" value="${esc(t.code)}" style="width:auto;accent-color:var(--accent)" ${!Array.isArray(p.recurringAllowanceCodes)||p.recurringAllowanceCodes.includes(t.code)?'checked':''}/><span><strong>${esc(t.code)}</strong> · ${esc(t.name)}</span></label>`).join('')}
+      </div>
+    </div>
     <div class="field"><label>Release Date</label><input id="epp-rel" type="date" class="finput" value="${p.releaseDate||''}"/></div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn btn-primary" onclick="
@@ -8548,10 +8562,12 @@ function renderModal(){
         const co1=document.getElementById('epp-co1')?.checked||false;
         const co2=document.getElementById('epp-co2')?.checked||false;
         const includeRecurringAllowances=document.getElementById('epp-recurring')?.checked!==false;
+        const recurringAllowanceCodes=[...document.querySelectorAll('.epp-ra-code:checked')].map(x=>x.value);
         if(!from||!to||!rel){toast('All dates required','warning');return;}
         if(from>to){toast('Period From must be before Period To','warning');return;}
+        if(includeRecurringAllowances&&!recurringAllowanceCodes.length){toast('Select at least one recurring allowance type, or turn off recurring allowances','warning');return;}
         const pp=PAY_PERIODS.find(x=>x.id===${p.id});
-        if(pp){Object.assign(pp,{groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,cutoff1:co1,cutoff2:co2,includeRecurringAllowances});}
+        if(pp){Object.assign(pp,{groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,recurringAllowanceCodes});}
         closeM();queueSync('Payroll_Periods');toast('Pay period updated!','success');render();">
         ✓ Save Changes</button>
       <button class="btn" onclick="closeM()">Cancel</button>
@@ -8716,13 +8732,14 @@ function renderModal(){
         <div><span style="color:var(--txt3)">Tax Treatment</span><br><strong style="color:${selected.taxable?'var(--amber)':'var(--green)'}">${selected.taxable?'Taxable':'Non-taxable'}</strong></div>
         <div><span style="color:var(--txt3)">De Minimis</span><br><strong>${selected.deminimis?'Yes · ₱'+numFmt(selected.dmLimit||0):'No'}</strong></div>
       </div>`:`<div style="padding:8px 10px;background:var(--amber-bg);color:var(--amber-txt);border-radius:7px;margin-bottom:10px;font-size:11px">Taxability is defined in the selected Income Type—not manually on this employee record.</div>`}
-      <div class="field"><label>Monthly Entitlement / Fixed Payroll Amount <span style="color:var(--red)">*</span></label><input id="ra-amount" type="number" min="0" step="0.01" class="finput" value="${d.monthlyAmount||''}" placeholder="0.00"/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Used as a monthly entitlement for monthly, semi-monthly, weekly, and bi-weekly schedules. For Fixed every payroll, this exact amount is paid each run.</div></div>
+      <div class="field"><label>Allowance Amount <span style="color:var(--red)">*</span></label><input id="ra-amount" type="number" min="0" step="0.01" class="finput" value="${d.monthlyAmount||''}" placeholder="0.00"/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Monthly entitlement for monthly/semi-monthly/weekly/bi-weekly. For Quarterly or Fixed every payroll, this exact amount is paid per scheduled occurrence.</div></div>
       <div class="form-row">
-        <div class="field"><label>Distribution Schedule</label><select id="ra-frequency" class="finput">
-          ${[['monthly','Monthly — once per month'],['semi-monthly','Semi-monthly — 50% each cutoff'],['weekly','Weekly — monthly × 12 ÷ 52'],['bi-weekly','Bi-weekly — monthly × 12 ÷ 26'],['every-payroll','Fixed amount every payroll']].map(o=>`<option value="${o[0]}" ${d.frequency===o[0]?'selected':''}>${o[1]}</option>`).join('')}
+        <div class="field"><label>Distribution Schedule</label><select id="ra-frequency" class="finput" onchange="document.getElementById('ra-quarter-wrap').style.display=this.value==='quarterly'?'block':'none';document.getElementById('ra-timing-wrap').style.display=this.value==='monthly'?'block':'none'">
+          ${[['monthly','Monthly — once per month'],['semi-monthly','Semi-monthly — 50% each cutoff'],['quarterly','Quarterly — fixed amount once per quarter'],['weekly','Weekly — monthly × 12 ÷ 52'],['bi-weekly','Bi-weekly — monthly × 12 ÷ 26'],['every-payroll','Fixed amount every payroll']].map(o=>`<option value="${o[0]}" ${d.frequency===o[0]?'selected':''}>${o[1]}</option>`).join('')}
         </select></div>
-        <div class="field"><label>Monthly Payout Cutoff</label><select id="ra-timing" class="finput"><option value="every-1st" ${d.timing==='every-1st'?'selected':''}>1st cutoff</option><option value="every-2nd" ${d.timing!=='every-1st'?'selected':''}>2nd cutoff</option></select><div style="font-size:10px;color:var(--txt3);margin-top:3px">Used only when Monthly is assigned to a semi-monthly payroll group.</div></div>
+        <div class="field" id="ra-timing-wrap" style="display:${d.frequency==='monthly'?'block':'none'}"><label>Monthly Payout Cutoff</label><select id="ra-timing" class="finput"><option value="every-1st" ${d.timing==='every-1st'?'selected':''}>1st cutoff</option><option value="every-2nd" ${d.timing!=='every-1st'?'selected':''}>2nd cutoff</option></select><div style="font-size:10px;color:var(--txt3);margin-top:3px">Used when Monthly is assigned to a semi-monthly payroll group.</div></div>
       </div>
+      <div class="field" id="ra-quarter-wrap" style="display:${d.frequency==='quarterly'?'block':'none'}"><label>Quarterly Payout Months</label><select id="ra-quarter" class="finput"><option value="quarter-start" ${d.quarterlyPattern==='quarter-start'?'selected':''}>January, April, July, October</option><option value="quarter-middle" ${d.quarterlyPattern==='quarter-middle'?'selected':''}>February, May, August, November</option><option value="quarter-end" ${!d.quarterlyPattern||d.quarterlyPattern==='quarter-end'?'selected':''}>March, June, September, December</option></select><div style="font-size:10px;color:var(--txt3);margin-top:3px">Eligibility follows the payroll release month.</div></div>
       <div class="form-row"><div class="field"><label>Effective From</label><input id="ra-from" type="date" class="finput" value="${d.effectiveFrom||''}"/></div><div class="field"><label>Effective To</label><input id="ra-to" type="date" class="finput" value="${d.effectiveTo||''}"/></div></div>
       <div class="field"><label>Notes</label><textarea id="ra-notes" class="finput" rows="2" placeholder="Optional policy or approval reference">${esc(d.notes||'')}</textarea></div>
       <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin:8px 0 12px"><input id="ra-active" type="checkbox" style="width:auto;accent-color:var(--accent)" ${d.active!==false?'checked':''}/> Active recurring allowance</label>
@@ -11156,7 +11173,7 @@ function employeeRecurringAllowances(emp){
 function openRecurringAllowance(empId,allowanceId){
   const emp=USERS.find(u=>u.id===empId);if(!emp)return;
   const existing=employeeRecurringAllowances(emp).find(a=>a.id===allowanceId);
-  modal={type:'recurringAllowance',empId,data:existing?JSON.parse(JSON.stringify(existing)):{id:'',payItemCode:'',monthlyAmount:0,frequency:(PAYROLL_GROUPS.find(g=>g.id===emp.payGroupId)?.freq||'monthly'),timing:'every-2nd',effectiveFrom:today(),effectiveTo:'',active:true,notes:''}};
+  modal={type:'recurringAllowance',empId,data:existing?JSON.parse(JSON.stringify(existing)):{id:'',payItemCode:'',monthlyAmount:0,frequency:(PAYROLL_GROUPS.find(g=>g.id===emp.payGroupId)?.freq||'monthly'),timing:'every-2nd',quarterlyPattern:'quarter-end',effectiveFrom:today(),effectiveTo:'',active:true,notes:''}};
   render();
 }
 function saveRecurringAllowance(){
@@ -11166,6 +11183,7 @@ function saveRecurringAllowance(){
   d.monthlyAmount=parseFloat(document.getElementById('ra-amount')?.value)||0;
   d.frequency=document.getElementById('ra-frequency')?.value||'monthly';
   d.timing=document.getElementById('ra-timing')?.value||'every-2nd';
+  d.quarterlyPattern=document.getElementById('ra-quarter')?.value||'quarter-end';
   d.effectiveFrom=document.getElementById('ra-from')?.value||'';
   d.effectiveTo=document.getElementById('ra-to')?.value||'';
   d.active=document.getElementById('ra-active')?.checked!==false;
@@ -11643,16 +11661,17 @@ function pgEmpDetail(){
 
   else if(detailTab===3){
     const allowances=employeeRecurringAllowances(e);
-    const frequencyLabel={'monthly':'Monthly (once)','semi-monthly':'Semi-monthly (split)','weekly':'Weekly','bi-weekly':'Bi-weekly','every-payroll':'Fixed every payroll'};
+    const frequencyLabel={'monthly':'Monthly (once)','semi-monthly':'Semi-monthly (split)','quarterly':'Quarterly (fixed)','weekly':'Weekly','bi-weekly':'Bi-weekly','every-payroll':'Fixed every payroll'};
+    const quarterLabel={'quarter-start':'Jan / Apr / Jul / Oct','quarter-middle':'Feb / May / Aug / Nov','quarter-end':'Mar / Jun / Sep / Dec'};
     tabBody=`
       <div class="card-hd" style="padding:0;margin-bottom:12px">
         <div><div class="card-title">Recurring Allowances</div><div class="card-sub">Employee-specific entitlement, schedule, effective dates, and tax classification from Payroll → Configuration → Income Types.</div></div>
         ${isA?`<button class="btn btn-primary btn-sm" onclick="openRecurringAllowance(${e.id})">+ Add Allowance</button>`:''}
       </div>
       <div style="padding:9px 11px;background:var(--blue-bg);color:var(--blue-txt);border-radius:8px;margin-bottom:12px;font-size:11px">
-        The amount is the monthly entitlement, except <strong>Fixed every payroll</strong>, which pays the entered amount on every included payroll period. Monthly allowances for semi-monthly groups are paid on the selected cutoff; semi-monthly allowances are split 50/50.
+        The amount is the monthly entitlement for monthly-based schedules. <strong>Quarterly</strong> pays the exact configured amount once in each selected quarter payout month; <strong>Fixed every payroll</strong> pays the exact amount every included period.
       </div>
-      <div style="overflow-x:auto"><table><thead><tr><th>Allowance / Code</th><th>Monthly Entitlement</th><th>Tax Treatment</th><th>Distribution</th><th>Effective Dates</th><th>Status</th>${isA?'<th>Actions</th>':''}</tr></thead><tbody>
+      <div style="overflow-x:auto"><table><thead><tr><th>Allowance / Code</th><th>Configured Amount</th><th>Tax Treatment</th><th>Distribution</th><th>Effective Dates</th><th>Status</th>${isA?'<th>Actions</th>':''}</tr></thead><tbody>
       ${allowances.length?allowances.map(a=>{
         const type=INCOME_TYPES.find(t=>t.code===a.payItemCode);
         const treatment=type?.deminimis?'De Minimis / Non-taxable up to limit':type?.taxable?'Taxable':'Non-taxable';
@@ -11661,7 +11680,7 @@ function pgEmpDetail(){
           <td><strong>${esc(type?.name||a.payItemCode)}</strong><div><code>${esc(a.payItemCode)}</code></div></td>
           <td class="mono" style="font-weight:700">₱${numFmt(a.monthlyAmount||a.amount||0)}</td>
           <td><span class="badge ${type?.taxable?'b-pending':'b-approved'}">${treatment}</span>${type?.deminimis&&type.dmLimit?`<div style="font-size:10px;color:var(--txt3);margin-top:3px">Limit: ₱${numFmt(type.dmLimit)} / month</div>`:''}</td>
-          <td>${frequencyLabel[a.frequency]||a.frequency}${timing}</td>
+          <td>${frequencyLabel[a.frequency]||a.frequency}${timing}${a.frequency==='quarterly'?' · '+quarterLabel[a.quarterlyPattern||'quarter-end']:''}</td>
           <td class="mono" style="font-size:10px">${a.effectiveFrom||'—'} → ${a.effectiveTo||'Onward'}</td>
           <td><span class="badge ${a.active===false?'b-absent':'b-approved'}">${a.active===false?'Inactive':'Active'}</span></td>
           ${isA?`<td><div class="action-row"><button class="btn btn-sm" onclick="openRecurringAllowance(${e.id},'${a.id}')">Edit</button><button class="btn btn-sm" onclick="toggleRecurringAllowance(${e.id},'${a.id}')">${a.active===false?'Enable':'Disable'}</button><button class="btn btn-sm btn-danger" onclick="deleteRecurringAllowance(${e.id},'${a.id}')">Delete</button></div></td>`:''}

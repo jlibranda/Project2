@@ -100,35 +100,24 @@
     });
   }
   function recurringAllowanceFactor(record,group,period){
-    var frequency=record.frequency||'monthly';
-    if(frequency==='every-payroll')return 1;
-    if(frequency==='monthly'){
-      if(group.freq==='monthly')return 1;
-      if(group.freq==='semi-monthly'){
-        var cutoff=PayrollRuleEngine.cutoffNumber(group,period);
-        var timing=record.timing||'every-2nd';
-        return timing==='every-1st'?(cutoff===1?1:0):(cutoff===2?1:0);
-      }
-      return 0;
-    }
-    if(frequency==='semi-monthly')return group.freq==='monthly'?1:(group.freq==='semi-monthly'?.5:0);
-    if(frequency==='weekly')return group.freq==='weekly'?12/52:0;
-    if(frequency==='bi-weekly')return group.freq==='bi-weekly'?12/26:0;
-    return 0;
+    return PayrollRuleEngine.recurringAllowanceFactor(record,group,period);
   }
   function effectiveRecurringAllowances(emp,group,period){
     if(period.includeRecurringAllowances===false)return[];
     migrateRecurringAllowances(emp);
     return (emp.recurringAllowances||[]).filter(function(record){
-      return record.active!==false&&(!record.effectiveFrom||record.effectiveFrom<=period.to)&&(!record.effectiveTo||record.effectiveTo>=period.from);
+      var selectedCodes=period.recurringAllowanceCodes;
+      var selected=!Array.isArray(selectedCodes)||selectedCodes.indexOf(record.payItemCode)>=0;
+      return selected&&record.active!==false&&(!record.effectiveFrom||record.effectiveFrom<=period.to)&&(!record.effectiveTo||record.effectiveTo>=period.from);
     }).map(function(record){
       var payItem=INCOME_TYPES.find(function(item){return item.code===record.payItemCode;});
       var factor=recurringAllowanceFactor(record,group,period);
       if(!payItem||!factor)return null;
       var monthlyAmount=Number(record.monthlyAmount||record.amount||0);
-      var payoutAmount=(record.frequency==='every-payroll'?monthlyAmount:monthlyAmount*factor);
-      var capFactor=record.frequency==='every-payroll'?PayrollRuleEngine.frequencyFactor(group):factor;
-      return Object.assign({},record,{name:payItem.name,taxable:payItem.taxable!==false,deminimis:!!payItem.deminimis,payoutAmount:PayrollRuleEngine.money(payoutAmount),exemptLimit:PayrollRuleEngine.money(Number(payItem.dmLimit||0)*capFactor),source:'Income Type '+payItem.code+' / employee recurring allowance',formula:record.frequency==='every-payroll'?'Fixed amount every payroll':'Monthly entitlement × '+PayrollRuleEngine.money(factor)+' schedule factor'});
+      var fixedPayout=record.frequency==='every-payroll'||record.frequency==='quarterly';
+      var payoutAmount=fixedPayout?monthlyAmount:monthlyAmount*factor;
+      var capFactor=record.frequency==='every-payroll'?PayrollRuleEngine.frequencyFactor(group):(record.frequency==='quarterly'?3:factor);
+      return Object.assign({},record,{name:payItem.name,taxable:payItem.taxable!==false,deminimis:!!payItem.deminimis,payoutAmount:PayrollRuleEngine.money(payoutAmount),exemptLimit:PayrollRuleEngine.money(Number(payItem.dmLimit||0)*capFactor),source:'Income Type '+payItem.code+' / employee recurring allowance',formula:record.frequency==='every-payroll'?'Fixed amount every payroll':record.frequency==='quarterly'?'Fixed quarterly amount in configured payout month':'Monthly entitlement × '+PayrollRuleEngine.money(factor)+' schedule factor'});
     }).filter(Boolean);
   }
   function governanceDraft(emp,grp,period) {

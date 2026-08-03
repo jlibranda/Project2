@@ -60,6 +60,30 @@
     if (timing === 'every-2nd') return cutoff === 2 || cutoff === 'both' ? 1 : 0;
     return timing === 'every-cutoff' ? frequencyFactor(group) : 1;
   }
+  function recurringAllowanceFactor(record, group, period) {
+    var frequency = record.frequency || 'monthly';
+    if (frequency === 'every-payroll') return 1;
+    if (frequency === 'quarterly') {
+      var payoutDate = period.releaseDate || period.to;
+      var month = Number(String(payoutDate || '').slice(5,7));
+      var pattern = record.quarterlyPattern || 'quarter-end';
+      var allowed = pattern === 'quarter-start' ? [1,4,7,10] : pattern === 'quarter-middle' ? [2,5,8,11] : [3,6,9,12];
+      return allowed.indexOf(month) >= 0 ? 1 : 0;
+    }
+    if (frequency === 'monthly') {
+      if (group.freq === 'monthly') return 1;
+      if (group.freq === 'semi-monthly') {
+        var cutoff = cutoffNumber(group,period);
+        var timing = record.timing || 'every-2nd';
+        return timing === 'every-1st' ? (cutoff === 1 ? 1 : 0) : (cutoff === 2 ? 1 : 0);
+      }
+      return 0;
+    }
+    if (frequency === 'semi-monthly') return group.freq === 'monthly' ? 1 : (group.freq === 'semi-monthly' ? .5 : 0);
+    if (frequency === 'weekly') return group.freq === 'weekly' ? 12/52 : 0;
+    if (frequency === 'bi-weekly') return group.freq === 'bi-weekly' ? 12/26 : 0;
+    return 0;
+  }
   function addLine(lines, input) {
     var line = Object.assign({ quantity: 1, rate: 0, multiplier: 1, amount: 0, taxable: false, employerAmount: 0 }, input);
     line.amount = money(line.amount);
@@ -215,5 +239,5 @@
       taxableCompensation:money(taxableCompensation),employerContributions:employerContributions,employerCost:money(credits+employerContributions),statutoryFactor:statFactor
     };
   }
-  return { money:money, selectRule:selectRule, frequencyFactor:frequencyFactor, cutoffNumber:cutoffNumber, statutoryFactor:statutoryFactor, validateEmployee:validateEmployee, validateAttendance:validateAttendance, calculate:calculate };
+  return { money:money, selectRule:selectRule, frequencyFactor:frequencyFactor, cutoffNumber:cutoffNumber, statutoryFactor:statutoryFactor, recurringAllowanceFactor:recurringAllowanceFactor, validateEmployee:validateEmployee, validateAttendance:validateAttendance, calculate:calculate };
 });

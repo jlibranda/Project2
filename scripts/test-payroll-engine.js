@@ -17,6 +17,9 @@ assert.equal(engine.selectRule(rules,'OT_REGULAR_DAY','2026-08-15',{employee,gro
 assert.equal(engine.statutoryFactor(group,period),0,'Every 2nd cutoff must not deduct contributions on the first cutoff');
 assert.equal(engine.statutoryFactor(group,{from:'2026-08-16',to:'2026-08-31',cutoff1:false,cutoff2:true}),1,'Every 2nd cutoff must deduct the full monthly contribution on the second cutoff');
 assert.equal(engine.statutoryFactor(group,{from:'2026-08-01',to:'2026-08-15',cutoff1:true,cutoff2:true}),0,'Semi-monthly dates must resolve an invalid dual-cutoff first period as cutoff 1');
+assert.equal(engine.recurringAllowanceFactor({frequency:'quarterly',quarterlyPattern:'quarter-end'},group,{from:'2026-06-01',to:'2026-06-15',releaseDate:'2026-06-20'}),1,'Quarter-end recurring allowance must be included in a June release');
+assert.equal(engine.recurringAllowanceFactor({frequency:'quarterly',quarterlyPattern:'quarter-end'},group,{from:'2026-05-01',to:'2026-05-15',releaseDate:'2026-05-20'}),0,'Quarter-end recurring allowance must be excluded outside Mar/Jun/Sep/Dec');
+assert.equal(engine.recurringAllowanceFactor({frequency:'monthly',timing:'every-2nd'},group,{from:'2026-08-01',to:'2026-08-15',cutoff1:true,cutoff2:false}),0,'Monthly allowance assigned to a semi-monthly group must honor its selected payout cutoff');
 const result = engine.calculate({
   employee,group,period,rules,baseBasic:11000,defaultDivisor:22,
   attendance:{records:[],presentDays:10,absentDays:1,lateMinutes:30,undertimeMinutes:15,otHours:2,ndHours:4,restDayHolidayHours:0},
