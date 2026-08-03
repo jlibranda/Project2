@@ -1100,10 +1100,10 @@ let nPayGroup=4;
 
 /* ── Pay Periods / Calendar ── */
 let PAY_PERIODS=[
-  {id:1,groupId:1,label:'May 2025 — Monthly',from:'2025-05-01',to:'2025-05-31',attendanceFrom:'2025-05-01',attendanceTo:'2025-05-31',releaseDate:'2025-06-05',cutoff1:true,cutoff2:true,status:'open',runId:null,lockedBy:null,lockedAt:null},
-  {id:2,groupId:2,label:'May 1–15, 2025',from:'2025-05-01',to:'2025-05-15',attendanceFrom:'2025-05-01',attendanceTo:'2025-05-15',releaseDate:'2025-05-20',cutoff1:true,cutoff2:false,status:'closed',runId:1,lockedBy:'admin@ph.com',lockedAt:'2025-05-20'},
-  {id:3,groupId:2,label:'May 16–31, 2025',from:'2025-05-16',to:'2025-05-31',attendanceFrom:'2025-05-16',attendanceTo:'2025-05-31',releaseDate:'2025-06-05',cutoff1:false,cutoff2:true,status:'open',runId:null,lockedBy:null,lockedAt:null},
-  {id:4,groupId:1,label:'June 2025 — Monthly',from:'2025-06-01',to:'2025-06-30',attendanceFrom:'2025-06-01',attendanceTo:'2025-06-30',releaseDate:'2025-07-05',cutoff1:true,cutoff2:true,status:'open',runId:null,lockedBy:null,lockedAt:null},
+  {id:1,groupId:1,label:'May 2025 — Monthly',from:'2025-05-01',to:'2025-05-31',attendanceFrom:'2025-05-01',attendanceTo:'2025-05-31',releaseDate:'2025-06-05',bir1601CMonth:'2025-06',cutoff1:true,cutoff2:true,status:'open',runId:null,lockedBy:null,lockedAt:null},
+  {id:2,groupId:2,label:'May 1–15, 2025',from:'2025-05-01',to:'2025-05-15',attendanceFrom:'2025-05-01',attendanceTo:'2025-05-15',releaseDate:'2025-05-20',bir1601CMonth:'2025-05',cutoff1:true,cutoff2:false,status:'closed',runId:1,lockedBy:'admin@ph.com',lockedAt:'2025-05-20'},
+  {id:3,groupId:2,label:'May 16–31, 2025',from:'2025-05-16',to:'2025-05-31',attendanceFrom:'2025-05-16',attendanceTo:'2025-05-31',releaseDate:'2025-06-05',bir1601CMonth:'2025-06',cutoff1:false,cutoff2:true,status:'open',runId:null,lockedBy:null,lockedAt:null},
+  {id:4,groupId:1,label:'June 2025 — Monthly',from:'2025-06-01',to:'2025-06-30',attendanceFrom:'2025-06-01',attendanceTo:'2025-06-30',releaseDate:'2025-07-05',bir1601CMonth:'2025-07',cutoff1:true,cutoff2:true,status:'open',runId:null,lockedBy:null,lockedAt:null},
 ];
 let nPayPeriod=5;
 
@@ -1114,6 +1114,8 @@ let nAdj=1;
 /* ── Final Pay Records ── */
 let FINAL_PAY_LIST=[];
 let nFP=1;
+function reportingMonthFromDate(date){return window.BIR1601CCore?BIR1601CCore.reportingMonth(date):String(date||'').slice(0,7);}
+function displayReportingMonth(month){if(!/^\d{4}-\d{2}$/.test(month||''))return'—';const[y,m]=month.split('-');return new Date(+y,+m-1,1).toLocaleDateString('en-PH',{month:'long',year:'numeric'});}
 
 /* ── Payroll Audit Log ── */
 let PAYROLL_AUDIT=[];
@@ -4938,7 +4940,10 @@ function pgPayroll(){
     const resigned=USERS.filter(u=>u.role==='employee'&&(u.status==='terminated'||u.status==='resigned'||u.active===false));
     const selFP=window._fpEmpId||resigned[0]?.id||null;
     const fpEmp=USERS.find(u=>u.id===selFP);
-    const fp=fpEmp?computeFinalPay(fpEmp):null;
+    const fpReleaseDate=window._fpReleaseDate||today();
+    const fpPreviousTaxable=Number(window._fpPreviousTaxable||0);
+    const fpPreviousTax=Number(window._fpPreviousTax||0);
+    const fp=fpEmp?computeFinalPay(fpEmp,{releaseDate:fpReleaseDate,previousEmployerTaxable:fpPreviousTaxable,previousEmployerTaxWithheld:fpPreviousTax}):null;
     body=`
     <div style="display:grid;grid-template-columns:280px 1fr;gap:1rem;align-items:start">
       <!-- Employee Selector -->
@@ -4980,6 +4985,26 @@ function pgPayroll(){
             ${fp.deductions.length?fp.deductions.map(d=>`<div class="info-row"><span style="font-size:12px">${esc(d.label)}</span><span class="mono" style="font-size:12px;color:var(--red)">${fmt(d.amount)}</span></div>`).join(''):'<div style="font-size:12px;color:var(--txt3)">No deductions.</div>'}
             <div class="info-row" style="border-top:2px solid var(--border);margin-top:4px"><span style="font-weight:700;font-size:13px">Total Deductions</span><span class="mono" style="font-weight:800;color:var(--red)">${fmt(fp.totalDed)}</span></div>
           </div>
+        </div>
+        <div class="card" style="margin-top:.75rem;margin-bottom:0;padding:.875rem;border-left:3px solid var(--red)">
+          <div class="card-title" style="margin-bottom:4px">BIR annualization and 1601-C filing</div>
+          <div class="card-sub" style="margin-bottom:10px">Final-pay withholding is annualized and included in the 1601-C month when the final pay is actually released.</div>
+          <div class="form-row">
+            <div class="field"><label>Actual Final Pay Release Date</label><input id="fp-release-date" type="date" class="finput" value="${fpReleaseDate}" onchange="window._fpReleaseDate=this.value;render()"/></div>
+            <div class="field"><label>1601-C Reporting Month</label><input type="month" class="finput" value="${reportingMonthFromDate(fpReleaseDate)}" readonly/></div>
+          </div>
+          <div style="font-size:11px;font-weight:700;color:var(--txt2);margin:3px 0 7px">Previous employer data for the same calendar year, if applicable</div>
+          <div class="form-row">
+            <div class="field"><label>Taxable Compensation</label><input type="number" min="0" step="0.01" class="finput" value="${fpPreviousTaxable}" onchange="window._fpPreviousTaxable=Number(this.value||0);render()"/></div>
+            <div class="field"><label>Tax Withheld</label><input type="number" min="0" step="0.01" class="finput" value="${fpPreviousTax}" onchange="window._fpPreviousTax=Number(this.value||0);render()"/></div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;font-size:11px">
+            <div><span style="color:var(--txt3)">Annualized taxable</span><div class="mono" style="font-weight:700">${fmt(fp.annualizedTaxable)}</div></div>
+            <div><span style="color:var(--txt3)">Annual tax due</span><div class="mono" style="font-weight:700">${fmt(fp.annualTax)}</div></div>
+            <div><span style="color:var(--txt3)">Final withholding</span><div class="mono" style="font-weight:700;color:var(--red)">${fmt(fp.taxWithheld)}</div></div>
+            <div><span style="color:var(--txt3)">Tax refund</span><div class="mono" style="font-weight:700;color:var(--green)">${fmt(fp.taxRefund)}</div></div>
+          </div>
+          <div style="margin-top:8px;padding:7px 9px;border-radius:7px;background:var(--red-bg);color:var(--red-txt);font-size:11px">Included automatically in <strong>1601-C ${displayReportingMonth(reportingMonthFromDate(fpReleaseDate))}</strong> after Release Final Pay.</div>
         </div>
         <!-- Clearance checklist -->
         <div class="card" style="margin-top:.75rem;margin-bottom:0;padding:.875rem">
@@ -5060,7 +5085,7 @@ function pgPayroll(){
     <div style="display:flex;justify-content:flex-end;margin-bottom:10px;gap:8px">
       <button class="btn btn-primary btn-sm" onclick="modal={type:'addPayPeriod'};render()">+ Add Period</button>
     </div>
-    <table><thead><tr><th>Label</th><th>Month / Year</th><th>Group</th><th>Cut-off</th><th>Pay Period</th><th>Attendance Period</th><th>Recurring</th><th>Release Date</th><th>Status</th><th>Actions</th></tr></thead>
+    <table><thead><tr><th>Label</th><th>Pay-period Month</th><th>Group</th><th>Cut-off</th><th>Pay Period</th><th>Attendance Period</th><th>Recurring</th><th>Release Date</th><th>1601-C Month</th><th>Status</th><th>Actions</th></tr></thead>
     <tbody>${PAY_PERIODS.map(p=>{
       const g=PAYROLL_GROUPS.find(x=>x.id===p.groupId);
       const statusBadge={open:'b-approved',closed:'b-absent',locked:'b-pending',processing:'b-info'};
@@ -5082,6 +5107,7 @@ function pgPayroll(){
         <td class="mono" style="font-size:11px">${p.attendanceFrom||p.from?fmtShort(p.attendanceFrom||p.from)+' → '+fmtShort(p.attendanceTo||p.to):'—'}</td>
         <td>${!recurringAllowancesEnabled(p)?'<span class="badge b-absent" style="font-size:10px">Excluded</span>':Array.isArray(p.recurringAllowanceCodes)?p.recurringAllowanceCodes.map(code=>`<span class="badge b-approved" style="font-size:9px;margin:1px">${esc(code)}</span>`).join(''):'<span class="badge b-approved" style="font-size:10px">All allowances</span>'}</td>
         <td style="font-size:12px">${fmtDate(p.releaseDate)}</td>
+        <td><span class="badge b-info" style="font-size:10px" title="BIR reporting month based on actual release/payment date">${displayReportingMonth(p.bir1601CMonth||reportingMonthFromDate(p.releaseDate))}</span></td>
         <td><span class="badge ${statusBadge[p.status]||'b-info'}">${p.status}</span></td>
         <td><div style="display:flex;gap:4px">
           ${!isLocked?`<button class="btn btn-sm" title="Edit period" onclick="modal={type:'editPayPeriod',period:JSON.parse(JSON.stringify(PAY_PERIODS.find(x=>x.id===${p.id})))};render()">✎ Edit</button>`:''}
@@ -5398,7 +5424,9 @@ function renderBankFile(){
 }
 
 /* ── FINAL PAY COMPUTATION ─────────────────────────────────────────────── */
-function computeFinalPay(e){
+function computeFinalPay(e,options={}){
+  const releaseDate=options.releaseDate||today();
+  const releaseYear=releaseDate.slice(0,4);
   const ms=e.rate*(COMPANY.dailyDivisor||22);
   const hired=e.hired||'2024-01-01';
   const separated=e.effectiveTermDate||today();
@@ -5407,24 +5435,43 @@ function computeFinalPay(e){
   const proratedLastMonth=+(ms*(lastMonthDays/30)).toFixed(2);
   const monthsWorked=Math.min(12,Math.max(1,Math.ceil((new Date(separated)-new Date(hired))/(30.44*24*3600*1000))));
   const t13Pro=+(ms*monthsWorked/12).toFixed(2);
-  const leaveConversion=5*e.rate; // assume 5 unused leave days
+  const leaveConversion=5*e.rate; // private employee; within RR 29-2025 12-day de minimis ceiling
   const loans=LOANS.filter(l=>l.eid===e.id&&l.status==='active').reduce((s,l)=>s+(l.balance||0),0);
+  const priorRuns=PAYROLLS.filter(r=>(r.status==='approved'||r.status==='locked')&&String(r.bir1601CMonth||reportingMonthFromDate(r.releaseDate||r.on||r.to)).startsWith(releaseYear)&&String(r.releaseDate||r.on||r.to)<=releaseDate);
+  const priorItems=priorRuns.map(r=>({run:r,item:(r.items||[]).find(i=>i.empId===e.id)})).filter(x=>x.item);
+  const priorTaxable=priorItems.reduce((s,x)=>s+Number(x.item.taxableCompensation||0),0);
+  const priorTaxWithheld=priorItems.reduce((s,x)=>s+Number(x.item.tax||0),0);
+  const prior13thBenefits=priorItems.filter(x=>x.run.type==='13th-month').reduce((s,x)=>s+Number(x.item.gross||0),0);
+  const remainingOtherBenefitsCap=Math.max(0,90000-prior13thBenefits);
+  const nonTaxable13th=Math.min(t13Pro,remainingOtherBenefitsCap);
+  const taxableFinal=+(proratedLastMonth+Math.max(0,t13Pro-nonTaxable13th)).toFixed(2);
+  const annualized=BIR1601CCore.annualizedTermination({priorTaxable,previousEmployerTaxable:options.previousEmployerTaxable,finalTaxable:taxableFinal,priorTaxWithheld,previousEmployerTaxWithheld:options.previousEmployerTaxWithheld,taxFunction:income=>birTaxByFreq(income,'annual')});
   const earnings=[
     {label:'Last Salary (prorated)',amount:proratedLastMonth},
     {label:'13th Month Pay (pro-rated)',amount:t13Pro},
-    {label:'Leave Conversion (est. 5 days)',amount:leaveConversion},
+    {label:'Leave Conversion (5 days, de minimis)',amount:leaveConversion},
   ];
-  const deductions=loans?[{label:'Outstanding Loan Balance',amount:loans}]:[];
-  const grossFP=earnings.reduce((s,x)=>s+x.amount,0);
+  const deductions=[];
+  if(loans)deductions.push({label:'Outstanding Loan Balance',amount:loans});
+  if(annualized.withholding)deductions.push({label:'BIR annualized withholding adjustment',amount:annualized.withholding});
+  if(annualized.refund)earnings.push({label:'Tax refund from annualization',amount:annualized.refund,excludeFromGross:true});
+  const grossFP=earnings.filter(x=>!x.excludeFromGross).reduce((s,x)=>s+x.amount,0);
   const totalDed=deductions.reduce((s,x)=>s+x.amount,0);
-  const netFP=Math.max(0,grossFP-totalDed);
-  return{earnings,deductions,grossFP,totalDed,netFP};
+  const netFP=Math.max(0,grossFP+annualized.refund-totalDed);
+  return{earnings,deductions,grossFP,totalDed,netFP,taxableCompensation:taxableFinal,nonTaxableCompensation:+(nonTaxable13th+leaveConversion).toFixed(2),priorTaxable,priorTaxWithheld,annualizedTaxable:annualized.annualTaxable,annualTax:annualized.annualTax,taxWithheld:annualized.withholding,taxRefund:annualized.refund,releaseDate};
 }
 
 function releaseFinalPay(empId){
   const e=USERS.find(u=>u.id===empId);
   if(!e)return;
-  toast(`Final pay for ${e.name} marked as released.`,'success');
+  const releaseDate=document.getElementById('fp-release-date')?.value||window._fpReleaseDate||today();
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(releaseDate)){toast('Enter the actual final pay release date.','warning');return;}
+  const computation=computeFinalPay(e,{releaseDate,previousEmployerTaxable:Number(window._fpPreviousTaxable||0),previousEmployerTaxWithheld:Number(window._fpPreviousTax||0)});
+  const existing=FINAL_PAY_LIST.find(x=>x.empId===empId&&x.releaseDate===releaseDate&&x.status==='released');
+  if(existing){toast('This final pay is already released and included in the selected 1601-C month.','info');return;}
+  FINAL_PAY_LIST.push({id:nFP++,empId:e.id,eid:e.eid,employeeName:e.name,status:'released',releasedAt:new Date().toISOString(),releasedBy:user?.name||'Administrator',releaseDate,bir1601CMonth:reportingMonthFromDate(releaseDate),includeIn1601C:true,taxEventType:'final_pay',grossFP:computation.grossFP,netFP:computation.netFP,taxableCompensation:computation.taxableCompensation,nonTaxableCompensation:computation.nonTaxableCompensation,taxWithheld:computation.taxWithheld,taxRefund:computation.taxRefund,annualizedTaxable:computation.annualizedTaxable,annualTax:computation.annualTax,previousEmployerTaxable:Number(window._fpPreviousTaxable||0),previousEmployerTaxWithheld:Number(window._fpPreviousTax||0)});
+  queueSync('Final_Pay');
+  toast(`Final pay for ${e.name} released and included in 1601-C ${displayReportingMonth(reportingMonthFromDate(releaseDate))}.`,'success');render();
 }
 function printFinalPay(empId){
   toast('Print / PDF export — coming soon','info');
@@ -5841,7 +5888,9 @@ function runPayroll(){
       return{...d,pr,la,ab,otH,ndH,adjustments:adjTotal,net:+Math.max(0,d.net+adjTotal).toFixed(2)};
     });
   }
-  const run={id:nPay++,from,to,items,on:today(),groupId,groupName:grp?.name||'Standard'};
+  const sourcePeriod=PAY_PERIODS.find(p=>p.id===window._prPeriod);
+  const paymentDate=sourcePeriod?.releaseDate||to;
+  const run={id:nPay++,from,to,items,on:today(),groupId,groupName:grp?.name||'Standard',periodId:sourcePeriod?.id||null,releaseDate:paymentDate,bir1601CMonth:sourcePeriod?.bir1601CMonth||reportingMonthFromDate(paymentDate),includeIn1601C:true,taxEventType:'regular_payroll'};
   PAYROLLS.push(run);
   const selPeriod=window._prPeriod;
   if(selPeriod&&selPeriod!=='custom'){const p=PAY_PERIODS.find(x=>x.id===selPeriod);if(p){p.status='closed';p.runId=run.id;}}
@@ -6260,7 +6309,7 @@ function gen13thPayroll(){
     return{...compute(e,22,0,0,0,0,null),eid:e.id,name:e.name,pos:e.pos,rate:e.rate,pr:22,la:0,ab:0,otH:0,ndH:0,
       basic:t13,gross:t13,net:Math.max(0,t13-sssContrib(ms)-phContrib(ms)-piContrib(ms))};
   });
-  const run={id:nPay++,from:'2025-12-01',to:'2025-12-31',items,on:today(),type:'13th-month',groupId:1};
+  const run={id:nPay++,from:'2025-12-01',to:'2025-12-31',items,on:today(),releaseDate:'2025-12-20',bir1601CMonth:'2025-12',includeIn1601C:true,taxEventType:'13th_month',type:'13th-month',groupId:1};
   PAYROLLS.push(run);
   toast('13th Month payroll run generated!','success');
   goTab(5);render();
@@ -8511,7 +8560,10 @@ function renderModal(){
         ${recurringAllowanceTypes().map(t=>`<label style="display:flex;align-items:center;gap:7px;font-size:11px"><input type="checkbox" class="pp-ra-code" value="${esc(t.code)}" style="width:auto;accent-color:var(--accent)" checked onchange="syncRecurringAllowanceMaster('pp-recurring','.pp-ra-code')"/><span><strong>${esc(t.code)}</strong> · ${esc(t.name)}</span></label>`).join('')}
       </div>
     </div>
-    <div class="field"><label>Release Date</label><input id="pp-rel" type="date" class="finput"/></div>
+    <div class="form-row">
+      <div class="field"><label>Actual Release / Payment Date</label><input id="pp-rel" type="date" class="finput" onchange="var m=document.getElementById('pp-bir-month');if(m)m.value=reportingMonthFromDate(this.value)"/></div>
+      <div class="field"><label>1601-C Reporting Month</label><input id="pp-bir-month" type="month" class="finput" readonly/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Automatically follows the actual payment date.</div></div>
+    </div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn btn-primary" onclick="
         const gid=parseInt(document.getElementById('pp-grp')?.value);
@@ -8520,6 +8572,7 @@ function renderModal(){
         const from=document.getElementById('pp-from')?.value;
         const to=document.getElementById('pp-to')?.value;
         const rel=document.getElementById('pp-rel')?.value;
+        const bir1601CMonth=document.getElementById('pp-bir-month')?.value||reportingMonthFromDate(rel);
         const attFrom=document.getElementById('pp-att-from')?.value||from;
         const attTo=document.getElementById('pp-att-to')?.value||to;
         const co1=document.getElementById('pp-co1')?.checked||false;
@@ -8529,7 +8582,8 @@ function renderModal(){
         if(!from||!to||!rel){toast('All dates required','warning');return;}
         if(from>to){toast('Period From must be before Period To','warning');return;}
         if(!co1&&!co2){toast('Select at least one cut-off (1st or 2nd)','warning');return;}
-        PAY_PERIODS.push({id:nPayPeriod++,groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,recurringAllowanceCodes,status:'open',runId:null});
+        if(bir1601CMonth!==reportingMonthFromDate(rel)){toast('1601-C month must match the actual release/payment month.','warning');return;}
+        PAY_PERIODS.push({id:nPayPeriod++,groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,bir1601CMonth,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,recurringAllowanceCodes,status:'open',runId:null});
         closeM();queueSync('Payroll_Periods');toast('Pay period added!','success');render()">
         ✓ Add Period</button>
       <button class="btn" onclick="closeM()">Cancel</button>
@@ -8586,7 +8640,10 @@ function renderModal(){
         ${recurringAllowanceTypes().map(t=>`<label style="display:flex;align-items:center;gap:7px;font-size:11px"><input type="checkbox" class="epp-ra-code" value="${esc(t.code)}" style="width:auto;accent-color:var(--accent)" ${recurringEnabled&&(!Array.isArray(p.recurringAllowanceCodes)||p.recurringAllowanceCodes.includes(t.code))?'checked':''} onchange="syncRecurringAllowanceMaster('epp-recurring','.epp-ra-code')"/><span><strong>${esc(t.code)}</strong> · ${esc(t.name)}</span></label>`).join('')}
       </div>
     </div>
-    <div class="field"><label>Release Date</label><input id="epp-rel" type="date" class="finput" value="${p.releaseDate||''}"/></div>
+    <div class="form-row">
+      <div class="field"><label>Actual Release / Payment Date</label><input id="epp-rel" type="date" class="finput" value="${p.releaseDate||''}" onchange="document.getElementById('epp-bir-month').value=reportingMonthFromDate(this.value)"/></div>
+      <div class="field"><label>1601-C Reporting Month</label><input id="epp-bir-month" type="month" class="finput" value="${p.bir1601CMonth||reportingMonthFromDate(p.releaseDate)}" readonly/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Automatically follows the actual payment date.</div></div>
+    </div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn btn-primary" onclick="
         const gid=parseInt(document.getElementById('epp-grp')?.value);
@@ -8595,6 +8652,7 @@ function renderModal(){
         const from=document.getElementById('epp-from')?.value;
         const to=document.getElementById('epp-to')?.value;
         const rel=document.getElementById('epp-rel')?.value;
+        const bir1601CMonth=document.getElementById('epp-bir-month')?.value||reportingMonthFromDate(rel);
         const attFrom=document.getElementById('epp-att-from')?.value||from;
         const attTo=document.getElementById('epp-att-to')?.value||to;
         const co1=document.getElementById('epp-co1')?.checked||false;
@@ -8603,8 +8661,9 @@ function renderModal(){
         const includeRecurringAllowances=recurringAllowanceCodes.length>0;
         if(!from||!to||!rel){toast('All dates required','warning');return;}
         if(from>to){toast('Period From must be before Period To','warning');return;}
+        if(bir1601CMonth!==reportingMonthFromDate(rel)){toast('1601-C month must match the actual release/payment month.','warning');return;}
         const pp=PAY_PERIODS.find(x=>x.id===${p.id});
-        if(pp){Object.assign(pp,{groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,recurringAllowanceCodes});}
+        if(pp){Object.assign(pp,{groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,bir1601CMonth,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,recurringAllowanceCodes});}
         closeM();queueSync('Payroll_Periods');toast('Pay period updated!','success');render();">
         ✓ Save Changes</button>
       <button class="btn" onclick="closeM()">Cancel</button>
@@ -12773,7 +12832,8 @@ render = function() {
 
 
 </script>
-<script src="/compliance.js?v=20260803-four-decimal-divisor-engine"></script>
+<script src="/bir-1601c-core.js?v=20260803-reporting-month"></script>
+<script src="/compliance.js?v=20260803-1601c-reporting-month"></script>
 <script src="/enterprise.js?v=sidebar-20260731"></script>
 <script src="/payroll-governance.js?v=20260803-payroll-process-inputs"></script>
 <script src="/persistence.js?v=20260801"></script>

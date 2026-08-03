@@ -1,6 +1,6 @@
 /*
  * SproutRipple PH compliance extension
- * Rules verified against primary PH government publications as of 2026-07-28.
+ * Rules verified against primary PH government publications as of 2026-08-03.
  * This remains a configurable payroll engine: employers must validate company-
  * specific policies, exemptions, minimum-wage treatment, and filing formats.
  */
@@ -8,11 +8,11 @@
   'use strict';
 
   var COMPLIANCE_VERSION = {
-    label: 'PH statutory rules verified 28 Jul 2026',
+    label: 'PH statutory rules verified 03 Aug 2026',
     sss: 'Effective 01 Jan 2025 · 15% total · MSC ₱5,000–₱35,000',
     philhealth: 'CY 2025 schedule · 5% total · ₱10,000–₱100,000 MBS',
     pagibig: 'Effective 01 Feb 2024 · MFS ₱10,000',
-    bir: 'RR 11-2018 Annex E · 2023 onwards'
+    bir: 'RR 11-2018 annualization · RR 29-2025 de minimis · 1601-C 2018 ENCS'
   };
 
   /* Correct the BIR Annex E tables (effective 2023 onwards). */
@@ -442,6 +442,40 @@
   }
 
   window.generateGovtReport = function (type) {
+    if (type === 'BIR') {
+      var selectedMonth = window._bir1601CMonth || (latestApprovedRun() ? BIR1601CCore.runMonth(latestApprovedRun()) : reportingMonthFromDate(today()));
+      var report = BIR1601CCore.aggregate(selectedMonth, PAYROLLS, FINAL_PAY_LIST);
+      if (!report.entries.length) { toast('No approved payroll or released final pay is reportable for '+displayReportingMonth(selectedMonth)+'.', 'warning'); return; }
+      var birRows = [
+        ['BIR FORM 1601-C MONTHLY REMITTANCE WORKSHEET'],
+        ['Item 1 - For the Month (MM/YYYY)', selectedMonth.slice(5,7)+'/'+selectedMonth.slice(0,4)],
+        ['Basis','Approved/locked payroll and released final pay paid during the selected month'],
+        [],
+        ['1601-C Item','Description','Amount'],
+        ['14','Total Amount of Compensation',report.totalCompensation],
+        ['17','13th Month and Other Benefits','Review detailed pay-item classification'],
+        ['18','De Minimis Benefits','Review detailed pay-item classification'],
+        ['19','Mandatory employee SSS/PHIC/HDMF shares and union dues',report.mandatoryContributions],
+        ['20','Other Non-Taxable Compensation',report.otherNonTaxable],
+        ['21','Total Non-Taxable Compensation',report.totalNonTaxable],
+        ['22','Total Taxable Compensation',report.taxableCompensation],
+        ['23','Taxable Compensation not subject to withholding (annual compensation <= P250,000)','Review employee annualization before filing'],
+        ['24','Net Taxable Compensation',report.taxableCompensation],
+        ['25','Total Taxes Withheld',report.totalTaxesWithheld],
+        ['26','Adjustments from prior month(s)','Enter approved BIR adjustment, if any'],
+        ['27','Tax Required to be Remitted',report.taxRequiredForRemittance],
+        [],
+        ['Source','Release Date','Employee No.','Employee','TIN','Gross Compensation','Mandatory Contributions','Other Non-Taxable','Taxable Compensation','Tax Withheld']
+      ];
+      report.entries.forEach(function (entry) {
+        var employee = USERS.find(function (u) { return u.id === entry.employeeId; }) || {};
+        birRows.push([entry.source,entry.releaseDate,entry.employeeNo,entry.employeeName,employee.tin||'',entry.gross,entry.mandatory,entry.otherNonTaxable,entry.taxable,entry.tax]);
+      });
+      birRows.push([],['CONTROL NOTE','Items 17, 18, 23 and prior-month adjustments require review against employee-level classifications and annualized records before filing the official return.']);
+      downloadCsv('BIR_1601C_Worksheet_'+selectedMonth+'.csv', birRows);
+      toast('1601-C worksheet generated for '+displayReportingMonth(selectedMonth)+' from '+report.regularRunCount+' payroll run(s) and '+report.finalPayCount+' final pay release(s).', 'success');
+      return;
+    }
     var run = latestApprovedRun();
     if (!run) { toast('Approve and lock a payroll run before generating reports.', 'warning'); return; }
     var headers, rows, filename;
@@ -467,13 +501,6 @@
         return [i.eid,i.name,e.pi||'',i.ms,piContrib(i.ms),piErShare(i.ms),piContrib(i.ms)+piErShare(i.ms)];
       });
       filename = 'PagIBIG_MCRF_'+run.from+'_'+run.to+'.csv';
-    } else {
-      headers = ['Employee No.','Employee','TIN','Gross Compensation','Mandatory Contributions','Taxable Compensation','Tax Withheld'];
-      rows = run.items.map(function (i) {
-        var e = USERS.find(function (u) { return u.id === i.empId; }) || {};
-        return [i.eid,i.name,e.tin||'',i.gross,(i.sss||0)+(i.ph||0)+(i.pi||0),i.taxableCompensation||0,i.tax||0];
-      });
-      filename = 'BIR_1601C_Worksheet_'+run.from+'_'+run.to+'.csv';
     }
     var totals = rows.reduce(function (acc,row) {
       row.forEach(function (v,idx) { if (typeof v === 'number') acc[idx] = (acc[idx] || 0) + v; });
@@ -525,7 +552,10 @@
 
   window.renderGovtReports = renderGovtReports = function () {
     var run = latestApprovedRun();
-    if (!run) return '<div class="empty-state"><div class="ei">📋</div>Approve and lock a payroll run to generate statutory reports.</div>';
+    if (!run && !FINAL_PAY_LIST.some(function (record) { return record.status === 'released'; })) return '<div class="empty-state"><div class="ei">📋</div>Approve and lock a payroll run or release a final pay to generate statutory reports.</div>';
+    var defaultBirMonth = run ? BIR1601CCore.runMonth(run) : reportingMonthFromDate(today());
+    if (!window._bir1601CMonth) window._bir1601CMonth = defaultBirMonth;
+    var birSummary = BIR1601CCore.aggregate(window._bir1601CMonth, PAYROLLS, FINAL_PAY_LIST);
     var cards = [
       {type:'SSS',name:'SSS R3 Worksheet',detail:'Employee and employer shares · '+COMPLIANCE_VERSION.sss,color:'blue'},
       {type:'PHIC',name:'PhilHealth RF-1 Worksheet',detail:COMPLIANCE_VERSION.philhealth,color:'green'},
@@ -533,7 +563,8 @@
       {type:'BIR',name:'BIR 1601-C Worksheet',detail:COMPLIANCE_VERSION.bir,color:'red'}
     ];
     return '<div style="padding:9px 12px;background:var(--green-bg);color:var(--green-txt);border-radius:8px;margin-bottom:12px;font-size:12px">'+
-      'Generating from approved payroll <strong>'+run.from+' – '+run.to+'</strong> · '+esc(run.complianceVersion || COMPLIANCE_VERSION.label)+'</div>'+
+      (run?'Latest approved payroll <strong>'+run.from+' – '+run.to+'</strong> · '+esc(run.complianceVersion || COMPLIANCE_VERSION.label):'Released final-pay records are available for statutory reporting.')+'</div>'+
+      '<div class="card" style="margin-bottom:.75rem;border-left:3px solid var(--red)"><div style="display:flex;gap:12px;align-items:end;justify-content:space-between;flex-wrap:wrap"><div><div class="card-title">BIR 1601-C reporting month</div><div class="card-sub">Based on actual compensation payment/release date—not the attendance period or calendar label.</div></div><div style="min-width:210px"><label style="font-size:11px;font-weight:700">For the Month</label><input type="month" class="finput" value="'+window._bir1601CMonth+'" onchange="window._bir1601CMonth=this.value;render()"/></div></div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px;font-size:11px"><div><span style="color:var(--txt3)">Approved payroll runs</span><div style="font-weight:800">'+birSummary.regularRunCount+'</div></div><div><span style="color:var(--txt3)">Released final pays</span><div style="font-weight:800">'+birSummary.finalPayCount+'</div></div><div><span style="color:var(--txt3)">Tax withheld</span><div class="mono" style="font-weight:800;color:var(--red)">'+fmt(birSummary.totalTaxesWithheld)+'</div></div></div></div>'+
       '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem">'+cards.map(function (c) {
         return '<div class="card" style="margin:0;border-left:3px solid var(--'+c.color+')"><div class="card-title">'+c.name+'</div>'+
           '<div class="card-sub" style="min-height:34px;margin:5px 0 10px">'+c.detail+'</div>'+
