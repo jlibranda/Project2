@@ -1118,6 +1118,8 @@ let SECURITY_AUDIT=[];
 let nSecurityAudit=1;
 function reportingMonthFromDate(date){return window.BIR1601CCore?BIR1601CCore.reportingMonth(date):String(date||'').slice(0,7);}
 function displayReportingMonth(month){if(!/^\d{4}-\d{2}$/.test(month||''))return'—';const[y,m]=month.split('-');return new Date(+y,+m-1,1).toLocaleDateString('en-PH',{month:'long',year:'numeric'});}
+function isPayrollAdjustmentReady(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.isReady(record):!!record&&['ready','approved','pending'].includes(record.status);}
+function canDeletePayrollAdjustment(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.canDelete(record):!!record&&record.status!=='applied'&&!record.payrollRunId;}
 
 /* ── Payroll Audit Log ── */
 let PAYROLL_AUDIT=[];
@@ -4582,7 +4584,7 @@ function pgPayroll(){
     const allEmps=USERS.filter(u=>u.role==='employee');
     const totalNet=PAYROLLS.length?PAYROLLS[PAYROLLS.length-1].items.reduce((s,i)=>s+i.net,0):0;
     const openPeriods=PAY_PERIODS.filter(p=>p.status==='open').length;
-    const pendingAdj=PAYROLL_ADJ.filter(a=>a.status==='pending').length;
+    const readyAdj=PAYROLL_ADJ.filter(isPayrollAdjustmentReady).length;
     // Validation alerts
     const noBank=allEmps.filter(e=>!e.bankAccount||!e.bank).length;
     const noGovt=allEmps.filter(e=>!e.sss||!e.ph||!e.pi||!e.tin).length;
@@ -4671,9 +4673,9 @@ function pgPayroll(){
             <button class="payroll-quick-action" onclick="goTab(5)"><span>${ico('chart',15)}</span><div><strong>Reports</strong><small>Register and government</small></div></button>
           </div>
         </div>
-        ${PAYROLL_ADJ.filter(a=>a.status==='pending').length?`<div class="card" style="margin-bottom:0;border-left:3px solid var(--amber)">
-          <div class="card-title" style="color:var(--amber);margin-bottom:6px">🔔 ${pendingAdj} Pending Adjustment${pendingAdj!==1?'s':''}</div>
-          <button class="btn btn-sm" onclick="goTab(2)">Review →</button>
+        ${readyAdj?`<div class="card" style="margin-bottom:0;border-left:3px solid var(--accent)">
+          <div class="card-title" style="color:var(--accent);margin-bottom:6px">${readyAdj} Adjustment${readyAdj!==1?'s':''} ready for processing</div>
+          <button class="btn btn-sm" onclick="goTab(2)">Open adjustments →</button>
         </div>`:''}
       </div>
     </div>
@@ -4880,12 +4882,13 @@ function pgPayroll(){
     const openPeriods=PAY_PERIODS.filter(p=>p.status==='open');
     const processPeriodId=window._adjProcessPeriod||openPeriods[0]?.id||'';
     const processPeriod=PAY_PERIODS.find(p=>p.id===processPeriodId)||null;
-    const processable=processPeriod?PAYROLL_ADJ.filter(a=>a.status==='approved'&&INCOME_TYPES.some(t=>!t.isStatutory&&t.code===a.payItemCode)&&(!a.payPeriodId||a.payPeriodId===processPeriod.id)&&USERS.some(e=>e.id===a.empId&&e.payGroupId===processPeriod.groupId)).length:0;
+    const processable=processPeriod?PAYROLL_ADJ.filter(a=>isPayrollAdjustmentReady(a)&&INCOME_TYPES.some(t=>!t.isStatutory&&t.code===a.payItemCode)&&(!a.payPeriodId||a.payPeriodId===processPeriod.id)&&USERS.some(e=>e.id===a.empId&&e.payGroupId===processPeriod.groupId)).length:0;
     const isReprocess=processPeriod&&PAYROLLS.some(r=>r.periodId===processPeriod.id&&r.status==='pending_approval');
     body=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
-      <div><div style="font-size:13px;font-weight:600">Payroll Adjustment Queue</div><div style="font-size:11px;color:var(--txt3);margin-top:2px">Approved items are applied only when you process their selected open payroll period.</div></div>
+      <div><div style="font-size:13px;font-weight:600">Payroll Adjustment Queue</div><div style="font-size:11px;color:var(--txt3);margin-top:2px">New and uploaded adjustments are immediately ready for processing; no separate approval is required.</div></div>
       <div style="display:flex;gap:8px">
+        <button class="btn btn-sm btn-danger" onclick="deleteSelectedPayAdjustments()">Delete selected</button>
         <button class="btn btn-sm" onclick="modal={type:'bulkAdj',rows:[{eid:'',adjType:'',payItemCode:'',amount:'',reason:'',effectiveDate:'${today()}'}]};render()">📋 Bulk Upload</button>
         <button class="btn btn-primary btn-sm" onclick="modal={type:'addPayAdj'};render()">+ New Adjustment</button>
       </div>
@@ -4895,24 +4898,26 @@ function pgPayroll(){
         <select class="finput" onchange="window._adjProcessPeriod=parseInt(this.value)||'';render()">
           ${openPeriods.length?openPeriods.map(p=>{const g=PAYROLL_GROUPS.find(x=>x.id===p.groupId);return`<option value="${p.id}" ${p.id===processPeriodId?'selected':''}>${esc(p.label)} · ${esc(g?.name||'')}</option>`;}).join(''):'<option value="">— No open payroll period —</option>'}
         </select></div>
-      <div style="font-size:11px;color:var(--accent-txt);padding:0 4px 9px">${processPeriod?`<strong>${processable}</strong> approved adjustment${processable!==1?'s':''} ready`:'Create or reopen a payroll period first.'}</div>
+      <div style="font-size:11px;color:var(--accent-txt);padding:0 4px 9px">${processPeriod?`<strong>${processable}</strong> adjustment${processable!==1?'s':''} ready`:'Create or reopen a payroll period first.'}</div>
       <button class="btn btn-primary" ${!processPeriod||!processable?'disabled':''} onclick="processAdjustmentPayroll(${processPeriodId||'null'})">${isReprocess?'↻ Reprocess Payroll':'▶ Process Adjustments'}</button>
     </div>
-    ${PAYROLL_ADJ.length?`<table><thead><tr><th>Employee</th><th>Income / Deduction Type</th><th>Amount</th><th>Reason</th><th>Target Period</th><th>Added By</th><th>Status</th><th></th></tr></thead>
+    ${PAYROLL_ADJ.length?`<table><thead><tr><th style="width:32px"><input type="checkbox" style="width:auto" title="Select all deletable adjustments" onchange="document.querySelectorAll('.adj-delete-check:not(:disabled)').forEach(x=>x.checked=this.checked)"/></th><th>Employee</th><th>Income / Deduction Type</th><th>Amount</th><th>Reason</th><th>Target Period</th><th>Added By</th><th>Status</th><th></th></tr></thead>
     <tbody>${PAYROLL_ADJ.map(a=>{
       const e=USERS.find(u=>u.id===a.empId);
       const payItem=INCOME_TYPES.find(t=>t.code===a.payItemCode);
+      const deletable=canDeletePayrollAdjustment(a);
+      const displayStatus=isPayrollAdjustmentReady(a)?'ready':a.status;
       return`<tr>
+        <td><input type="checkbox" class="adj-delete-check" value="${a.id}" style="width:auto" ${deletable?'':'disabled'} title="${deletable?'Select for bulk deletion':'Applied/submitted adjustments are protected'}"/></td>
         <td><div class="emp-cell"><div class="avatar sm">${ini(e?.name||'?')}</div>${esc(e?.name||'Unknown')}</div></td>
         <td><strong style="font-size:12px">${esc(payItem?.name||a.adjType||'Unmapped')}</strong>${a.payItemCode?`<div><code style="font-size:9px;background:var(--bg);padding:1px 5px;border-radius:3px;border:1px solid var(--border)">${esc(a.payItemCode)}</code> <span style="font-size:10px;color:var(--txt3)">${payItem?.cat==='deductions'?'Deduction':'Income'}</span></div>`:''}</td>
         <td class="mono" style="font-weight:600;color:${a.amount>=0?'var(--green)':'var(--red)'}">${a.amount>=0?'+':''}${fmt(a.amount)}</td>
         <td style="font-size:12px;color:var(--txt2);max-width:200px">${esc(a.reason)}</td>
         <td style="font-size:12px">${a.payPeriodLabel?`<strong>${esc(a.payPeriodLabel)}</strong>`:'<span style="color:var(--amber)">Not assigned</span>'}<div style="font-size:10px;color:var(--txt3)">${a.effectiveDate||''}</div></td>
         <td style="font-size:11px;color:var(--txt3)">${a.addedBy}</td>
-        <td><span class="badge b-${a.status==='pending'?'pending':a.status==='approved'?'approved':'info'}">${a.status}</span></td>
+        <td><span class="badge b-${displayStatus==='ready'?'approved':'info'}">${displayStatus}</span></td>
         <td><div style="display:flex;gap:4px">
-          ${a.status==='pending'?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="approvePayAdjustment(${a.id})">✓ Approve</button>
-          <button class="btn btn-sm btn-danger" onclick="deletePayAdjustment(${a.id})">✕</button>`:''}
+          ${deletable?`<button class="btn btn-sm btn-danger" onclick="deletePayAdjustment(${a.id})">Delete</button>`:'<span style="font-size:10px;color:var(--txt3)">Protected</span>'}
         </div></td>
       </tr>`;}).join('')}</tbody></table>`
     :`<div class="empty-state"><div class="ei">📋</div>No adjustments yet. Use this to add retroactive pay, missed allowances, or corrections.</div>`}`;
@@ -5696,7 +5701,7 @@ function saveBulkAdj(){
       effectiveDate:period?period.releaseDate:(r.effectiveDate||today()),
       payPeriodId:period?period.id:null,
       payPeriodLabel:period?period.label:null,
-      addedBy:user.name,status:'pending',createdAt:today()
+      addedBy:user.name,status:'ready',processStatus:'ready',createdAt:today()
     });
     added++;
   });
@@ -5704,7 +5709,7 @@ function saveBulkAdj(){
   if(errors.length&&!added){alert('All rows failed:\n\n'+errors.join('\n'));return;}
   queueSync('Payroll_Adjustments');
   closeM();
-  var msg='Bulk adjustments submitted — '+added+' added, pending approval';
+  var msg='Bulk adjustments saved — '+added+' ready for payroll processing';
   if(period)msg+=' for '+period.label;
   if(skipped)msg+='. '+skipped+' skipped.';
   toast(msg,'success');
@@ -5723,23 +5728,33 @@ function savePayAdj(){
   const emp=USERS.find(e=>e.id===empId);
   if(!emp||emp.payGroupId!==period.groupId){toast('The employee is not assigned to the payroll group for that period.','warning');return;}
   const amount=item.cat==='deductions'?-Math.abs(enteredAmount):Math.abs(enteredAmount);
-  PAYROLL_ADJ.push({id:nAdj++,empId,adjType:item.name,payItemCode:item.code,category:item.cat,taxable:!!item.taxable,direction:item.cat==='deductions'?'deduction':'income',amount,reason,effectiveDate:period.releaseDate||period.to,payPeriodId:period.id,payPeriodLabel:period.label,addedBy:user.name,status:'pending',createdAt:today()});
+  PAYROLL_ADJ.push({id:nAdj++,empId,adjType:item.name,payItemCode:item.code,category:item.cat,taxable:!!item.taxable,direction:item.cat==='deductions'?'deduction':'income',amount,reason,effectiveDate:period.releaseDate||period.to,payPeriodId:period.id,payPeriodLabel:period.label,addedBy:user.name,status:'ready',processStatus:'ready',createdAt:today()});
   queueSync('Payroll_Adjustments');
-  closeM();toast('Adjustment added — pending approval.','success');render();
-}
-
-function approvePayAdjustment(id){
-  const adjustment=PAYROLL_ADJ.find(a=>a.id===id);
-  if(!adjustment||adjustment.status!=='pending')return;
-  adjustment.status='approved';adjustment.approvedBy=user.name;adjustment.approvedAt=new Date().toISOString();
-  queueSync('Payroll_Adjustments');toast('Adjustment approved and ready for payroll processing.','success');render();
+  closeM();toast('Adjustment added and ready for payroll processing.','success');render();
 }
 
 function deletePayAdjustment(id){
-  const index=PAYROLL_ADJ.findIndex(a=>a.id===id&&a.status==='pending');
+  const index=PAYROLL_ADJ.findIndex(a=>a.id===id&&canDeletePayrollAdjustment(a));
   if(index<0)return;
-  if(!confirm('Delete this pending payroll adjustment?'))return;
-  PAYROLL_ADJ.splice(index,1);queueSync('Payroll_Adjustments');toast('Pending adjustment deleted.','info');render();
+  if(!confirm('Delete this payroll adjustment? This cannot be undone.'))return;
+  const removed=PAYROLL_ADJ.splice(index,1)[0];
+  PAYROLL_AUDIT.push({action:'adjustment_deleted',adjustmentId:removed.id,by:user.name,at:new Date().toISOString(),notes:removed.payItemCode+' · '+removed.reason});
+  if(removed.processStatus==='included_in_preview'){PAYROLL_DRAFT={};window._prPreview=false;window._reprocessRunId=null;}
+  queueSync('Payroll_Adjustments','Payroll_Audit');toast('Adjustment deleted.','info');render();
+}
+
+function deleteSelectedPayAdjustments(){
+  const selected=[...document.querySelectorAll('.adj-delete-check:checked')].map(x=>parseInt(x.value)).filter(Number.isFinite);
+  if(!selected.length){toast('Select at least one deletable adjustment.','warning');return;}
+  const deletableIds=window.PayrollAdjustmentCore?PayrollAdjustmentCore.deletableIds(PAYROLL_ADJ,selected):selected.filter(id=>canDeletePayrollAdjustment(PAYROLL_ADJ.find(a=>a.id===id)));
+  if(!deletableIds.length){toast('The selected adjustments are already submitted or applied and cannot be deleted.','warning');return;}
+  if(!confirm(`Delete ${deletableIds.length} selected adjustment${deletableIds.length!==1?'s':''}? This cannot be undone.`))return;
+  const idSet=new Set(deletableIds);
+  const removed=PAYROLL_ADJ.filter(a=>idSet.has(a.id));
+  for(let i=PAYROLL_ADJ.length-1;i>=0;i--){if(idSet.has(PAYROLL_ADJ[i].id))PAYROLL_ADJ.splice(i,1);}
+  removed.forEach(a=>PAYROLL_AUDIT.push({action:'adjustment_bulk_deleted',adjustmentId:a.id,by:user.name,at:new Date().toISOString(),notes:a.payItemCode+' · '+a.reason}));
+  if(removed.some(a=>a.processStatus==='included_in_preview')){PAYROLL_DRAFT={};window._prPreview=false;window._reprocessRunId=null;}
+  queueSync('Payroll_Adjustments','Payroll_Audit');toast(`${removed.length} adjustment${removed.length!==1?'s':''} deleted.`,'info');render();
 }
 
 function processAdjustmentPayroll(periodId){
@@ -5749,8 +5764,8 @@ function processAdjustmentPayroll(periodId){
   if(!grp){toast('Payroll group for this period was not found.','warning');return;}
   const employees=USERS.filter(e=>e.role==='employee'&&e.active!==false&&e.payGroupId===grp.id);
   const employeeIds=new Set(employees.map(e=>e.id));
-  const adjustments=PAYROLL_ADJ.filter(a=>a.status==='approved'&&INCOME_TYPES.some(t=>!t.isStatutory&&t.code===a.payItemCode)&&employeeIds.has(a.empId)&&(!a.payPeriodId||a.payPeriodId===period.id));
-  if(!adjustments.length){toast('There are no approved adjustments for this payroll period.','warning');return;}
+  const adjustments=PAYROLL_ADJ.filter(a=>isPayrollAdjustmentReady(a)&&INCOME_TYPES.some(t=>!t.isStatutory&&t.code===a.payItemCode)&&employeeIds.has(a.empId)&&(!a.payPeriodId||a.payPeriodId===period.id));
+  if(!adjustments.length){toast('There are no ready adjustments for this payroll period.','warning');return;}
   const attendanceFrom=period.attendanceFrom||period.from,attendanceTo=period.attendanceTo||period.to;
   const pendingAttendance=attendanceRecords().filter(r=>employeeIds.has(r.eid)&&r.date>=attendanceFrom&&r.date<=attendanceTo&&r.approvalStatus!=='approved');
   if(pendingAttendance.length){toast('Payroll cannot be processed: '+pendingAttendance.length+' attendance record(s) still need approval.','warning',6000);return;}
@@ -5889,7 +5904,7 @@ function runPayroll(){
     /* Use edited draft values */
     items=Object.values(PAYROLL_DRAFT).map(d=>{
       const e=USERS.find(u=>u.id===d.empId);
-      const adjItems=PAYROLL_ADJ.filter(x=>x.empId===d.empId&&x.status==='approved');
+      const adjItems=PAYROLL_ADJ.filter(x=>x.empId===d.empId&&isPayrollAdjustmentReady(x));
       const adjTotal=adjItems.reduce((s,x)=>s+x.amount,0);
       adjItems.forEach(x=>{x.status='applied';});
       return{...d,adjustments:adjTotal,net:+Math.max(0,d.net+adjTotal).toFixed(2)};
@@ -5909,7 +5924,7 @@ function runPayroll(){
       const ndH=a.reduce((s,x)=>s+(x.nd||0),0);
       const extras=PAY_OVERRIDES[e.eid]||null;
       const d=buildDraftRow(e,grp,period||{from:from,to:to});
-      const adjItems=PAYROLL_ADJ.filter(x=>x.empId===e.id&&x.status==='approved');
+      const adjItems=PAYROLL_ADJ.filter(x=>x.empId===e.id&&isPayrollAdjustmentReady(x));
       const adjTotal=adjItems.reduce((s,x)=>s+x.amount,0);
       adjItems.forEach(x=>{x.status='applied';});
       return{...d,pr,la,ab,otH,ndH,adjustments:adjTotal,net:+Math.max(0,d.net+adjTotal).toFixed(2)};
@@ -8238,7 +8253,7 @@ function renderModal(){
 
     <div style="display:flex;gap:8px;align-items:center;border-top:1px solid var(--border);padding-top:12px">
       <button class="btn btn-primary" style="padding:9px 20px" onclick="saveBulkAdj()">
-        ✓ Submit ${readyCount} Adjustment${readyCount!==1?'s':''}${selPeriod?' for '+esc(selPeriod.label):''}
+        ✓ Save ${readyCount} Ready Adjustment${readyCount!==1?'s':''}${selPeriod?' for '+esc(selPeriod.label):''}
       </button>
       <button class="btn" onclick="closeM()">Cancel</button>
       ${selPeriod?`<span style="font-size:11px;color:var(--accent-txt);padding:4px 10px;background:var(--accent-bg);border-radius:6px;border:1px solid var(--accent)">
@@ -8274,7 +8289,7 @@ function renderModal(){
     <div class="field"><label>Reason / Notes <span style="color:var(--red)">*</span></label>
       <textarea id="adj-reason" class="finput" rows="3" placeholder="Explain the reason for this adjustment..."></textarea></div>
     <div style="display:flex;gap:8px;margin-top:4px">
-      <button class="btn btn-primary" onclick="savePayAdj()">✓ Submit Adjustment</button>
+      <button class="btn btn-primary" onclick="savePayAdj()">✓ Save as Ready</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
   }else if(modal.type==='viewPayGroup'){
@@ -12873,9 +12888,10 @@ render = function() {
 
 </script>
 <script src="/bir-1601c-core.js?v=20260803-reporting-month"></script>
+<script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/compliance.js?v=20260804-manual-1601c-month"></script>
 <script src="/enterprise.js?v=sidebar-20260731"></script>
-<script src="/payroll-governance.js?v=20260804-manual-1601c-month"></script>
+<script src="/payroll-governance.js?v=20260804-adjustments-no-approval"></script>
 <script src="/persistence.js?v=20260804-impersonation-audit"></script>
 </body>
 </html>
