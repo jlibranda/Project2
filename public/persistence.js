@@ -25,7 +25,7 @@
       employeeNumberConfig:EMP_NUM_CONFIG,statutoryConfig:STATUTORY_CONFIG,approvalConfig:APPROVAL_CONFIG,
       fieldConfig:FIELD_CONFIG,incomeTypes:INCOME_TYPES,attendanceAdjustments:ATTENDANCE_ADJ,
       overtimeRates:OT_RATES,payrollGroups:PAYROLL_GROUPS,payPeriods:PAY_PERIODS,
-      payrollAdjustments:PAYROLL_ADJ,finalPayList:FINAL_PAY_LIST,payrollAudit:PAYROLL_AUDIT,
+      payrollAdjustments:PAYROLL_ADJ,finalPayList:FINAL_PAY_LIST,payrollAudit:PAYROLL_AUDIT,securityAudit:SECURITY_AUDIT,
       governmentRates:GOVT_RATES,platformClients:PLATFORM_CLIENTS,
       enterprise:window.collectEnterpriseState?window.collectEnterpriseState():null,
       payrollGovernance:window.collectPayrollGovernanceState?window.collectPayrollGovernanceState():null
@@ -44,7 +44,7 @@
     if(saved.approvalConfig)APPROVAL_CONFIG=saved.approvalConfig;if(saved.fieldConfig)FIELD_CONFIG=saved.fieldConfig;
     replaceArray(INCOME_TYPES,saved.incomeTypes);if(saved.attendanceAdjustments)ATTENDANCE_ADJ=saved.attendanceAdjustments;
     replaceArray(OT_RATES,saved.overtimeRates);replaceArray(PAYROLL_GROUPS,saved.payrollGroups);replaceArray(PAY_PERIODS,saved.payPeriods);
-    replaceArray(PAYROLL_ADJ,saved.payrollAdjustments);replaceArray(FINAL_PAY_LIST,saved.finalPayList);replaceArray(PAYROLL_AUDIT,saved.payrollAudit);
+    replaceArray(PAYROLL_ADJ,saved.payrollAdjustments);replaceArray(FINAL_PAY_LIST,saved.finalPayList);replaceArray(PAYROLL_AUDIT,saved.payrollAudit);replaceArray(SECURITY_AUDIT,saved.securityAudit);
     if(saved.governmentRates)GOVT_RATES=saved.governmentRates;replaceArray(PLATFORM_CLIENTS,saved.platformClients);
     if(window.applyEnterpriseState)window.applyEnterpriseState(saved.enterprise);
     if(window.applyPayrollGovernanceState)window.applyPayrollGovernanceState(saved.payrollGovernance);
@@ -57,6 +57,7 @@
     nPayPeriod=PAY_PERIODS.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
     nAdj=PAYROLL_ADJ.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
     nFP=FINAL_PAY_LIST.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
+    nSecurityAudit=SECURITY_AUDIT.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
     document.title=COMPANY.name+' — HR & Payroll';
   }
 

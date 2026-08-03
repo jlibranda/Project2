@@ -1114,6 +1114,8 @@ let nAdj=1;
 /* ── Final Pay Records ── */
 let FINAL_PAY_LIST=[];
 let nFP=1;
+let SECURITY_AUDIT=[];
+let nSecurityAudit=1;
 function reportingMonthFromDate(date){return window.BIR1601CCore?BIR1601CCore.reportingMonth(date):String(date||'').slice(0,7);}
 function displayReportingMonth(month){if(!/^\d{4}-\d{2}$/.test(month||''))return'—';const[y,m]=month.split('-');return new Date(+y,+m-1,1).toLocaleDateString('en-PH',{month:'long',year:'numeric'});}
 
@@ -1669,7 +1671,7 @@ function doLogout(){
     PAYROLLS.length=0; PAYROLLS.push(..._savedAppState.payrolls);
     _savedAppState=null;
   }
-  user=null;view='dashboard';modal=null;
+  user=null;view='dashboard';modal=null;godAdmin=null;
   isPlatformAdmin=false;platformAdmin=null;activeClientId=null;
   render();
 }
@@ -2074,6 +2076,9 @@ function pgPlatformAdmin(){
               onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">
               🔐 Enter Portal
             </button>
+            <button onclick="openUserLogin(${c.id})"
+              style="background:#312e81;color:#c7d2fe;border:1px solid #4f46e5;border-radius:7px;padding:7px 10px;font-size:12px;font-weight:600;cursor:pointer"
+              title="Log in as a user with their actual permissions">Log in as user</button>
             <button onclick="modal={type:'editPOC',clientId:${c.id}};render()"
               style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:7px;padding:7px 9px;font-size:12px;cursor:pointer"
               onmouseover="this.style.borderColor='#22c55e';this.style.color='#86efac'" onmouseout="this.style.borderColor='#334155';this.style.color='#94a3b8'"
@@ -2124,13 +2129,29 @@ function pgPlatformAdmin(){
 }
 
 /* ── Impersonation (God Mode) ── */
-let godAdmin=null; /* stores real admin while impersonating */
+let godAdmin=null; /* stores the platform identity and context while impersonating */
+
+function recordSecurityAudit(action,target,notes){
+  SECURITY_AUDIT.push({id:nSecurityAudit++,action,targetUserId:target?.id||null,targetEmployeeNo:target?.eid||'',targetName:target?.name||'',clientId:activeClientId||null,by:'God Admin',at:new Date().toISOString(),notes:notes||''});
+  queueSync('Security_Audit');
+}
+
+function openUserLogin(clientId){
+  if(!isPlatformAdmin||godAdmin){toast('Only the active Super Admin session can use Log in as user.','warning');return;}
+  enterClient(clientId);
+  modal={type:'impersonatePicker',clientId};
+  render();
+}
 
 function impersonateUser(id){
+  if(!isPlatformAdmin||godAdmin){toast('Only Super Admin can start an impersonated session.','warning');return;}
   const target=USERS.find(u=>u.id===id);
   if(!target)return;
-  if(!confirm(`View the system as ${target.name} (${target.eid})?\n\nYou'll see exactly what they see. A banner will remind you to exit.`))return;
-  godAdmin=user;
+  if(target.active===false){toast('Disabled users cannot be impersonated.','warning');return;}
+  if(!confirm(`Log in as ${target.name} (${target.eid||target.email})?\n\nYou will use this user's actual permissions. All impersonation activity is audited.`))return;
+  godAdmin={user:user,wasPlatformAdmin:isPlatformAdmin,startedAt:new Date().toISOString(),clientId:activeClientId};
+  recordSecurityAudit('impersonation_started',target,'Super Admin entered the account without using or revealing the user password.');
+  isPlatformAdmin=false;
   user=target;
   view='dashboard';tab=0;modal=null;
   render();
@@ -2138,7 +2159,10 @@ function impersonateUser(id){
 
 function exitImpersonation(){
   if(!godAdmin)return;
-  user=godAdmin;
+  const impersonated=user;
+  recordSecurityAudit('impersonation_ended',impersonated,'Session returned to Super Admin.');
+  user=godAdmin.user;
+  isPlatformAdmin=godAdmin.wasPlatformAdmin;
   godAdmin=null;
   view='employees';tab=0;modal=null;
   render();
@@ -3087,7 +3111,7 @@ function pgEmployees(){
       <button class="btn btn-sm" onclick="openEmp(${e.id})">201 →</button>
       <button class="btn btn-sm" onclick="modal={type:'accessEdit',emp:USERS.find(u=>u.id===${e.id})};render()" title="Edit access level" style="padding:4px 8px">${ico('shield',13)}</button>
       ${(isPlatformAdmin||canAccess('emp_reset_password'))?`<button class="btn btn-sm" onclick="modal={type:'resetPassword',emp:USERS.find(u=>u.id===${e.id}),newPass:''};render()" title="Reset password" style="padding:4px 8px">🔑</button>`:''}
-      ${isPlatformAdmin?`<button class="btn btn-sm" style="padding:4px 8px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${e.id})" title="Replicate access — God Admin only">👁</button>`:''}
+      ${isPlatformAdmin?`<button class="btn btn-sm" style="padding:4px 8px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${e.id})" title="Log in with this user's actual access — Super Admin only">Log in as user</button>`:''}
       ${(isPlatformAdmin||user.role==='admin'||canAccess('emp_delete'))?`<button class="btn btn-sm btn-danger" onclick="deleteEmp(${e.id})" title="Delete" style="padding:4px 8px">✕</button>`:''}
     </div></td>
   </tr>`;}).join('')})():`<tr><td colspan="10" class="empty-state">No employees match "${esc(empSearch)}"</td></tr>`}</tbody></table></div>`;
@@ -4941,6 +4965,7 @@ function pgPayroll(){
     const selFP=window._fpEmpId||resigned[0]?.id||null;
     const fpEmp=USERS.find(u=>u.id===selFP);
     const fpReleaseDate=window._fpReleaseDate||today();
+    const fpBir1601CMonth=window._fpBir1601CMonth||'';
     const fpPreviousTaxable=Number(window._fpPreviousTaxable||0);
     const fpPreviousTax=Number(window._fpPreviousTax||0);
     const fp=fpEmp?computeFinalPay(fpEmp,{releaseDate:fpReleaseDate,previousEmployerTaxable:fpPreviousTaxable,previousEmployerTaxWithheld:fpPreviousTax}):null;
@@ -4988,10 +5013,10 @@ function pgPayroll(){
         </div>
         <div class="card" style="margin-top:.75rem;margin-bottom:0;padding:.875rem;border-left:3px solid var(--red)">
           <div class="card-title" style="margin-bottom:4px">BIR annualization and 1601-C filing</div>
-          <div class="card-sub" style="margin-bottom:10px">Final-pay withholding is annualized and included in the 1601-C month when the final pay is actually released.</div>
+          <div class="card-sub" style="margin-bottom:10px">Final-pay withholding is annualized. Select the BIR reporting month that will include this release.</div>
           <div class="form-row">
             <div class="field"><label>Actual Final Pay Release Date</label><input id="fp-release-date" type="date" class="finput" value="${fpReleaseDate}" onchange="window._fpReleaseDate=this.value;render()"/></div>
-            <div class="field"><label>1601-C Reporting Month</label><input type="month" class="finput" value="${reportingMonthFromDate(fpReleaseDate)}" readonly/></div>
+            <div class="field"><label>1601-C Reporting Month <span style="color:var(--red)">*</span></label><input id="fp-bir-month" type="month" class="finput" value="${fpBir1601CMonth}" onchange="window._fpBir1601CMonth=this.value;render()" required/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Required manual selection; independent from the release date.</div></div>
           </div>
           <div style="font-size:11px;font-weight:700;color:var(--txt2);margin:3px 0 7px">Previous employer data for the same calendar year, if applicable</div>
           <div class="form-row">
@@ -5004,7 +5029,7 @@ function pgPayroll(){
             <div><span style="color:var(--txt3)">Final withholding</span><div class="mono" style="font-weight:700;color:var(--red)">${fmt(fp.taxWithheld)}</div></div>
             <div><span style="color:var(--txt3)">Tax refund</span><div class="mono" style="font-weight:700;color:var(--green)">${fmt(fp.taxRefund)}</div></div>
           </div>
-          <div style="margin-top:8px;padding:7px 9px;border-radius:7px;background:var(--red-bg);color:var(--red-txt);font-size:11px">Included automatically in <strong>1601-C ${displayReportingMonth(reportingMonthFromDate(fpReleaseDate))}</strong> after Release Final Pay.</div>
+          <div style="margin-top:8px;padding:7px 9px;border-radius:7px;background:${fpBir1601CMonth?'var(--red-bg)':'var(--amber-bg)'};color:${fpBir1601CMonth?'var(--red-txt)':'var(--amber-txt)'};font-size:11px">${fpBir1601CMonth?`Included automatically in <strong>1601-C ${displayReportingMonth(fpBir1601CMonth)}</strong> after Release Final Pay.`:'Select the required 1601-C reporting month before release.'}</div>
         </div>
         <!-- Clearance checklist -->
         <div class="card" style="margin-top:.75rem;margin-bottom:0;padding:.875rem">
@@ -5107,7 +5132,7 @@ function pgPayroll(){
         <td class="mono" style="font-size:11px">${p.attendanceFrom||p.from?fmtShort(p.attendanceFrom||p.from)+' → '+fmtShort(p.attendanceTo||p.to):'—'}</td>
         <td>${!recurringAllowancesEnabled(p)?'<span class="badge b-absent" style="font-size:10px">Excluded</span>':Array.isArray(p.recurringAllowanceCodes)?p.recurringAllowanceCodes.map(code=>`<span class="badge b-approved" style="font-size:9px;margin:1px">${esc(code)}</span>`).join(''):'<span class="badge b-approved" style="font-size:10px">All allowances</span>'}</td>
         <td style="font-size:12px">${fmtDate(p.releaseDate)}</td>
-        <td><span class="badge b-info" style="font-size:10px" title="BIR reporting month based on actual release/payment date">${displayReportingMonth(p.bir1601CMonth||reportingMonthFromDate(p.releaseDate))}</span></td>
+        <td><span class="badge b-info" style="font-size:10px" title="Manually selected BIR reporting month">${displayReportingMonth(p.bir1601CMonth||reportingMonthFromDate(p.releaseDate))}</span></td>
         <td><span class="badge ${statusBadge[p.status]||'b-info'}">${p.status}</span></td>
         <td><div style="display:flex;gap:4px">
           ${!isLocked?`<button class="btn btn-sm" title="Edit period" onclick="modal={type:'editPayPeriod',period:JSON.parse(JSON.stringify(PAY_PERIODS.find(x=>x.id===${p.id})))};render()">✎ Edit</button>`:''}
@@ -5465,13 +5490,15 @@ function releaseFinalPay(empId){
   const e=USERS.find(u=>u.id===empId);
   if(!e)return;
   const releaseDate=document.getElementById('fp-release-date')?.value||window._fpReleaseDate||today();
+  const bir1601CMonth=document.getElementById('fp-bir-month')?.value||window._fpBir1601CMonth||'';
   if(!/^\d{4}-\d{2}-\d{2}$/.test(releaseDate)){toast('Enter the actual final pay release date.','warning');return;}
+  if(!/^\d{4}-\d{2}$/.test(bir1601CMonth)){toast('Select the 1601-C reporting month before releasing final pay.','warning');return;}
   const computation=computeFinalPay(e,{releaseDate,previousEmployerTaxable:Number(window._fpPreviousTaxable||0),previousEmployerTaxWithheld:Number(window._fpPreviousTax||0)});
   const existing=FINAL_PAY_LIST.find(x=>x.empId===empId&&x.releaseDate===releaseDate&&x.status==='released');
   if(existing){toast('This final pay is already released and included in the selected 1601-C month.','info');return;}
-  FINAL_PAY_LIST.push({id:nFP++,empId:e.id,eid:e.eid,employeeName:e.name,status:'released',releasedAt:new Date().toISOString(),releasedBy:user?.name||'Administrator',releaseDate,bir1601CMonth:reportingMonthFromDate(releaseDate),includeIn1601C:true,taxEventType:'final_pay',grossFP:computation.grossFP,netFP:computation.netFP,taxableCompensation:computation.taxableCompensation,nonTaxableCompensation:computation.nonTaxableCompensation,taxWithheld:computation.taxWithheld,taxRefund:computation.taxRefund,annualizedTaxable:computation.annualizedTaxable,annualTax:computation.annualTax,previousEmployerTaxable:Number(window._fpPreviousTaxable||0),previousEmployerTaxWithheld:Number(window._fpPreviousTax||0)});
+  FINAL_PAY_LIST.push({id:nFP++,empId:e.id,eid:e.eid,employeeName:e.name,status:'released',releasedAt:new Date().toISOString(),releasedBy:user?.name||'Administrator',releaseDate,bir1601CMonth,includeIn1601C:true,taxEventType:'final_pay',grossFP:computation.grossFP,netFP:computation.netFP,taxableCompensation:computation.taxableCompensation,nonTaxableCompensation:computation.nonTaxableCompensation,taxWithheld:computation.taxWithheld,taxRefund:computation.taxRefund,annualizedTaxable:computation.annualizedTaxable,annualTax:computation.annualTax,previousEmployerTaxable:Number(window._fpPreviousTaxable||0),previousEmployerTaxWithheld:Number(window._fpPreviousTax||0)});
   queueSync('Final_Pay');
-  toast(`Final pay for ${e.name} released and included in 1601-C ${displayReportingMonth(reportingMonthFromDate(releaseDate))}.`,'success');render();
+  toast(`Final pay for ${e.name} released and included in 1601-C ${displayReportingMonth(bir1601CMonth)}.`,'success');render();
 }
 function printFinalPay(empId){
   toast('Print / PDF export — coming soon','info');
@@ -7867,6 +7894,15 @@ function renderModal(){
       <button class="btn btn-primary" onclick="${isNew?'saveNewLevel()':'saveEditLevel()'}">✓ ${isNew?'Create Level':'Save Changes'}</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
+  }else if(modal.type==='impersonatePicker'){
+    const client=PLATFORM_CLIENTS.find(x=>x.id===modal.clientId);
+    const availableUsers=USERS.filter(u=>u.active!==false).sort((a,b)=>a.name.localeCompare(b.name));
+    inner=`<div class="modal-title">Log in as user — ${esc(client?.name||COMPANY.name)}
+      <button class="close-x" onclick="closeM()">×</button></div>
+      <div style="padding:9px 11px;background:var(--amber-bg);border:1px solid var(--amber);border-radius:8px;color:var(--amber-txt);font-size:11px;margin-bottom:10px">The selected account's actual permissions will apply. Passwords are not used or revealed, and start/end events are added to the security audit.</div>
+      <div style="display:grid;gap:6px;max-height:420px;overflow-y:auto">
+        ${availableUsers.length?availableUsers.map(u=>`<button class="btn" style="display:flex;align-items:center;text-align:left;justify-content:flex-start;padding:9px 10px" onclick="impersonateUser(${u.id})"><span class="avatar sm">${ini(u.name)}</span><span style="flex:1"><strong>${esc(u.name)}</strong><br><span style="font-size:10px;color:var(--txt3)">${esc(u.eid||u.email)} · ${esc(u.role||'employee')}</span></span><span style="font-size:11px;color:var(--accent)">Log in →</span></button>`).join(''):'<div class="empty-state">No active users are available in this company.</div>'}
+      </div>`;
   }else if(modal.type==='editPOC'){
     const c=PLATFORM_CLIENTS.find(x=>x.id===modal.clientId);
     inner=`<div class="modal-title">👤 Edit Point of Contact — <strong>${esc(c?.name||'')}</strong>
@@ -7898,7 +7934,7 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='godSettings'){
     const settingTab=modal.settingTab||'security';
-    const tabs2=[{k:'security',l:'🔐 Security'},{k:'plans',l:'📦 Plan Defaults'},{k:'passwords',l:'🔑 All Passwords'},{k:'branding',l:'🎨 Branding'}];
+    const tabs2=[{k:'security',l:'🔐 Security'},{k:'audit',l:'🧾 Impersonation Audit'},{k:'plans',l:'📦 Plan Defaults'},{k:'passwords',l:'🔑 All Passwords'},{k:'branding',l:'🎨 Branding'}];
     inner=`<div class="modal-title">⚙ God Admin Settings
       <button class="close-x" onclick="closeM()">×</button>
     </div>
@@ -7925,6 +7961,12 @@ function renderModal(){
     <div style="padding:10px 12px;background:var(--amber-bg);border-radius:7px;font-size:12px;color:var(--amber-txt)">
       ⚠ Password changes are session-only. To make permanent, update the <code>GOD_PASS</code> variable in the HTML file.
     </div>`:''}
+
+    ${settingTab==='audit'?`
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:10px">Super Admin impersonation start and exit events. Newest events appear first.</div>
+    <div style="max-height:390px;overflow:auto"><table style="font-size:11px"><thead><tr><th>Date / Time</th><th>Action</th><th>User</th><th>Client</th><th>Notes</th></tr></thead><tbody>
+      ${SECURITY_AUDIT.length?SECURITY_AUDIT.slice().reverse().map(a=>`<tr><td class="mono">${esc(new Date(a.at).toLocaleString('en-PH'))}</td><td><span class="badge ${a.action==='impersonation_started'?'b-pending':'b-approved'}">${esc(a.action)}</span></td><td>${esc(a.targetName||a.targetEmployeeNo||'—')}</td><td>${esc(PLATFORM_CLIENTS.find(c=>c.id===a.clientId)?.name||'—')}</td><td>${esc(a.notes||'')}</td></tr>`).join(''):'<tr><td colspan="5" class="empty-state">No impersonation activity yet.</td></tr>'}
+    </tbody></table></div>`:''}
 
     ${settingTab==='plans'?`
     <div style="font-size:12px;color:var(--txt3);margin-bottom:10px">
@@ -8561,8 +8603,8 @@ function renderModal(){
       </div>
     </div>
     <div class="form-row">
-      <div class="field"><label>Actual Release / Payment Date</label><input id="pp-rel" type="date" class="finput" onchange="var m=document.getElementById('pp-bir-month');if(m)m.value=reportingMonthFromDate(this.value)"/></div>
-      <div class="field"><label>1601-C Reporting Month</label><input id="pp-bir-month" type="month" class="finput" readonly/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Automatically follows the actual payment date.</div></div>
+      <div class="field"><label>Actual Release / Payment Date</label><input id="pp-rel" type="date" class="finput"/></div>
+      <div class="field"><label>1601-C Reporting Month <span style="color:var(--red)">*</span></label><input id="pp-bir-month" type="month" class="finput" required/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Select manually; it does not follow the payment date.</div></div>
     </div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn btn-primary" onclick="
@@ -8572,17 +8614,16 @@ function renderModal(){
         const from=document.getElementById('pp-from')?.value;
         const to=document.getElementById('pp-to')?.value;
         const rel=document.getElementById('pp-rel')?.value;
-        const bir1601CMonth=document.getElementById('pp-bir-month')?.value||reportingMonthFromDate(rel);
+        const bir1601CMonth=document.getElementById('pp-bir-month')?.value;
         const attFrom=document.getElementById('pp-att-from')?.value||from;
         const attTo=document.getElementById('pp-att-to')?.value||to;
         const co1=document.getElementById('pp-co1')?.checked||false;
         const co2=document.getElementById('pp-co2')?.checked||false;
         const recurringAllowanceCodes=[...document.querySelectorAll('.pp-ra-code:checked')].map(x=>x.value);
         const includeRecurringAllowances=recurringAllowanceCodes.length>0;
-        if(!from||!to||!rel){toast('All dates required','warning');return;}
+        if(!from||!to||!rel||!bir1601CMonth){toast('All dates and the 1601-C reporting month are required','warning');return;}
         if(from>to){toast('Period From must be before Period To','warning');return;}
         if(!co1&&!co2){toast('Select at least one cut-off (1st or 2nd)','warning');return;}
-        if(bir1601CMonth!==reportingMonthFromDate(rel)){toast('1601-C month must match the actual release/payment month.','warning');return;}
         PAY_PERIODS.push({id:nPayPeriod++,groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,bir1601CMonth,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,recurringAllowanceCodes,status:'open',runId:null});
         closeM();queueSync('Payroll_Periods');toast('Pay period added!','success');render()">
         ✓ Add Period</button>
@@ -8641,8 +8682,8 @@ function renderModal(){
       </div>
     </div>
     <div class="form-row">
-      <div class="field"><label>Actual Release / Payment Date</label><input id="epp-rel" type="date" class="finput" value="${p.releaseDate||''}" onchange="document.getElementById('epp-bir-month').value=reportingMonthFromDate(this.value)"/></div>
-      <div class="field"><label>1601-C Reporting Month</label><input id="epp-bir-month" type="month" class="finput" value="${p.bir1601CMonth||reportingMonthFromDate(p.releaseDate)}" readonly/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Automatically follows the actual payment date.</div></div>
+      <div class="field"><label>Actual Release / Payment Date</label><input id="epp-rel" type="date" class="finput" value="${p.releaseDate||''}"/></div>
+      <div class="field"><label>1601-C Reporting Month <span style="color:var(--red)">*</span></label><input id="epp-bir-month" type="month" class="finput" value="${p.bir1601CMonth||''}" required/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Select manually; it does not follow the payment date.</div></div>
     </div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn btn-primary" onclick="
@@ -8652,16 +8693,15 @@ function renderModal(){
         const from=document.getElementById('epp-from')?.value;
         const to=document.getElementById('epp-to')?.value;
         const rel=document.getElementById('epp-rel')?.value;
-        const bir1601CMonth=document.getElementById('epp-bir-month')?.value||reportingMonthFromDate(rel);
+        const bir1601CMonth=document.getElementById('epp-bir-month')?.value;
         const attFrom=document.getElementById('epp-att-from')?.value||from;
         const attTo=document.getElementById('epp-att-to')?.value||to;
         const co1=document.getElementById('epp-co1')?.checked||false;
         const co2=document.getElementById('epp-co2')?.checked||false;
         const recurringAllowanceCodes=[...document.querySelectorAll('.epp-ra-code:checked')].map(x=>x.value);
         const includeRecurringAllowances=recurringAllowanceCodes.length>0;
-        if(!from||!to||!rel){toast('All dates required','warning');return;}
+        if(!from||!to||!rel||!bir1601CMonth){toast('All dates and the 1601-C reporting month are required','warning');return;}
         if(from>to){toast('Period From must be before Period To','warning');return;}
-        if(bir1601CMonth!==reportingMonthFromDate(rel)){toast('1601-C month must match the actual release/payment month.','warning');return;}
         const pp=PAY_PERIODS.find(x=>x.id===${p.id});
         if(pp){Object.assign(pp,{groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,bir1601CMonth,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,recurringAllowanceCodes});}
         closeM();queueSync('Payroll_Periods');toast('Pay period updated!','success');render();">
@@ -10015,7 +10055,7 @@ function renderCredRows(filter){
       <td><div style="display:flex;gap:4px;flex-wrap:wrap">
         <button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'accessEdit',emp:USERS.find(x=>x.id===${u.id})};render()">🛡 Level</button>
         ${(isPlatformAdmin||canAccess('emp_reset_password'))?`<button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'resetPassword',emp:USERS.find(x=>x.id===${u.id}),newPass:''};render()">🔑 Reset</button>`:''}
-        ${u.id!==user.id?(isPlatformAdmin?`<button class="btn btn-sm" style="font-size:11px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${u.id})">👁 View as</button>`:''):'<span style="font-size:11px;color:var(--txt3)">← You</span>'}
+        ${u.id!==user.id?(isPlatformAdmin?`<button class="btn btn-sm" style="font-size:11px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${u.id})">Log in as user</button>`:''):'<span style="font-size:11px;color:var(--txt3)">← You</span>'}
       </div></td>
     </tr>`;
   }).join('')||'<tr><td colspan="5" class="empty-state">No employees found.</td></tr>';
@@ -12558,9 +12598,9 @@ function render(){
           <button onclick="exitClientView()" style="background:#f59e0b;color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;cursor:pointer">← All Clients</button>
         </div>`;
       })():''}
-      ${godAdmin?`<div style="display:flex;align-items:center;gap:8px;padding:5px 12px;border-radius:999px;background:#fef3c7;border:1.5px solid #f59e0b;font-size:12px;font-weight:600;color:#92400e;animation:blink .8s step-end infinite">
-        👁 Viewing as ${esc(user.name)}
-        <button onclick="exitImpersonation()" style="background:#f59e0b;color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;cursor:pointer">Exit God Mode</button>
+      ${godAdmin?`<div style="display:flex;align-items:center;gap:8px;padding:5px 12px;border-radius:999px;background:#fef3c7;border:1.5px solid #f59e0b;font-size:12px;font-weight:700;color:#92400e">
+        IMPERSONATING: ${esc(user.name)} · Actual user permissions active
+        <button onclick="exitImpersonation()" style="background:#f59e0b;color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:11px;font-weight:700;cursor:pointer">Exit & return to Super Admin</button>
       </div>`:''}
       <!-- Auto-sync status indicator -->
       ${GS.autoSync?`<div style="display:flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:600;background:${GS.syncIndicator==='syncing'?'var(--accent-bg)':GS.syncIndicator==='ok'?'var(--green-bg)':GS.syncIndicator==='error'?'var(--red-bg)':'var(--bg)'};color:${GS.syncIndicator==='syncing'?'var(--accent-txt)':GS.syncIndicator==='ok'?'var(--green-txt)':GS.syncIndicator==='error'?'var(--red-txt)':'var(--txt3)'}">
@@ -12833,9 +12873,9 @@ render = function() {
 
 </script>
 <script src="/bir-1601c-core.js?v=20260803-reporting-month"></script>
-<script src="/compliance.js?v=20260803-1601c-reporting-month"></script>
+<script src="/compliance.js?v=20260804-manual-1601c-month"></script>
 <script src="/enterprise.js?v=sidebar-20260731"></script>
-<script src="/payroll-governance.js?v=20260803-payroll-process-inputs"></script>
-<script src="/persistence.js?v=20260801"></script>
+<script src="/payroll-governance.js?v=20260804-manual-1601c-month"></script>
+<script src="/persistence.js?v=20260804-impersonation-audit"></script>
 </body>
 </html>

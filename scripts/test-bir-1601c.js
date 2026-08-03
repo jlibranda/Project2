@@ -16,6 +16,9 @@ assert.strictEqual(june.entries.length, 2, 'Only locked payroll and released fin
 assert.strictEqual(june.totalCompensation, 80000);
 assert.strictEqual(june.totalTaxesWithheld, 2582.50);
 assert.strictEqual(core.aggregate('2026-05', runs, finalPays).entries.length, 1);
+const manualMonthRun = {id:4,status:'locked',releaseDate:'2026-06-30',bir1601CMonth:'2026-07',items:[{empId:3,eid:'E-3',name:'Cara',gross:20000,taxableCompensation:20000,tax:250}]};
+assert.strictEqual(core.aggregate('2026-06',[manualMonthRun],[]).entries.length,0,'Manual BIR month must override the payment month');
+assert.strictEqual(core.aggregate('2026-07',[manualMonthRun],[]).entries.length,1,'Run must appear in its manually selected BIR month');
 const annualized = core.annualizedTermination({priorTaxable:300000,previousEmployerTaxable:100000,finalTaxable:50000,priorTaxWithheld:20000,previousEmployerTaxWithheld:5000,taxFunction:income=>income<=400000?22500:22500+(income-400000)*.20});
 assert.deepStrictEqual(annualized,{annualTaxable:450000,annualTax:32500,adjustment:7500,withholding:7500,refund:0});
 console.log('BIR 1601-C tests passed.');
