@@ -251,7 +251,9 @@
     var to = period && (period.attendanceTo || period.to) || document.getElementById('pt') && document.getElementById('pt').value || today();
     var logs = approvedAttendance(emp.id, from, to);
     var baseBasic = computeBasicByPayType(emp, grp, period);
-    var dailyRate = Number(emp.rate) || 0;
+    var monthlyRate = Number(emp.salaryPM) || 0;
+    var dailyDivisor = Number(emp.dailyDivisor || COMPANY.dailyDivisor || 22);
+    var dailyRate = monthlyRate && dailyDivisor ? monthlyRate / dailyDivisor : Number(emp.rate) || 0;
     var absentDays = logs.filter(function (a) { return a.status === 'absent'; }).length;
     var lateMinutes = logs.reduce(function (sum, a) { return sum + attendanceLateMinutes(a); }, 0);
     var otHours = logs.reduce(function (sum, a) { return sum + (Number(a.ot) || 0); }, 0);

@@ -228,7 +228,7 @@ tr:hover td{background:var(--accent-bg) !important}
 <body>
 <div id="root"></div>
 <script src="/timekeeping-core.js"></script>
-<script src="/payroll-rule-engine.js?v=20260801-cutoff-loan"></script>
+<script src="/payroll-rule-engine.js?v=20260803-four-decimal-divisor-engine"></script>
 <script>
 /* ========== DATA ========== */
 /* ---- ORG STRUCTURE (BU → Dept → Team → Subteam) ---- */
@@ -5721,7 +5721,9 @@ function buildDraftRow(emp,grp,period){
   const applyStatutory=shouldDeductStatutory(grp,period);
   const taxFreq=grp.taxMethod||'monthly';
   const attendance=period&&period.from&&period.to?attendancePeriodSummary(emp,period.from,period.to):{presentDays:0,lateMinutes:0,undertimeMinutes:0,absentDays:0,otHours:0,ndHours:0,records:[]};
-  const dailyRate=Number(emp.rate||0);
+  const monthlyRate=Number(emp.salaryPM||0);
+  const dailyDivisor=Number(emp.dailyDivisor||COMPANY.dailyDivisor||22);
+  const dailyRate=monthlyRate&&dailyDivisor?monthlyRate/dailyDivisor:Number(emp.rate||0);
   const hourlyRate=dailyRate/8;
   const ot=+(hourlyRate*1.25*attendance.otHours).toFixed(2);
   const nd=+(hourlyRate*0.10*attendance.ndHours).toFixed(2);
@@ -12771,7 +12773,7 @@ render = function() {
 
 
 </script>
-<script src="/compliance.js?v=20260801-cutoff-loan"></script>
+<script src="/compliance.js?v=20260803-four-decimal-divisor-engine"></script>
 <script src="/enterprise.js?v=sidebar-20260731"></script>
 <script src="/payroll-governance.js?v=20260803-payroll-process-inputs"></script>
 <script src="/persistence.js?v=20260801"></script>

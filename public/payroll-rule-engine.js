@@ -145,8 +145,12 @@
     var date = period.to;
     var rules = input.rules || [];
     var lines = [];
-    var daily = number(employee.rate);
-    var monthly = number(employee.salaryPM) || daily * number(employee.dailyDivisor || input.defaultDivisor || 22);
+    var configuredDailyDivisor = number(employee.dailyDivisor || input.defaultDivisor || 22);
+    var statedDaily = number(employee.rate);
+    var monthly = number(employee.salaryPM) || statedDaily * configuredDailyDivisor;
+    /* Monthly-salaried employees always derive their payroll rate from the configured
+       divisor. A cached/profile daily rate must never override a changed divisor. */
+    var daily = number(employee.salaryPM) && configuredDailyDivisor ? monthly / configuredDailyDivisor : statedDaily;
     var divisor = number(employee.annualWorkdays || (daily ? monthly * 12 / daily : 261));
     if (!daily) daily = monthly * 12 / divisor;
     var hoursPerDay = number(employee.hoursPerDay || 8);
@@ -232,7 +236,7 @@
     if (net === 0) issues.push({severity:'warning',code:'ZERO_NET',message:'Employee has zero net pay'});
     if (attendance.records.some(function (record) { return record.approvalStatus !== 'approved'; })) issues.push({severity:'blocker',code:'UNAPPROVED_ATTENDANCE',message:'Unapproved attendance exists in the payroll period'});
     return {
-      rates:{monthly:money(monthly),daily:money(daily),hourly:money(hourly),minute:money(minute),annualWorkdays:money(divisor)},
+      rates:{monthly:money(monthly),daily:money(daily),hourly:money(hourly),minute:money(minute),dailyDivisor:+configuredDailyDivisor.toFixed(4),annualWorkdays:money(divisor)},
       lines:lines,issues:issues,loanSchedule:loanResult.details,
       basic:money(baseBasic),ot:money(lines.filter(function(l){return l.code==='OT_REG'||l.code==='RDH';}).reduce(function(s,l){return s+l.amount;},0)),nd:money(lines.filter(function(l){return l.code==='ND';}).reduce(function(s,l){return s+l.amount;},0)),
       gross:money(credits),attendanceDeduction:money(attendanceDeductions),sss:money(statutory.sssEE),ph:money(statutory.phEE),pi:money(statutory.piEE),tax:tax,loan:loanResult.amount,totalDed:totalDeductions,net:net,

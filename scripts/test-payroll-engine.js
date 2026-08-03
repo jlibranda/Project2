@@ -67,4 +67,15 @@ assert.ok(recurringResult.lines.some(line=>line.code==='RICE_TX'&&line.amount===
 const excludedRecurring = engine.calculate({...recurringBase,recurringAllowances:[]});
 assert.equal(excludedRecurring.gross,11000,'an excluded calendar period must be able to pass no recurring allowances');
 
+const decimalDivisorEmployee = {...employee,rate:1000,salaryPM:22000,dailyDivisor:22.1234};
+const decimalDivisorResult = engine.calculate({
+  employee:decimalDivisorEmployee,group,period,rules,baseBasic:11000,defaultDivisor:22,
+  attendance:{records:[],presentDays:10,absentDays:1,lateMinutes:30,undertimeMinutes:15,otHours:2,ndHours:0,restDayHolidayHours:0},
+  adjustments:[],loans:[],statutory:()=>({sssEE:0,sssER:0,phEE:0,phER:0,piEE:0,piER:0}),tax:()=>0
+});
+assert.equal(decimalDivisorResult.rates.dailyDivisor,22.1234,'the payroll engine must preserve all four divisor decimal places');
+assert.equal(decimalDivisorResult.rates.daily,994.42,'daily rate must be derived from monthly salary divided by the configured decimal divisor');
+assert.equal(decimalDivisorResult.ot,323.19,'OT must use the daily rate produced by the decimal divisor, not a cached profile rate');
+assert.equal(decimalDivisorResult.attendanceDeduction,1087.65,'absence, late, and undertime must use the decimal-divisor daily and minute rates');
+
 console.log('Payroll rule engine tests passed.');
