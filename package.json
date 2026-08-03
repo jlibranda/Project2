@@ -10,7 +10,8 @@
     "test:timekeeping": "node scripts/test-timekeeping.js",
     "test:payroll": "node scripts/test-payroll-engine.js",
     "test:bir": "node scripts/test-bir-1601c.js",
-    "test:adjustments": "node scripts/test-payroll-adjustments.js"
+    "test:adjustments": "node scripts/test-payroll-adjustments.js",
+    "test:payroll-preview": "node scripts/test-payroll-preview.js"
   },
   "dependencies": {
     "express": "^4.18.2",
