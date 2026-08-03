@@ -4213,7 +4213,7 @@ function buildXLSX(sheets){
 }
 
 /* ── Multi-CDN SheetJS loader (for READING xlsx uploads only) ── */
-function loadXLSXLib(cb){
+function loadXLSXLib(cb,onError){
   if(window.XLSX){cb();return;}
   const urls=[
     'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
@@ -4224,6 +4224,7 @@ function loadXLSXLib(cb){
   function tryNext(){
     if(i>=urls.length){
       alert('Could not load Excel reader — your network may be blocking CDN access.\n\nTo upload an Excel file:\n  1. Open the file in Excel\n  2. File → Save As → CSV UTF-8 (.csv)\n  3. Upload the CSV file instead\n\nThe downloaded Excel template works 100% offline.');
+      if(onError)onError();
       return;
     }
     const s=document.createElement('script');s.src=urls[i++];
@@ -5467,7 +5468,19 @@ function downloadAdjTemplate(){
 function handleAdjExcel(evt){
   const file=evt.target.files[0];
   if(!file)return;
-  if(typeof XLSX==='undefined'){toast('Excel library not loaded — please wait','warning');return;}
+  const input=evt.target;
+  input.disabled=true;
+  toast('Loading Excel reader and checking the file…','info');
+  loadXLSXLib(function(){
+    input.disabled=false;
+    parsePayrollAdjustmentExcel(file,input);
+  },function(){
+    input.disabled=false;
+    input.value='';
+  });
+}
+
+function parsePayrollAdjustmentExcel(file,input){
 
   /* Build pay item lookup: code → item details */
   var payItemMap={};
@@ -5482,10 +5495,14 @@ function handleAdjExcel(evt){
       const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
       if(!raw.length){toast('Empty file','warning');return;}
 
-      /* Find the actual header row (contains EID and Pay Item) */
+      /* Find the actual column header row, not an instruction line that happens
+         to mention EID, Pay Item Code, and Amount in a single cell. */
       var hdrIdx=raw.findIndex(function(r){
-        var s=r.join('\t').toLowerCase();
-        return (s.includes('eid')||s.includes('employee id'))&&(s.includes('pay item')||s.includes('code')||s.includes('amount'));
+        var cells=r.map(function(value){return String(value||'').toLowerCase().replace(/\s*\*\s*$/,'').trim();});
+        var eidIndex=cells.findIndex(function(value){return value==='eid'||value==='employee id';});
+        var codeIndex=cells.findIndex(function(value){return value==='pay item code'||value==='item code';});
+        var amountIndex=cells.findIndex(function(value){return value==='amount'||value.indexOf('amount ')===0;});
+        return eidIndex>=0&&codeIndex>=0&&amountIndex>=0&&new Set([eidIndex,codeIndex,amountIndex]).size===3;
       });
       if(hdrIdx<0){toast('Header row not found — make sure your file has columns: EID, Pay Item Code, Amount','warning');return;}
 
@@ -5521,7 +5538,7 @@ function handleAdjExcel(evt){
 
         /* If OT item and hours provided but no amount, compute amount later at save */
         var item=payItemMap[code]||null;
-        if(!item&&code)warnings.push('Row '+(ri+2)+': Unknown pay item code "'+code+'" — please verify');
+        if(!item&&code)warnings.push('Row '+(hdrIdx+ri+2)+': Unknown pay item code "'+code+'" — please verify');
 
         rows.push({
           eid:eid,
@@ -5538,7 +5555,7 @@ function handleAdjExcel(evt){
 
       if(!rows.length){toast('No data rows found','warning');return;}
       modal.rows=rows;
-      evt.target.value='';
+      input.value='';
       render();
       var msg=rows.length+' rows loaded';
       if(warnings.length)msg+=' — '+warnings.length+' unknown pay codes';
@@ -5546,7 +5563,8 @@ function handleAdjExcel(evt){
       if(warnings.length)setTimeout(function(){alert('Unknown pay item codes:\n\n'+warnings.join('\n')+'\n\nPlease check the Pay Items sheet in the template for valid codes.');},400);
     }catch(ex){
       toast('Upload failed: '+ex.message,'warning');
-      evt.target.value='';
+      console.error('[payroll-adjustment-upload] Failed to parse file',ex);
+      input.value='';
     }
   };
   reader.readAsArrayBuffer(file);
