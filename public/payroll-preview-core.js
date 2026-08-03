@@ -41,6 +41,9 @@
     var current = Math.min(Math.max(1,Number(page || 1)),pages);
     return {items:items.slice((current-1)*size,current*size),page:current,pages:pages,pageSize:pageSize === 'all' ? 'all' : size,total:items.length};
   }
+  function needsPagination(result) {
+    return !!result && Number(result.pages || 0) > 1;
+  }
   function componentColumns(drafts, type, excludedCodes) {
     var excluded = new Set(excludedCodes || []), found = new Map();
     (drafts || []).forEach(function (draft) {
@@ -58,5 +61,5 @@
   function employerAmount(draft, code) {
     return (draft.calculationTrace || []).filter(function (line) { return line.code === code; }).reduce(function (sum,line) { return sum + Number(line.employerAmount || 0); },0);
   }
-  return {terms:terms,matchesSearch:matchesSearch,matchesStatus:matchesStatus,filterDrafts:filterDrafts,paginate:paginate,componentColumns:componentColumns,lineAmount:lineAmount,employerAmount:employerAmount};
+  return {terms:terms,matchesSearch:matchesSearch,matchesStatus:matchesStatus,filterDrafts:filterDrafts,paginate:paginate,needsPagination:needsPagination,componentColumns:componentColumns,lineAmount:lineAmount,employerAmount:employerAmount};
 }));

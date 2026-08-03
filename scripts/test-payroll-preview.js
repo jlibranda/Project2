@@ -13,6 +13,8 @@ assert.deepStrictEqual(core.filterDrafts(drafts,{status:'blockers'}).map(x=>x.em
 assert.deepStrictEqual(core.filterDrafts(drafts,{status:'adjustments'}).map(x=>x.empId),[2]);
 assert.equal(core.paginate([1,2,3],2,2).items[0],3);
 assert.equal(core.paginate([1,2,3],9,2).page,2);
+assert.equal(core.needsPagination(core.paginate([1,2,3],1,2)),true);
+assert.equal(core.needsPagination(core.paginate([1,2],1,25)),false,'Pagination controls stay hidden when one page is enough');
 assert.deepStrictEqual(core.componentColumns(drafts,'earning',['BASIC']).map(x=>x.code),['MOBILE','ADJ']);
 const mobile=core.componentColumns(drafts,'earning',['BASIC']).find(x=>x.code==='MOBILE');
 assert.equal(core.lineAmount(drafts[0],mobile),500);
