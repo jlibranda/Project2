@@ -80,10 +80,12 @@
   }
   function effectiveAdjustments(emp,period) {
     return PAYROLL_ADJ.filter(function (adjustment) {
-      return adjustment.empId===emp.id&&adjustment.status==='approved'&&(!adjustment.effectiveDate||adjustment.effectiveDate<=period.to);
+      if(adjustment.empId!==emp.id||adjustment.status!=='approved')return false;
+      if(adjustment.payPeriodId)return !!period.id&&adjustment.payPeriodId===period.id;
+      return !adjustment.effectiveDate||adjustment.effectiveDate<=period.to;
     }).map(function (adjustment) {
       var payItem=INCOME_TYPES.find(function(item){return item.code===adjustment.payItemCode;});
-      return Object.assign({},adjustment,{taxable:payItem?payItem.taxable:adjustment.amount>0});
+      return Object.assign({},adjustment,{taxable:payItem?payItem.taxable:adjustment.amount>0,category:payItem?payItem.cat:adjustment.category});
     });
   }
   function governanceDraft(emp,grp,period) {
@@ -121,12 +123,16 @@
     if(blockers.length){toast('Payroll blocked by '+blockers.length+' validation issue(s). Open the calculation trace for details.','warning',6000);return;}
     var groupId=window._prGroup||PAYROLL_GROUPS[0].id;
     var grp=PAYROLL_GROUPS.find(function(g){return g.id===groupId;})||PAYROLL_GROUPS[0];
-    if(PAYROLLS.some(function(run){return run.groupId===groupId&&run.from===from&&run.to===to&&run.status==='pending_approval';})){toast('A payroll for this group and period is already awaiting approval.','warning');return;}
-    var items=Object.values(PAYROLL_DRAFT).map(function(item){return Object.assign({},item,{adjustmentIds:effectiveAdjustments(USERS.find(function(e){return e.id===item.empId;}),{to:to}).map(function(adj){return adj.id;})});});
+    var pendingRun=PAYROLLS.find(function(run){return run.groupId===groupId&&run.from===from&&run.to===to&&run.status==='pending_approval';});
+    if(pendingRun&&window._reprocessRunId!==pendingRun.id){toast('A payroll for this group and period is already awaiting approval. Use Reprocess Payroll from Adjustments.','warning');return;}
+    var calculationPeriod={id:window._prPeriod!=='custom'?window._prPeriod:null,to:to};
+    var items=Object.values(PAYROLL_DRAFT).map(function(item){return Object.assign({},item,{adjustmentIds:effectiveAdjustments(USERS.find(function(e){return e.id===item.empId;}),calculationPeriod).map(function(adj){return adj.id;})});});
     var now=new Date().toISOString();
+    if(pendingRun){pendingRun.status='superseded';pendingRun.supersededAt=now;pendingRun.supersededBy=user.name;pendingRun.supersededReason='Replacement payroll submitted after approved adjustments';PAYROLL_AUDIT.push({runId:pendingRun.id,action:'superseded_for_reprocess',by:user.name,at:now,notes:'Replacement payroll was submitted from the adjustment reprocessing flow'});}
     var run={id:nPay++,from:from,to:to,items:items,on:today(),groupId:groupId,groupName:grp.name||'Standard',periodId:window._prPeriod!=='custom'?window._prPeriod:null,status:'pending_approval',approvalStage:1,workflow:[{stage:'maker',label:'HR / Payroll Maker',by:user.name,at:now,status:'completed'}],preparedBy:user.name,preparedAt:now,ruleSnapshot:PAYROLL_RULEBOOK.filter(function(rule){return rule.status==='active';}).map(function(rule){return {id:rule.id,code:rule.code,version:rule.version,effectiveFrom:rule.effectiveFrom,value:rule.value};}),complianceVersion:'Versioned PH Payroll Rule Engine · '+today()};
     PAYROLLS.push(run);PAYROLL_AUDIT.push({runId:run.id,action:'maker_submitted',stage:'maker',by:user.name,at:now});
-    PAYROLL_DRAFT={};window._prPreview=false;queueSync('Payroll_Runs','Payroll_Items','Payroll_Audit');toast('Payroll submitted to the Timekeeping Reviewer.','success');tab=0;render();
+    items.forEach(function(item){(item.adjustmentIds||[]).forEach(function(id){var adjustment=PAYROLL_ADJ.find(function(a){return a.id===id;});if(adjustment){adjustment.processStatus='submitted_for_approval';adjustment.payrollRunId=run.id;}});});
+    PAYROLL_DRAFT={};window._prPreview=false;window._reprocessRunId=null;queueSync('Payroll_Runs','Payroll_Items','Payroll_Audit','Payroll_Adjustments');toast('Payroll submitted to the Timekeeping Reviewer.','success');tab=0;render();
   };
 
   window.approvePayroll=function(runId){
@@ -150,9 +156,9 @@
   function numberOr(value,fallback){var parsed=Number(value);return Number.isFinite(parsed)?parsed:fallback;}
   function lockPayrollRun(run){
     var at=new Date().toISOString();run.status='locked';run.approvedBy=user.name;run.approvedAt=at;run.lockedAt=at;run.immutable=true;
-    run.items.forEach(function(item){(item.adjustmentIds||[]).forEach(function(id){var adjustment=PAYROLL_ADJ.find(function(a){return a.id===id;});if(adjustment)adjustment.status='applied';});});
+    run.items.forEach(function(item){(item.adjustmentIds||[]).forEach(function(id){var adjustment=PAYROLL_ADJ.find(function(a){return a.id===id;});if(adjustment){adjustment.status='applied';adjustment.processStatus='applied';adjustment.appliedAt=at;adjustment.payrollRunId=run.id;}});});
     var period=PAY_PERIODS.find(function(item){return item.id===run.periodId;});if(period){period.status='closed';period.runId=run.id;period.lockedBy=user.email||user.name;period.lockedAt=today();}
-    PAYROLL_AUDIT.push({runId:run.id,action:'approved_locked_immutable',stage:'authorized_approver',by:user.name,at:at});queueSync('Payroll_Runs','Payroll_Items','Payroll_Audit');toast('Payroll approved, locked, and immutable. Corrections now require a retro adjustment or reversal.','success');render();
+    PAYROLL_AUDIT.push({runId:run.id,action:'approved_locked_immutable',stage:'authorized_approver',by:user.name,at:at});queueSync('Payroll_Runs','Payroll_Items','Payroll_Audit','Payroll_Adjustments','Payroll_Periods');toast('Payroll approved, locked, and immutable. Corrections now require a retro adjustment or reversal.','success');render();
   }
   window.rejectPayroll=function(runId){
     var run=PAYROLLS.find(function(item){return item.id===runId;});if(!run||run.status!=='pending_approval')return;

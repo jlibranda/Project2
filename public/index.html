@@ -4831,29 +4831,42 @@ function pgPayroll(){
 
   /* ── TAB 2: ADJUSTMENTS ─────────────────────────────────────────────── */
   else if(tab===2){
-    const adjTypes=['Retro Pay','Missed Allowance','Missed Deduction','Tax Adjustment','OT Correction','Incentive','Overpayment Recovery','Other'];
+    const openPeriods=PAY_PERIODS.filter(p=>p.status==='open');
+    const processPeriodId=window._adjProcessPeriod||openPeriods[0]?.id||'';
+    const processPeriod=PAY_PERIODS.find(p=>p.id===processPeriodId)||null;
+    const processable=processPeriod?PAYROLL_ADJ.filter(a=>a.status==='approved'&&INCOME_TYPES.some(t=>!t.isStatutory&&t.code===a.payItemCode)&&(!a.payPeriodId||a.payPeriodId===processPeriod.id)&&USERS.some(e=>e.id===a.empId&&e.payGroupId===processPeriod.groupId)).length:0;
+    const isReprocess=processPeriod&&PAYROLLS.some(r=>r.periodId===processPeriod.id&&r.status==='pending_approval');
     body=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
-      <div style="font-size:13px;color:var(--txt2)">Payroll adjustments are included in the next payroll run for the affected employee.</div>
+      <div><div style="font-size:13px;font-weight:600">Payroll Adjustment Queue</div><div style="font-size:11px;color:var(--txt3);margin-top:2px">Approved items are applied only when you process their selected open payroll period.</div></div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-sm" onclick="modal={type:'bulkAdj',rows:[{eid:'',adjType:'Retro Pay',amount:'',reason:'',effectiveDate:'${today()}'}]};render()">📋 Bulk Upload</button>
+        <button class="btn btn-sm" onclick="modal={type:'bulkAdj',rows:[{eid:'',adjType:'',payItemCode:'',amount:'',reason:'',effectiveDate:'${today()}'}]};render()">📋 Bulk Upload</button>
         <button class="btn btn-primary btn-sm" onclick="modal={type:'addPayAdj'};render()">+ New Adjustment</button>
       </div>
     </div>
-    ${PAYROLL_ADJ.length?`<table><thead><tr><th>Employee</th><th>Type</th><th>Amount</th><th>Reason</th><th>Effective</th><th>Added By</th><th>Status</th><th></th></tr></thead>
+    <div style="display:flex;gap:10px;align-items:flex-end;padding:12px 14px;margin-bottom:1rem;border:1px solid var(--accent);background:var(--accent-bg);border-radius:10px;flex-wrap:wrap">
+      <div class="field" style="margin:0;min-width:300px;flex:1"><label>Target Open Payroll Period</label>
+        <select class="finput" onchange="window._adjProcessPeriod=parseInt(this.value)||'';render()">
+          ${openPeriods.length?openPeriods.map(p=>{const g=PAYROLL_GROUPS.find(x=>x.id===p.groupId);return`<option value="${p.id}" ${p.id===processPeriodId?'selected':''}>${esc(p.label)} · ${esc(g?.name||'')}</option>`;}).join(''):'<option value="">— No open payroll period —</option>'}
+        </select></div>
+      <div style="font-size:11px;color:var(--accent-txt);padding:0 4px 9px">${processPeriod?`<strong>${processable}</strong> approved adjustment${processable!==1?'s':''} ready`:'Create or reopen a payroll period first.'}</div>
+      <button class="btn btn-primary" ${!processPeriod||!processable?'disabled':''} onclick="processAdjustmentPayroll(${processPeriodId||'null'})">${isReprocess?'↻ Reprocess Payroll':'▶ Process Adjustments'}</button>
+    </div>
+    ${PAYROLL_ADJ.length?`<table><thead><tr><th>Employee</th><th>Income / Deduction Type</th><th>Amount</th><th>Reason</th><th>Target Period</th><th>Added By</th><th>Status</th><th></th></tr></thead>
     <tbody>${PAYROLL_ADJ.map(a=>{
       const e=USERS.find(u=>u.id===a.empId);
+      const payItem=INCOME_TYPES.find(t=>t.code===a.payItemCode);
       return`<tr>
         <td><div class="emp-cell"><div class="avatar sm">${ini(e?.name||'?')}</div>${esc(e?.name||'Unknown')}</div></td>
-        <td><span class="badge b-info" style="font-size:10px">${esc(a.adjType)}</span>${a.payItemCode?`<code style="font-size:9px;margin-left:4px;background:var(--bg);padding:1px 5px;border-radius:3px;border:1px solid var(--border)">${esc(a.payItemCode)}</code>`:''}</td>
+        <td><strong style="font-size:12px">${esc(payItem?.name||a.adjType||'Unmapped')}</strong>${a.payItemCode?`<div><code style="font-size:9px;background:var(--bg);padding:1px 5px;border-radius:3px;border:1px solid var(--border)">${esc(a.payItemCode)}</code> <span style="font-size:10px;color:var(--txt3)">${payItem?.cat==='deductions'?'Deduction':'Income'}</span></div>`:''}</td>
         <td class="mono" style="font-weight:600;color:${a.amount>=0?'var(--green)':'var(--red)'}">${a.amount>=0?'+':''}${fmt(a.amount)}</td>
         <td style="font-size:12px;color:var(--txt2);max-width:200px">${esc(a.reason)}</td>
-        <td style="font-size:12px">${a.effectiveDate}${a.payPeriodLabel?`<div style="font-size:10px;color:var(--accent-txt)">📅 ${esc(a.payPeriodLabel)}</div>`:''}</td>
+        <td style="font-size:12px">${a.payPeriodLabel?`<strong>${esc(a.payPeriodLabel)}</strong>`:'<span style="color:var(--amber)">Not assigned</span>'}<div style="font-size:10px;color:var(--txt3)">${a.effectiveDate||''}</div></td>
         <td style="font-size:11px;color:var(--txt3)">${a.addedBy}</td>
         <td><span class="badge b-${a.status==='pending'?'pending':a.status==='approved'?'approved':'info'}">${a.status}</span></td>
         <td><div style="display:flex;gap:4px">
-          ${a.status==='pending'?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="PAYROLL_ADJ.find(x=>x.id===${a.id}).status='approved';toast('Adjustment approved','success');render()">✓</button>
-          <button class="btn btn-sm btn-danger" onclick="PAYROLL_ADJ.splice(PAYROLL_ADJ.findIndex(x=>x.id===${a.id}),1);render()">✕</button>`:''}
+          ${a.status==='pending'?`<button class="btn btn-sm" style="color:var(--green);border-color:var(--green)" onclick="approvePayAdjustment(${a.id})">✓ Approve</button>
+          <button class="btn btn-sm btn-danger" onclick="deletePayAdjustment(${a.id})">✕</button>`:''}
         </div></td>
       </tr>`;}).join('')}</tbody></table>`
     :`<div class="empty-state"><div class="ei">📋</div>No adjustments yet. Use this to add retroactive pay, missed allowances, or corrections.</div>`}`;
@@ -5401,27 +5414,24 @@ function printFinalPay(empId){
 function downloadAdjTemplate(){
   const emps=USERS.filter(function(u){return u.role==='employee'&&u.active!==false;});
 
-  /* ── Build pay items list from INCOME_TYPES + OT_RATES ── */
+  /* ── Build pay items list from configured income/deduction types ── */
   var payItems=[];
   INCOME_TYPES.filter(function(t){return !t.isStatutory&&t.code&&t.name;}).forEach(function(t){
     var catLabel={earnings:'Earnings',bonuses:'Bonuses',deminimis:'De Minimis',allowance:'Allowance',deductions:'Deductions',attendance:'Attendance'}[t.cat]||t.cat;
     payItems.push([t.code,t.name,catLabel,t.taxable?'Yes':'No',t.cat==='deductions'?'Deduction':'Addition',t.deminimis?'De Minimis — limit P'+t.dmLimit+'/mo':'']);
   });
-  OT_RATES.filter(function(r){return r.active&&r.code;}).forEach(function(r){
-    payItems.push([r.code,r.name,'Overtime / Premium','Yes','Addition','Rate: '+r.rate+'% — '+r.rateNote]);
-  });
 
   /* ── Sheet 1: Template ── */
   var templateRows=[
     ['PAYROLL ADJUSTMENT UPLOAD TEMPLATE — SproutRipple PH','','','','','',''],
-    ['Fill in EID, Pay Item Code, Amount (or Hours for OT), Effective Date, and Reason.','','','','','',''],
-    ['Use negative amount for deductions. See Pay Items sheet for valid codes.','','','','','',''],
+    ['Fill in EID, Pay Item Code, Amount, Effective Date, and Reason.','','','','','',''],
+    ['Enter a positive amount. Deduction types are automatically treated as deductions.','','','','','',''],
     [],
-    ['EID *','Employee Name (ref)','Pay Item Code *','Amount (negative=deduction)','Hours / Units (OT only)','Effective Date (YYYY-MM-DD) *','Reason / Notes *']
+    ['EID *','Employee Name (ref)','Pay Item Code *','Amount *','Hours / Units','Effective Date (YYYY-MM-DD) *','Reason / Notes *']
   ];
   emps.slice(0,3).forEach(function(e,i){
     var item=payItems[i%payItems.length]||['RICE_ALLOW','Rice Allowance'];
-    templateRows.push([e.eid,e.name,item[0],item[4]==='Deduction'?-1000:2000,'',today(),'Sample: '+item[1]]);
+    templateRows.push([e.eid,e.name,item[0],item[4]==='Deduction'?1000:2000,'',today(),'Sample: '+item[1]]);
   });
 
   /* ── Sheet 2: Pay Items reference ── */
@@ -5461,8 +5471,7 @@ function handleAdjExcel(evt){
 
   /* Build pay item lookup: code → item details */
   var payItemMap={};
-  INCOME_TYPES.forEach(function(t){payItemMap[t.code.toUpperCase()]={name:t.name,cat:t.cat,taxable:t.taxable};});
-  OT_RATES.forEach(function(r){payItemMap[r.code.toUpperCase()]={name:r.name,cat:'attendance',taxable:true,rate:r.rate};});
+  INCOME_TYPES.filter(function(t){return !t.isStatutory&&t.code;}).forEach(function(t){payItemMap[t.code.toUpperCase()]={name:t.name,cat:t.cat,taxable:t.taxable};});
 
   const reader=new FileReader();
   reader.onload=function(e){
@@ -5547,11 +5556,11 @@ function saveBulkAdj(){
   if(!modal||modal.type!=='bulkAdj')return;
   var added=0,skipped=0,errors=[];
   var period=PAY_PERIODS.find(function(p){return p.id===modal.payPeriodId;})||null;
+  if(!period||period.status!=='open'){toast('Select an open target payroll period first.','warning');return;}
 
   /* Build pay item lookup */
   var payItemMap={};
-  INCOME_TYPES.forEach(function(t){payItemMap[t.code.toUpperCase()]=t;});
-  OT_RATES.forEach(function(r){payItemMap[r.code.toUpperCase()]=r;});
+  INCOME_TYPES.filter(function(t){return !t.isStatutory&&t.code;}).forEach(function(t){payItemMap[t.code.toUpperCase()]=t;});
 
   modal.rows.forEach(function(r,i){
     var emp=USERS.find(function(u){return u.eid===r.eid||String(u.id)===String(r.eid);});
@@ -5560,21 +5569,17 @@ function saveBulkAdj(){
     var code=(r.payItemCode||r.adjType||'').toUpperCase();
     var item=payItemMap[code]||null;
 
-    /* For OT items with hours but no amount, compute from employee's rate */
-    if((isNaN(amt)||String(r.amount).trim()==='')&&r.hours&&emp){
-      var hrs=parseFloat(r.hours)||0;
-      var otItem=OT_RATES.find(function(x){return x.code===code;});
-      if(otItem&&hrs>0){amt=+(emp.rate/8*(otItem.rate/100)*hrs).toFixed(2);}
-    }
-
     if(!emp){errors.push('Row '+(i+1)+': Employee not found ("'+r.eid+'")');skipped++;return;}
-    if(isNaN(amt)){errors.push('Row '+(i+1)+': No valid amount or hours for "'+r.eid+'"');skipped++;return;}
+    if(emp.payGroupId!==period.groupId){errors.push('Row '+(i+1)+': Employee is not in the selected period payroll group');skipped++;return;}
+    if(!item){errors.push('Row '+(i+1)+': Pay item code is not configured ("'+code+'")');skipped++;return;}
+    if(isNaN(amt)||amt===0){errors.push('Row '+(i+1)+': Enter a non-zero amount for "'+r.eid+'"');skipped++;return;}
     if(!reason){errors.push('Row '+(i+1)+': Reason is required');skipped++;return;}
+    amt=item.cat==='deductions'?-Math.abs(amt):Math.abs(amt);
 
     PAYROLL_ADJ.push({
       id:nAdj++,empId:emp.id,
-      adjType:item?item.name:(r.adjType||'Adjustment'),
-      payItemCode:code||null,
+      adjType:item.name,payItemCode:code,
+      category:item.cat,taxable:!!item.taxable,direction:item.cat==='deductions'?'deduction':'income',
       amount:amt,reason:reason,
       effectiveDate:period?period.releaseDate:(r.effectiveDate||today()),
       payPeriodId:period?period.id:null,
@@ -5585,6 +5590,7 @@ function saveBulkAdj(){
   });
 
   if(errors.length&&!added){alert('All rows failed:\n\n'+errors.join('\n'));return;}
+  queueSync('Payroll_Adjustments');
   closeM();
   var msg='Bulk adjustments submitted — '+added+' added, pending approval';
   if(period)msg+=' for '+period.label;
@@ -5595,13 +5601,54 @@ function saveBulkAdj(){
 }
 function savePayAdj(){
   const empId=parseInt(document.getElementById('adj-emp')?.value);
-  const adjType=document.getElementById('adj-type')?.value;
-  const amount=parseFloat(document.getElementById('adj-amt')?.value)||0;
+  const payItemCode=document.getElementById('adj-type')?.value;
+  const item=INCOME_TYPES.find(t=>t.code===payItemCode&&!t.isStatutory);
+  const enteredAmount=parseFloat(document.getElementById('adj-amt')?.value)||0;
   const reason=document.getElementById('adj-reason')?.value?.trim();
-  const effectiveDate=document.getElementById('adj-date')?.value;
-  if(!empId||!adjType||!reason||!effectiveDate){toast('All fields required.','warning');return;}
-  PAYROLL_ADJ.push({id:nAdj++,empId,adjType,amount,reason,effectiveDate,addedBy:user.name,status:'pending',createdAt:today()});
+  const payPeriodId=parseInt(document.getElementById('adj-period')?.value);
+  const period=PAY_PERIODS.find(p=>p.id===payPeriodId&&p.status==='open');
+  if(!empId||!item||!period||!reason||!enteredAmount){toast('Employee, open payroll period, configured type, amount, and reason are required.','warning');return;}
+  const emp=USERS.find(e=>e.id===empId);
+  if(!emp||emp.payGroupId!==period.groupId){toast('The employee is not assigned to the payroll group for that period.','warning');return;}
+  const amount=item.cat==='deductions'?-Math.abs(enteredAmount):Math.abs(enteredAmount);
+  PAYROLL_ADJ.push({id:nAdj++,empId,adjType:item.name,payItemCode:item.code,category:item.cat,taxable:!!item.taxable,direction:item.cat==='deductions'?'deduction':'income',amount,reason,effectiveDate:period.releaseDate||period.to,payPeriodId:period.id,payPeriodLabel:period.label,addedBy:user.name,status:'pending',createdAt:today()});
+  queueSync('Payroll_Adjustments');
   closeM();toast('Adjustment added — pending approval.','success');render();
+}
+
+function approvePayAdjustment(id){
+  const adjustment=PAYROLL_ADJ.find(a=>a.id===id);
+  if(!adjustment||adjustment.status!=='pending')return;
+  adjustment.status='approved';adjustment.approvedBy=user.name;adjustment.approvedAt=new Date().toISOString();
+  queueSync('Payroll_Adjustments');toast('Adjustment approved and ready for payroll processing.','success');render();
+}
+
+function deletePayAdjustment(id){
+  const index=PAYROLL_ADJ.findIndex(a=>a.id===id&&a.status==='pending');
+  if(index<0)return;
+  if(!confirm('Delete this pending payroll adjustment?'))return;
+  PAYROLL_ADJ.splice(index,1);queueSync('Payroll_Adjustments');toast('Pending adjustment deleted.','info');render();
+}
+
+function processAdjustmentPayroll(periodId){
+  const period=PAY_PERIODS.find(p=>p.id===periodId&&p.status==='open');
+  if(!period){toast('Select an open payroll period. Locked payroll cannot be overwritten.','warning');return;}
+  const grp=PAYROLL_GROUPS.find(g=>g.id===period.groupId);
+  if(!grp){toast('Payroll group for this period was not found.','warning');return;}
+  const employees=USERS.filter(e=>e.role==='employee'&&e.active!==false&&e.payGroupId===grp.id);
+  const employeeIds=new Set(employees.map(e=>e.id));
+  const adjustments=PAYROLL_ADJ.filter(a=>a.status==='approved'&&INCOME_TYPES.some(t=>!t.isStatutory&&t.code===a.payItemCode)&&employeeIds.has(a.empId)&&(!a.payPeriodId||a.payPeriodId===period.id));
+  if(!adjustments.length){toast('There are no approved adjustments for this payroll period.','warning');return;}
+  const attendanceFrom=period.attendanceFrom||period.from,attendanceTo=period.attendanceTo||period.to;
+  const pendingAttendance=attendanceRecords().filter(r=>employeeIds.has(r.eid)&&r.date>=attendanceFrom&&r.date<=attendanceTo&&r.approvalStatus!=='approved');
+  if(pendingAttendance.length){toast('Payroll cannot be processed: '+pendingAttendance.length+' attendance record(s) still need approval.','warning',6000);return;}
+  const existing=PAYROLLS.find(r=>r.periodId===period.id&&r.status==='pending_approval');
+  const now=new Date().toISOString();
+  adjustments.forEach(a=>{if(!a.payPeriodId){a.payPeriodId=period.id;a.payPeriodLabel=period.label;}a.processStatus='included_in_preview';a.lastProcessedAt=now;});
+  PAYROLL_DRAFT={};employees.forEach(emp=>{PAYROLL_DRAFT[emp.id]=buildDraftRow(emp,grp,period);});
+  window._prGroup=grp.id;window._prPeriod=period.id;window._prPreview=true;window._reprocessRunId=existing?.id||null;window._payrollTraceEmployee=employees[0]?.id;tab=1;
+  queueSync('Payroll_Adjustments');
+  toast((existing?'Payroll reprocessed':'Payroll processed')+' — review the calculation trace, then submit for approval.','success',5000);render();
 }
 
 /* ── 13TH MONTH PAYROLL RUN ─────────────────────────────────────────────── */
@@ -7917,7 +7964,7 @@ function renderModal(){
     const selPeriodId=modal.payPeriodId||'';
     const selPeriod=PAY_PERIODS.find(p=>p.id===selPeriodId)||null;
     const openPeriods=PAY_PERIODS.filter(p=>p.status==='open');
-    const readyCount=rows.filter(r=>r.eid&&r.amount!==''&&!isNaN(parseFloat(r.amount))&&(r.reason||'').trim()).length;
+    const readyCount=selPeriod?rows.filter(r=>r.eid&&r.payItemCode&&r.amount!==''&&!isNaN(parseFloat(r.amount))&&parseFloat(r.amount)!==0&&(r.reason||'').trim()).length:0;
 
     inner=`<div class="modal-title" style="position:sticky;top:0;z-index:2;background:var(--surface)">
       <span>📋 Bulk Payroll Adjustments</span>
@@ -7930,7 +7977,7 @@ function renderModal(){
       <div style="flex:1;min-width:220px">
         <div style="font-size:11px;font-weight:700;color:var(--accent-txt);text-transform:uppercase;letter-spacing:.4px;margin-bottom:5px">📅 Target Pay Period</div>
         <select class="finput" style="font-size:13px" onchange="modal.payPeriodId=parseInt(this.value)||'';render()">
-          <option value="">— No specific period (manual effective date) —</option>
+          <option value="">— Select open payroll period (required) —</option>
           ${openPeriods.map(p=>{
             const g=PAYROLL_GROUPS.find(x=>x.id===p.groupId);
             return`<option value="${p.id}" ${p.id===selPeriodId?'selected':''}>${esc(p.label)} · ${esc(g?.name||'')} · Due ${p.releaseDate}</option>`;
@@ -7939,7 +7986,7 @@ function renderModal(){
         ${selPeriod?`<div style="font-size:11px;color:var(--accent-txt);margin-top:4px">
           Period: <strong>${selPeriod.from}</strong> to <strong>${selPeriod.to}</strong>
           &nbsp;·&nbsp; Effective date auto-set to <strong>${selPeriod.releaseDate}</strong>
-        </div>`:'<div style="font-size:11px;color:var(--txt3);margin-top:4px">Select a pay period to tag these adjustments for a specific payroll run</div>'}
+        </div>`:'<div style="font-size:11px;color:var(--red);margin-top:4px">Required: adjustments must belong to an open payroll period</div>'}
       </div>
       <div style="display:flex;flex-direction:column;gap:6px;align-items:flex-start">
         <div style="font-size:11px;font-weight:700;color:var(--accent-txt);text-transform:uppercase;letter-spacing:.4px;margin-bottom:1px">📊 Excel</div>
@@ -8004,15 +8051,6 @@ function renderModal(){
                   });
                   opts+='</optgroup>';
                 });
-                var hasOT=OT_RATES.filter(function(x){return x.active;}).length;
-                if(hasOT){
-                  opts+='<optgroup label="OT / Premium Rates">';
-                  OT_RATES.filter(function(x){return x.active;}).forEach(function(ot){
-                    var sel=(r.adjType===ot.code||r.payItemCode===ot.code)?'selected':'';
-                    opts+=`<option value="${ot.code}" ${sel}>${ot.code} — ${esc(ot.name)} (${ot.rate}%)</option>`;
-                  });
-                  opts+='</optgroup>';
-                }
                 return opts;
               })()}
             </select>
@@ -8036,7 +8074,7 @@ function renderModal(){
           </td>
           <td style="padding:3px 6px;border-radius:0 4px 4px 0">
             <button class="btn btn-sm" style="padding:3px 8px;color:var(--red);border-color:var(--red)"
-              onclick="modal.rows.splice(${i},1);if(!modal.rows.length)modal.rows=[{eid:'',adjType:'Retro Pay',amount:'',reason:'',effectiveDate:'${today()}'}];render()">✕</button>
+              onclick="modal.rows.splice(${i},1);if(!modal.rows.length)modal.rows=[{eid:'',adjType:'',payItemCode:'',amount:'',reason:'',effectiveDate:'${today()}'}];render()">✕</button>
           </td>
         </tr>`;
       }).join('')}
@@ -8045,9 +8083,9 @@ function renderModal(){
     </div>
 
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
-      <button class="btn btn-sm" onclick="(function(){modal.rows.push({eid:'',adjType:'Retro Pay',amount:'',reason:'',effectiveDate:'${today()}'});render();setTimeout(function(){var fi=document.querySelector('.modal-box select[tabindex=\\''+((modal.rows.length)*10+1)+'\\']');if(fi)fi.focus();},50);})()">+ Add Row</button>
+      <button class="btn btn-sm" onclick="(function(){modal.rows.push({eid:'',adjType:'',payItemCode:'',amount:'',reason:'',effectiveDate:'${today()}'});render();setTimeout(function(){var fi=document.querySelector('.modal-box select[tabindex=\\''+((modal.rows.length)*10+1)+'\\']');if(fi)fi.focus();},50);})()">+ Add Row</button>
       <span style="font-size:11px;color:var(--txt3)"><span style="color:var(--green)">●</span> Ready &nbsp;<span style="color:var(--red)">●</span> Has issue &nbsp;● Incomplete</span>
-      <span style="margin-left:auto;font-size:11px;color:var(--txt3)">Tip: Use negative amounts for deductions (e.g. -1250)</span>
+      <span style="margin-left:auto;font-size:11px;color:var(--txt3)">Enter a positive amount; the selected type determines income or deduction.</span>
     </div>
 
     <div style="display:flex;gap:8px;align-items:center;border-top:1px solid var(--border);padding-top:12px">
@@ -8061,7 +8099,8 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='addPayAdj'){
     const emps=USERS.filter(u=>u.role==='employee');
-    const adjTypes=['Retro Pay','Missed Allowance','Missed Deduction','OT Correction','Tax Adjustment','Incentive','Overpayment Recovery','Other'];
+    const openPeriods=PAY_PERIODS.filter(p=>p.status==='open');
+    const configuredTypes=INCOME_TYPES.filter(t=>!t.isStatutory&&t.code&&t.name);
     inner=`<div class="modal-title">📋 New Payroll Adjustment
       <button class="close-x" onclick="closeM()">×</button></div>
     <div class="field"><label>Employee <span style="color:var(--red)">*</span></label>
@@ -8069,16 +8108,21 @@ function renderModal(){
         <option value="">— Select Employee —</option>
         ${emps.map(e=>`<option value="${e.id}">${esc(e.name)} (${esc(e.eid)})</option>`).join('')}
       </select></div>
+    <div class="field"><label>Target Open Payroll Period <span style="color:var(--red)">*</span></label>
+      <select id="adj-period" class="finput">
+        <option value="">— Select payroll period —</option>
+        ${openPeriods.map(p=>{const g=PAYROLL_GROUPS.find(x=>x.id===p.groupId);return`<option value="${p.id}">${esc(p.label)} · ${esc(g?.name||'')}</option>`;}).join('')}
+      </select></div>
     <div class="form-row">
-      <div class="field"><label>Adjustment Type <span style="color:var(--red)">*</span></label>
+      <div class="field"><label>Income / Deduction Type <span style="color:var(--red)">*</span></label>
         <select id="adj-type" class="finput">
-          ${['Retro Pay','Missed Allowance','Missed Deduction','OT Correction','Tax Adjustment','Incentive','Overpayment Recovery','Other'].map(t=>`<option>${t}</option>`).join('')}
+          <option value="">— Select configured type —</option>
+          ${(function(){const cats={};configuredTypes.forEach(t=>(cats[t.cat]=cats[t.cat]||[]).push(t));return Object.entries(cats).map(([cat,items])=>`<optgroup label="${esc(cat==='deductions'?'Deductions':'Income · '+cat)}">${items.map(t=>`<option value="${esc(t.code)}">${esc(t.code)} — ${esc(t.name)}</option>`).join('')}</optgroup>`).join('');})()}
         </select></div>
-      <div class="field"><label>Amount (₱) <span style="color:var(--red)">*</span> <span style="font-size:10px;color:var(--txt3)">Use negative for deductions</span></label>
-        <input id="adj-amt" type="number" class="finput" placeholder="e.g. 5000 or -1250"/></div>
+      <div class="field"><label>Amount (₱) <span style="color:var(--red)">*</span> <span style="font-size:10px;color:var(--txt3)">Enter a positive amount</span></label>
+        <input id="adj-amt" type="number" min="0.01" step="0.01" class="finput" placeholder="e.g. 5000"/></div>
     </div>
-    <div class="field"><label>Effective Date <span style="color:var(--red)">*</span></label>
-      <input id="adj-date" type="date" class="finput" value="${today()}"/></div>
+    <div style="font-size:11px;color:var(--txt3);padding:8px 10px;background:var(--bg);border-radius:7px;margin-bottom:10px">The selected configured type controls whether the amount increases income or becomes a deduction, including its taxable classification.</div>
     <div class="field"><label>Reason / Notes <span style="color:var(--red)">*</span></label>
       <textarea id="adj-reason" class="finput" rows="3" placeholder="Explain the reason for this adjustment..."></textarea></div>
     <div style="display:flex;gap:8px;margin-top:4px">
@@ -12497,7 +12541,7 @@ render = function() {
 </script>
 <script src="/compliance.js?v=20260801-cutoff-loan"></script>
 <script src="/enterprise.js?v=sidebar-20260731"></script>
-<script src="/payroll-governance.js?v=20260801"></script>
+<script src="/payroll-governance.js?v=20260801-adjustment-process"></script>
 <script src="/persistence.js?v=20260801"></script>
 </body>
 </html>
