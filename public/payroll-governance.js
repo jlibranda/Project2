@@ -28,6 +28,15 @@
   var nextRuleId = PAYROLL_RULEBOOK.reduce(function (max,rule) { return Math.max(max,rule.id||0); },0)+1;
 
   function addDays(date,days){var value=new Date(date+'T00:00:00Z');value.setUTCDate(value.getUTCDate()+days);return value.toISOString().slice(0,10);}
+  function defaultAllowanceFrequency(emp){var group=PAYROLL_GROUPS.find(function(item){return item.id===emp.payGroupId;});return group&&['monthly','semi-monthly','weekly','bi-weekly'].indexOf(group.freq)>=0?group.freq:'monthly';}
+  function migrateRecurringAllowances(emp){
+    if(!Array.isArray(emp.recurringAllowances))emp.recurringAllowances=[];
+    [{field:'mobileAllowance',code:'LOAD'},{field:'riceAllowance',code:'RICE'}].forEach(function(legacy){
+      var amount=Number(emp[legacy.field]||0);
+      if(!amount||emp.recurringAllowances.some(function(item){return item.legacyField===legacy.field;}))return;
+      emp.recurringAllowances.push({id:'RA-'+emp.id+'-'+legacy.code,payItemCode:legacy.code,monthlyAmount:amount,frequency:defaultAllowanceFrequency(emp),timing:'every-2nd',effectiveFrom:emp.hired||'2025-01-01',effectiveTo:'',active:true,notes:'Migrated from legacy employee profile',legacyField:legacy.field});
+    });
+  }
   function ensureEffectiveData(){
     var componentUpdates={RICE:{dmLimit:2500,limitPeriod:'monthly'},CLOTH:{dmLimit:8000,limitPeriod:'annual'},XMAS:{dmLimit:6000,limitPeriod:'annual'},MEDICAL:{dmLimit:12000,limitPeriod:'annual'}};
     Object.keys(componentUpdates).forEach(function(code){var component=INCOME_TYPES.find(function(item){return item.code===code;});if(component)Object.assign(component,componentUpdates[code]);});
@@ -39,8 +48,10 @@
       if(typeof emp.nightDifferentialEligible==='undefined')emp.nightDifferentialEligible=true;
       if(typeof emp.restDayPremiumEligible==='undefined')emp.restDayPremiumEligible=true;
       if(!emp.workLocation)emp.workLocation=emp.city||'Philippines';
+      migrateRecurringAllowances(emp);
     });
     PAY_PERIODS.forEach(function(period){
+      if(typeof period.includeRecurringAllowances==='undefined')period.includeRecurringAllowances=true;
       var payDate=period.releaseDate||period.to;
       if(!period.adjustmentCutoff)period.adjustmentCutoff=period.attendanceTo||period.to;
       if(!period.approvalDeadline)period.approvalDeadline=addDays(payDate,-3);
@@ -88,14 +99,47 @@
       return Object.assign({},adjustment,{taxable:payItem?payItem.taxable:adjustment.amount>0,category:payItem?payItem.cat:adjustment.category});
     });
   }
+  function recurringAllowanceFactor(record,group,period){
+    var frequency=record.frequency||'monthly';
+    if(frequency==='every-payroll')return 1;
+    if(frequency==='monthly'){
+      if(group.freq==='monthly')return 1;
+      if(group.freq==='semi-monthly'){
+        var cutoff=PayrollRuleEngine.cutoffNumber(group,period);
+        var timing=record.timing||'every-2nd';
+        return timing==='every-1st'?(cutoff===1?1:0):(cutoff===2?1:0);
+      }
+      return 0;
+    }
+    if(frequency==='semi-monthly')return group.freq==='monthly'?1:(group.freq==='semi-monthly'?.5:0);
+    if(frequency==='weekly')return group.freq==='weekly'?12/52:0;
+    if(frequency==='bi-weekly')return group.freq==='bi-weekly'?12/26:0;
+    return 0;
+  }
+  function effectiveRecurringAllowances(emp,group,period){
+    if(period.includeRecurringAllowances===false)return[];
+    migrateRecurringAllowances(emp);
+    return (emp.recurringAllowances||[]).filter(function(record){
+      return record.active!==false&&(!record.effectiveFrom||record.effectiveFrom<=period.to)&&(!record.effectiveTo||record.effectiveTo>=period.from);
+    }).map(function(record){
+      var payItem=INCOME_TYPES.find(function(item){return item.code===record.payItemCode;});
+      var factor=recurringAllowanceFactor(record,group,period);
+      if(!payItem||!factor)return null;
+      var monthlyAmount=Number(record.monthlyAmount||record.amount||0);
+      var payoutAmount=(record.frequency==='every-payroll'?monthlyAmount:monthlyAmount*factor);
+      var capFactor=record.frequency==='every-payroll'?PayrollRuleEngine.frequencyFactor(group):factor;
+      return Object.assign({},record,{name:payItem.name,taxable:payItem.taxable!==false,deminimis:!!payItem.deminimis,payoutAmount:PayrollRuleEngine.money(payoutAmount),exemptLimit:PayrollRuleEngine.money(Number(payItem.dmLimit||0)*capFactor),source:'Income Type '+payItem.code+' / employee recurring allowance',formula:record.frequency==='every-payroll'?'Fixed amount every payroll':'Monthly entitlement × '+PayrollRuleEngine.money(factor)+' schedule factor'});
+    }).filter(Boolean);
+  }
   function governanceDraft(emp,grp,period) {
     var p=periodForCalculation(period);
     var from=p.attendanceFrom||p.from,to=p.attendanceTo||p.to;
     var appliedEmp=effectiveEmployee(emp,p.to);
     var attendance=approvedAttendanceSummary(appliedEmp,from,to);
     var baseBasic=computeBasicByPayType(appliedEmp,grp,p);
-    var result=PayrollRuleEngine.calculate({employee:appliedEmp,group:grp,period:p,attendance:attendance,rules:PAYROLL_RULEBOOK,baseBasic:baseBasic,defaultDivisor:COMPANY.dailyDivisor||22,adjustments:effectiveAdjustments(emp,p),loans:LOANS.filter(function(loan){return loan.eid===emp.id;}),statutory:statutoryAmounts,tax:birTaxByFreq});
-    return Object.assign({empId:emp.id,name:emp.name,eid:emp.eid,pos:emp.pos,payType:emp.payType,baseBasic:baseBasic,pr:attendance.presentDays,absentDays:attendance.absentDays,lateMinutes:attendance.lateMinutes,undertimeMinutes:attendance.undertimeMinutes,otH:attendance.otHours,ndH:attendance.ndHours,attendanceSummary:attendance,attendanceFrom:from,attendanceTo:to,attendanceApproved:attendance.records.length,applyStatutory:result.statutoryFactor>0,taxFreq:grp.taxMethod||grp.freq,ms:result.rates.monthly,calculationTrace:result.lines,validationIssues:result.issues,loanSchedule:result.loanSchedule,employerContributions:result.employerContributions,employerCost:result.employerCost,compensationSnapshot:appliedEmp.appliedCompensationRecord||null,_computed:{basic:result.basic,ot:result.ot,nd:result.nd,sss:result.sss,ph:result.ph,pi:result.pi,tax:result.tax,loan:result.loan},_nonEditableGross:PayrollRuleEngine.money(result.gross-result.basic-result.ot-result.nd),_edited:false},result);
+    var recurringAllowances=effectiveRecurringAllowances(emp,grp,p);
+    var result=PayrollRuleEngine.calculate({employee:appliedEmp,group:grp,period:p,attendance:attendance,rules:PAYROLL_RULEBOOK,baseBasic:baseBasic,defaultDivisor:COMPANY.dailyDivisor||22,recurringAllowances:recurringAllowances,adjustments:effectiveAdjustments(emp,p),loans:LOANS.filter(function(loan){return loan.eid===emp.id;}),statutory:statutoryAmounts,tax:birTaxByFreq});
+    return Object.assign({empId:emp.id,name:emp.name,eid:emp.eid,pos:emp.pos,payType:emp.payType,baseBasic:baseBasic,pr:attendance.presentDays,absentDays:attendance.absentDays,lateMinutes:attendance.lateMinutes,undertimeMinutes:attendance.undertimeMinutes,otH:attendance.otHours,ndH:attendance.ndHours,attendanceSummary:attendance,attendanceFrom:from,attendanceTo:to,attendanceApproved:attendance.records.length,applyStatutory:result.statutoryFactor>0,recurringAllowances:recurringAllowances,taxFreq:grp.taxMethod||grp.freq,ms:result.rates.monthly,calculationTrace:result.lines,validationIssues:result.issues,loanSchedule:result.loanSchedule,employerContributions:result.employerContributions,employerCost:result.employerCost,compensationSnapshot:appliedEmp.appliedCompensationRecord||null,_computed:{basic:result.basic,ot:result.ot,nd:result.nd,sss:result.sss,ph:result.ph,pi:result.pi,tax:result.tax,loan:result.loan},_nonEditableGross:PayrollRuleEngine.money(result.gross-result.basic-result.ot-result.nd),_edited:false},result);
   }
   window.buildDraftRow=buildDraftRow=governanceDraft;
   window.updateDraftNet=updateDraftNet=function(empId){

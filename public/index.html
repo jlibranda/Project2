@@ -5041,7 +5041,7 @@ function pgPayroll(){
     <div style="display:flex;justify-content:flex-end;margin-bottom:10px;gap:8px">
       <button class="btn btn-primary btn-sm" onclick="modal={type:'addPayPeriod'};render()">+ Add Period</button>
     </div>
-    <table><thead><tr><th>Label</th><th>Month / Year</th><th>Group</th><th>Cut-off</th><th>Pay Period</th><th>Attendance Period</th><th>Release Date</th><th>Status</th><th>Actions</th></tr></thead>
+    <table><thead><tr><th>Label</th><th>Month / Year</th><th>Group</th><th>Cut-off</th><th>Pay Period</th><th>Attendance Period</th><th>Recurring</th><th>Release Date</th><th>Status</th><th>Actions</th></tr></thead>
     <tbody>${PAY_PERIODS.map(p=>{
       const g=PAYROLL_GROUPS.find(x=>x.id===p.groupId);
       const statusBadge={open:'b-approved',closed:'b-absent',locked:'b-pending',processing:'b-info'};
@@ -5061,6 +5061,7 @@ function pgPayroll(){
         <td>${cutoffBadge}</td>
         <td class="mono" style="font-size:11px">${fmtShort(p.from)} → ${fmtShort(p.to)}</td>
         <td class="mono" style="font-size:11px">${p.attendanceFrom||p.from?fmtShort(p.attendanceFrom||p.from)+' → '+fmtShort(p.attendanceTo||p.to):'—'}</td>
+        <td><span class="badge ${p.includeRecurringAllowances===false?'b-absent':'b-approved'}" style="font-size:10px">${p.includeRecurringAllowances===false?'Excluded':'Included'}</span></td>
         <td style="font-size:12px">${fmtDate(p.releaseDate)}</td>
         <td><span class="badge ${statusBadge[p.status]||'b-info'}">${p.status}</span></td>
         <td><div style="display:flex;gap:4px">
@@ -8462,6 +8463,10 @@ function renderModal(){
         <div class="field"><label>Attendance To</label><input id="pp-att-to" type="date" class="finput"/></div>
       </div>
     </div>
+    <label style="display:flex;align-items:flex-start;gap:9px;padding:10px 12px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;margin-bottom:10px;cursor:pointer">
+      <input type="checkbox" id="pp-recurring" style="width:auto;accent-color:var(--accent);margin-top:2px" checked/>
+      <span><strong style="font-size:12px;color:var(--accent-txt)">Include recurring allowances</strong><br><span style="font-size:10px;color:var(--txt3)">Pull eligible employee recurring allowances into this payroll period.</span></span>
+    </label>
     <div class="field"><label>Release Date</label><input id="pp-rel" type="date" class="finput"/></div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn btn-primary" onclick="
@@ -8475,11 +8480,12 @@ function renderModal(){
         const attTo=document.getElementById('pp-att-to')?.value||to;
         const co1=document.getElementById('pp-co1')?.checked||false;
         const co2=document.getElementById('pp-co2')?.checked||false;
+        const includeRecurringAllowances=document.getElementById('pp-recurring')?.checked!==false;
         if(!from||!to||!rel){toast('All dates required','warning');return;}
         if(from>to){toast('Period From must be before Period To','warning');return;}
         if(!co1&&!co2){toast('Select at least one cut-off (1st or 2nd)','warning');return;}
-        PAY_PERIODS.push({id:nPayPeriod++,groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,cutoff1:co1,cutoff2:co2,status:'open',runId:null});
-        closeM();toast('Pay period added!','success');render()">
+        PAY_PERIODS.push({id:nPayPeriod++,groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,status:'open',runId:null});
+        closeM();queueSync('Payroll_Periods');toast('Pay period added!','success');render()">
         ✓ Add Period</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
@@ -8524,6 +8530,10 @@ function renderModal(){
         <div class="field"><label>Attendance To</label><input id="epp-att-to" type="date" class="finput" value="${p.attendanceTo||p.to||''}"/></div>
       </div>
     </div>
+    <label style="display:flex;align-items:flex-start;gap:9px;padding:10px 12px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;margin-bottom:10px;cursor:pointer">
+      <input type="checkbox" id="epp-recurring" style="width:auto;accent-color:var(--accent);margin-top:2px" ${p.includeRecurringAllowances!==false?'checked':''}/>
+      <span><strong style="font-size:12px;color:var(--accent-txt)">Include recurring allowances</strong><br><span style="font-size:10px;color:var(--txt3)">Turn off to exclude all recurring allowances from this period.</span></span>
+    </label>
     <div class="field"><label>Release Date</label><input id="epp-rel" type="date" class="finput" value="${p.releaseDate||''}"/></div>
     <div style="display:flex;gap:8px;margin-top:8px">
       <button class="btn btn-primary" onclick="
@@ -8537,11 +8547,12 @@ function renderModal(){
         const attTo=document.getElementById('epp-att-to')?.value||to;
         const co1=document.getElementById('epp-co1')?.checked||false;
         const co2=document.getElementById('epp-co2')?.checked||false;
+        const includeRecurringAllowances=document.getElementById('epp-recurring')?.checked!==false;
         if(!from||!to||!rel){toast('All dates required','warning');return;}
         if(from>to){toast('Period From must be before Period To','warning');return;}
         const pp=PAY_PERIODS.find(x=>x.id===${p.id});
-        if(pp){Object.assign(pp,{groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,cutoff1:co1,cutoff2:co2});}
-        closeM();toast('Pay period updated!','success');render();">
+        if(pp){Object.assign(pp,{groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,cutoff1:co1,cutoff2:co2,includeRecurringAllowances});}
+        closeM();queueSync('Payroll_Periods');toast('Pay period updated!','success');render();">
         ✓ Save Changes</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
@@ -8689,6 +8700,33 @@ function renderModal(){
       ${rows.filter(r=>r.code&&existCodes.has(r.code.toUpperCase())).length?
         `<span style="font-size:12px;color:var(--red)">⚠ ${rows.filter(r=>r.code&&existCodes.has(r.code.toUpperCase())).length} duplicate code${rows.filter(r=>r.code&&existCodes.has(r.code.toUpperCase())).length!==1?'s':''} will be skipped</span>`:''}
     </div>`;
+  }else if(modal.type==='recurringAllowance'){
+    const d=modal.data||{};
+    const types=recurringAllowanceTypes();
+    const selected=types.find(t=>t.code===d.payItemCode);
+    inner=`<div class="modal-title">${d.id?'Edit':'Add'} Recurring Allowance<button class="close-x" onclick="closeM()">×</button></div>
+      <div class="field"><label>Allowance Type <span style="color:var(--red)">*</span></label>
+        <select id="ra-type" class="finput" onchange="modal.data.payItemCode=this.value;render()">
+          <option value="">— Select configured Income Type —</option>
+          ${types.map(t=>`<option value="${esc(t.code)}" ${d.payItemCode===t.code?'selected':''}>${esc(t.code)} — ${esc(t.name)}</option>`).join('')}
+        </select>
+      </div>
+      ${selected?`<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:7px;padding:9px 10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;margin-bottom:10px;font-size:11px">
+        <div><span style="color:var(--txt3)">Classification</span><br><strong>${esc(selected.cat)}</strong></div>
+        <div><span style="color:var(--txt3)">Tax Treatment</span><br><strong style="color:${selected.taxable?'var(--amber)':'var(--green)'}">${selected.taxable?'Taxable':'Non-taxable'}</strong></div>
+        <div><span style="color:var(--txt3)">De Minimis</span><br><strong>${selected.deminimis?'Yes · ₱'+numFmt(selected.dmLimit||0):'No'}</strong></div>
+      </div>`:`<div style="padding:8px 10px;background:var(--amber-bg);color:var(--amber-txt);border-radius:7px;margin-bottom:10px;font-size:11px">Taxability is defined in the selected Income Type—not manually on this employee record.</div>`}
+      <div class="field"><label>Monthly Entitlement / Fixed Payroll Amount <span style="color:var(--red)">*</span></label><input id="ra-amount" type="number" min="0" step="0.01" class="finput" value="${d.monthlyAmount||''}" placeholder="0.00"/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Used as a monthly entitlement for monthly, semi-monthly, weekly, and bi-weekly schedules. For Fixed every payroll, this exact amount is paid each run.</div></div>
+      <div class="form-row">
+        <div class="field"><label>Distribution Schedule</label><select id="ra-frequency" class="finput">
+          ${[['monthly','Monthly — once per month'],['semi-monthly','Semi-monthly — 50% each cutoff'],['weekly','Weekly — monthly × 12 ÷ 52'],['bi-weekly','Bi-weekly — monthly × 12 ÷ 26'],['every-payroll','Fixed amount every payroll']].map(o=>`<option value="${o[0]}" ${d.frequency===o[0]?'selected':''}>${o[1]}</option>`).join('')}
+        </select></div>
+        <div class="field"><label>Monthly Payout Cutoff</label><select id="ra-timing" class="finput"><option value="every-1st" ${d.timing==='every-1st'?'selected':''}>1st cutoff</option><option value="every-2nd" ${d.timing!=='every-1st'?'selected':''}>2nd cutoff</option></select><div style="font-size:10px;color:var(--txt3);margin-top:3px">Used only when Monthly is assigned to a semi-monthly payroll group.</div></div>
+      </div>
+      <div class="form-row"><div class="field"><label>Effective From</label><input id="ra-from" type="date" class="finput" value="${d.effectiveFrom||''}"/></div><div class="field"><label>Effective To</label><input id="ra-to" type="date" class="finput" value="${d.effectiveTo||''}"/></div></div>
+      <div class="field"><label>Notes</label><textarea id="ra-notes" class="finput" rows="2" placeholder="Optional policy or approval reference">${esc(d.notes||'')}</textarea></div>
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;margin:8px 0 12px"><input id="ra-active" type="checkbox" style="width:auto;accent-color:var(--accent)" ${d.active!==false?'checked':''}/> Active recurring allowance</label>
+      <div style="display:flex;gap:8px"><button class="btn btn-primary" onclick="saveRecurringAllowance()">✓ Save Allowance</button><button class="btn" onclick="closeM()">Cancel</button></div>`;
   }else if(modal.type==='editIT'){
     const t=modal.it;const isNew=!t.id;
     inner=`<div class="modal-title">${isNew?'+ Add Income/Deduction Type':'✎ Edit Income/Deduction Type'}
@@ -11099,6 +11137,60 @@ function numFmt(v){
   return n.toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2});
 }
 
+function recurringAllowanceTypes(){
+  return INCOME_TYPES.filter(t=>!t.isStatutory&&(t.cat==='allowance'||t.cat==='deminimis'));
+}
+function employeeRecurringAllowances(emp){
+  if(!Array.isArray(emp.recurringAllowances))emp.recurringAllowances=[];
+  const grp=PAYROLL_GROUPS.find(g=>g.id===emp.payGroupId);
+  const frequency=['monthly','semi-monthly','weekly','bi-weekly'].includes(grp?.freq)?grp.freq:'monthly';
+  [{field:'mobileAllowance',code:'LOAD'},{field:'riceAllowance',code:'RICE'}].forEach(legacy=>{
+    const amount=parseFloat(emp[legacy.field])||0;
+    if(amount&&!emp.recurringAllowances.some(a=>a.legacyField===legacy.field))emp.recurringAllowances.push({
+      id:`RA-${emp.id}-${legacy.code}`,payItemCode:legacy.code,monthlyAmount:amount,frequency,timing:'every-2nd',
+      effectiveFrom:emp.hired||today(),effectiveTo:'',active:true,notes:'Migrated from legacy employee profile',legacyField:legacy.field
+    });
+  });
+  return emp.recurringAllowances;
+}
+function openRecurringAllowance(empId,allowanceId){
+  const emp=USERS.find(u=>u.id===empId);if(!emp)return;
+  const existing=employeeRecurringAllowances(emp).find(a=>a.id===allowanceId);
+  modal={type:'recurringAllowance',empId,data:existing?JSON.parse(JSON.stringify(existing)):{id:'',payItemCode:'',monthlyAmount:0,frequency:(PAYROLL_GROUPS.find(g=>g.id===emp.payGroupId)?.freq||'monthly'),timing:'every-2nd',effectiveFrom:today(),effectiveTo:'',active:true,notes:''}};
+  render();
+}
+function saveRecurringAllowance(){
+  const emp=USERS.find(u=>u.id===modal?.empId);if(!emp)return;
+  const d=modal.data||{};
+  d.payItemCode=document.getElementById('ra-type')?.value||d.payItemCode;
+  d.monthlyAmount=parseFloat(document.getElementById('ra-amount')?.value)||0;
+  d.frequency=document.getElementById('ra-frequency')?.value||'monthly';
+  d.timing=document.getElementById('ra-timing')?.value||'every-2nd';
+  d.effectiveFrom=document.getElementById('ra-from')?.value||'';
+  d.effectiveTo=document.getElementById('ra-to')?.value||'';
+  d.active=document.getElementById('ra-active')?.checked!==false;
+  d.notes=(document.getElementById('ra-notes')?.value||'').trim();
+  if(!d.payItemCode){toast('Select an allowance type','warning');return;}
+  if(d.monthlyAmount<=0){toast('Enter an allowance amount greater than zero','warning');return;}
+  if(d.effectiveFrom&&d.effectiveTo&&d.effectiveFrom>d.effectiveTo){toast('Effective From must be before Effective To','warning');return;}
+  const list=employeeRecurringAllowances(emp);
+  if(d.id){const i=list.findIndex(a=>a.id===d.id);if(i>=0)list[i]=d;}
+  else{d.id=`RA-${emp.id}-${Date.now()}`;list.push(d);}
+  if(d.legacyField)emp[d.legacyField]=d.monthlyAmount;
+  closeM();queueSync('Employees');toast('Recurring allowance saved','success');render();
+}
+function toggleRecurringAllowance(empId,allowanceId){
+  const emp=USERS.find(u=>u.id===empId);const item=employeeRecurringAllowances(emp).find(a=>a.id===allowanceId);if(!item)return;
+  item.active=item.active===false;queueSync('Employees');render();
+}
+function deleteRecurringAllowance(empId,allowanceId){
+  const emp=USERS.find(u=>u.id===empId);if(!emp||!confirm('Delete this recurring allowance?'))return;
+  const item=employeeRecurringAllowances(emp).find(a=>a.id===allowanceId);
+  emp.recurringAllowances=employeeRecurringAllowances(emp).filter(a=>a.id!==allowanceId);
+  if(item?.legacyField)emp[item.legacyField]=0;
+  queueSync('Employees');toast('Recurring allowance deleted','success');render();
+}
+
 function pgEmpDetail(){
   const e=USERS.find(u=>u.id===detailEmpId);
   if(!e)return`<div class="page-header"><div class="page-title">Employee not found</div></div><button class="btn" onclick="goView('employees')">← Back</button>`;
@@ -11110,7 +11202,7 @@ function pgEmpDetail(){
   const age=e.bday?Math.floor((new Date()-new Date(e.bday))/(365.25*24*3600*1000)):0;
   const al=ACCESS_LEVELS.find(a=>a.id===e.accessLevelId)||ACCESS_LEVELS[4];
   const alColors={purple:'#7c3aed',blue:'#2563eb',green:'#059669',amber:'#d97706',gray:'#6b7280'};
-  const tabs=['Personal','Employment','Compensation','Gov\'t & Bank','Emergency','Offboarding','Movements'];
+  const tabs=['Personal','Employment','Compensation','Recurring Allowances','Gov\'t & Bank','Emergency','Offboarding','Movements'];
 
   /* ── helper: render a field as view or edit ── */
   const d=detailDraft;
@@ -11524,8 +11616,9 @@ function pgEmpDetail(){
              <input id="ef-dailyDivisor" class="finput" type="number" value="${val('dailyDivisor')||''}" placeholder="${COMPANY.dailyDivisor}"
                style="font-size:13px;width:100px" oninput="detailDraft.dailyDivisor=this.value?parseFloat(this.value):''"/></div>`
           :vrow('Daily Rate Divisor',(e.dailyDivisor||COMPANY.dailyDivisor)+' days')}
-        ${fv('compensation','mobileAllowance')?amtField('mobileAllowance','Mobile Allowance'):''}
-        ${fv('compensation','riceAllowance')?amtField('riceAllowance','Rice Allowance'):''}
+        <div style="padding:9px 11px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;margin-bottom:8px;font-size:11px;color:var(--accent-txt)">
+          Mobile, rice, and other repeating benefits are managed in <strong>Recurring Allowances</strong>. Their taxable/non-taxable treatment now comes from the selected Income Type.
+        </div>
         ${fv('compensation','stockOptions')?esel('stockOptions','Stock Options',[{v:'N',l:'No'},{v:'Y',l:'Yes'}]):''}
         ${fv('compensation','esopGranted')?esel('esopGranted','ESOP Granted',[{v:'N',l:'No'},{v:'Y',l:'Yes'}]):''}
         ${fv('compensation','esopEntity')?etext('esopEntity','ESOP Entity'):''}
@@ -11549,6 +11642,35 @@ function pgEmpDetail(){
 
 
   else if(detailTab===3){
+    const allowances=employeeRecurringAllowances(e);
+    const frequencyLabel={'monthly':'Monthly (once)','semi-monthly':'Semi-monthly (split)','weekly':'Weekly','bi-weekly':'Bi-weekly','every-payroll':'Fixed every payroll'};
+    tabBody=`
+      <div class="card-hd" style="padding:0;margin-bottom:12px">
+        <div><div class="card-title">Recurring Allowances</div><div class="card-sub">Employee-specific entitlement, schedule, effective dates, and tax classification from Payroll → Configuration → Income Types.</div></div>
+        ${isA?`<button class="btn btn-primary btn-sm" onclick="openRecurringAllowance(${e.id})">+ Add Allowance</button>`:''}
+      </div>
+      <div style="padding:9px 11px;background:var(--blue-bg);color:var(--blue-txt);border-radius:8px;margin-bottom:12px;font-size:11px">
+        The amount is the monthly entitlement, except <strong>Fixed every payroll</strong>, which pays the entered amount on every included payroll period. Monthly allowances for semi-monthly groups are paid on the selected cutoff; semi-monthly allowances are split 50/50.
+      </div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Allowance / Code</th><th>Monthly Entitlement</th><th>Tax Treatment</th><th>Distribution</th><th>Effective Dates</th><th>Status</th>${isA?'<th>Actions</th>':''}</tr></thead><tbody>
+      ${allowances.length?allowances.map(a=>{
+        const type=INCOME_TYPES.find(t=>t.code===a.payItemCode);
+        const treatment=type?.deminimis?'De Minimis / Non-taxable up to limit':type?.taxable?'Taxable':'Non-taxable';
+        const timing=a.frequency==='monthly'&&PAYROLL_GROUPS.find(g=>g.id===e.payGroupId)?.freq==='semi-monthly'?(a.timing==='every-1st'?' · 1st cutoff':' · 2nd cutoff'):'';
+        return`<tr>
+          <td><strong>${esc(type?.name||a.payItemCode)}</strong><div><code>${esc(a.payItemCode)}</code></div></td>
+          <td class="mono" style="font-weight:700">₱${numFmt(a.monthlyAmount||a.amount||0)}</td>
+          <td><span class="badge ${type?.taxable?'b-pending':'b-approved'}">${treatment}</span>${type?.deminimis&&type.dmLimit?`<div style="font-size:10px;color:var(--txt3);margin-top:3px">Limit: ₱${numFmt(type.dmLimit)} / month</div>`:''}</td>
+          <td>${frequencyLabel[a.frequency]||a.frequency}${timing}</td>
+          <td class="mono" style="font-size:10px">${a.effectiveFrom||'—'} → ${a.effectiveTo||'Onward'}</td>
+          <td><span class="badge ${a.active===false?'b-absent':'b-approved'}">${a.active===false?'Inactive':'Active'}</span></td>
+          ${isA?`<td><div class="action-row"><button class="btn btn-sm" onclick="openRecurringAllowance(${e.id},'${a.id}')">Edit</button><button class="btn btn-sm" onclick="toggleRecurringAllowance(${e.id},'${a.id}')">${a.active===false?'Enable':'Disable'}</button><button class="btn btn-sm btn-danger" onclick="deleteRecurringAllowance(${e.id},'${a.id}')">Delete</button></div></td>`:''}
+        </tr>`;
+      }).join(''):`<tr><td colspan="${isA?7:6}" class="empty-state">No recurring allowances configured.</td></tr>`}
+      </tbody></table></div>`;
+  }
+
+  else if(detailTab===4){
     const govtField=(key,label)=>{
       const cur=fmtGovt(key,val(key)||'');
       const err=validateGovtNum(key,cur);
@@ -11581,7 +11703,7 @@ function pgEmpDetail(){
       </div>
     </div>`;}
 
-  else if(detailTab===4){tabBody=`
+  else if(detailTab===5){tabBody=`
     <div class="section-header">Emergency Contact 1</div>
     <div class="form-row">
       <div>${etext('ec1Name','Name')}${etext('ec1Rel','Relationship')}</div>
@@ -11594,7 +11716,7 @@ function pgEmpDetail(){
       <div>${etext('ec2Contact','Contact Number')}${etext('ec2Addr','Home Address')}</div>
     </div>`;}
 
-  else if(detailTab===5){
+  else if(detailTab===6){
     const tod=today();
     const termReached=e.effectiveTermDate&&e.effectiveTermDate<=tod;
     const isFuture=e.effectiveTermDate&&e.effectiveTermDate>tod;
@@ -11681,8 +11803,8 @@ function pgEmpDetail(){
       </div>
     </div>`:''}`;}
 
-  /* ── Tab 6: Movements ── */
-  else if(detailTab===6){
+  /* ── Tab 7: Movements ── */
+  else if(detailTab===7){
     const mvs=(e.movements||[]);
     const typeColors={'Position Change':'var(--accent)','Transfer':'var(--blue)','Compensation Change':'var(--green)','Profile Update':'var(--txt3)'};
     tabBody=mvs.length?`
@@ -11792,7 +11914,7 @@ function pgEmpDetail(){
         <div style="display:flex;gap:0;overflow-x:auto">
           ${tabs.map((t,i)=>`<div class="tab${detailTab===i?' active':''}" onclick="detailTab=${i};detailEdit=false;detailDraft={};render()" style="white-space:nowrap">${t}</div>`).join('')}
         </div>
-        ${isA&&detailTab!==6?`<div style="display:flex;gap:6px;padding-bottom:8px;flex-shrink:0;margin-left:12px">
+        ${isA&&detailTab!==3&&detailTab!==7?`<div style="display:flex;gap:6px;padding-bottom:8px;flex-shrink:0;margin-left:12px">
           ${detailEdit
             ?`<button class="btn btn-sm btn-primary" onclick="saveEmpEdit()">✓ Save</button>
               <button class="btn btn-sm" onclick="detailEdit=false;detailDraft={};render()">Cancel</button>`

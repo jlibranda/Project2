@@ -52,4 +52,16 @@ const secondCutoffStatutory = engine.calculate({...loanBase,group,period:{from:'
 assert.deepEqual([firstCutoffStatutory.sss,firstCutoffStatutory.ph,firstCutoffStatutory.pi],[0,0,0],'First cutoff statutory contributions must all be zero for Every 2nd timing');
 assert.deepEqual([secondCutoffStatutory.sss,secondCutoffStatutory.ph,secondCutoffStatutory.pi],[1000,500,200],'Second cutoff must deduct the full monthly statutory contributions');
 
+const recurringBase = {...loanBase,group,loans:[],adjustments:[],tax:()=>0,recurringAllowances:[
+  {id:'RA-LOAD',payItemCode:'LOAD',name:'Load/Mobile Allowance',payoutAmount:500,taxable:false,deminimis:false},
+  {id:'RA-RICE',payItemCode:'RICE',name:'Rice Subsidy',payoutAmount:1500,taxable:false,deminimis:true,exemptLimit:1250}
+]};
+const recurringResult = engine.calculate(recurringBase);
+assert.equal(recurringResult.gross,13000,'eligible recurring allowances must be included in gross pay');
+assert.equal(recurringResult.taxableCompensation,11250,'non-taxable allowance and de minimis exempt portion must be excluded from taxable compensation');
+assert.ok(recurringResult.lines.some(line=>line.code==='LOAD'&&line.taxable===false),'Income Type classification must control recurring allowance taxability');
+assert.ok(recurringResult.lines.some(line=>line.code==='RICE_TX'&&line.amount===250&&line.taxable===true),'de minimis excess must be split into a taxable line');
+const excludedRecurring = engine.calculate({...recurringBase,recurringAllowances:[]});
+assert.equal(excludedRecurring.gross,11000,'an excluded calendar period must be able to pass no recurring allowances');
+
 console.log('Payroll rule engine tests passed.');

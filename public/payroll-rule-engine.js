@@ -142,14 +142,34 @@
     var ndRule = ruleValue(rules,'NIGHT_DIFFERENTIAL',date,context,0.10);
     if (attendance.ndHours) addLine(lines,Object.assign({code:'ND',name:'Night Shift Differential',type:'earning',quantity:attendance.ndHours,rate:hourly,multiplier:ndRule.value,amount:hourly*ndRule.value*attendance.ndHours,taxable:true,formula:'Hourly rate × qualified NSD hours × '+ndRule.value},lineFromRule(ndRule.rule,'NIGHT_DIFFERENTIAL','Labor Code / DOLE')));
 
-    var allowanceFactor = factor;
-    if (number(employee.mobileAllowance)) addLine(lines,{code:'MOBILE',name:'Mobile Allowance',type:'earning',amount:number(employee.mobileAllowance)*allowanceFactor,taxable:true,formula:'Monthly allowance × payroll-frequency factor',ruleCode:'COMPONENT_MOBILE',ruleVersion:1,legalSource:'Company policy'});
-    if (number(employee.riceAllowance)) {
-      var riceRule = ruleValue(rules,'DEMINIMIS_RICE_MONTHLY',date,context,2500);
-      var ricePaid = number(employee.riceAllowance)*allowanceFactor;
-      var riceExempt = Math.min(ricePaid,riceRule.value*allowanceFactor);
-      if (riceExempt) addLine(lines,Object.assign({code:'RICE',name:'Rice Subsidy – Non-Taxable',type:'earning',amount:riceExempt,taxable:false,formula:'Lower of benefit paid or remaining configured de minimis limit'},lineFromRule(riceRule.rule,'DEMINIMIS_RICE_MONTHLY','BIR RR 29-2025')));
-      if (ricePaid>riceExempt) addLine(lines,{code:'RICE_TX',name:'Rice Subsidy – Taxable Excess',type:'earning',amount:ricePaid-riceExempt,taxable:true,formula:'Benefit paid − non-taxable portion',ruleCode:'DEMINIMIS_EXCESS',ruleVersion:1,legalSource:'BIR'});
+    /* Tax treatment comes from the configured pay item, never the allowance name. */
+    if (Array.isArray(input.recurringAllowances)) {
+      input.recurringAllowances.forEach(function (allowance) {
+        var paid = number(allowance.payoutAmount);
+        if (!paid) return;
+        var code = allowance.payItemCode || 'ALLOWANCE';
+        var source = allowance.source || 'Employee recurring allowance setup';
+        var formula = allowance.formula || 'Monthly entitlement converted by configured distribution schedule';
+        if (allowance.deminimis) {
+          var exemptLimit = number(allowance.exemptLimit);
+          var exempt = exemptLimit > 0 ? Math.min(paid,exemptLimit) : paid;
+          if (exempt) addLine(lines,{code:code,name:(allowance.name||code)+' – Non-Taxable',type:'earning',amount:exempt,taxable:false,formula:formula,ruleCode:'RECURRING_DEMINIMIS',ruleVersion:1,legalSource:source,sourceTransaction:allowance.id});
+          if (paid > exempt) addLine(lines,{code:code+'_TX',name:(allowance.name||code)+' – Taxable Excess',type:'earning',amount:paid-exempt,taxable:true,formula:'Scheduled benefit − configured non-taxable limit',ruleCode:'DEMINIMIS_EXCESS',ruleVersion:1,legalSource:'BIR / configured pay item',sourceTransaction:allowance.id});
+        } else {
+          addLine(lines,{code:code,name:allowance.name||code,type:'earning',amount:paid,taxable:allowance.taxable!==false,formula:formula,ruleCode:'RECURRING_ALLOWANCE',ruleVersion:1,legalSource:source,sourceTransaction:allowance.id});
+        }
+      });
+    } else {
+      /* Backward-compatible fallback for snapshots created before recurring allowances existed. */
+      var allowanceFactor = factor;
+      if (number(employee.mobileAllowance)) addLine(lines,{code:'MOBILE',name:'Mobile Allowance',type:'earning',amount:number(employee.mobileAllowance)*allowanceFactor,taxable:true,formula:'Legacy monthly allowance × payroll-frequency factor',ruleCode:'COMPONENT_MOBILE_LEGACY',ruleVersion:1,legalSource:'Legacy employee profile'});
+      if (number(employee.riceAllowance)) {
+        var riceRule = ruleValue(rules,'DEMINIMIS_RICE_MONTHLY',date,context,2500);
+        var ricePaid = number(employee.riceAllowance)*allowanceFactor;
+        var riceExempt = Math.min(ricePaid,riceRule.value*allowanceFactor);
+        if (riceExempt) addLine(lines,Object.assign({code:'RICE',name:'Rice Subsidy – Non-Taxable',type:'earning',amount:riceExempt,taxable:false,formula:'Lower of benefit paid or remaining configured de minimis limit'},lineFromRule(riceRule.rule,'DEMINIMIS_RICE_MONTHLY','BIR RR 29-2025')));
+        if (ricePaid>riceExempt) addLine(lines,{code:'RICE_TX',name:'Rice Subsidy – Taxable Excess',type:'earning',amount:ricePaid-riceExempt,taxable:true,formula:'Benefit paid − non-taxable portion',ruleCode:'DEMINIMIS_EXCESS',ruleVersion:1,legalSource:'BIR'});
+      }
     }
     (input.adjustments || []).forEach(function (adjustment) {
       var isDeduction = number(adjustment.amount) < 0;
