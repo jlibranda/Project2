@@ -67,6 +67,14 @@ assert.ok(recurringResult.lines.some(line=>line.code==='RICE_TX'&&line.amount===
 const excludedRecurring = engine.calculate({...recurringBase,recurringAllowances:[]});
 assert.equal(excludedRecurring.gross,11000,'an excluded calendar period must be able to pass no recurring allowances');
 
+const annualBenefitResult = engine.calculate({...loanBase,group,loans:[],baseBasic:11000,
+  adjustments:[{id:91,payItemCode:'BONUS',adjType:'Performance Bonus',amount:50000,taxable:false,benefitTreatment:'annual-benefit-bucket'}],
+  annualBenefitContext:{limit:90000,previousEmployerNonTaxable:60000,currentEmployerYtdNonTaxable:10000},tax:()=>0});
+assert.equal(annualBenefitResult.annualBenefitQualified,50000,'qualified bonus must enter the combined annual benefit bucket');
+assert.equal(annualBenefitResult.annualBenefitExempt,20000,'only the remaining P20,000 of the shared exemption may be non-taxable');
+assert.equal(annualBenefitResult.annualBenefitTaxable,30000,'the P30,000 excess must be taxable in payroll');
+assert.ok(annualBenefitResult.lines.some(line=>line.code==='BONUS_TX'&&line.amount===30000&&line.taxable),'taxable benefit excess must be visible in the calculation trace');
+
 const decimalDivisorEmployee = {...employee,rate:1000,salaryPM:22000,dailyDivisor:22.1234};
 const decimalDivisorResult = engine.calculate({
   employee:decimalDivisorEmployee,group,period,rules,baseBasic:11000,defaultDivisor:22,

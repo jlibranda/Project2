@@ -199,9 +199,17 @@
         if (ricePaid>riceExempt) addLine(lines,{code:'RICE_TX',name:'Rice Subsidy – Taxable Excess',type:'earning',amount:ricePaid-riceExempt,taxable:true,formula:'Benefit paid − non-taxable portion',ruleCode:'DEMINIMIS_EXCESS',ruleVersion:1,legalSource:'BIR'});
       }
     }
+    var benefitContext=input.annualBenefitContext||{},annualBenefitQualified=0,annualBenefitExempt=0,annualBenefitTaxable=0;
+    var benefitUsedBefore=number(benefitContext.previousEmployerNonTaxable)+number(benefitContext.currentEmployerYtdNonTaxable),benefitLimit=number(benefitContext.limit||90000);
     (input.adjustments || []).forEach(function (adjustment) {
       var isDeduction = number(adjustment.amount) < 0;
-      addLine(lines,{code:adjustment.payItemCode||'ADJUST',name:adjustment.adjType||'Payroll Adjustment',type:isDeduction?'deduction':'earning',amount:Math.abs(number(adjustment.amount)),taxable:!isDeduction&&adjustment.taxable!==false,formula:'Approved adjustment from source period',ruleCode:'RETRO_ADJUSTMENT',ruleVersion:1,legalSource:adjustment.reason||'Approved payroll adjustment',sourceTransaction:adjustment.id});
+      var amount=Math.abs(number(adjustment.amount));
+      if(!isDeduction&&adjustment.benefitTreatment==='annual-benefit-bucket'){
+        var remaining=Math.max(0,benefitLimit-benefitUsedBefore-annualBenefitExempt),exempt=Math.min(amount,remaining),taxable=Math.max(0,amount-exempt);
+        annualBenefitQualified+=amount;annualBenefitExempt+=exempt;annualBenefitTaxable+=taxable;
+        if(exempt)addLine(lines,{code:(adjustment.payItemCode||'BENEFIT')+'_EX',name:(adjustment.adjType||'Annual Benefit')+' – Non-Taxable',type:'earning',amount:exempt,taxable:false,annualBenefitBucket:true,formula:'Qualified annual benefit within remaining P90,000 combined exemption',ruleCode:'BIR_13TH_OTHER_BENEFITS_BUCKET',ruleVersion:1,legalSource:'BIR RR 11-2018 / BIR Form 2316',sourceTransaction:adjustment.id});
+        if(taxable)addLine(lines,{code:(adjustment.payItemCode||'BENEFIT')+'_TX',name:(adjustment.adjType||'Annual Benefit')+' – Taxable Excess',type:'earning',amount:taxable,taxable:true,annualBenefitBucket:true,formula:'Qualified annual benefit exceeding remaining P90,000 combined exemption',ruleCode:'BIR_13TH_OTHER_BENEFITS_BUCKET',ruleVersion:1,legalSource:'BIR RR 11-2018 / BIR Form 2316',sourceTransaction:adjustment.id});
+      }else addLine(lines,{code:adjustment.payItemCode||'ADJUST',name:adjustment.adjType||'Payroll Adjustment',type:isDeduction?'deduction':'earning',amount:amount,taxable:!isDeduction&&adjustment.taxable!==false,formula:'Ready payroll adjustment from source period',ruleCode:'RETRO_ADJUSTMENT',ruleVersion:1,legalSource:adjustment.reason||'Payroll adjustment',sourceTransaction:adjustment.id});
     });
 
     var absentRule = ruleValue(rules,'ABSENCE_DEDUCTION',date,context,1);
@@ -221,7 +229,7 @@
     addLine(lines,{code:'HDMF',name:'Pag-IBIG Employee Share',type:'statutory',amount:statutory.piEE,employerAmount:statutory.piER,formula:'Compensation base × configured rate × period factor',ruleCode:'HDMF_2024',ruleVersion:1,legalSource:'Pag-IBIG effective contribution schedule'});
     var taxableCredits = lines.filter(function (line) { return line.type === 'earning' && line.taxable; }).reduce(function (sum,line) { return sum+line.amount; },0);
     var taxableCompensation = Math.max(0,taxableCredits-statutory.sssEE-statutory.phEE-statutory.piEE);
-    var tax = money(input.tax(taxableCompensation,group.taxMethod||group.freq));
+    var tax = money(input.tax(taxableCompensation,group.taxMethod||group.freq,period.releaseDate||period.to));
     addLine(lines,{code:'TAX',name:'Withholding Tax',type:'statutory',amount:tax,formula:'BIR withholding table applied to taxable compensation after mandatory employee contributions',ruleCode:'BIR_ANNEX_E_2023',ruleVersion:1,legalSource:'BIR RR 11-2018 Annex E'});
     var mandatory = statutory.sssEE+statutory.phEE+statutory.piEE+tax;
     var protectedNetRule = ruleValue(rules,'PROTECTED_NET_PAY',date,context,0);
@@ -240,7 +248,7 @@
       lines:lines,issues:issues,loanSchedule:loanResult.details,
       basic:money(baseBasic),ot:money(lines.filter(function(l){return l.code==='OT_REG'||l.code==='RDH';}).reduce(function(s,l){return s+l.amount;},0)),nd:money(lines.filter(function(l){return l.code==='ND';}).reduce(function(s,l){return s+l.amount;},0)),
       gross:money(credits),attendanceDeduction:money(attendanceDeductions),sss:money(statutory.sssEE),ph:money(statutory.phEE),pi:money(statutory.piEE),tax:tax,loan:loanResult.amount,totalDed:totalDeductions,net:net,
-      taxableCompensation:money(taxableCompensation),employerContributions:employerContributions,employerCost:money(credits+employerContributions),statutoryFactor:statFactor
+      taxableCompensation:money(taxableCompensation),annualBenefitQualified:money(annualBenefitQualified),annualBenefitExempt:money(annualBenefitExempt),annualBenefitTaxable:money(annualBenefitTaxable),annualBenefitUsedBefore:money(benefitUsedBefore),annualBenefitRemaining:money(Math.max(0,benefitLimit-benefitUsedBefore-annualBenefitExempt)),employerContributions:employerContributions,employerCost:money(credits+employerContributions),statutoryFactor:statFactor
     };
   }
   return { money:money, selectRule:selectRule, frequencyFactor:frequencyFactor, cutoffNumber:cutoffNumber, statutoryFactor:statutoryFactor, recurringAllowanceFactor:recurringAllowanceFactor, validateEmployee:validateEmployee, validateAttendance:validateAttendance, calculate:calculate };

@@ -25,6 +25,9 @@ assert.strictEqual(core.aggregate('2026-05', runs, finalPays).entries.length, 1)
 const manualMonthRun = {id:4,status:'locked',releaseDate:'2026-06-30',bir1601CMonth:'2026-07',items:[{empId:3,eid:'E-3',name:'Cara',gross:20000,taxableCompensation:20000,tax:250}]};
 assert.strictEqual(core.aggregate('2026-06',[manualMonthRun],[]).entries.length,0,'Manual BIR month must override the payment month');
 assert.strictEqual(core.aggregate('2026-07',[manualMonthRun],[]).entries.length,1,'Run must appear in its manually selected BIR month');
+const benefitMonth=core.aggregate('2026-12',[{id:6,status:'approved',bir1601CMonth:'2026-12',items:[{empId:4,gross:50000,taxableCompensation:30000,annualBenefitExempt:20000,annualBenefitTaxable:30000,tax:1000}]}],[]);
+assert.strictEqual(benefitMonth.annualBenefitExempt,20000,'1601-C Item 17 control must aggregate the system-classified exempt benefit portion');
+assert.strictEqual(benefitMonth.annualBenefitTaxable,30000,'the taxable excess must remain separately auditable');
 const annualized = core.annualizedTermination({priorTaxable:300000,previousEmployerTaxable:100000,finalTaxable:50000,priorTaxWithheld:20000,previousEmployerTaxWithheld:5000,taxFunction:income=>income<=400000?22500:22500+(income-400000)*.20});
 assert.deepStrictEqual(annualized,{annualTaxable:450000,annualTax:32500,adjustment:7500,withholding:7500,refund:0});
 console.log('BIR 1601-C tests passed.');

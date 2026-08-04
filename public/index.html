@@ -1019,8 +1019,8 @@ let INCOME_TYPES=[
   {id:2,code:'OT',name:'Overtime Pay (125%)',cat:'earnings',taxable:true,deminimis:false,dmLimit:0,annualize:true,isStatutory:false},
   {id:3,code:'ND',name:'Night Differential',cat:'earnings',taxable:true,deminimis:false,dmLimit:0,annualize:true,isStatutory:false},
   {id:4,code:'HOLIDAY',name:'Holiday Pay',cat:'earnings',taxable:true,deminimis:false,dmLimit:0,annualize:true,isStatutory:false},
-  {id:5,code:'BONUS',name:'Performance Bonus',cat:'earnings',taxable:true,deminimis:false,dmLimit:0,annualize:true,isStatutory:false},
-  {id:6,code:'13TH',name:'13th Month Pay',cat:'bonuses',taxable:false,deminimis:false,dmLimit:90000,annualize:false,isStatutory:false},
+  {id:5,code:'BONUS',name:'Performance / Productivity Bonus',cat:'bonuses',taxable:false,deminimis:false,dmLimit:90000,annualize:true,benefitTreatment:'annual-benefit-bucket',isStatutory:false},
+  {id:6,code:'13TH',name:'13th Month Pay',cat:'bonuses',taxable:false,deminimis:false,dmLimit:90000,annualize:true,benefitTreatment:'annual-benefit-bucket',isStatutory:false},
   {id:7,code:'RICE',name:'Rice Subsidy',cat:'deminimis',taxable:false,deminimis:true,dmLimit:2000,annualize:false,isStatutory:false},
   {id:8,code:'CLOTH',name:'Clothing Allowance',cat:'deminimis',taxable:false,deminimis:true,dmLimit:500,annualize:false,isStatutory:false},
   {id:9,code:'XMAS',name:'Christmas Bonus',cat:'deminimis',taxable:false,deminimis:true,dmLimit:5000,annualize:false,isStatutory:false},
@@ -1138,7 +1138,7 @@ function taxEventLabel(value){return {'regular':'Regular withholding','annualize
 function employeeTaxRecord(emp,year,create=false){
   if(!emp)return null;if(!Array.isArray(emp.taxYearRecords))emp.taxYearRecords=[];
   let record=emp.taxYearRecords.find(r=>Number(r.year)===Number(year));
-  if(!record&&create){record={year:Number(year),hasPreviousEmployer:false,previousEmployerTaxable:0,previousEmployerTaxWithheld:0,openingYtdTaxable:0,openingYtdTaxWithheld:0,sourceReference:'',confirmed:false};emp.taxYearRecords.push(record);}
+  if(!record&&create){record={year:Number(year),hasPreviousEmployer:false,previousEmployerName:'',previousEmployerTin:'',previousEmploymentFrom:'',previousEmploymentTo:'',previousEmployerNonTaxableBenefits:0,previousEmployerTaxableBenefits:0,previousEmployerDeMinimis:0,previousEmployerTaxable:0,previousEmployerTaxWithheld:0,openingYtdTaxable:0,openingYtdTaxWithheld:0,sourceReference:'',confirmed:false};emp.taxYearRecords.push(record);}
   return record||null;
 }
 function payrollRunTaxYear(run){return Number(run.taxYear||String(run.bir1601CMonth||run.releaseDate||run.to||'').slice(0,4));}
@@ -1151,19 +1151,32 @@ function employeeYtdTaxSnapshot(empId,year,throughMonth='',excludePeriodId=null)
   const items=eligible.map(run=>(run.items||[]).find(item=>item.empId===empId)).filter(Boolean);
   return{taxable:items.reduce((s,item)=>s+Number(item.taxableCompensation||0),0),withheld:items.reduce((s,item)=>s+Number(item.tax||0)-Number(item.taxRefund||0),0),runCount:items.length};
 }
+function employeeYtdBenefitSnapshot(empId,year,throughMonth='',excludePeriodId=null){
+  const eligible=PAYROLLS.filter(run=>{const finalized=run.status==='approved'||run.status==='locked'||(run.type==='13th-month'&&run.status!=='voided');const month=String(run.bir1601CMonth||reportingMonthFromDate(run.releaseDate||run.on||run.to));return finalized&&payrollRunTaxYear(run)===Number(year)&&run.periodId!==excludePeriodId&&(!throughMonth||month<=throughMonth);});
+  const items=eligible.map(run=>(run.items||[]).find(item=>item.empId===empId)).filter(Boolean);
+  return{qualified:items.reduce((s,item)=>s+Number(item.annualBenefitQualified||0),0),exempt:items.reduce((s,item)=>s+Number(item.annualBenefitExempt||0),0),taxable:items.reduce((s,item)=>s+Number(item.annualBenefitTaxable||0),0),runCount:items.length};
+}
 function saveEmployeeTaxYearRecord(empId,year){
   const emp=USERS.find(e=>e.id===empId);if(!emp)return;
   const record=employeeTaxRecord(emp,year,true),num=id=>Math.max(0,Number(document.getElementById(id)?.value||0));
   record.hasPreviousEmployer=!!document.getElementById('tax-has-previous')?.checked;
+  record.previousEmployerName=record.hasPreviousEmployer?(document.getElementById('tax-prev-name')?.value||'').trim():'';
+  record.previousEmployerTin=record.hasPreviousEmployer?(document.getElementById('tax-prev-tin')?.value||'').trim():'';
+  record.previousEmploymentFrom=record.hasPreviousEmployer?(document.getElementById('tax-prev-from')?.value||''):'';
+  record.previousEmploymentTo=record.hasPreviousEmployer?(document.getElementById('tax-prev-to')?.value||''):'';
+  record.previousEmployerNonTaxableBenefits=record.hasPreviousEmployer?num('tax-prev-nontax-benefits'):0;
+  record.previousEmployerTaxableBenefits=record.hasPreviousEmployer?num('tax-prev-tax-benefits'):0;
+  record.previousEmployerDeMinimis=record.hasPreviousEmployer?num('tax-prev-deminimis'):0;
   record.previousEmployerTaxable=record.hasPreviousEmployer?num('tax-prev-taxable'):0;
   record.previousEmployerTaxWithheld=record.hasPreviousEmployer?num('tax-prev-withheld'):0;
   record.openingYtdTaxable=num('tax-opening-taxable');record.openingYtdTaxWithheld=num('tax-opening-withheld');
   record.sourceReference=(document.getElementById('tax-source')?.value||'').trim();record.confirmed=!!document.getElementById('tax-confirmed')?.checked;
-  if(record.hasPreviousEmployer&&!record.sourceReference){toast('Enter the BIR 2316 or previous-employer source reference.','warning');return;}
+  const priorIssues=window.BIRTaxVersionCore?BIRTaxVersionCore.validatePreviousEmployer(record):[];
+  if(priorIssues.length){record.confirmed=false;toast(priorIssues[0],'warning',6000);return;}
   if(record.confirmed){record.confirmedBy=user.name;record.confirmedAt=new Date().toISOString();}
   queueSync('Employees');toast('Tax year record saved.','success');render();
 }
-function setEmployeeHasPreviousEmployer(empId,year,checked){const emp=USERS.find(e=>e.id===empId),record=employeeTaxRecord(emp,year,true);record.hasPreviousEmployer=!!checked;if(!checked){record.previousEmployerTaxable=0;record.previousEmployerTaxWithheld=0;}render();}
+function setEmployeeHasPreviousEmployer(empId,year,checked){const emp=USERS.find(e=>e.id===empId),record=employeeTaxRecord(emp,year,true);record.hasPreviousEmployer=!!checked;if(!checked){['previousEmployerName','previousEmployerTin','previousEmploymentFrom','previousEmploymentTo','previousEmployerNonTaxableBenefits','previousEmployerTaxableBenefits','previousEmployerDeMinimis','previousEmployerTaxable','previousEmployerTaxWithheld'].forEach(k=>record[k]=typeof record[k]==='number'?0:'');}render();}
 function isPayrollAdjustmentReady(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.isReady(record):!!record&&['ready','approved','pending'].includes(record.status);}
 function canDeletePayrollAdjustment(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.canDelete(record):!!record&&record.status!=='applied'&&!record.payrollRunId;}
 function setPayrollPreviewFilter(kind,value){
@@ -1590,6 +1603,14 @@ let GOVT_RATES={
     effectiveDate:'2023-01-01'
   }
 };
+let BIR_TAX_VERSIONS=[];
+function ensureBirTaxVersions(){
+  if(BIR_TAX_VERSIONS.length)return;
+  BIR_TAX_VERSIONS.push({id:'BIR-ANNEX-E-2023',name:'BIR RR 11-2018 Annex E',version:1,status:'active',effectiveFrom:'2023-01-01',effectiveTo:'',legalReference:'BIR RR 11-2018 Annex E',notes:'Official revised withholding tax table effective January 1, 2023 and onwards.',tables:JSON.parse(JSON.stringify(GOVT_RATES.bir.tables)),createdBy:'System migration',createdAt:new Date().toISOString(),approvedBy:'System migration',approvedAt:new Date().toISOString()});
+}
+function selectedBirTaxVersion(date){ensureBirTaxVersions();return window.BIRTaxVersionCore?BIRTaxVersionCore.selectVersion(BIR_TAX_VERSIONS,date||today()):BIR_TAX_VERSIONS.find(v=>v.status==='active');}
+function birTaxVersionById(id){ensureBirTaxVersions();return BIR_TAX_VERSIONS.find(v=>v.id===id)||null;}
+function birTaxVersionSnapshot(date){const v=selectedBirTaxVersion(date);return v?{id:v.id,name:v.name,version:v.version,effectiveFrom:v.effectiveFrom,effectiveTo:v.effectiveTo||'',legalReference:v.legalReference,status:v.status}:null;}
 
 function sssContrib(ms){
   for(const[c,a]of GOVT_RATES.sss.brackets)if(ms<=c)return a;
@@ -1640,9 +1661,11 @@ function piErShare(ms){return piContrib(ms);} /* employer matches employee */
    TRAIN Law (RA 10963) | All tables derived from the annual schedule:
    Annual: 0%/20%/25%/30%/32%/35% on ₱0/250k/400k/800k/2M/8M
    ─────────────────────────────────────────────────────────────── */
-function birTaxByFreq(income,freq){
-  const tbl=(GOVT_RATES.bir.tables&&GOVT_RATES.bir.tables[freq])||GOVT_RATES.bir.brackets;
-  for(let i=tbl.length-1;i>=0;i--){const b=tbl[i];if(income>b.from)return +(b.base+(income-b.from)*(b.rate/100)).toFixed(2);}
+function birTaxByFreq(income,freq,effectiveDate){
+  const version=selectedBirTaxVersion(effectiveDate||today());
+  if(window.BIRTaxVersionCore&&version)return BIRTaxVersionCore.taxDue(income,freq,version);
+  const tbl=(version?.tables&&version.tables[freq])||(GOVT_RATES.bir.tables&&GOVT_RATES.bir.tables[freq])||GOVT_RATES.bir.brackets;
+  for(let i=tbl.length-1;i>=0;i--){const b=tbl[i];if(income>=b.from)return +(b.base+(income-b.from)*(b.rate/100)).toFixed(2);}
   return 0;
 }
 function birTax(ms){return birTaxByFreq(ms,'monthly');}
@@ -1675,7 +1698,7 @@ function compute(emp,pr,la,ab,otH,ndH,extras){
     extraEarnings,extraDeductions,taxableExtras,nonTaxExtras,deminimisTotal,
     extras:extras||[]};
 }
-function thirteenth(emp){return +(emp.rate*22/12).toFixed(2);}
+function thirteenth(emp){const monthly=Number(emp.salaryPM||emp.rate*(emp.dailyDivisor||COMPANY.dailyDivisor||22));return +monthly.toFixed(2);}
 
 /* ========== CLAUDE ========== */
 async function askClaude(q){
@@ -4973,25 +4996,32 @@ function pgPayroll(){
   else if(tab===3){
     const emps=USERS.filter(u=>u.role==='employee');
     const releaseType=window._13type||'year-end';
+    const openPeriods=PAY_PERIODS.filter(p=>p.status==='open');
+    if(!window._13period&&openPeriods.length)window._13period=openPeriods[0].id;
+    const selected13Period=openPeriods.find(p=>p.id===Number(window._13period))||openPeriods[0];
+    const benefitYear=Number(String(selected13Period?.taxYear||selected13Period?.bir1601CMonth||selected13Period?.to||today()).slice(0,4));
     const totalT13=emps.reduce((s,e)=>s+thirteenth(e),0);
     const taxExemptLimit=90000;
     body=`
     <div style="padding:10px 14px;background:var(--amber-bg);border-radius:8px;font-size:12px;color:var(--amber-txt);margin-bottom:1rem;border-left:3px solid var(--amber)">
-      <strong>PD 851 (13th Month Pay Law):</strong> All rank-and-file employees who have worked for at least one month are entitled to 13th month pay = Total Basic Salary ÷ 12. Tax-exempt up to ₱90,000 annually.
+      <strong>13th Month &amp; Other Benefits:</strong> The ₱90,000 exemption is one shared annual bucket across the employee's previous employer, current-employer 13th month, and other qualified benefits. Only the excess is taxable.
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
       <div style="font-size:13px;font-weight:600;color:var(--txt2)">Release Type:</div>
       ${[['year-end','Year-End (Dec 24)'],['mid-year','Mid-Year (June)'],['pro-rated','Pro-Rated (Resigned)']].map(([v,l])=>`
       <button class="btn btn-sm ${releaseType===v?'btn-primary':''}" onclick="window._13type='${v}';render()">${l}</button>`).join('')}
-      <button class="btn btn-sm btn-primary" style="margin-left:auto" onclick="gen13thPayroll()">🏦 Generate 13th Month Payroll Run</button>
+      <select class="finput" style="margin-left:auto;max-width:280px" onchange="window._13period=+this.value;render()"><option value="">— Select open payroll period —</option>${openPeriods.map(p=>`<option value="${p.id}" ${selected13Period?.id===p.id?'selected':''}>${esc(p.label)} · BIR ${displayReportingMonth(p.bir1601CMonth)}</option>`).join('')}</select>
+      <button class="btn btn-sm btn-primary" onclick="stage13thMonthPayroll()" ${selected13Period?'':'disabled'}>Add &amp; Process 13th Month</button>
     </div>
     <table><thead><tr><th>Employee</th><th>Position</th><th>Daily Rate</th><th>Monthly Basic</th><th>Months Worked</th><th>13th Month</th><th>Tax-Exempt Limit</th><th>Taxable Excess</th></tr></thead>
     <tbody>${emps.map(e=>{
       const ms=e.rate*(COMPANY.dailyDivisor||22);
       const hired=e.hired||'2024-01-01';
-      const monthsWorked=Math.min(12,Math.max(1,Math.ceil((new Date('2025-12-31')-new Date(hired))/(30.44*24*3600*1000))));
+      const monthsWorked=Math.min(12,Math.max(1,Math.ceil((new Date(benefitYear+'-12-31')-new Date(hired))/(30.44*24*3600*1000))));
       const t13=releaseType==='pro-rated'?+(ms*monthsWorked/12).toFixed(2):thirteenth(e);
-      const excess=Math.max(0,t13-taxExemptLimit);
+      const taxProfile=employeeTaxRecord(e,benefitYear,false)||{};const ytdBenefits=employeeYtdBenefitSnapshot(e.id,benefitYear,selected13Period?.bir1601CMonth||'');
+      const allocation=BIRTaxVersionCore.allocateAnnualBenefit({limit:taxExemptLimit,previousEmployerNonTaxable:taxProfile.previousEmployerNonTaxableBenefits,currentEmployerYtdNonTaxable:ytdBenefits.exempt,currentQualified:t13});
+      const excess=allocation.taxable;
       return`<tr>
         <td><div class="emp-cell"><div class="avatar sm">${ini(e.name)}</div><div><div style="font-weight:500">${esc(e.name)}</div><div style="font-size:11px;color:var(--txt3)">${esc(e.eid)}</div></div></div></td>
         <td style="font-size:12px">${esc(e.pos||'')}</td>
@@ -4999,14 +5029,14 @@ function pgPayroll(){
         <td class="mono">${fmt(ms)}</td>
         <td style="text-align:center;font-weight:600">${monthsWorked}</td>
         <td class="mono" style="font-weight:700;color:var(--green)">${fmt(t13)}</td>
-        <td class="mono" style="color:var(--txt3)">${fmt(taxExemptLimit)}</td>
+        <td class="mono" style="color:var(--txt3)">${fmt(allocation.remainingBefore)} remaining</td>
         <td class="mono" style="color:${excess?'var(--red)':'var(--green)'};font-weight:600">${excess?fmt(excess):'Exempt'}</td>
       </tr>`;}).join('')}</tbody>
     <tfoot><tr style="background:var(--surface2)">
       <td colspan="5" style="text-align:right;font-weight:700;padding:10px 12px;font-size:13px">TOTAL 13TH MONTH:</td>
       <td class="mono" style="font-weight:800;color:var(--green);font-size:14px;padding:10px 12px">${fmt(totalT13)}</td>
       <td></td>
-      <td class="mono" style="font-weight:700;color:var(--red);padding:10px 12px">${fmt(emps.reduce((s,e)=>s+Math.max(0,thirteenth(e)-taxExemptLimit),0))}</td>
+      <td class="mono" style="font-weight:700;color:var(--red);padding:10px 12px">${fmt(emps.reduce((s,e)=>{const profile=employeeTaxRecord(e,benefitYear,false)||{},ytd=employeeYtdBenefitSnapshot(e.id,benefitYear,selected13Period?.bir1601CMonth||'');return s+BIRTaxVersionCore.allocateAnnualBenefit({limit:taxExemptLimit,previousEmployerNonTaxable:profile.previousEmployerNonTaxableBenefits,currentEmployerYtdNonTaxable:ytd.exempt,currentQualified:thirteenth(e)}).taxable;},0))}</td>
     </tr></tfoot></table>`;
   }
 
@@ -5514,7 +5544,9 @@ function computeFinalPay(e,options={}){
   // Days in last partial month
   const lastMonthDays=Math.max(1,Math.ceil((new Date(separated)-new Date(separated.slice(0,8)+'01'))/(24*3600*1000)));
   const proratedLastMonth=+(ms*(lastMonthDays/30)).toFixed(2);
-  const monthsWorked=Math.min(12,Math.max(1,Math.ceil((new Date(separated)-new Date(hired))/(30.44*24*3600*1000))));
+  const benefitYear=separated.slice(0,4),benefitYearStart=benefitYear+'-01-01';
+  const benefitServiceStart=hired>benefitYearStart?hired:benefitYearStart;
+  const monthsWorked=Math.min(12,Math.max(1,Math.ceil((new Date(separated)-new Date(benefitServiceStart))/(30.44*24*3600*1000))));
   const t13Pro=+(ms*monthsWorked/12).toFixed(2);
   const leaveConversion=5*e.rate; // private employee; within RR 29-2025 12-day de minimis ceiling
   const loans=LOANS.filter(l=>l.eid===e.id&&l.status==='active').reduce((s,l)=>s+(l.balance||0),0);
@@ -5522,13 +5554,14 @@ function computeFinalPay(e,options={}){
   const priorItems=priorRuns.map(r=>({run:r,item:(r.items||[]).find(i=>i.empId===e.id)})).filter(x=>x.item);
   const priorTaxable=priorItems.reduce((s,x)=>s+Number(x.item.taxableCompensation||0),0);
   const priorTaxWithheld=priorItems.reduce((s,x)=>s+Number(x.item.tax||0),0);
-  const prior13thBenefits=priorItems.filter(x=>x.run.type==='13th-month').reduce((s,x)=>s+Number(x.item.gross||0),0);
-  const remainingOtherBenefitsCap=Math.max(0,90000-prior13thBenefits);
-  const nonTaxable13th=Math.min(t13Pro,remainingOtherBenefitsCap);
-  const taxableFinal=+(proratedLastMonth+Math.max(0,t13Pro-nonTaxable13th)).toFixed(2);
   const taxProfile=employeeTaxRecord(e,Number(releaseYear),false)||{};
-  const taxProfileIssues=BIRAnnualizationCore.validateProfile(taxProfile,Number(releaseYear),COMPANY.taxPolicy?.requireConfirmedTaxRecord!==false);
-  const annualized=BIRAnnualizationCore.reconcile({priorTaxable,finalTaxable,currentTaxable:taxableFinal,ytdTaxable:priorTaxable,ytdTaxWithheld:priorTaxWithheld,openingYtdTaxable:taxProfile.openingYtdTaxable,openingYtdTaxWithheld:taxProfile.openingYtdTaxWithheld,previousEmployerTaxable:taxProfile.previousEmployerTaxable,previousEmployerTaxWithheld:taxProfile.previousEmployerTaxWithheld,taxFunction:income=>birTaxByFreq(income,'annual')});
+  const benefitYtd=employeeYtdBenefitSnapshot(e.id,Number(releaseYear),releaseDate.slice(0,7),null);
+  const legacyPriorBenefits=priorItems.filter(x=>x.run.type==='13th-month').reduce((s,x)=>s+Number(x.item.gross||0),0);
+  const benefitAllocation=BIRTaxVersionCore.allocateAnnualBenefit({limit:90000,previousEmployerNonTaxable:taxProfile.previousEmployerNonTaxableBenefits,currentEmployerYtdNonTaxable:benefitYtd.exempt||legacyPriorBenefits,currentQualified:t13Pro});
+  const nonTaxable13th=benefitAllocation.exempt;
+  const taxableFinal=+(proratedLastMonth+Math.max(0,t13Pro-nonTaxable13th)).toFixed(2);
+  const taxProfileIssues=BIRAnnualizationCore.validateProfile(taxProfile,Number(releaseYear),COMPANY.taxPolicy?.requireConfirmedTaxRecord!==false).concat(window.BIRTaxVersionCore?BIRTaxVersionCore.validatePreviousEmployer(taxProfile):[]);
+  const annualized=BIRAnnualizationCore.reconcile({priorTaxable,finalTaxable,currentTaxable:taxableFinal,ytdTaxable:priorTaxable,ytdTaxWithheld:priorTaxWithheld,openingYtdTaxable:taxProfile.openingYtdTaxable,openingYtdTaxWithheld:taxProfile.openingYtdTaxWithheld,previousEmployerTaxable:taxProfile.previousEmployerTaxable,previousEmployerTaxWithheld:taxProfile.previousEmployerTaxWithheld,taxFunction:income=>birTaxByFreq(income,'annual',releaseDate)});
   const earnings=[
     {label:'Last Salary (prorated)',amount:proratedLastMonth},
     {label:'13th Month Pay (pro-rated)',amount:t13Pro},
@@ -5541,7 +5574,7 @@ function computeFinalPay(e,options={}){
   const grossFP=earnings.filter(x=>!x.excludeFromGross).reduce((s,x)=>s+x.amount,0);
   const totalDed=deductions.reduce((s,x)=>s+x.amount,0);
   const netFP=Math.max(0,grossFP+annualized.refund-totalDed);
-  return{earnings,deductions,grossFP,totalDed,netFP,taxableCompensation:taxableFinal,nonTaxableCompensation:+(nonTaxable13th+leaveConversion).toFixed(2),priorTaxable,priorTaxWithheld,annualizedTaxable:annualized.annualTaxable,annualTax:annualized.annualTax,taxWithheld:annualized.withholding,taxRefund:annualized.refund,taxProfile,taxProfileIssues,releaseDate};
+  return{earnings,deductions,grossFP,totalDed,netFP,taxableCompensation:taxableFinal,nonTaxableCompensation:+(nonTaxable13th+leaveConversion).toFixed(2),annualBenefitQualified:t13Pro,annualBenefitExempt:nonTaxable13th,annualBenefitTaxable:benefitAllocation.taxable,priorTaxable,priorTaxWithheld,annualizedTaxable:annualized.annualTaxable,annualTax:annualized.annualTax,taxWithheld:annualized.withholding,taxRefund:annualized.refund,taxProfile,taxProfileIssues,birTaxTableVersion:birTaxVersionSnapshot(releaseDate),releaseDate};
 }
 
 function releaseFinalPay(empId){
@@ -5555,7 +5588,7 @@ function releaseFinalPay(empId){
   if(computation.taxProfileIssues.length){toast('Final pay blocked: complete and confirm the employee Tax & YTD record for '+releaseDate.slice(0,4)+'.','warning',6000);return;}
   const existing=FINAL_PAY_LIST.find(x=>x.empId===empId&&x.releaseDate===releaseDate&&x.status==='released');
   if(existing){toast('This final pay is already released and included in the selected 1601-C month.','info');return;}
-  FINAL_PAY_LIST.push({id:nFP++,empId:e.id,eid:e.eid,employeeName:e.name,status:'released',releasedAt:new Date().toISOString(),releasedBy:user?.name||'Administrator',releaseDate,bir1601CMonth,includeIn1601C:true,taxEventType:'annualized-final-pay',taxYear:Number(releaseDate.slice(0,4)),grossFP:computation.grossFP,netFP:computation.netFP,taxableCompensation:computation.taxableCompensation,nonTaxableCompensation:computation.nonTaxableCompensation,taxWithheld:computation.taxWithheld,taxRefund:computation.taxRefund,annualizedTaxable:computation.annualizedTaxable,annualTax:computation.annualTax,taxProfileSnapshot:Object.assign({},computation.taxProfile)});
+  FINAL_PAY_LIST.push({id:nFP++,empId:e.id,eid:e.eid,employeeName:e.name,status:'released',releasedAt:new Date().toISOString(),releasedBy:user?.name||'Administrator',releaseDate,bir1601CMonth,includeIn1601C:true,taxEventType:'annualized-final-pay',taxYear:Number(releaseDate.slice(0,4)),grossFP:computation.grossFP,netFP:computation.netFP,taxableCompensation:computation.taxableCompensation,nonTaxableCompensation:computation.nonTaxableCompensation,annualBenefitQualified:computation.annualBenefitQualified,annualBenefitExempt:computation.annualBenefitExempt,annualBenefitTaxable:computation.annualBenefitTaxable,taxWithheld:computation.taxWithheld,taxRefund:computation.taxRefund,annualizedTaxable:computation.annualizedTaxable,annualTax:computation.annualTax,birTaxTableVersion:computation.birTaxTableVersion,taxProfileSnapshot:Object.assign({},computation.taxProfile)});
   queueSync('Final_Pay');
   toast(`Final pay for ${e.name} released and included in 1601-C ${displayReportingMonth(bir1601CMonth)}.`,'success');render();
 }
@@ -6397,20 +6430,26 @@ function matchesGroup(emp, group){
 
 function openPR(id){modal={type:'payroll',run:PAYROLLS.find(r=>r.id===id)};render();}
 
-function gen13thPayroll(){
-  const emps=USERS.filter(u=>u.role==='employee');
-  if(!emps.length){toast('No employees found.','warning');return;}
-  const items=emps.map(e=>{
-    const ms=e.rate*(COMPANY.dailyDivisor||22);
-    const t13=thirteenth(e);
-    return{...compute(e,22,0,0,0,0,null),eid:e.id,name:e.name,pos:e.pos,rate:e.rate,pr:22,la:0,ab:0,otH:0,ndH:0,
-      basic:t13,gross:t13,net:Math.max(0,t13-sssContrib(ms)-phContrib(ms)-piContrib(ms))};
+function stage13thMonthPayroll(){
+  const period=PAY_PERIODS.find(p=>p.id===Number(window._13period)&&p.status==='open');
+  if(!period){toast('Select an open payroll period first.','warning');return;}
+  const group=PAYROLL_GROUPS.find(g=>g.id===period.groupId),type=INCOME_TYPES.find(t=>t.code==='13TH');
+  if(!group||!type){toast('The payroll group or 13TH income type is missing.','warning');return;}
+  const taxYear=Number(String(period.taxYear||period.bir1601CMonth||period.to).slice(0,4));
+  const employees=USERS.filter(e=>e.role==='employee'&&e.active!==false&&(e.payGroupId===group.id||matchesGroup(e,group)));
+  let added=0;
+  employees.forEach(emp=>{
+    if(PAYROLL_ADJ.some(a=>a.empId===emp.id&&a.payPeriodId===period.id&&a.payItemCode==='13TH'&&a.processStatus!=='voided'))return;
+    const monthly=Number(emp.salaryPM||emp.rate*(emp.dailyDivisor||COMPANY.dailyDivisor||22));
+    const hired=emp.hired||taxYear+'-01-01';
+    const monthsWorked=Math.min(12,Math.max(1,Math.ceil((new Date(taxYear+'-12-31')-new Date(hired))/(30.44*24*3600*1000))));
+    const amount=(window._13type==='pro-rated'?monthly*monthsWorked/12:thirteenth(emp));
+    PAYROLL_ADJ.push({id:nAdj++,empId:emp.id,adjType:type.name,payItemCode:type.code,category:type.cat,taxable:false,benefitTreatment:'annual-benefit-bucket',direction:'income',amount:+amount.toFixed(2),reason:'13th month pay · '+taxYear+' · '+(window._13type||'year-end'),effectiveDate:period.releaseDate||period.to,payPeriodId:period.id,payPeriodLabel:period.label,addedBy:user.name,status:'ready',processStatus:'ready',createdAt:today()});added++;
   });
-  const run={id:nPay++,from:'2025-12-01',to:'2025-12-31',items,on:today(),releaseDate:'2025-12-20',bir1601CMonth:'2025-12',includeIn1601C:true,taxEventType:'13th_month',type:'13th-month',groupId:1};
-  PAYROLLS.push(run);
-  toast('13th Month payroll run generated!','success');
-  goTab(5);render();
+  if(!added){toast('13th month entries already exist for this payroll period.','warning');return;}
+  queueSync('Payroll_Adjustments');toast(added+' 13th month entries added. Processing the full payroll now.','success');processAdjustmentPayroll(period.id);
 }
+function gen13thPayroll(){stage13thMonthPayroll();}
 
 /* ── PAYROLL REGISTER EXPORT ─────────────────────────────────────────────── */
 function exportPayrollRegister(){
@@ -6613,17 +6652,31 @@ function pgGovernment(){
     </div>`;
   }
   if(tab===2){
-    const b=GOVT_RATES.bir;
+    ensureBirTaxVersions();
+    const activeVersion=selectedBirTaxVersion(today());
+    if(!window._birVersionId)window._birVersionId=activeVersion?.id||BIR_TAX_VERSIONS[0]?.id;
+    const version=birTaxVersionById(window._birVersionId)||activeVersion||BIR_TAX_VERSIONS[0];
+    const b=version;
+    const editable=version?.status==='draft';
     const freqTabs=['monthly','semi-monthly','weekly','daily','annual'];
     const selFreq=window._birFreq||'monthly';
     const freqBrackets=(b.tables&&b.tables[selFreq])?[...b.tables[selFreq]]:b.brackets;
     const freqLabels={'monthly':'Monthly','semi-monthly':'Semi-Monthly','weekly':'Weekly','daily':'Daily','annual':'Annual'};
     const periods={'monthly':'/mo','semi-monthly':'/semi-mo','weekly':'/wk','daily':'/day','annual':'/yr'};
     return`<div class="page-header" style="align-items:center">
-      <div><div class="page-title">BIR Withholding Tax Tables</div><div class="page-sub">All tables editable — Monthly · Semi-Monthly · Weekly · Daily · Annual</div></div>
-      <button class="btn btn-success" onclick="applyBIRTables()">✓ Save & Apply Tables</button>
+      <div><div class="page-title">BIR Withholding Tax Versions</div><div class="page-sub">Effective-dated tables preserve historical payroll while allowing future BIR changes.</div></div>
+      <div style="display:flex;gap:7px"><button class="btn" onclick="cloneBIRTaxVersion()">+ Clone New Version</button>${editable?`<button class="btn btn-danger" onclick="deleteBIRTaxDraft('${version.id}')">Delete Draft</button><button class="btn btn-success" onclick="applyBIRTables()">Save Draft</button><button class="btn btn-primary" onclick="activateBIRTaxVersion('${version.id}')">Activate Version</button>`:''}</div>
     </div>
     ${tabBar}
+    <div class="card" style="padding:.875rem;margin-bottom:1rem;border-left:3px solid ${editable?'var(--amber)':'var(--green)'}">
+      <div style="display:grid;grid-template-columns:1.3fr .7fr .7fr .9fr;gap:10px;align-items:end">
+        <div class="field" style="margin:0"><label>Tax Table Version</label><select class="finput" onchange="window._birVersionId=this.value;render()">${BIR_TAX_VERSIONS.slice().sort((a,b)=>String(b.effectiveFrom).localeCompare(String(a.effectiveFrom))).map(v=>`<option value="${v.id}" ${v.id===version.id?'selected':''}>${esc(v.name)} · ${v.status.toUpperCase()}</option>`).join('')}</select></div>
+        <div class="field" style="margin:0"><label>Effective From</label><input id="bir-version-from" type="date" class="finput" value="${version.effectiveFrom||''}" ${editable?'':'disabled'}/></div>
+        <div class="field" style="margin:0"><label>Effective To</label><input id="bir-version-to" type="date" class="finput" value="${version.effectiveTo||''}" ${editable?'':'disabled'}/></div>
+        <div><span class="badge ${editable?'b-pending':'b-approved'}">${version.status}</span><div style="font-size:10px;color:var(--txt3);margin-top:5px">${esc(version.legalReference||'No legal reference')}</div></div>
+      </div>
+      ${editable?`<div class="form-row" style="margin-top:10px"><div class="field"><label>Version Name</label><input id="bir-version-name" class="finput" value="${esc(version.name||'')}"/></div><div class="field"><label>BIR Issuance / Legal Reference</label><input id="bir-version-law" class="finput" value="${esc(version.legalReference||'')}" placeholder="e.g. RR No. __ / RMC No. __"/></div></div>`:`<div style="font-size:11px;color:var(--txt3);margin-top:9px">Active versions are read-only. Clone this version, enter its future effective date and legal issuance, validate, then activate it. Existing payroll remains tied to its saved table snapshot.</div>`}
+    </div>
     <!-- Frequency tabs -->
     <div style="display:flex;gap:6px;margin-bottom:1rem;flex-wrap:wrap">
       ${freqTabs.map(f=>`<button onclick="window._birFreq='${f}';render()" class="btn ${selFreq===f?'btn-primary':''}" style="font-size:12px;font-weight:600">
@@ -6638,9 +6691,9 @@ function pgGovernment(){
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
         <div>
           <div class="card-title">Tax Brackets — ${freqLabels[selFreq]||selFreq} (${freqBrackets.length} rows)</div>
-          <div class="card-sub">Edit any cell · Add rows below · Delete rows · Changes saved on "Save & Apply"</div>
+          <div class="card-sub">${editable?'Edit the draft, validate it, then activate.':'Read-only active table used for the selected effective dates.'}</div>
         </div>
-        <button class="btn btn-sm btn-primary" onclick="addBIRRow('${selFreq}')">+ Add Bracket</button>
+        ${editable?`<button class="btn btn-sm btn-primary" onclick="addBIRRow('${selFreq}')">+ Add Bracket</button>`:''}
       </div>
       <div style="overflow-x:auto">
       <table style="min-width:700px"><thead><tr>
@@ -6657,25 +6710,25 @@ function pgGovernment(){
         const sampleTax=inBracket?+(br.base+(sample-br.from)*(br.rate/100)).toFixed(2):null;
         return`<tr style="${inBracket?'background:var(--accent-bg)':i%2===0?'':'background:var(--bg)'}">
           <td><input type="number" class="finput" style="font-size:12px;padding:5px 8px" value="${br.from}"
-            onchange="(GOVT_RATES.bir.tables['${selFreq}']||GOVT_RATES.bir.brackets)[${i}].from=+this.value"/></td>
+            ${editable?'':'disabled'} onchange="birTaxVersionById(window._birVersionId).tables['${selFreq}'][${i}].from=+this.value"/></td>
           <td><input type="number" class="finput" style="font-size:12px;padding:5px 8px" value="${br.to>=999999998?'':br.to}" placeholder="(no limit)"
-            onchange="(GOVT_RATES.bir.tables['${selFreq}']||GOVT_RATES.bir.brackets)[${i}].to=+this.value||999999999"/></td>
+            ${editable?'':'disabled'} onchange="birTaxVersionById(window._birVersionId).tables['${selFreq}'][${i}].to=+this.value||999999999"/></td>
           <td><input type="number" class="finput" style="font-size:12px;padding:5px 8px;color:var(--accent-txt)" value="${br.base}" step="0.01"
-            onchange="(GOVT_RATES.bir.tables['${selFreq}']||GOVT_RATES.bir.brackets)[${i}].base=+this.value"/></td>
+            ${editable?'':'disabled'} onchange="birTaxVersionById(window._birVersionId).tables['${selFreq}'][${i}].base=+this.value"/></td>
           <td><div style="display:flex;align-items:center;gap:6px">
             <input type="number" class="finput" style="font-size:12px;padding:5px 8px;width:70px" value="${br.rate}" step="1" min="0" max="100"
-              onchange="(GOVT_RATES.bir.tables['${selFreq}']||GOVT_RATES.bir.brackets)[${i}].rate=+this.value"/>
+              ${editable?'':'disabled'} onchange="birTaxVersionById(window._birVersionId).tables['${selFreq}'][${i}].rate=+this.value"/>
             <span class="badge ${br.rate===0?'b-approved':br.rate<=25?'b-info':br.rate<=30?'b-pending':'b-absent'}" style="font-size:10px">${br.rate}%</span>
           </div></td>
           <td class="mono" style="font-weight:${inBracket?'800':'400'};color:${inBracket?'var(--accent)':'var(--txt3)'};font-size:12px;text-align:right">${inBracket&&sampleTax!==null?fmt(sampleTax):'—'}</td>
-          <td><button onclick="removeBIRRow('${selFreq}',${i})" class="btn btn-sm btn-danger" style="padding:3px 7px;font-size:11px" ${i===0?'disabled title="First bracket cannot be deleted"':''}>✕</button></td>
+          <td>${editable?`<button onclick="removeBIRRow('${selFreq}',${i})" class="btn btn-sm btn-danger" style="padding:3px 7px;font-size:11px" ${i===0?'disabled title="First bracket cannot be deleted"':''}>✕</button>`:''}</td>
         </tr>`;}).join('')}
       </tbody></table>
       </div>
       <div style="margin-top:10px;padding:8px 12px;background:var(--amber-bg);border-radius:7px;font-size:11px;color:var(--amber-txt)">
         ⚠ <strong>Important:</strong> Changes here affect all payroll computations for the "${freqLabels[selFreq]||selFreq}" frequency. 
         Ensure brackets are consecutive (To of each row = From of next). 
-        Rate tiers: 0% / 20% / 25% / 30% / 32% / 35%. For other frequencies, use annual ÷ divisor for both thresholds and base tax.
+        Current Annex E tiers are 0% / 15% / 20% / 25% / 30% / 35%. Future changes must be entered as a new effective-dated version supported by a BIR issuance.
         
       </div>
     </div>`;
@@ -6854,18 +6907,53 @@ function syncPIFromTiers(){
 
 /* ── BIR ─────────────────────────────────────────────────────── */
 function applyBIRTables(){
-  const l=document.getElementById('bir-law');
-  const e=document.getElementById('bir-eff');
-  
-  /* Sync monthly table to .brackets for backward compat */
-  if(GOVT_RATES.bir.tables&&GOVT_RATES.bir.tables.monthly){
-    GOVT_RATES.bir.brackets=[...GOVT_RATES.bir.tables.monthly];
-  }
-  toast('BIR withholding tax tables saved and applied!','success');
+  const version=birTaxVersionById(window._birVersionId);
+  if(!version||version.status!=='draft'){toast('Active tax-table versions are read-only. Clone a new version first.','warning');return;}
+  version.name=(document.getElementById('bir-version-name')?.value||version.name||'').trim();
+  version.effectiveFrom=document.getElementById('bir-version-from')?.value||'';
+  version.effectiveTo=document.getElementById('bir-version-to')?.value||'';
+  version.legalReference=(document.getElementById('bir-version-law')?.value||'').trim();
+  const issues=BIRTaxVersionCore.validateVersion(version,BIR_TAX_VERSIONS);
+  if(!version.legalReference)issues.push('BIR issuance / legal reference is required.');
+  if(issues.length){toast(issues[0],'warning');return;}
+  version.updatedAt=new Date().toISOString();version.updatedBy=user?.name||'Administrator';
+  PAYROLL_AUDIT.push({action:'bir_tax_version_saved',versionId:version.id,by:user?.name||'Administrator',at:version.updatedAt,notes:version.name+' · '+version.effectiveFrom});
+  queueSync('governmentRates');
+  toast('BIR tax-table draft validated and saved.','success');
   render();
 }
+function cloneBIRTaxVersion(){
+  ensureBirTaxVersions();
+  const source=birTaxVersionById(window._birVersionId)||selectedBirTaxVersion(today())||BIR_TAX_VERSIONS[0];
+  const draft=BIRTaxVersionCore.cloneVersion(source,{id:'BIR-'+Date.now(),name:(source?.name||'BIR Tax Table')+' — New Version',effectiveFrom:'',createdBy:user?.name||'Administrator'});
+  BIR_TAX_VERSIONS.push(draft);window._birVersionId=draft.id;queueSync('governmentRates');render();
+  toast('Draft cloned. Enter the BIR issuance and effective date before activation.','info');
+}
+function deleteBIRTaxDraft(id){
+  const version=birTaxVersionById(id);if(!version||version.status!=='draft')return;
+  if(!confirm('Delete this unactivated BIR tax-table draft?'))return;
+  BIR_TAX_VERSIONS.splice(BIR_TAX_VERSIONS.indexOf(version),1);window._birVersionId=selectedBirTaxVersion(today())?.id||BIR_TAX_VERSIONS[0]?.id;
+  PAYROLL_AUDIT.push({action:'bir_tax_version_draft_deleted',versionId:id,by:user?.name||'Administrator',at:new Date().toISOString(),notes:version.name});queueSync('governmentRates');toast('BIR tax-table draft deleted.','info');render();
+}
+function activateBIRTaxVersion(id){
+  const version=birTaxVersionById(id);if(!version||version.status!=='draft'){toast('Only a validated draft can be activated.','warning');return;}
+  applyBIRTables();
+  if(version.status!=='draft')return;
+  const issues=BIRTaxVersionCore.validateVersion(version,BIR_TAX_VERSIONS);
+  if(!version.legalReference)issues.push('BIR issuance / legal reference is required.');
+  if(issues.length){toast(issues[0],'warning');return;}
+  const fromDate=new Date(version.effectiveFrom+'T00:00:00Z');fromDate.setUTCDate(fromDate.getUTCDate()-1);const priorTo=fromDate.toISOString().slice(0,10);
+  BIR_TAX_VERSIONS.filter(v=>v.id!==id&&v.status==='active'&&(!v.effectiveTo||v.effectiveTo>=version.effectiveFrom)&&v.effectiveFrom<version.effectiveFrom).forEach(v=>v.effectiveTo=priorTo);
+  version.status='active';version.approvedAt=new Date().toISOString();version.approvedBy=user?.name||'Administrator';
+  const postIssues=BIRTaxVersionCore.validateVersion(version,BIR_TAX_VERSIONS);
+  if(postIssues.length){version.status='draft';delete version.approvedAt;delete version.approvedBy;toast(postIssues[0],'warning');return;}
+  if(version.effectiveFrom<=today()){GOVT_RATES.bir.tables=JSON.parse(JSON.stringify(version.tables));GOVT_RATES.bir.brackets=JSON.parse(JSON.stringify(version.tables.monthly));}
+  PAYROLL_AUDIT.push({action:'bir_tax_version_activated',versionId:version.id,by:version.approvedBy,at:version.approvedAt,notes:version.name+' · '+version.legalReference+' · effective '+version.effectiveFrom});
+  queueSync('governmentRates');toast('BIR tax-table version activated. Historical payroll snapshots remain unchanged.','success');render();
+}
 function addBIRRow(freq){
-  const tbl=GOVT_RATES.bir.tables&&GOVT_RATES.bir.tables[freq]?GOVT_RATES.bir.tables[freq]:GOVT_RATES.bir.brackets;
+  const version=birTaxVersionById(window._birVersionId);if(!version||version.status!=='draft')return;
+  const tbl=version.tables[freq];
   const last=tbl[tbl.length-1]||{from:0,to:999999999,base:0,rate:35};
   /* Insert before the last row (which is usually the top bracket) */
   const prevTo=tbl[tbl.length-2]?.to||0;
@@ -6875,7 +6963,8 @@ function addBIRRow(freq){
 }
 function removeBIRRow(freq,i){
   if(i===0){toast('First bracket cannot be deleted (must start at 0%)','warning');return;}
-  const tbl=GOVT_RATES.bir.tables&&GOVT_RATES.bir.tables[freq]?GOVT_RATES.bir.tables[freq]:GOVT_RATES.bir.brackets;
+  const version=birTaxVersionById(window._birVersionId);if(!version||version.status!=='draft')return;
+  const tbl=version.tables[freq];
   if(tbl.length<=2){toast('Need at least two brackets','warning');return;}
   tbl.splice(i,1);
   render();
@@ -9080,6 +9169,10 @@ function renderModal(){
         <input type="checkbox" id="${id}" style="width:auto;accent-color:var(--accent)" ${t[key]?'checked':''}/> ${lbl}
       </label>`).join('')}
     </div>
+    <div class="field"><label>Annual Benefit Tax Treatment</label><select id="it-benefit-treatment" class="finput">
+      <option value="standard" ${!t.benefitTreatment||t.benefitTreatment==='standard'?'selected':''}>Standard taxable / non-taxable setting</option>
+      <option value="annual-benefit-bucket" ${t.benefitTreatment==='annual-benefit-bucket'?'selected':''}>13th Month &amp; Other Benefits — shared ₱90,000 annual exemption</option>
+    </select><div style="font-size:10px;color:var(--txt3);margin-top:4px">Use the shared bucket for 13th month, performance/productivity bonus, and other qualified benefits. The processor automatically taxes only the excess after previous-employer and current-year usage.</div></div>
     <div style="display:flex;gap:8px">
       <button class="btn btn-primary" onclick="
         const code=(document.getElementById('it-code')?.value||'').trim().toUpperCase();
@@ -9090,7 +9183,7 @@ function renderModal(){
         const attendanceCode=cat==='attendance'?(document.getElementById('it-linked-code')?.value||''):'';
         const recurVal=cat==='allowance'?([...document.querySelectorAll('input[name=it-recur]')].find(r=>r.checked)?.value||''):'';
         const compField=cat==='allowance'?(document.getElementById('it-comp-field')?.value||''):'';
-        const obj={id:${isNew?'nIT++':t.id},code,name,cat,consideredIn,attendanceCode,recurring:!!recurVal,recurrence:recurVal||'',compensationField:compField,taxable:document.getElementById('it-tax')?.checked||false,deminimis:document.getElementById('it-dm')?.checked||false,dmLimit:parseFloat(document.getElementById('it-dmlimit')?.value)||0,annualize:document.getElementById('it-ann')?.checked||false,isStatutory:cat==='statutory'};
+        const obj={id:${isNew?'nIT++':t.id},code,name,cat,consideredIn,attendanceCode,recurring:!!recurVal,recurrence:recurVal||'',compensationField:compField,taxable:document.getElementById('it-tax')?.checked||false,deminimis:document.getElementById('it-dm')?.checked||false,dmLimit:parseFloat(document.getElementById('it-dmlimit')?.value)||0,annualize:document.getElementById('it-ann')?.checked||false,benefitTreatment:document.getElementById('it-benefit-treatment')?.value||'standard',isStatutory:cat==='statutory'};
         ${isNew?'INCOME_TYPES.push(obj)':'Object.assign(INCOME_TYPES.find(x=>x.id==='+t.id+'),obj)'};
         closeM();toast('Income/deduction type ${isNew?'added':'updated'}!','success');render()">
         ✓ ${isNew?'Add':'Save'}</button>
@@ -12141,12 +12234,14 @@ function pgEmpDetail(){
   }
   else if(detailTab===8){
     const taxYear=Number(window._empTaxYear||new Date().getFullYear());
-    const record=employeeTaxRecord(e,taxYear,false)||{year:taxYear,hasPreviousEmployer:false,previousEmployerTaxable:0,previousEmployerTaxWithheld:0,openingYtdTaxable:0,openingYtdTaxWithheld:0,sourceReference:'',confirmed:false};
+    const record=employeeTaxRecord(e,taxYear,false)||{year:taxYear,hasPreviousEmployer:false,previousEmployerTaxable:0,previousEmployerTaxWithheld:0,previousEmployerNonTaxableBenefits:0,previousEmployerTaxableBenefits:0,previousEmployerDeMinimis:0,openingYtdTaxable:0,openingYtdTaxWithheld:0,sourceReference:'',confirmed:false};
     const ytd=employeeYtdTaxSnapshot(e.id,taxYear,String(taxYear)+'-12',null);
+    const benefits=employeeYtdBenefitSnapshot(e.id,taxYear,String(taxYear)+'-12',null);
     const hasPrevious=!!record.hasPreviousEmployer;
-    tabBody=`<div class="card-hd" style="padding:0;margin-bottom:12px"><div><div class="card-title">Tax Year Record</div><div class="card-sub">Previous-employer data, migration opening balances, and system YTD used by BIR annualization.</div></div><div class="field" style="margin:0;width:120px"><label>Tax Year</label><input type="number" min="2000" max="2099" class="finput" value="${taxYear}" onchange="window._empTaxYear=Number(this.value);render()"/></div></div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px"><div class="metric"><div class="metric-label">System YTD Taxable</div><div class="metric-val" style="font-size:17px">${fmt(ytd.taxable)}</div></div><div class="metric"><div class="metric-label">System Tax Withheld</div><div class="metric-val" style="font-size:17px">${fmt(ytd.withheld)}</div></div><div class="metric"><div class="metric-label">Annualization Readiness</div><div class="metric-val" style="font-size:14px;color:${record.confirmed?'var(--green)':'var(--amber)'}">${record.confirmed?'Confirmed':'Needs confirmation'}</div></div></div>
+    tabBody=`<div class="card-hd" style="padding:0;margin-bottom:12px"><div><div class="card-title">Tax Year Record</div><div class="card-sub">Previous-employer BIR 2316, consolidated annual-benefit bucket, migration balances, and system YTD.</div></div><div class="field" style="margin:0;width:120px"><label>Tax Year</label><input type="number" min="2000" max="2099" class="finput" value="${taxYear}" onchange="window._empTaxYear=Number(this.value);render()"/></div></div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px"><div class="metric"><div class="metric-label">System YTD Taxable</div><div class="metric-val" style="font-size:17px">${fmt(ytd.taxable)}</div></div><div class="metric"><div class="metric-label">System Tax Withheld</div><div class="metric-val" style="font-size:17px">${fmt(ytd.withheld)}</div></div><div class="metric"><div class="metric-label">Benefit Bucket Used</div><div class="metric-val" style="font-size:17px">${fmt(Number(record.previousEmployerNonTaxableBenefits||0)+benefits.exempt)}</div><div style="font-size:9px;color:var(--txt3)">Remaining ${fmt(Math.max(0,90000-Number(record.previousEmployerNonTaxableBenefits||0)-benefits.exempt))}</div></div><div class="metric"><div class="metric-label">Annualization Readiness</div><div class="metric-val" style="font-size:14px;color:${record.confirmed?'var(--green)':'var(--amber)'}">${record.confirmed?'Confirmed':'Needs confirmation'}</div></div></div>
     <div style="padding:10px 12px;background:var(--blue-bg);color:var(--blue-txt);border-radius:8px;margin-bottom:12px;font-size:11px">Opening YTD is only for payroll history before this system began. Do not enter system-generated payroll again. Previous-employer amounts should come from BIR Form 2316 for the same calendar year.</div>
+    <div class="card" style="padding:12px;margin-bottom:12px;${hasPrevious?'':'opacity:.62'}"><div class="card-title" style="margin-bottom:8px">Previous Employer BIR 2316 Breakdown</div><div class="form-row"><div><div class="field"><label>Previous Employer Name</label><input id="tax-prev-name" class="finput" value="${esc(record.previousEmployerName||'')}" ${hasPrevious?'':'disabled'}/></div><div class="field"><label>Previous Employer TIN</label><input id="tax-prev-tin" class="finput" value="${esc(record.previousEmployerTin||'')}" ${hasPrevious?'':'disabled'}/></div><div class="form-row"><div class="field"><label>Employment From</label><input id="tax-prev-from" type="date" class="finput" value="${record.previousEmploymentFrom||''}" ${hasPrevious?'':'disabled'}/></div><div class="field"><label>Employment To</label><input id="tax-prev-to" type="date" class="finput" value="${record.previousEmploymentTo||''}" ${hasPrevious?'':'disabled'}/></div></div></div><div><div class="field"><label>Non-taxable 13th Month &amp; Other Benefits</label><input id="tax-prev-nontax-benefits" type="number" min="0" max="90000" step="0.01" class="finput" value="${Number(record.previousEmployerNonTaxableBenefits||0)}" ${hasPrevious?'':'disabled'}/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Consumes the same combined ₱90,000 annual exemption.</div></div><div class="field"><label>Taxable 13th Month &amp; Other Benefits</label><input id="tax-prev-tax-benefits" type="number" min="0" step="0.01" class="finput" value="${Number(record.previousEmployerTaxableBenefits||0)}" ${hasPrevious?'':'disabled'}/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Must already be included in total taxable compensation below.</div></div><div class="field"><label>Previous Employer De Minimis</label><input id="tax-prev-deminimis" type="number" min="0" step="0.01" class="finput" value="${Number(record.previousEmployerDeMinimis||0)}" ${hasPrevious?'':'disabled'}/></div></div></div></div>
     <div class="form-row"><div><label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:12px;font-weight:650"><input id="tax-has-previous" type="checkbox" style="width:auto;accent-color:var(--accent)" ${hasPrevious?'checked':''} onchange="setEmployeeHasPreviousEmployer(${e.id},${taxYear},this.checked)"/> Employee had a previous employer in ${taxYear}</label><div class="field"><label>Previous Employer Taxable Compensation</label><input id="tax-prev-taxable" type="number" min="0" step="0.01" class="finput" value="${Number(record.previousEmployerTaxable||0)}" ${hasPrevious?'':'disabled'}/></div><div class="field"><label>Previous Employer Tax Withheld</label><input id="tax-prev-withheld" type="number" min="0" step="0.01" class="finput" value="${Number(record.previousEmployerTaxWithheld||0)}" ${hasPrevious?'':'disabled'}/></div><div class="field"><label>BIR 2316 / Source Reference</label><input id="tax-source" class="finput" value="${esc(record.sourceReference||'')}" placeholder="e.g. 2316 received 2026-03-15"/></div></div><div><div class="field"><label>Opening YTD Taxable Compensation</label><input id="tax-opening-taxable" type="number" min="0" step="0.01" class="finput" value="${Number(record.openingYtdTaxable||0)}"/></div><div class="field"><label>Opening YTD Tax Withheld</label><input id="tax-opening-withheld" type="number" min="0" step="0.01" class="finput" value="${Number(record.openingYtdTaxWithheld||0)}"/></div><label style="display:flex;align-items:flex-start;gap:8px;padding:10px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;font-size:11px"><input id="tax-confirmed" type="checkbox" style="width:auto;accent-color:var(--accent);margin-top:2px" ${record.confirmed?'checked':''}/><span><strong>Confirmed for annualization</strong><br>I verified previous-employer status and opening balances for ${taxYear}.</span></label>${record.confirmedAt?`<div style="font-size:10px;color:var(--txt3);margin-top:5px">Confirmed by ${esc(record.confirmedBy||'—')} · ${esc(record.confirmedAt)}</div>`:''}</div></div>
     ${isA?`<div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn btn-primary" onclick="saveEmployeeTaxYearRecord(${e.id},${taxYear})">Save Tax Record</button></div>`:''}`;
   }
@@ -12986,6 +13081,7 @@ render = function() {
 </script>
 <script src="/bir-1601c-core.js?v=20260803-reporting-month"></script>
 <script src="/bir-annualization-core.js?v=20260804-rr11-2018-annex-e"></script>
+<script src="/bir-tax-version-core.js?v=20260804-effective-dated-benefits"></script>
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
 <script src="/compliance.js?v=20260804-manual-1601c-month"></script>

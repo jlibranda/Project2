@@ -50,6 +50,8 @@
         var mandatory = money((item.sss || 0) + (item.ph || 0) + (item.pi || 0));
         var taxable = money(item.taxableCompensation || 0);
         var gross = money(item.gross || 0);
+        var annualBenefitExempt = money(item.annualBenefitExempt || 0);
+        var annualBenefitTaxable = money(item.annualBenefitTaxable || 0);
         var totalNonTaxable = money(Math.max(0, gross - taxable));
         entries.push({
           source: run.type === '13th-month' ? '13th Month Payroll' : 'Regular Payroll',
@@ -60,7 +62,9 @@
           releaseDate: run.releaseDate || run.on || '',
           gross: gross,
           mandatory: mandatory,
-          otherNonTaxable: money(Math.max(0, totalNonTaxable - mandatory)),
+          annualBenefitExempt: annualBenefitExempt,
+          annualBenefitTaxable: annualBenefitTaxable,
+          otherNonTaxable: money(Math.max(0, totalNonTaxable - mandatory - annualBenefitExempt)),
           totalNonTaxable: totalNonTaxable,
           taxable: taxable,
           tax: money(item.tax || 0),
@@ -76,7 +80,9 @@
         source: 'Final Pay', sourceId: record.id, employeeId: record.empId,
         employeeNo: record.eid || '', employeeName: record.employeeName || '',
         releaseDate: record.releaseDate || '', gross: money(record.grossFP), mandatory: 0,
-        otherNonTaxable: money(record.nonTaxableCompensation),
+        annualBenefitExempt: money(record.annualBenefitExempt || 0),
+        annualBenefitTaxable: money(record.annualBenefitTaxable || 0),
+        otherNonTaxable: money(Math.max(0,Number(record.nonTaxableCompensation||0)-Number(record.annualBenefitExempt||0))),
         totalNonTaxable: money(record.nonTaxableCompensation),
         taxable: money(record.taxableCompensation), tax: money(record.taxWithheld),
         taxRefund: money(record.taxRefund),
@@ -90,6 +96,7 @@
       regularRunCount: new Set(entries.filter(function (e) { return e.source !== 'Final Pay'; }).map(function (e) { return e.sourceId; })).size,
       finalPayCount: entries.filter(function (e) { return e.source === 'Final Pay'; }).length,
       totalCompensation: sum('gross'), mandatoryContributions: sum('mandatory'),
+      annualBenefitExempt:sum('annualBenefitExempt'), annualBenefitTaxable:sum('annualBenefitTaxable'),
       otherNonTaxable: sum('otherNonTaxable'), totalNonTaxable: sum('totalNonTaxable'),
       taxableCompensation: sum('taxable'), totalTaxesWithheld: sum('tax'),
       annualizationRefunds: sum('taxRefund'), taxRequiredForRemittance: money(Math.max(0, netTax)),

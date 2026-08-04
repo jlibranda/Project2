@@ -1,0 +1,14 @@
+'use strict';
+const assert=require('assert');
+const core=require('../public/bir-tax-version-core');
+const tables={annual:[{from:0,base:0,rate:0},{from:250000,base:0,rate:15},{from:400000,base:22500,rate:20}],monthly:[{from:0,base:0,rate:0},{from:20833,base:0,rate:15}], 'semi-monthly':[{from:0,base:0,rate:0},{from:10417,base:0,rate:15}],weekly:[{from:0,base:0,rate:0},{from:4808,base:0,rate:15}],daily:[{from:0,base:0,rate:0},{from:685,base:0,rate:15}]};
+const old={id:'v1',name:'Old',version:1,status:'active',effectiveFrom:'2023-01-01',effectiveTo:'2026-12-31',tables};
+const next={id:'v2',name:'Next',version:2,status:'active',effectiveFrom:'2027-01-01',effectiveTo:'',tables};
+assert.equal(core.selectVersion([old,next],'2026-12-15').id,'v1');
+assert.equal(core.selectVersion([old,next],'2027-01-01').id,'v2');
+assert.equal(core.taxDue(450000,'annual',old),32500);
+assert.deepStrictEqual(core.allocateAnnualBenefit({previousEmployerNonTaxable:60000,currentEmployerYtdNonTaxable:10000,currentQualified:50000}),{limit:90000,previousEmployerNonTaxable:60000,currentEmployerYtdNonTaxable:10000,usedBefore:70000,remainingBefore:20000,currentQualified:50000,exempt:20000,taxable:30000,remainingAfter:0});
+assert.deepStrictEqual(core.validatePreviousEmployer({hasPreviousEmployer:true,previousEmployerName:'Old Co',sourceReference:'2316',previousEmployerNonTaxableBenefits:90000,previousEmployerTaxableBenefits:20000,previousEmployerTaxable:200000}),[]);
+assert(core.validatePreviousEmployer({hasPreviousEmployer:true,previousEmployerNonTaxableBenefits:100000,previousEmployerTaxableBenefits:200000,previousEmployerTaxable:100000}).length>=3);
+assert.equal(core.validateVersion(old,[old,next]).length,0);
+console.log('BIR tax version and benefit-bucket tests passed.');

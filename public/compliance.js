@@ -453,7 +453,7 @@
         [],
         ['1601-C Item','Description','Amount'],
         ['14','Total Amount of Compensation',report.totalCompensation],
-        ['17','13th Month and Other Benefits','Review detailed pay-item classification'],
+        ['17','Non-Taxable 13th Month and Other Benefits',report.annualBenefitExempt],
         ['18','De Minimis Benefits','Review detailed pay-item classification'],
         ['19','Mandatory employee SSS/PHIC/HDMF shares and union dues',report.mandatoryContributions],
         ['20','Other Non-Taxable Compensation',report.otherNonTaxable],
@@ -467,13 +467,13 @@
         ['27','Tax Required to be Remitted',report.taxRequiredForRemittance],
         ['Control','Excess annualization credit for review/carry-forward',report.excessAnnualizationCredit],
         [],
-        ['Source','Release Date','Employee No.','Employee','TIN','Gross Compensation','Mandatory Contributions','Other Non-Taxable','Taxable Compensation','Tax Withheld','Tax Refund','Net Tax']
+        ['Source','Release Date','Employee No.','Employee','TIN','Gross Compensation','13th Month/Other Benefits - Exempt','13th Month/Other Benefits - Taxable Excess','Mandatory Contributions','Other Non-Taxable','Taxable Compensation','Tax Withheld','Tax Refund','Net Tax']
       ];
       report.entries.forEach(function (entry) {
         var employee = USERS.find(function (u) { return u.id === entry.employeeId; }) || {};
-        birRows.push([entry.source,entry.releaseDate,entry.employeeNo,entry.employeeName,employee.tin||'',entry.gross,entry.mandatory,entry.otherNonTaxable,entry.taxable,entry.tax,entry.taxRefund,entry.netTax]);
+        birRows.push([entry.source,entry.releaseDate,entry.employeeNo,entry.employeeName,employee.tin||'',entry.gross,entry.annualBenefitExempt,entry.annualBenefitTaxable,entry.mandatory,entry.otherNonTaxable,entry.taxable,entry.tax,entry.taxRefund,entry.netTax]);
       });
-      birRows.push([],['CONTROL NOTE','Items 17, 18, 23 and prior-month adjustments require review against employee-level classifications and annualized records before filing the official return.']);
+      birRows.push([],['CONTROL NOTE','Items 18, 23 and prior-month adjustments still require review against employee-level classifications and annualized records before filing the official return. Item 17 is sourced from the payroll benefit-bucket classification.']);
       downloadCsv('BIR_1601C_Worksheet_'+selectedMonth+'.csv', birRows);
       toast('1601-C worksheet generated for '+displayReportingMonth(selectedMonth)+' from '+report.regularRunCount+' payroll run(s) and '+report.finalPayCount+' final pay release(s).', 'success');
       return;
@@ -515,26 +515,32 @@
 
   window.generate2316Worksheet = function (empId) {
     var emp = USERS.find(function (u) { return u.id === empId; });
-    var runs = PAYROLLS.filter(function (r) { return r.status === 'approved' || r.status === 'locked'; });
+    var approvedRuns = PAYROLLS.filter(function (r) { return r.status === 'approved' || r.status === 'locked'; });
+    var taxYear = approvedRuns.reduce(function (year,r) { return Math.max(year,Number(r.taxYear||String(r.bir1601CMonth||r.releaseDate||r.to||'').slice(0,4))||0); },0)||new Date().getFullYear();
+    var runs = approvedRuns.filter(function(r){return Number(r.taxYear||String(r.bir1601CMonth||r.releaseDate||r.to||'').slice(0,4))===taxYear;});
     if (!emp || !runs.length) { toast('No approved payroll data available.', 'warning'); return; }
     var items = [];
     runs.forEach(function (r) {
       var item = r.items.find(function (i) { return i.empId === empId; });
       if (item) items.push({run:r,item:item});
     });
-    var rows = [['BIR 2316 DATA WORKSHEET'],['Employee',emp.name],['TIN',emp.tin||''],['Year',new Date().getFullYear()],
-      [],['Period From','Period To','Gross Compensation','SSS','PhilHealth','Pag-IBIG','Taxable Compensation','Tax Withheld']];
+    var profile=employeeTaxRecord(emp,taxYear,false)||{};
+    var rows = [['BIR 2316 DATA WORKSHEET'],['Employee',emp.name],['TIN',emp.tin||''],['Year',taxYear],
+      [],['PREVIOUS EMPLOYER CONSOLIDATION'],['Previous Employer',profile.previousEmployerName||''],['Previous Employer TIN',profile.previousEmployerTin||''],['Employment From',profile.previousEmploymentFrom||''],['Employment To',profile.previousEmploymentTo||''],['Previous Non-Taxable 13th Month & Other Benefits',Number(profile.previousEmployerNonTaxableBenefits||0)],['Previous Taxable 13th Month & Other Benefits',Number(profile.previousEmployerTaxableBenefits||0)],['Previous Employer Total Taxable Compensation',Number(profile.previousEmployerTaxable||0)],['Previous Employer Tax Withheld',Number(profile.previousEmployerTaxWithheld||0)],['BIR 2316 / Source Reference',profile.sourceReference||''],
+      [],['CURRENT EMPLOYER PAYROLL DETAIL'],['Period From','Period To','Gross Compensation','13th/Other Benefits Exempt','13th/Other Benefits Taxable','SSS','PhilHealth','Pag-IBIG','Taxable Compensation','Tax Withheld']];
     items.forEach(function (x) {
-      rows.push([x.run.from,x.run.to,x.item.gross,x.item.sss,x.item.ph,x.item.pi,x.item.taxableCompensation,x.item.tax]);
+      rows.push([x.run.from,x.run.to,x.item.gross,x.item.annualBenefitExempt||0,x.item.annualBenefitTaxable||0,x.item.sss,x.item.ph,x.item.pi,x.item.taxableCompensation,x.item.tax]);
     });
     rows.push([],['TOTAL','',
       items.reduce(function (s,x) { return s+x.item.gross; },0),
+      items.reduce(function (s,x) { return s+(x.item.annualBenefitExempt||0); },0),
+      items.reduce(function (s,x) { return s+(x.item.annualBenefitTaxable||0); },0),
       items.reduce(function (s,x) { return s+x.item.sss; },0),
       items.reduce(function (s,x) { return s+x.item.ph; },0),
       items.reduce(function (s,x) { return s+x.item.pi; },0),
       items.reduce(function (s,x) { return s+(x.item.taxableCompensation||0); },0),
       items.reduce(function (s,x) { return s+x.item.tax; },0)]);
-    rows.push([],['Note','Worksheet for review and official form preparation; not a substitute for the signed BIR Form 2316.']);
+    rows.push([],['ANNUAL BENEFIT CONTROL'],['Combined non-taxable benefit used',Number(profile.previousEmployerNonTaxableBenefits||0)+items.reduce(function(s,x){return s+Number(x.item.annualBenefitExempt||0);},0)],['Remaining from P90,000',Math.max(0,90000-Number(profile.previousEmployerNonTaxableBenefits||0)-items.reduce(function(s,x){return s+Number(x.item.annualBenefitExempt||0);},0))],[],['Note','Worksheet for review and official form preparation; not a substitute for the signed BIR Form 2316.']);
     downloadCsv('BIR_2316_Worksheet_'+emp.eid+'.csv', rows);
     toast('BIR 2316 worksheet generated.', 'success');
   };
