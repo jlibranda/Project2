@@ -48,6 +48,8 @@ async function main() {
   assert.strictEqual(Buffer.from(bytes).subarray(0, 4).toString(), '%PDF');
   const doc = await PDFLib.PDFDocument.load(bytes);
   assert.strictEqual(doc.getPageCount(), 1);
+  const pageText = Buffer.from(bytes).toString('latin1');
+  assert.ok(!pageText.includes('123-456-789-000'), 'TIN must be plotted per box, not as one dashed string');
 
   const outputDir = path.join(__dirname, '..', 'output', 'pdf');
   fs.mkdirSync(outputDir, {recursive: true});

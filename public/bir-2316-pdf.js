@@ -66,13 +66,21 @@
     var doc=await pdfLib.PDFDocument.load(templateBytes),page=doc.getPages()[0],font=await doc.embedFont(pdfLib.StandardFonts.Helvetica),bold=await doc.embedFont(pdfLib.StandardFonts.HelveticaBold),black=pdfLib.rgb(0,0,0);
     function fit(text,max,size){text=clean(text);while(text.length&&font.widthOfTextAtSize(text,size)>max)text=text.slice(0,-1);return text;}
     function draw(text,x,y,max,size,align,useBold){text=clean(text);if(!text)return;size=size||7;var f=useBold?bold:font,t=fit(text,max,size),w=f.widthOfTextAtSize(t,size);page.drawText(t,{x:align==='right'?x+max-w:align==='center'?x+(max-w)/2:x,y:y,size:size,font:f,color:black});}
+    function drawCells(value,centers,y,size,useBold){
+      var chars=clean(value).replace(/[^0-9A-Za-z]/g,'').split(''),f=useBold?bold:font;
+      chars.slice(0,centers.length).forEach(function(char,index){var w=f.widthOfTextAtSize(char,size);page.drawText(char,{x:centers[index]-w/2,y:y,size:size,font:f,color:black});});
+    }
     function amount(value,y){if(!number(value))return;draw(number(value).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}),484,y,101,7,'right');}
     function summary(value,y){if(!number(value))return;draw(number(value).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}),192,y,116,7,'right');}
-    draw(data.year,125,830,71,8,'center',true);draw(data.periodFrom,387,830,69,7,'center');draw(data.periodTo,512,830,70,7,'center');
-    draw(data.employeeTin,86,802,220,8,'center');draw(data.employeeName,43,777,210,7);draw(data.employeeRdo,264,777,44,7,'center');draw(data.employeeAddress,43,749,210,7);draw(data.employeeZip,261,749,48,7,'center');draw(data.employeeLocalAddress,43,724,210,7);draw(data.employeeLocalZip,261,724,48,7,'center');draw(data.birthDate,47,671,101,7,'center');draw(data.contact,167,671,142,7,'center');
+    var yearCells=[133.6,151.3,168.9,186.6],periodFromCells=[395.6,413.0,430.4,447.8],periodToCells=[521.4,538.9,556.4,573.9];
+    var tinCells=[92.3,104.9,117.5,142.1,154.7,167.4,191.6,204.2,216.9,242.3,256.5,270.7,284.9,299.1];
+    var rdoCells=[270.8,283.4,296.1],zipCells=[266.2,278.3,290.4,302.5],birthCells=[52.9,65.5,78.1,90.7,103.3,115.9,128.5,141.1];
+    var contactCells=[173.5,186.4,199.3,212.2,225.1,238.0,250.9,263.8,276.7,289.6,302.5];
+    drawCells(data.year,yearCells,830,8,true);drawCells(data.periodFrom,periodFromCells,830,7,false);drawCells(data.periodTo,periodToCells,830,7,false);
+    drawCells(data.employeeTin,tinCells,802,8,false);draw(data.employeeName,43,777,210,7);drawCells(data.employeeRdo,rdoCells,777,7,false);draw(data.employeeAddress,43,749,210,7);drawCells(data.employeeZip,zipCells,749,7,false);draw(data.employeeLocalAddress,43,724,210,7);drawCells(data.employeeLocalZip,zipCells,724,7,false);drawCells(data.birthDate,birthCells,671,7,false);drawCells(data.contact,contactCells,671,7,false);
     if(data.dailyMinimumWage)draw(data.dailyMinimumWage.toFixed(2),210,653,98,7,'right');if(data.monthlyMinimumWage)draw(data.monthlyMinimumWage.toFixed(2),210,635,98,7,'right');if(data.isMwe)draw('X',48,617,14,10,'center',true);
-    draw(data.employerTin,86,590,220,8,'center');draw(data.employerName,43,564,264,7);draw(data.employerAddress,43,538,210,7);draw(data.employerZip,260,538,47,7,'center');draw('X',data.employerType==='secondary'?202:116,520,13,10,'center',true);
-    draw(data.previousTin,86,494,220,8,'center');draw(data.previousName,43,468,264,7);draw(data.previousAddress,43,442,210,7);draw(data.previousZip,260,442,47,7,'center');
+    drawCells(data.employerTin,tinCells,590,8,false);draw(data.employerName,43,564,264,7);draw(data.employerAddress,43,538,210,7);drawCells(data.employerZip,zipCells,538,7,false);draw('X',data.employerType==='secondary'?202:116,520,13,10,'center',true);
+    drawCells(data.previousTin,tinCells,494,8,false);draw(data.previousName,43,468,264,7);draw(data.previousAddress,43,442,210,7);drawCells(data.previousZip,zipCells,442,7,false);
     summary(data.grossPresent,414);summary(data.nonTaxablePresent,394);summary(data.taxablePresent,375);summary(data.previousTaxable,356);summary(data.grossTaxable,336);summary(data.taxDue,317);summary(data.presentTax,297);summary(data.previousTax,278);summary(data.totalTaxWithheld,259);summary(data.totalTaxWithheld,219);
     amount(data.nonTaxBasic,784);amount(data.holidayMwe,766);amount(data.overtimeMwe,746);amount(data.nightMwe,726);amount(data.hazardMwe,706);amount(data.benefitExempt,687);amount(data.deMinimis,667);amount(data.mandatory,648);amount(data.otherNonTaxable,628);amount(data.totalNonTaxable,609);
     amount(data.taxableBasic,571);amount(data.taxableRepresentation,552);amount(data.taxableTransportation,532);amount(data.taxableCola,513);amount(data.taxableHousing,493);amount(data.taxableCommission,416);amount(data.taxableProfitSharing,397);amount(data.taxableDirectorFees,377);amount(data.taxableBenefit,363);amount(data.taxableHazard,339);amount(data.taxableOvertime,320);if(data.otherTaxable){draw('OTHER TAXABLE COMPENSATION',342,298,132,6);amount(data.otherTaxable,298);}amount(data.totalTaxablePresent,258);
