@@ -545,6 +545,40 @@
     toast('BIR 2316 worksheet generated.', 'success');
   };
 
+  function downloadPdf(filename,bytes) {
+    var blob=new Blob([bytes],{type:'application/pdf'}),link=document.createElement('a');
+    link.href=URL.createObjectURL(blob);link.download=filename;document.body.appendChild(link);link.click();
+    setTimeout(function(){URL.revokeObjectURL(link.href);link.remove();},1000);
+  }
+
+  window.generateOfficial2316PDF = async function (empId) {
+    var emp=USERS.find(function(u){return u.id===empId;}),year=Number(window._bir2316Year||new Date().getFullYear());
+    if(!emp){toast('Employee was not found.','warning');return;}
+    var profile=employeeTaxRecord(emp,year,false)||{},missing=[];
+    if(!String(COMPANY.taxIdentificationNo||'').trim())missing.push('Employer TIN');
+    if(!String(COMPANY.registeredAddress||'').trim())missing.push('Registered address');
+    if(!String(COMPANY.zipCode||'').trim())missing.push('ZIP code');
+    if(missing.length){toast('Complete Company Settings → BIR Form 2316 Employer Information: '+missing.join(', ')+'.','warning',7000);return;}
+    if(!String(emp.tin||'').trim())missing.push('Employee TIN');
+    if(!String(emp.rdo||'').trim())missing.push('Employee RDO code');
+    if(!String(emp.permanentAddress||emp.city||'').trim())missing.push('Employee registered address');
+    if(!String(emp.zipCode||emp.zip||'').trim())missing.push('Employee ZIP code');
+    if(profile.hasPreviousEmployer){if(!String(profile.previousEmployerName||'').trim())missing.push('Previous employer name');if(!String(profile.previousEmployerTin||'').trim())missing.push('Previous employer TIN');if(!String(profile.previousEmployerAddress||'').trim())missing.push('Previous employer address');if(!String(profile.previousEmployerZip||'').trim())missing.push('Previous employer ZIP code');}
+    if(missing.length){toast('Complete the employee Tax & YTD / Personal records before generating: '+missing.join(', ')+'.','warning',7500);return;}
+    var approved=PAYROLLS.filter(function(run){return run.status==='approved'||run.status==='locked';});
+    var finalPayRuns=FINAL_PAY_LIST.filter(function(record){return record.status==='released'&&Number(record.taxYear)===year;}).map(function(record){return{id:'FP-'+record.id,status:'locked',type:'final-pay',taxYear:record.taxYear,from:record.releaseDate,to:record.releaseDate,releaseDate:record.releaseDate,bir1601CMonth:record.bir1601CMonth,items:[{empId:record.empId,eid:record.eid,name:record.employeeName,gross:record.grossFP,taxableCompensation:record.taxableCompensation,annualBenefitExempt:record.annualBenefitExempt,annualBenefitTaxable:record.annualBenefitTaxable,sss:0,ph:0,pi:0,tax:record.taxWithheld,taxRefund:record.taxRefund,annualTax:record.annualTax,calculationTrace:[]}]};});
+    var runs=approved.concat(finalPayRuns).filter(function(run){return Number(run.taxYear||String(run.bir1601CMonth||run.releaseDate||run.to||'').slice(0,4))===year&&(run.items||[]).some(function(item){return item.empId===empId;});});
+    if(!runs.length){toast('No approved/locked payroll or released final pay for '+year+'.','warning');return;}
+    try{
+      toast('Generating official BIR Form 2316 PDF…','info');
+      var data=BIR2316Pdf.buildData({employee:emp,company:COMPANY,profile:profile,year:year,runs:runs,taxDueFunction:function(value){return birTaxByFreq(value,'annual',year+'-12-31');}});
+      var response=await fetch('/forms/bir-form-2316-sep-2021.pdf');if(!response.ok)throw new Error('Official BIR template could not be loaded.');
+      var bytes=await BIR2316Pdf.render(await response.arrayBuffer(),data,window.PDFLib);
+      downloadPdf('BIR_2316_'+String(emp.eid||emp.id).replace(/[^A-Za-z0-9_-]/g,'_')+'_'+year+'.pdf',bytes);
+      toast('Official BIR Form 2316 generated. Review and complete the required signatures before issuance.','success',6500);
+    }catch(error){toast('BIR 2316 PDF could not be generated: '+error.message,'error',7000);}
+  };
+
   window.generateBankFile = function (bank) {
     var run = latestApprovedRun();
     if (!run) { toast('Approve and lock payroll before generating a bank file.', 'warning'); return; }
@@ -578,12 +612,12 @@
           '<div class="card-sub" style="min-height:34px;margin:5px 0 10px">'+c.detail+'</div>'+
           '<button class="btn btn-sm" style="width:100%;justify-content:center" onclick="generateGovtReport(\''+c.type+'\')">Download CSV worksheet</button></div>';
       }).join('')+'</div>'+
-      '<div class="card" style="margin-top:.75rem;margin-bottom:0"><div class="card-title">BIR 2316 annual data worksheets</div>'+
-      '<div class="card-sub" style="margin-bottom:10px">Consolidates approved payroll data for official Form 2316 preparation and sign-off.</div>'+
+      '<div class="card" style="margin-top:.75rem;margin-bottom:0"><div style="display:flex;gap:12px;align-items:end;justify-content:space-between;flex-wrap:wrap"><div><div class="card-title">Official BIR Form 2316</div>'+ 
+      '<div class="card-sub">Plots approved payroll and previous-employer data directly on the September 2021 (ENCS) government form. Review and signatures remain required.</div></div><div style="min-width:130px"><label style="font-size:11px;font-weight:700">Tax Year</label><input type="number" min="2000" max="2099" class="finput" value="'+Number(window._bir2316Year||new Date().getFullYear())+'" onchange="window._bir2316Year=Number(this.value);render()"/></div></div>'+ 
       '<div style="display:grid;gap:5px">'+USERS.filter(function (u) { return u.role === 'employee'; }).map(function (e) {
         return '<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 9px;border:1px solid var(--border);border-radius:7px">'+
           '<div><div style="font-weight:600;font-size:12px">'+esc(e.name)+'</div><div style="font-size:10px;color:var(--txt3)">TIN '+esc(e.tin||'Not set')+'</div></div>'+
-          '<button class="btn btn-sm" onclick="generate2316Worksheet('+e.id+')">Download worksheet</button></div>';
+          '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-sm btn-primary" onclick="generateOfficial2316PDF('+e.id+')">Generate official PDF</button><button class="btn btn-sm" onclick="generate2316Worksheet('+e.id+')">CSV worksheet</button></div></div>';
       }).join('')+'</div></div>';
   };
 

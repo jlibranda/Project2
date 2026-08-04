@@ -700,6 +700,13 @@ let COMPANY={
   dailyDivisor:22,
   hoursPerDay:8,
   salaryMultiplier:13,
+  registeredName:'SproutRipple PH',
+  taxIdentificationNo:'',
+  registeredAddress:'',
+  zipCode:'',
+  employerType:'main',
+  authorizedAgent:'',
+  authorizedAgentTitle:'',
   taxPolicy:{annualizationEnabled:true,autoSuggestDecember:true,requireConfirmedTaxRecord:true,taxTableVersion:'BIR RR 11-2018 Annex E · 2023 onwards'},
   darkMode:false,
 };
@@ -831,7 +838,9 @@ const DEFAULT_FIELDS={
     {key:'religion',label:'Religion'},
     {key:'city',label:'City'},
     {key:'permanentAddress',label:'Permanent Address'},
+    {key:'zipCode',label:'Permanent Address ZIP Code'},
     {key:'temporaryAddress',label:'Temporary Address'},
+    {key:'localZipCode',label:'Local Address ZIP Code'},
     {key:'contact',label:'Primary Contact',required:true},
     {key:'contact2',label:'Secondary Contact'},
     {key:'email',label:'Company Email',required:true,locked:true},
@@ -1138,7 +1147,7 @@ function taxEventLabel(value){return {'regular':'Regular withholding','annualize
 function employeeTaxRecord(emp,year,create=false){
   if(!emp)return null;if(!Array.isArray(emp.taxYearRecords))emp.taxYearRecords=[];
   let record=emp.taxYearRecords.find(r=>Number(r.year)===Number(year));
-  if(!record&&create){record={year:Number(year),hasPreviousEmployer:false,previousEmployerName:'',previousEmployerTin:'',previousEmploymentFrom:'',previousEmploymentTo:'',previousEmployerNonTaxableBenefits:0,previousEmployerTaxableBenefits:0,previousEmployerDeMinimis:0,previousEmployerTaxable:0,previousEmployerTaxWithheld:0,openingYtdTaxable:0,openingYtdTaxWithheld:0,sourceReference:'',confirmed:false};emp.taxYearRecords.push(record);}
+  if(!record&&create){record={year:Number(year),hasPreviousEmployer:false,previousEmployerName:'',previousEmployerTin:'',previousEmployerAddress:'',previousEmployerZip:'',previousEmploymentFrom:'',previousEmploymentTo:'',previousEmployerNonTaxableBenefits:0,previousEmployerTaxableBenefits:0,previousEmployerDeMinimis:0,previousEmployerTaxable:0,previousEmployerTaxWithheld:0,openingYtdTaxable:0,openingYtdTaxWithheld:0,sourceReference:'',confirmed:false};emp.taxYearRecords.push(record);}
   return record||null;
 }
 function payrollRunTaxYear(run){return Number(run.taxYear||String(run.bir1601CMonth||run.releaseDate||run.to||'').slice(0,4));}
@@ -1162,6 +1171,8 @@ function saveEmployeeTaxYearRecord(empId,year){
   record.hasPreviousEmployer=!!document.getElementById('tax-has-previous')?.checked;
   record.previousEmployerName=record.hasPreviousEmployer?(document.getElementById('tax-prev-name')?.value||'').trim():'';
   record.previousEmployerTin=record.hasPreviousEmployer?(document.getElementById('tax-prev-tin')?.value||'').trim():'';
+  record.previousEmployerAddress=record.hasPreviousEmployer?(document.getElementById('tax-prev-address')?.value||'').trim():'';
+  record.previousEmployerZip=record.hasPreviousEmployer?(document.getElementById('tax-prev-zip')?.value||'').trim():'';
   record.previousEmploymentFrom=record.hasPreviousEmployer?(document.getElementById('tax-prev-from')?.value||''):'';
   record.previousEmploymentTo=record.hasPreviousEmployer?(document.getElementById('tax-prev-to')?.value||''):'';
   record.previousEmployerNonTaxableBenefits=record.hasPreviousEmployer?num('tax-prev-nontax-benefits'):0;
@@ -1176,7 +1187,7 @@ function saveEmployeeTaxYearRecord(empId,year){
   if(record.confirmed){record.confirmedBy=user.name;record.confirmedAt=new Date().toISOString();}
   queueSync('Employees');toast('Tax year record saved.','success');render();
 }
-function setEmployeeHasPreviousEmployer(empId,year,checked){const emp=USERS.find(e=>e.id===empId),record=employeeTaxRecord(emp,year,true);record.hasPreviousEmployer=!!checked;if(!checked){['previousEmployerName','previousEmployerTin','previousEmploymentFrom','previousEmploymentTo','previousEmployerNonTaxableBenefits','previousEmployerTaxableBenefits','previousEmployerDeMinimis','previousEmployerTaxable','previousEmployerTaxWithheld'].forEach(k=>record[k]=typeof record[k]==='number'?0:'');}render();}
+function setEmployeeHasPreviousEmployer(empId,year,checked){const emp=USERS.find(e=>e.id===empId),record=employeeTaxRecord(emp,year,true);record.hasPreviousEmployer=!!checked;if(!checked){['previousEmployerName','previousEmployerTin','previousEmployerAddress','previousEmployerZip','previousEmploymentFrom','previousEmploymentTo','previousEmployerNonTaxableBenefits','previousEmployerTaxableBenefits','previousEmployerDeMinimis','previousEmployerTaxable','previousEmployerTaxWithheld'].forEach(k=>record[k]=typeof record[k]==='number'?0:'');}render();}
 function isPayrollAdjustmentReady(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.isReady(record):!!record&&['ready','approved','pending'].includes(record.status);}
 function canDeletePayrollAdjustment(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.canDelete(record):!!record&&record.status!=='applied'&&!record.payrollRunId;}
 function setPayrollPreviewFilter(kind,value){
@@ -11255,6 +11266,16 @@ function pgCompanySettings(){
       <div style="padding:9px 11px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;font-size:11px;color:var(--accent-txt)"><strong>Tax table:</strong> ${esc(COMPANY.taxPolicy.taxTableVersion)}<br><span>Annual schedule: 0% / 15% / 20% / 25% / 30% / 35%. Legal basis: BIR RR 11-2018.</span></div>
     </div>
 
+    <div class="card" style="grid-column:span 2;border-left:3px solid var(--red)">
+      <div class="card-title" style="margin-bottom:4px">BIR Form 2316 Employer Information</div>
+      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">Printed directly on the official September 2021 ENCS form. Complete these fields before generating employee certificates.</div>
+      <div class="form-row"><div class="field"><label>BIR-Registered Employer Name</label><input id="co-bir-name" class="finput" value="${esc(COMPANY.registeredName||COMPANY.name)}"/></div><div class="field"><label>Employer TIN</label><input id="co-bir-tin" class="finput" value="${esc(COMPANY.taxIdentificationNo||'')}" placeholder="000-000-000-000"/></div></div>
+      <div class="form-row"><div class="field"><label>Registered Address</label><input id="co-bir-address" class="finput" value="${esc(COMPANY.registeredAddress||'')}"/></div><div class="field"><label>ZIP Code</label><input id="co-bir-zip" class="finput" value="${esc(COMPANY.zipCode||'')}" maxlength="4"/></div></div>
+      <div class="form-row"><div class="field"><label>Type of Employer</label><select id="co-bir-type" class="finput"><option value="main" ${COMPANY.employerType!=='secondary'?'selected':''}>Main Employer</option><option value="secondary" ${COMPANY.employerType==='secondary'?'selected':''}>Secondary Employer</option></select></div><div class="field"><label>Authorized Representative / Agent</label><input id="co-bir-agent" class="finput" value="${esc(COMPANY.authorizedAgent||'')}" placeholder="Printed name for signing reference"/></div></div>
+      <div class="field"><label>Authorized Representative Title</label><input id="co-bir-agent-title" class="finput" value="${esc(COMPANY.authorizedAgentTitle||'')}" placeholder="e.g. Payroll Manager / HR Director"/></div>
+      <div style="font-size:10px;color:var(--amber-txt);background:var(--amber-bg);padding:8px 10px;border-radius:7px">The PDF generator does not create a signature. The authorized employer representative and employee must complete the applicable signature/date sections before issuance.</div>
+    </div>
+
     <!-- Web Bundy settings -->
     <div class="card" style="grid-column:span 1">
       <div class="card-title" style="margin-bottom:1rem">Web Bundy Settings</div>
@@ -11375,6 +11396,13 @@ function saveCompany(){
   COMPANY.name=document.getElementById('co-name')?.value?.trim()||COMPANY.name;
   COMPANY.tagline=document.getElementById('co-tag')?.value?.trim()||COMPANY.tagline;
   COMPANY.initials=(document.getElementById('co-ini')?.value?.trim()||COMPANY.initials).toUpperCase().slice(0,2);
+  COMPANY.registeredName=document.getElementById('co-bir-name')?.value?.trim()||COMPANY.name;
+  COMPANY.taxIdentificationNo=document.getElementById('co-bir-tin')?.value?.trim()||'';
+  COMPANY.registeredAddress=document.getElementById('co-bir-address')?.value?.trim()||'';
+  COMPANY.zipCode=document.getElementById('co-bir-zip')?.value?.trim()||'';
+  COMPANY.employerType=document.getElementById('co-bir-type')?.value||'main';
+  COMPANY.authorizedAgent=document.getElementById('co-bir-agent')?.value?.trim()||'';
+  COMPANY.authorizedAgentTitle=document.getElementById('co-bir-agent-title')?.value?.trim()||'';
   COMPANY.bundyPublicAccess=document.getElementById('co-public')?.checked??COMPANY.bundyPublicAccess;
   COMPANY.bundySelfie=document.getElementById('co-selfie')?.checked??COMPANY.bundySelfie;
   const divisorInput=document.getElementById('co-divisor')?.value;
@@ -12243,6 +12271,7 @@ function pgEmpDetail(){
     <div style="padding:10px 12px;background:var(--blue-bg);color:var(--blue-txt);border-radius:8px;margin-bottom:12px;font-size:11px">Opening YTD is only for payroll history before this system began. Do not enter system-generated payroll again. Previous-employer amounts should come from BIR Form 2316 for the same calendar year.</div>
     <div class="card" style="padding:12px;margin-bottom:12px;${hasPrevious?'':'opacity:.62'}"><div class="card-title" style="margin-bottom:8px">Previous Employer BIR 2316 Breakdown</div><div class="form-row"><div><div class="field"><label>Previous Employer Name</label><input id="tax-prev-name" class="finput" value="${esc(record.previousEmployerName||'')}" ${hasPrevious?'':'disabled'}/></div><div class="field"><label>Previous Employer TIN</label><input id="tax-prev-tin" class="finput" value="${esc(record.previousEmployerTin||'')}" ${hasPrevious?'':'disabled'}/></div><div class="form-row"><div class="field"><label>Employment From</label><input id="tax-prev-from" type="date" class="finput" value="${record.previousEmploymentFrom||''}" ${hasPrevious?'':'disabled'}/></div><div class="field"><label>Employment To</label><input id="tax-prev-to" type="date" class="finput" value="${record.previousEmploymentTo||''}" ${hasPrevious?'':'disabled'}/></div></div></div><div><div class="field"><label>Non-taxable 13th Month &amp; Other Benefits</label><input id="tax-prev-nontax-benefits" type="number" min="0" max="90000" step="0.01" class="finput" value="${Number(record.previousEmployerNonTaxableBenefits||0)}" ${hasPrevious?'':'disabled'}/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Consumes the same combined ₱90,000 annual exemption.</div></div><div class="field"><label>Taxable 13th Month &amp; Other Benefits</label><input id="tax-prev-tax-benefits" type="number" min="0" step="0.01" class="finput" value="${Number(record.previousEmployerTaxableBenefits||0)}" ${hasPrevious?'':'disabled'}/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Must already be included in total taxable compensation below.</div></div><div class="field"><label>Previous Employer De Minimis</label><input id="tax-prev-deminimis" type="number" min="0" step="0.01" class="finput" value="${Number(record.previousEmployerDeMinimis||0)}" ${hasPrevious?'':'disabled'}/></div></div></div></div>
     <div class="form-row"><div><label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:12px;font-weight:650"><input id="tax-has-previous" type="checkbox" style="width:auto;accent-color:var(--accent)" ${hasPrevious?'checked':''} onchange="setEmployeeHasPreviousEmployer(${e.id},${taxYear},this.checked)"/> Employee had a previous employer in ${taxYear}</label><div class="field"><label>Previous Employer Taxable Compensation</label><input id="tax-prev-taxable" type="number" min="0" step="0.01" class="finput" value="${Number(record.previousEmployerTaxable||0)}" ${hasPrevious?'':'disabled'}/></div><div class="field"><label>Previous Employer Tax Withheld</label><input id="tax-prev-withheld" type="number" min="0" step="0.01" class="finput" value="${Number(record.previousEmployerTaxWithheld||0)}" ${hasPrevious?'':'disabled'}/></div><div class="field"><label>BIR 2316 / Source Reference</label><input id="tax-source" class="finput" value="${esc(record.sourceReference||'')}" placeholder="e.g. 2316 received 2026-03-15"/></div></div><div><div class="field"><label>Opening YTD Taxable Compensation</label><input id="tax-opening-taxable" type="number" min="0" step="0.01" class="finput" value="${Number(record.openingYtdTaxable||0)}"/></div><div class="field"><label>Opening YTD Tax Withheld</label><input id="tax-opening-withheld" type="number" min="0" step="0.01" class="finput" value="${Number(record.openingYtdTaxWithheld||0)}"/></div><label style="display:flex;align-items:flex-start;gap:8px;padding:10px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;font-size:11px"><input id="tax-confirmed" type="checkbox" style="width:auto;accent-color:var(--accent);margin-top:2px" ${record.confirmed?'checked':''}/><span><strong>Confirmed for annualization</strong><br>I verified previous-employer status and opening balances for ${taxYear}.</span></label>${record.confirmedAt?`<div style="font-size:10px;color:var(--txt3);margin-top:5px">Confirmed by ${esc(record.confirmedBy||'—')} · ${esc(record.confirmedAt)}</div>`:''}</div></div>
+    ${hasPrevious?`<div class="form-row"><div class="field"><label>Previous Employer Registered Address</label><input id="tax-prev-address" class="finput" value="${esc(record.previousEmployerAddress||'')}"/></div><div class="field"><label>Previous Employer ZIP Code</label><input id="tax-prev-zip" class="finput" value="${esc(record.previousEmployerZip||'')}" maxlength="4"/></div></div>`:`<input id="tax-prev-address" type="hidden" value=""/><input id="tax-prev-zip" type="hidden" value=""/>`}
     ${isA?`<div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn btn-primary" onclick="saveEmployeeTaxYearRecord(${e.id},${taxYear})">Save Tax Record</button></div>`:''}`;
   }
   return`
@@ -13082,6 +13111,8 @@ render = function() {
 <script src="/bir-1601c-core.js?v=20260803-reporting-month"></script>
 <script src="/bir-annualization-core.js?v=20260804-rr11-2018-annex-e"></script>
 <script src="/bir-tax-version-core.js?v=20260804-effective-dated-benefits"></script>
+<script src="/vendor/pdf-lib.min.js?v=1.17.1"></script>
+<script src="/bir-2316-pdf.js?v=20260804-official-form-overlay"></script>
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
 <script src="/compliance.js?v=20260804-manual-1601c-month"></script>

@@ -13,7 +13,8 @@
     "test:adjustments": "node scripts/test-payroll-adjustments.js",
     "test:payroll-preview": "node scripts/test-payroll-preview.js",
     "test:bir-annualization": "node scripts/test-bir-annualization.js",
-    "test:bir-version": "node scripts/test-bir-tax-version.js"
+    "test:bir-version": "node scripts/test-bir-tax-version.js",
+    "test:bir-2316": "node scripts/test-bir-2316-pdf.js"
   },
   "dependencies": {
     "express": "^4.18.2",
