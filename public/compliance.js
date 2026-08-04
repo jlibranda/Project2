@@ -454,13 +454,13 @@
         ['1601-C Item','Description','Amount'],
         ['14','Total Amount of Compensation',report.totalCompensation],
         ['17','Non-Taxable 13th Month and Other Benefits',report.annualBenefitExempt],
-        ['18','De Minimis Benefits','Review detailed pay-item classification'],
+        ['18','De Minimis Benefits',report.deMinimis],
         ['19','Mandatory employee SSS/PHIC/HDMF shares and union dues',report.mandatoryContributions],
         ['20','Other Non-Taxable Compensation',report.otherNonTaxable],
         ['21','Total Non-Taxable Compensation',report.totalNonTaxable],
         ['22','Total Taxable Compensation',report.taxableCompensation],
-        ['23','Taxable Compensation not subject to withholding (annual compensation <= P250,000)','Review employee annualization before filing'],
-        ['24','Net Taxable Compensation',report.taxableCompensation],
+        ['23','Taxable Compensation not subject to withholding (annual compensation <= P250,000)',report.taxableNotSubjectToWithholding],
+        ['24','Net Taxable Compensation',Math.max(0,report.taxableCompensation-report.taxableNotSubjectToWithholding)],
         ['25','Total Taxes Withheld',report.totalTaxesWithheld],
         ['Annualization control','Tax refunded to employees',report.annualizationRefunds],
         ['26','Adjustments from prior month(s)',report.annualizationRefunds?'-'+report.annualizationRefunds:'Enter approved BIR adjustment, if any'],
@@ -551,13 +551,32 @@
     setTimeout(function(){URL.revokeObjectURL(link.href);link.remove();},1000);
   }
 
+  window.generateOfficial1601CPDF = async function () {
+    var selectedMonth=window._bir1601CMonth||(latestApprovedRun()?BIR1601CCore.runMonth(latestApprovedRun()):reportingMonthFromDate(today()));
+    var report=BIR1601CCore.aggregate(selectedMonth,PAYROLLS,FINAL_PAY_LIST),missing=[];
+    if(!report.entries.length){toast('No approved payroll or released final pay is reportable for '+displayReportingMonth(selectedMonth)+'.','warning');return;}
+    if(!String(COMPANY.registeredName||COMPANY.name||'').trim())missing.push('registered employer name');
+    if(!String(COMPANY.taxIdentificationNo||'').trim())missing.push('employer TIN');
+    if(!String(COMPANY.rdo||'').trim())missing.push('employer RDO code');
+    if(!String(COMPANY.registeredAddress||'').trim())missing.push('registered address');
+    if(missing.length){toast('Complete Company Settings → BIR Employer Information: '+missing.join(', ')+'.','warning',7500);return;}
+    try{
+      toast('Generating official BIR Form 1601-C PDF…','info');
+      var data=BIR1601CPdf.buildData({company:COMPANY,report:report,month:selectedMonth});
+      var response=await fetch('/forms/bir-form-1601c-jan-2018.pdf');if(!response.ok)throw new Error('Official BIR template could not be loaded.');
+      var bytes=await BIR1601CPdf.render(await response.arrayBuffer(),data,window.PDFLib);
+      downloadPdf('BIR_1601C_'+selectedMonth+'.pdf',bytes);
+      toast('Official BIR Form 1601-C draft generated. Review the return, adjustment schedule, payment details, and signatures before filing.','success',7500);
+    }catch(error){toast('BIR 1601-C PDF could not be generated: '+error.message,'error',7000);}
+  };
+
   window.generateOfficial2316PDF = async function (empId) {
     var emp=USERS.find(function(u){return u.id===empId;}),year=Number(window._bir2316Year||new Date().getFullYear());
     if(!emp){toast('Employee was not found.','warning');return;}
     var profile=employeeTaxRecord(emp,year,false)||{},missing=[];
     if(!String(COMPANY.taxIdentificationNo||'').trim())missing.push('Employer TIN');
     if(!String(COMPANY.registeredAddress||'').trim())missing.push('Registered address');
-    if(missing.length){toast('Complete Company Settings → BIR Form 2316 Employer Information: '+missing.join(', ')+'.','warning',7000);return;}
+    if(missing.length){toast('Complete Company Settings → BIR Employer Information: '+missing.join(', ')+'.','warning',7000);return;}
     if(!String(emp.tin||'').trim())missing.push('Employee TIN');
     if(!String(emp.rdo||'').trim())missing.push('Employee RDO code');
     if(!String(emp.permanentAddress||emp.city||'').trim())missing.push('Employee registered address');
@@ -600,7 +619,7 @@
       {type:'SSS',name:'SSS R3 Worksheet',detail:'Employee and employer shares · '+COMPLIANCE_VERSION.sss,color:'blue'},
       {type:'PHIC',name:'PhilHealth RF-1 Worksheet',detail:COMPLIANCE_VERSION.philhealth,color:'green'},
       {type:'HDMF',name:'Pag-IBIG MCRF Worksheet',detail:COMPLIANCE_VERSION.pagibig,color:'amber'},
-      {type:'BIR',name:'BIR 1601-C Worksheet',detail:COMPLIANCE_VERSION.bir,color:'red'}
+      {type:'BIR',name:'Official BIR Form 1601-C',detail:COMPLIANCE_VERSION.bir,color:'red'}
     ];
     return '<div style="padding:9px 12px;background:var(--green-bg);color:var(--green-txt);border-radius:8px;margin-bottom:12px;font-size:12px">'+
       (run?'Latest approved payroll <strong>'+run.from+' – '+run.to+'</strong> · '+esc(run.complianceVersion || COMPLIANCE_VERSION.label):'Released final-pay records are available for statutory reporting.')+'</div>'+
@@ -608,7 +627,7 @@
       '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.75rem">'+cards.map(function (c) {
         return '<div class="card" style="margin:0;border-left:3px solid var(--'+c.color+')"><div class="card-title">'+c.name+'</div>'+
           '<div class="card-sub" style="min-height:34px;margin:5px 0 10px">'+c.detail+'</div>'+
-          '<button class="btn btn-sm" style="width:100%;justify-content:center" onclick="generateGovtReport(\''+c.type+'\')">Download CSV worksheet</button></div>';
+          (c.type==='BIR'?'<div style="display:flex;gap:6px"><button class="btn btn-sm btn-primary" style="flex:1;justify-content:center" onclick="generateOfficial1601CPDF()">Generate official PDF</button><button class="btn btn-sm" style="flex:1;justify-content:center" onclick="generateGovtReport(\'BIR\')">CSV worksheet</button></div>':'<button class="btn btn-sm" style="width:100%;justify-content:center" onclick="generateGovtReport(\''+c.type+'\')">Download CSV worksheet</button>')+'</div>';
       }).join('')+'</div>'+
       '<div class="card" style="margin-top:.75rem;margin-bottom:0"><div style="display:flex;gap:12px;align-items:end;justify-content:space-between;flex-wrap:wrap"><div><div class="card-title">Official BIR Form 2316</div>'+ 
       '<div class="card-sub">Plots approved payroll and previous-employer data directly on the September 2021 (ENCS) government form. Review and signatures remain required.</div></div><div style="min-width:130px"><label style="font-size:11px;font-weight:700">Tax Year</label><input type="number" min="2000" max="2099" class="finput" value="'+Number(window._bir2316Year||new Date().getFullYear())+'" onchange="window._bir2316Year=Number(this.value);render()"/></div></div>'+ 

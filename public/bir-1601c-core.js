@@ -53,6 +53,9 @@
         var annualBenefitExempt = money(item.annualBenefitExempt || 0);
         var annualBenefitTaxable = money(item.annualBenefitTaxable || 0);
         var totalNonTaxable = money(Math.max(0, gross - taxable));
+        var deMinimis = money((item.calculationTrace || []).filter(function (line) {
+          return line.type === 'earning' && line.taxable === false && String(line.ruleCode || '').indexOf('DEMINIMIS') >= 0;
+        }).reduce(function (total, line) { return total + (Number(line.amount) || 0); }, 0));
         entries.push({
           source: run.type === '13th-month' ? '13th Month Payroll' : 'Regular Payroll',
           sourceId: run.id,
@@ -64,9 +67,10 @@
           mandatory: mandatory,
           annualBenefitExempt: annualBenefitExempt,
           annualBenefitTaxable: annualBenefitTaxable,
-          otherNonTaxable: money(Math.max(0, totalNonTaxable - mandatory - annualBenefitExempt)),
+          deMinimis: deMinimis,
+          otherNonTaxable: money(Math.max(0, totalNonTaxable - mandatory - annualBenefitExempt - deMinimis)),
           totalNonTaxable: totalNonTaxable,
-          taxable: taxable,
+          taxable: taxable, taxableNotSubjectToWithholding:money(item.taxableNotSubjectToWithholding),
           tax: money(item.tax || 0),
           taxRefund: money(item.taxRefund || 0),
           netTax: money((item.tax || 0) - (item.taxRefund || 0))
@@ -82,9 +86,10 @@
         releaseDate: record.releaseDate || '', gross: money(record.grossFP), mandatory: 0,
         annualBenefitExempt: money(record.annualBenefitExempt || 0),
         annualBenefitTaxable: money(record.annualBenefitTaxable || 0),
+        deMinimis: money(record.deMinimis || 0),
         otherNonTaxable: money(Math.max(0,Number(record.nonTaxableCompensation||0)-Number(record.annualBenefitExempt||0))),
         totalNonTaxable: money(record.nonTaxableCompensation),
-        taxable: money(record.taxableCompensation), tax: money(record.taxWithheld),
+        taxable: money(record.taxableCompensation), taxableNotSubjectToWithholding:money(record.taxableNotSubjectToWithholding), tax: money(record.taxWithheld),
         taxRefund: money(record.taxRefund),
         netTax: money((record.taxWithheld || 0) - (record.taxRefund || 0))
       });
@@ -97,8 +102,8 @@
       finalPayCount: entries.filter(function (e) { return e.source === 'Final Pay'; }).length,
       totalCompensation: sum('gross'), mandatoryContributions: sum('mandatory'),
       annualBenefitExempt:sum('annualBenefitExempt'), annualBenefitTaxable:sum('annualBenefitTaxable'),
-      otherNonTaxable: sum('otherNonTaxable'), totalNonTaxable: sum('totalNonTaxable'),
-      taxableCompensation: sum('taxable'), totalTaxesWithheld: sum('tax'),
+      deMinimis:sum('deMinimis'), otherNonTaxable: sum('otherNonTaxable'), totalNonTaxable: sum('totalNonTaxable'),
+      taxableCompensation: sum('taxable'), taxableNotSubjectToWithholding:sum('taxableNotSubjectToWithholding'), totalTaxesWithheld: sum('tax'),
       annualizationRefunds: sum('taxRefund'), taxRequiredForRemittance: money(Math.max(0, netTax)),
       excessAnnualizationCredit: money(Math.max(0, -netTax))
     };

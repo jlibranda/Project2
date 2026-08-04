@@ -4,6 +4,7 @@
   function number(v){return Number(v)||0;}
   function money(v){return Math.round(number(v)*100)/100;}
   function clean(v){return String(v==null?'':v).replace(/\s+/g,' ').trim();}
+  function normalizeRdo(value){var code=clean(value).toUpperCase().replace(/^RDO[\s-]*/,'').replace(/[^0-9A-Z]/g,'');if(/^\d{1,3}$/.test(code))return code.padStart(3,'0');if(/^\d{1,2}[A-Z]$/.test(code))return code.padStart(3,'0');return code.slice(0,3);}
   function datePart(value){var d=String(value||'');return /^\d{4}-\d{2}-\d{2}$/.test(d)?d.slice(5,7)+'/'+d.slice(8,10):'';}
   function fullDate(value){var d=String(value||'');return /^\d{4}-\d{2}-\d{2}$/.test(d)?d.slice(5,7)+'/'+d.slice(8,10)+'/'+d.slice(0,4):'';}
   function employeeName(emp){
@@ -53,7 +54,7 @@
     Object.keys(taxableParts).forEach(function(key){taxableParts[key]=money(Math.max(0,taxableParts[key]));});
     var periodFrom=runs.reduce(function(v,r){var d=r.from||r.releaseDate||'';return !v||d<v?d:v;},''),periodTo=runs.reduce(function(v,r){var d=r.to||r.releaseDate||'';return !v||d>v?d:v;},'');
     return{
-      year:year,periodFrom:datePart(periodFrom),periodTo:datePart(periodTo),employeeTin:clean(emp.tin),employeeName:employeeName(emp),employeeRdo:clean(emp.rdo).replace(/^RDO\s*/i,''),employeeAddress:clean(emp.permanentAddress||emp.city),employeeZip:clean(emp.zipCode||emp.zip),employeeLocalAddress:clean(emp.temporaryAddress||emp.permanentAddress||emp.city),employeeLocalZip:clean(emp.localZipCode||emp.zipCode||emp.zip),birthDate:fullDate(emp.bday),contact:clean(emp.contact),dailyMinimumWage:money(emp.minimumWageDaily),monthlyMinimumWage:money(emp.minimumWageMonthly),isMwe:!!emp.minimumWageEarner,
+      year:year,periodFrom:datePart(periodFrom),periodTo:datePart(periodTo),employeeTin:clean(emp.tin),employeeName:employeeName(emp),employeeRdo:normalizeRdo(emp.rdo),employeeAddress:clean(emp.permanentAddress||emp.city),employeeZip:clean(emp.zipCode||emp.zip),employeeLocalAddress:clean(emp.temporaryAddress||emp.permanentAddress||emp.city),employeeLocalZip:clean(emp.localZipCode||emp.zipCode||emp.zip),birthDate:fullDate(emp.bday),contact:clean(emp.contact),dailyMinimumWage:money(emp.minimumWageDaily),monthlyMinimumWage:money(emp.minimumWageMonthly),isMwe:!!emp.minimumWageEarner,
       employerTin:clean(company.taxIdentificationNo||company.tin),employerName:clean(company.registeredName||company.name),employerAddress:clean(company.registeredAddress||company.address),employerZip:clean(company.zipCode||company.zip),employerType:company.employerType||'main',
       previousTin:clean(profile.previousEmployerTin),previousName:clean(profile.previousEmployerName),previousAddress:clean(profile.previousEmployerAddress),previousZip:clean(profile.previousEmployerZip),
       grossPresent:gross,nonTaxablePresent:nonTaxable,taxablePresent:taxable,previousTaxable:previousTaxable,grossTaxable:totalTaxable,taxDue:taxDue,presentTax:presentTax,previousTax:previousTax,totalTaxWithheld:money(presentTax+previousTax),

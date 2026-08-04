@@ -7,7 +7,7 @@ const BIR2316Pdf = require('../public/bir-2316-pdf.js');
 async function main() {
   const employee = {
     id: 1, eid: 'EMP-001', firstName: 'Juan', middleName: 'Santos', lastName: 'Dela Cruz',
-    tin: '123-456-789-000', rdo: 'RDO 043', permanentAddress: '123 Example Street, Quezon City',
+    tin: '123-456-789-000', rdo: '43', permanentAddress: '123 Example Street, Quezon City',
     zipCode: '1100', bday: '1990-01-15', contact: '09171234567'
   };
   const run = {
@@ -34,6 +34,7 @@ async function main() {
   });
 
   assert.strictEqual(data.employeeName, 'Dela Cruz, Juan Santos');
+  assert.strictEqual(data.employeeRdo, '043');
   assert.strictEqual(data.grossPresent, 500000);
   assert.strictEqual(data.totalNonTaxable + data.totalTaxablePresent, data.grossPresent);
   assert.strictEqual(data.taxablePresent + data.previousTaxable, data.grossTaxable);

@@ -702,8 +702,12 @@ let COMPANY={
   salaryMultiplier:13,
   registeredName:'SproutRipple PH',
   taxIdentificationNo:'',
+  rdo:'',
   registeredAddress:'',
   zipCode:'',
+  contactNumber:'',
+  emailAddress:'',
+  withholdingAgentCategory:'private',
   employerType:'main',
   authorizedAgent:'',
   authorizedAgentTitle:'',
@@ -939,6 +943,14 @@ function validateGovtNum(key,value){
     return`${fmt.label} must have ${allowed.join(' or ')} digits. Format: ${fmt.hint}`;
   }
   return null;
+}
+
+/* RDO must remain text so numeric codes retain a leading zero (for example 043). */
+function normalizeRdoCode(value){
+  let code=String(value||'').toUpperCase().replace(/^RDO[\s-]*/,'').replace(/[^0-9A-Z]/g,'');
+  if(/^\d{1,3}$/.test(code))return code.padStart(3,'0');
+  if(/^\d{1,2}[A-Z]$/.test(code))return code.padStart(3,'0');
+  return code.slice(0,3);
 }
 
 function validateGovtAll(e){
@@ -3419,7 +3431,7 @@ function getTemplateSheetDefs(){
     includeInPayroll:'Y',includeInTimekeeping:'Y',
     salaryPM:20000,currency:'PHP',payType:'monthly',dailyDivisor:'',
     mobileAllowance:1000,riceAllowance:2000,stockOptions:'N',esopGranted:'N',esopEntity:'',
-    sss:'34-1234567-8',ph:'12-345678901-2',pi:'1234-5678-9012',tin:'123-456-789-000',
+    sss:'34-1234567-8',ph:'12-345678901-2',pi:'1234-5678-9012',tin:'123-456-789-000',rdo:'043',
     bank:'BDO',bankAccount:'1234567890',
     ec1Name:'Maria dela Cruz',ec1Rel:'Mother',ec1Contact:'09987654321',
     ec2Name:'Roberto dela Cruz',ec2Rel:'Father',ec2Contact:'',
@@ -3494,6 +3506,7 @@ function getTemplateSheetDefs(){
       {k:'ph',         l:'PhilHealth Number', fmt:'12-345678901-2  (raw digits OK)',s:S.ph},
       {k:'pi',         l:'Pag-IBIG Number',   fmt:'1234-5678-9012  (raw digits OK)',s:S.pi},
       {k:'tin',        l:'TIN / BIR Number',  fmt:'123-456-789-000  (raw digits OK)',s:S.tin},
+      {k:'rdo',        l:'Employee RDO Code', fmt:'Text code e.g. 043; leading zero is preserved',s:S.rdo},
       {k:'bank',       l:'Bank Name',         fmt:'BDO | BPI | Metrobank...',s:S.bank},
       {k:'bankAccount',l:'Bank Account No.',  fmt:'Text',s:S.bankAccount},
     ]},
@@ -11267,10 +11280,12 @@ function pgCompanySettings(){
     </div>
 
     <div class="card" style="grid-column:span 2;border-left:3px solid var(--red)">
-      <div class="card-title" style="margin-bottom:4px">BIR Form 2316 Employer Information</div>
-      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">Printed directly on the official September 2021 ENCS form. Complete these fields before generating employee certificates.</div>
+      <div class="card-title" style="margin-bottom:4px">BIR Employer Information (1601-C / 2316)</div>
+      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">Printed directly on the official BIR forms. RDO is stored as text so codes such as <strong>043</strong> keep the leading zero.</div>
       <div class="form-row"><div class="field"><label>BIR-Registered Employer Name</label><input id="co-bir-name" class="finput" value="${esc(COMPANY.registeredName||COMPANY.name)}"/></div><div class="field"><label>Employer TIN</label><input id="co-bir-tin" class="finput" value="${esc(COMPANY.taxIdentificationNo||'')}" placeholder="000-000-000-000"/></div></div>
+      <div class="form-row"><div class="field"><label>Employer RDO Code</label><input id="co-bir-rdo" class="finput" type="text" inputmode="text" maxlength="3" value="${esc(normalizeRdoCode(COMPANY.rdo||''))}" placeholder="043" onblur="this.value=normalizeRdoCode(this.value)"/></div><div class="field"><label>Withholding Agent Category</label><select id="co-bir-category" class="finput"><option value="private" ${COMPANY.withholdingAgentCategory!=='government'?'selected':''}>Private</option><option value="government" ${COMPANY.withholdingAgentCategory==='government'?'selected':''}>Government</option></select></div></div>
       <div class="form-row"><div class="field"><label>Registered Address</label><input id="co-bir-address" class="finput" value="${esc(COMPANY.registeredAddress||'')}"/></div><div class="field"><label>ZIP Code</label><input id="co-bir-zip" class="finput" value="${esc(COMPANY.zipCode||'')}" maxlength="4"/></div></div>
+      <div class="form-row"><div class="field"><label>Registered Contact Number</label><input id="co-bir-contact" class="finput" value="${esc(COMPANY.contactNumber||'')}"/></div><div class="field"><label>Registered Email Address</label><input id="co-bir-email" class="finput" type="email" value="${esc(COMPANY.emailAddress||'')}"/></div></div>
       <div class="form-row"><div class="field"><label>Type of Employer</label><select id="co-bir-type" class="finput"><option value="main" ${COMPANY.employerType!=='secondary'?'selected':''}>Main Employer</option><option value="secondary" ${COMPANY.employerType==='secondary'?'selected':''}>Secondary Employer</option></select></div><div class="field"><label>Authorized Representative / Agent</label><input id="co-bir-agent" class="finput" value="${esc(COMPANY.authorizedAgent||'')}" placeholder="Printed name for signing reference"/></div></div>
       <div class="field"><label>Authorized Representative Title</label><input id="co-bir-agent-title" class="finput" value="${esc(COMPANY.authorizedAgentTitle||'')}" placeholder="e.g. Payroll Manager / HR Director"/></div>
       <div style="font-size:10px;color:var(--amber-txt);background:var(--amber-bg);padding:8px 10px;border-radius:7px">The PDF generator does not create a signature. The authorized employer representative and employee must complete the applicable signature/date sections before issuance.</div>
@@ -11398,8 +11413,12 @@ function saveCompany(){
   COMPANY.initials=(document.getElementById('co-ini')?.value?.trim()||COMPANY.initials).toUpperCase().slice(0,2);
   COMPANY.registeredName=document.getElementById('co-bir-name')?.value?.trim()||COMPANY.name;
   COMPANY.taxIdentificationNo=document.getElementById('co-bir-tin')?.value?.trim()||'';
+  COMPANY.rdo=normalizeRdoCode(document.getElementById('co-bir-rdo')?.value||'');
   COMPANY.registeredAddress=document.getElementById('co-bir-address')?.value?.trim()||'';
   COMPANY.zipCode=document.getElementById('co-bir-zip')?.value?.trim()||'';
+  COMPANY.contactNumber=document.getElementById('co-bir-contact')?.value?.trim()||'';
+  COMPANY.emailAddress=document.getElementById('co-bir-email')?.value?.trim()||'';
+  COMPANY.withholdingAgentCategory=document.getElementById('co-bir-category')?.value||'private';
   COMPANY.employerType=document.getElementById('co-bir-type')?.value||'main';
   COMPANY.authorizedAgent=document.getElementById('co-bir-agent')?.value?.trim()||'';
   COMPANY.authorizedAgentTitle=document.getElementById('co-bir-agent-title')?.value?.trim()||'';
@@ -12103,6 +12122,7 @@ function pgEmpDetail(){
         ${govtField('ph','PhilHealth / PHIC')}
         ${govtField('pi','Pag-IBIG / HDMF')}
         ${govtField('tin','TIN / BIR')}
+        ${detailEdit?`<div class="field" style="margin-bottom:6px"><label>Employee RDO Code <span style="font-weight:400;color:var(--txt3);font-size:11px">text code; leading zero preserved</span></label><input id="ef-rdo" class="finput" type="text" inputmode="text" maxlength="3" value="${esc(normalizeRdoCode(val('rdo')||''))}" placeholder="043" style="font-size:13px;font-family:'JetBrains Mono',monospace;letter-spacing:.5px" oninput="this.value=this.value.toUpperCase().replace(/[^0-9A-Z]/g,'').slice(0,3);detailDraft.rdo=this.value" onblur="this.value=normalizeRdoCode(this.value);detailDraft.rdo=this.value"/></div>`:`<div class="info-row"><span class="info-label">Employee RDO Code</span><span style="font-size:13px;font-family:'JetBrains Mono',monospace">${esc(normalizeRdoCode(val('rdo')||'')||'â€”')}</span></div>`}
       </div>
       <div>
         ${etext('bank','Bank (free text)','text')}
@@ -12386,6 +12406,7 @@ function applyEmpSave(reason){
   if(!e)return;
   /* If called from movement modal, restore draft */
   const draftToApply=modal?.type==='movementReason'?modal.draft:detailDraft;
+  if(draftToApply.rdo!==undefined)draftToApply.rdo=normalizeRdoCode(draftToApply.rdo);
   /* Record movement if reason provided */
   if(reason!==null){
     const movChanges=modal?.type==='movementReason'?modal.changes:detectMovementChanges(e,draftToApply);
@@ -13109,6 +13130,7 @@ render = function() {
 
 </script>
 <script src="/bir-1601c-core.js?v=20260803-reporting-month"></script>
+<script src="/bir-1601c-pdf.js?v=20260805-official-form-overlay"></script>
 <script src="/bir-annualization-core.js?v=20260804-rr11-2018-annex-e"></script>
 <script src="/bir-tax-version-core.js?v=20260804-effective-dated-benefits"></script>
 <script src="/vendor/pdf-lib.min.js?v=1.17.1"></script>
