@@ -557,13 +557,11 @@
     var profile=employeeTaxRecord(emp,year,false)||{},missing=[];
     if(!String(COMPANY.taxIdentificationNo||'').trim())missing.push('Employer TIN');
     if(!String(COMPANY.registeredAddress||'').trim())missing.push('Registered address');
-    if(!String(COMPANY.zipCode||'').trim())missing.push('ZIP code');
     if(missing.length){toast('Complete Company Settings → BIR Form 2316 Employer Information: '+missing.join(', ')+'.','warning',7000);return;}
     if(!String(emp.tin||'').trim())missing.push('Employee TIN');
     if(!String(emp.rdo||'').trim())missing.push('Employee RDO code');
     if(!String(emp.permanentAddress||emp.city||'').trim())missing.push('Employee registered address');
-    if(!String(emp.zipCode||emp.zip||'').trim())missing.push('Employee ZIP code');
-    if(profile.hasPreviousEmployer){if(!String(profile.previousEmployerName||'').trim())missing.push('Previous employer name');if(!String(profile.previousEmployerTin||'').trim())missing.push('Previous employer TIN');if(!String(profile.previousEmployerAddress||'').trim())missing.push('Previous employer address');if(!String(profile.previousEmployerZip||'').trim())missing.push('Previous employer ZIP code');}
+    if(profile.hasPreviousEmployer){if(!String(profile.previousEmployerName||'').trim())missing.push('Previous employer name');if(!String(profile.previousEmployerTin||'').trim())missing.push('Previous employer TIN');if(!String(profile.previousEmployerAddress||'').trim())missing.push('Previous employer address');}
     if(missing.length){toast('Complete the employee Tax & YTD / Personal records before generating: '+missing.join(', ')+'.','warning',7500);return;}
     var approved=PAYROLLS.filter(function(run){return run.status==='approved'||run.status==='locked';});
     var finalPayRuns=FINAL_PAY_LIST.filter(function(record){return record.status==='released'&&Number(record.taxYear)===year;}).map(function(record){return{id:'FP-'+record.id,status:'locked',type:'final-pay',taxYear:record.taxYear,from:record.releaseDate,to:record.releaseDate,releaseDate:record.releaseDate,bir1601CMonth:record.bir1601CMonth,items:[{empId:record.empId,eid:record.eid,name:record.employeeName,gross:record.grossFP,taxableCompensation:record.taxableCompensation,annualBenefitExempt:record.annualBenefitExempt,annualBenefitTaxable:record.annualBenefitTaxable,sss:0,ph:0,pi:0,tax:record.taxWithheld,taxRefund:record.taxRefund,annualTax:record.annualTax,calculationTrace:[]}]};});
