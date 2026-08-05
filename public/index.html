@@ -12914,6 +12914,7 @@ function render(){
    ═══════════════════════════════════════════════════════════ */
 
 /* ── Toast notifications ── */
+var TOAST_MAX = 3;
 function toast(msg, type, dur) {
   type = type || 'info'; dur = dur || 3500;
   var wrap = document.getElementById('toast-wrap');
@@ -12923,6 +12924,19 @@ function toast(msg, type, dur) {
     wrap.style.cssText = 'position:fixed;bottom:88px;right:24px;z-index:99999;display:flex;flex-direction:column-reverse;gap:8px;pointer-events:none;max-width:340px';
     document.body.appendChild(wrap);
   }
+  function dismiss(el) {
+    clearTimeout(el._toastTimer);
+    el.style.opacity = '0'; el.style.transform = 'translateX(16px)';
+    setTimeout(function() { el.remove(); }, 260);
+  }
+  // Dedupe: an identical message already showing just gets its timer refreshed instead of stacking again.
+  var existing = wrap.querySelector('[data-toast-msg="' + CSS.escape(msg) + '"]');
+  if (existing) {
+    clearTimeout(existing._toastTimer);
+    existing.classList.add('toast-repeat');
+    existing._toastTimer = setTimeout(function() { dismiss(existing); }, dur);
+    return;
+  }
   var icn = {success:'✓',error:'✕',warning:'⚠',info:'ℹ'}[type] || 'ℹ';
   var clr = {
     success:'background:#f0fdf4;border-color:#22c55e;color:#166534',
@@ -12931,11 +12945,12 @@ function toast(msg, type, dur) {
     info:   'background:var(--accent-bg);border-color:var(--accent);color:var(--accent-txt)',
   }[type] || 'background:var(--bg);border-color:var(--border);color:var(--txt)';
   var el = document.createElement('div');
+  el.dataset.toastMsg = msg;
   el.style.cssText = 'display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-radius:10px;border:1.5px solid;' + clr + ';font-size:13px;font-weight:500;box-shadow:0 4px 20px rgba(0,0,0,.12);pointer-events:auto;opacity:0;transform:translateX(16px);transition:opacity .22s,transform .22s;line-height:1.4';
   var closeBtn = document.createElement('span');
   closeBtn.textContent = '×';
   closeBtn.style.cssText = 'cursor:pointer;opacity:.5;font-size:18px;line-height:1;margin-left:4px;flex-shrink:0';
-  closeBtn.onclick = function() { el.remove(); };
+  closeBtn.onclick = function() { dismiss(el); };
   var icon = document.createElement('span');
   icon.textContent = icn;
   icon.style.cssText = 'font-size:15px;flex-shrink:0;margin-top:1px';
@@ -12944,8 +12959,10 @@ function toast(msg, type, dur) {
   text.textContent = msg;
   el.appendChild(icon); el.appendChild(text); el.appendChild(closeBtn);
   wrap.appendChild(el);
+  // Cap concurrent toasts so a burst of failures can't stack up and cover real UI.
+  while (wrap.children.length > TOAST_MAX) dismiss(wrap.firstElementChild);
   requestAnimationFrame(function() { el.style.opacity = '1'; el.style.transform = 'translateX(0)'; });
-  setTimeout(function() { el.style.opacity = '0'; el.style.transform = 'translateX(16px)'; setTimeout(function() { el.remove(); }, 260); }, dur);
+  el._toastTimer = setTimeout(function() { dismiss(el); }, dur);
 }
 
 /* ── Custom confirm dialog ── */
