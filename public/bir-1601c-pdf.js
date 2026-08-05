@@ -40,12 +40,12 @@
     var monthCells=[53.5,67.7,82.1,96.5,110.9,125.0];
     var tinCells=[240.5,254.9,269.0,298.1,312.2,326.4,355.4,369.6,384.0,412.8,426.9,441.1,455.5,469.9];
     var rdoCells=[555.8,571.2,586.6];
-    drawCells(data.month,monthCells,812,8);mark(data.amended?190.1:238.2,819.5);mark(data.hasTaxes?311.0:351.4,819.5);draw(data.sheetsAttached,448,811,55,8,'center');
-    drawCells(data.tin,tinCells,777,8);drawCells(data.rdo,rdoCells,777,8);
-    drawTextCells(data.name,17.8,14.42,40,752);var address=ascii(data.address).toUpperCase();drawTextCells(address.slice(0,40),17.8,14.42,40,725);drawTextCells(address.slice(40),17.8,14.42,31,709);drawCells(data.zip,[541.5,556.0,570.4,584.9],709,7);
-    drawTextCells(data.contact,104.2,14.42,12,691);mark(data.category==='government'?526.6:454.0,697.5);drawTextCells(data.email,104.2,14.42,34,674);mark(data.taxRelief?181.9:225.1,664.5);if(data.taxRelief)drawTextCells(data.taxReliefDetails,346.5,14.42,17,658);
-    var ys={14:626.5,15:610.7,16:595.0,17:579.2,18:563.5,19:547.7,20:531.9,21:516.1,22:500.3,23:484.5,24:468.7,25:452.9,26:437.1,27:421.3,28:405.5,29:389.7,30:373.9,31:358.1,32:342.3,33:326.5,34:310.7,35:294.9,36:279.1};Object.keys(ys).forEach(function(key){amount(data['item'+key],ys[key]);});
-    if(page2){drawCells(data.tin,repeatedCenters(17.8,14.42,14),830,8,page2);drawTextCells(data.name,218.4,14.42,26,830,page2);if(number(data.item26))amount(data.item26,638,page2,[337.9,352.3,366.7,381.1,395.3,409.4,423.8,438.2,452.6,467.0,481.4],[511.7,526.8]);}
+    drawCells(data.month,monthCells,813.8,8);mark(data.amended?190.1:238.2,817.1);mark(data.hasTaxes?311.0:351.4,817.1);draw(data.sheetsAttached,448,813.8,55,8,'center');
+    drawCells(data.tin,tinCells,783.7,8);drawCells(data.rdo,rdoCells,783.7,8);
+    drawTextCells(data.name,17.8,14.42,40,757.2);var address=ascii(data.address).toUpperCase();drawTextCells(address.slice(0,40),17.8,14.42,40,730.9);drawTextCells(address.slice(40),17.8,14.42,31,715.2);drawCells(data.zip,[541.5,556.0,570.4,584.9],715.2,7);
+    drawTextCells(data.contact,104.2,14.42,12,698.1);mark(data.category==='government'?526.6:454.0,701.0);drawTextCells(data.email,104.2,14.42,34,681.0);mark(data.taxRelief?181.9:225.1,666.3);if(data.taxRelief)drawTextCells(data.taxReliefDetails,346.5,14.42,17,663.4);
+    var ys={14:632.2,15:606.3,16:590.3,17:574.4,18:558.5,19:542.5,20:526.6,21:510.6,22:494.7,23:478.6,24:462.6,25:446.7,26:430.7,27:414.7,28:398.8,29:382.9,30:366.6,31:350.3,32:334.4,33:318.5,34:302.5,35:286.6,36:270.6};Object.keys(ys).forEach(function(key){amount(data['item'+key],ys[key]);});
+    if(page2){drawCells(data.tin,repeatedCenters(17.8,14.42,14),832.6,8,page2);drawTextCells(data.name,218.4,14.42,26,832.9,page2);if(number(data.item26))amount(data.item26,639.5,page2,[337.9,352.3,366.7,381.1,395.3,409.4,423.8,438.2,452.6,467.0,481.4],[511.7,526.8]);}
     doc.setTitle('BIR Form 1601-C - '+data.monthLabel);doc.setSubject('Monthly Remittance Return of Income Taxes Withheld on Compensation');doc.setProducer('SproutRipple PH Payroll');return await doc.save();
   }
   return{money:money,normalizeRdo:normalizeRdo,buildData:buildData,render:render};
