@@ -28,14 +28,31 @@ const allowedOrigins = new Set(
 
 app.use(express.json({ limit: '8mb' }));
 app.use((req, res, next) => {
-  const origin = req.headers.origin;
+  const origin = req.headers.origin?.replace(/\/$/, '');
+
   if (origin && allowedOrigins.has(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
-    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, OPTIONS');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Authorization, Content-Type'
+    );
+    res.setHeader(
+      'Access-Control-Allow-Methods',
+      'GET, POST, PUT, PATCH, DELETE, OPTIONS'
+    );
   }
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
+
+  if (req.method === 'OPTIONS') {
+    if (!origin || !allowedOrigins.has(origin)) {
+      return res.status(403).json({
+        error: 'Origin is not allowed by CORS.'
+      });
+    }
+
+    return res.sendStatus(204);
+  }
+
   next();
 });
 
