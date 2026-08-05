@@ -91,12 +91,49 @@ async function initializeDatabase() {
       id BIGSERIAL PRIMARY KEY, tenant_key TEXT NOT NULL, version BIGINT NOT NULL,
       actor TEXT NOT NULL, saved_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS zk_devices (
+      tenant_key TEXT NOT NULL, serial TEXT NOT NULL,
+      last_seen TIMESTAMPTZ, pending JSONB NOT NULL DEFAULT '[]', device_users JSONB NOT NULL DEFAULT '[]',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (tenant_key, serial)
+    );
   `);
 }
 async function readState() {
   if (!pool) return null;
   const result = await pool.query('SELECT state, version, updated_at FROM app_state WHERE tenant_key = $1', [TENANT_KEY]);
   return result.rows[0] || null;
+}
+
+// zk_devices lives in its own table, separate from app_state, specifically so device pushes
+// (which happen independently of any browser session) can never be clobbered by the browser's
+// full-state overwrite in PUT /api/state.
+async function zkMutateDevice(serial, mutator) {
+  if (!pool) return null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query('SELECT pending, device_users FROM zk_devices WHERE tenant_key = $1 AND serial = $2 FOR UPDATE', [TENANT_KEY, serial]);
+    const row = existing.rows[0] || { pending: [], device_users: [] };
+    const next = mutator({ pending: row.pending || [], deviceUsers: row.device_users || [] }) || {};
+    await client.query(
+      `INSERT INTO zk_devices (tenant_key, serial, last_seen, pending, device_users, updated_at)
+       VALUES ($1, $2, NOW(), $3, $4, NOW())
+       ON CONFLICT (tenant_key, serial) DO UPDATE SET last_seen = NOW(), pending = $3, device_users = $4, updated_at = NOW()`,
+      [TENANT_KEY, serial, JSON.stringify(next.pending || []), JSON.stringify(next.deviceUsers || [])]
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+async function zkAllDevices() {
+  if (!pool) return [];
+  const result = await pool.query('SELECT serial, last_seen, pending, device_users FROM zk_devices WHERE tenant_key = $1', [TENANT_KEY]);
+  return result.rows;
 }
 
 app.get('/api/health', async (_req, res) => {
@@ -148,6 +185,121 @@ app.put('/api/state', requireAuth, async (req, res) => {
     res.json({ ok: true, version, updatedAt: result.rows[0].updated_at });
   } catch (error) {
     res.status(500).json({ error: 'Unable to save application data.', detail: error.message });
+  }
+});
+
+/* ── ZKTeco ADMS (push protocol) ──────────────────────────────────────────
+   The device itself calls these endpoints — no auth, no CORS needed (it's not
+   a browser). Configure on the device: Menu → Comm → Cloud Server Setting →
+   Server Address = this app's host, Server Port = 80/443, enable ADMS. */
+function parseAdmsLines(body) {
+  return String(body || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+}
+function zkKey(userId, date, time) { return userId + '|' + date + '|' + time; }
+
+app.get('/iclock/cdata', async (req, res) => {
+  const sn = String(req.query.SN || req.query.sn || 'unknown');
+  await zkMutateDevice(sn, current => current).catch(() => {});
+  res.type('text/plain').send(
+    `GET OPTION FROM: ${sn}\r\nStamp=9999\r\nOpStamp=0\r\nErrorDelay=60\r\nDelay=30\r\nTransFlag=1111000000\r\nTimeZone=8\r\nRealtime=1\r\nEncrypt=None\r\n`
+  );
+});
+
+app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (req, res) => {
+  const sn = String(req.query.SN || req.query.sn || 'unknown');
+  const table = String(req.query.table || '').toUpperCase();
+  const lines = parseAdmsLines(req.body);
+  let count = 0;
+  try {
+    if (table === 'ATTLOG') {
+      await zkMutateDevice(sn, current => {
+        const seen = new Set(current.pending.map(r => zkKey(r.userId, r.date, r.time)));
+        lines.forEach(line => {
+          const cols = line.split('\t');
+          const userId = (cols[0] || '').trim();
+          const timestamp = (cols[1] || '').trim();
+          if (!userId || !timestamp) return;
+          const [date, time] = timestamp.split(' ');
+          if (!date || !time) return;
+          const key = zkKey(userId, date, time);
+          if (seen.has(key)) return;
+          seen.add(key);
+          current.pending.push({ userId, date, time, receivedAt: new Date().toISOString() });
+          count++;
+        });
+        return current;
+      });
+    } else if (table === 'OPERLOG') {
+      // Firmware varies on whether USER lines are tab- or space-delimited (and "USER PIN=16"
+      // often arrives as one token), so extract known fields by regex instead of splitting.
+      await zkMutateDevice(sn, current => {
+        lines.forEach(line => {
+          if (!/^USER\b/.test(line)) return;
+          const pin = /\bPIN=(\S+)/.exec(line);
+          if (!pin) return;
+          const name = /\bName=(.*?)(?:\s+(?:Pri|Passwd|Card|Grp|TZ|Verify|ViceCard)=|\t|$)/.exec(line);
+          const card = /\bCard=(\S+)/.exec(line);
+          const userId = pin[1];
+          const existing = current.deviceUsers.find(u => u.userId === userId);
+          const entry = { userId, name: (name ? name[1] : '').trim(), cardNo: card ? card[1] : '' };
+          if (existing) Object.assign(existing, entry); else current.deviceUsers.push(entry);
+          count++;
+        });
+        return current;
+      });
+    } else {
+      await zkMutateDevice(sn, current => current);
+    }
+  } catch (error) {
+    // Device retries on failure; log and still ack what we could to avoid a stuck retry loop.
+    console.error('ADMS ingest error:', error.message);
+  }
+  res.type('text/plain').send(`OK: ${count}`);
+});
+
+app.get('/iclock/getrequest', (req, res) => {
+  // Command queue not implemented yet — always tell the device there's nothing pending.
+  res.type('text/plain').send('OK');
+});
+
+app.post('/iclock/devicecmd', express.text({ type: '*/*', limit: '256kb' }), (_req, res) => {
+  res.type('text/plain').send('OK');
+});
+
+/* ── ZKTeco setup API (used by the browser UI) ──
+   userMapping is admin-edited and lives in app_state (round-trips with the normal save flow);
+   everything else here is device-owned and lives in zk_devices so it's never at risk of being
+   overwritten by a stale browser save. */
+app.get('/api/zk/status', requireAuth, async (_req, res) => {
+  const [record, devices] = await Promise.all([readState(), zkAllDevices()]);
+  const userMapping = record?.state?.zk?.userMapping || {};
+  res.json({
+    devices: devices.map(d => ({ serial: d.serial, lastSeen: d.last_seen, pendingCount: (d.pending || []).length })),
+    deviceUsers: devices.flatMap(d => (d.device_users || []).map(u => ({ ...u, serial: d.serial }))),
+    userMapping
+  });
+});
+app.get('/api/zk/pending', requireAuth, async (_req, res) => {
+  const devices = await zkAllDevices();
+  res.json({ records: devices.flatMap(d => (d.pending || []).map(r => ({ ...r, serial: d.serial }))) });
+});
+app.post('/api/zk/ack', requireAuth, async (req, res) => {
+  const consumedBySerial = new Map();
+  (req.body.consumed || []).forEach(r => {
+    const serial = r.serial || 'unknown';
+    if (!consumedBySerial.has(serial)) consumedBySerial.set(serial, new Set());
+    consumedBySerial.get(serial).add(zkKey(r.userId, r.date, r.time));
+  });
+  try {
+    for (const [serial, keys] of consumedBySerial) {
+      await zkMutateDevice(serial, current => {
+        current.pending = current.pending.filter(r => !keys.has(zkKey(r.userId, r.date, r.time)));
+        return current;
+      });
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to update pending records.', detail: error.message });
   }
 });
 
