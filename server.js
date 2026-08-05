@@ -10,11 +10,21 @@ const SESSION_SECRET = process.env.API_SESSION_SECRET || 'local-development-only
 const pool = process.env.DATABASE_URL
   ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined })
   : null;
-const allowedOrigins = new Set((process.env.APP_ALLOWED_ORIGINS || [
-  'https://sproutripple-ph.vercel.app',
-  'https://sproutripple-ph-payroll.jlibranda.chatgpt.site',
-  'https://sproutripple-ph-production.up.railway.app'
-].join(',')).split(',').map(value => value.trim()).filter(Boolean));
+const allowedOrigins = new Set(
+  (
+    process.env.APP_ALLOWED_ORIGINS ||
+    [
+      'http://localhost:3000',
+      'http://localhost:5173',
+      'https://project2-six-taupe.vercel.app',
+      'https://sproutripple-ph.vercel.app',
+      'https://sproutripple-ph-payroll.jlibranda.chatgpt.site'
+    ].join(',')
+  )
+    .split(',')
+    .map(value => value.trim().replace(/\/$/, ''))
+    .filter(Boolean)
+);
 
 app.use(express.json({ limit: '8mb' }));
 app.use((req, res, next) => {
