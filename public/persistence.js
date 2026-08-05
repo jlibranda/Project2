@@ -29,7 +29,8 @@
       payrollAdjustments:PAYROLL_ADJ,finalPayList:FINAL_PAY_LIST,payrollAudit:PAYROLL_AUDIT,securityAudit:SECURITY_AUDIT,
       governmentRates:GOVT_RATES,birTaxVersions:BIR_TAX_VERSIONS,platformClients:PLATFORM_CLIENTS,
       enterprise:window.collectEnterpriseState?window.collectEnterpriseState():null,
-      payrollGovernance:window.collectPayrollGovernanceState?window.collectPayrollGovernanceState():null
+      payrollGovernance:window.collectPayrollGovernanceState?window.collectPayrollGovernanceState():null,
+      zk:{userMapping:(typeof ZK!=='undefined'&&ZK.userMapping)||{}}
     };
   }
 
@@ -49,6 +50,7 @@
     if(saved.governmentRates)GOVT_RATES=saved.governmentRates;replaceArray(BIR_TAX_VERSIONS,saved.birTaxVersions);replaceArray(PLATFORM_CLIENTS,saved.platformClients);
     if(window.applyEnterpriseState)window.applyEnterpriseState(saved.enterprise);
     if(window.applyPayrollGovernanceState)window.applyPayrollGovernanceState(saved.payrollGovernance);
+    if(saved.zk&&typeof ZK!=='undefined')ZK.userMapping=saved.zk.userMapping||{};
     nAtt=ATT.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
     nLeave=LEAVES.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
     nLoan=LOANS.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
@@ -70,6 +72,8 @@
     if(!response.ok){var error=new Error(result.error||'The data service returned an error.');error.status=response.status;throw error;}
     return result;
   }
+
+  window.apiRequest=request;
 
   window.connectDatabaseAfterLogin=async function(email,password){
     var result=await request('/auth/login',{method:'POST',body:JSON.stringify({email:email,password:password})});
