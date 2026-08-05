@@ -9,6 +9,7 @@
   var saving = false;
   var saveAgain = false;
   var lastSavedPayload = '';
+  var lastAttemptedPayload = '';
 
   function replaceArray(target, value) {
     if (!Array.isArray(value)) return;
@@ -84,7 +85,8 @@
     saving=true;
     try{
       var state=snapshot(),payload=JSON.stringify(state);
-      if(payload===lastSavedPayload)return;
+      if(payload===lastSavedPayload||payload===lastAttemptedPayload)return;
+      lastAttemptedPayload=payload;
       var result=await request('/state',{method:'PUT',body:JSON.stringify({version:stateVersion,state:state})});
       stateVersion=result.version;
       lastSavedPayload=payload;
