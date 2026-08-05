@@ -1340,68 +1340,48 @@ async function flushSync(){
 
 
 
-/* ---- ZKTeco state ---- */
+/* ---- ZKTeco state (ADMS push mode — the device calls our server, not the other way around) ---- */
 let ZK={
-  bridgeUrl:'http://localhost:3001',
-  deviceIp:'192.168.1.201',
-  devicePort:4370,
-  status:'disconnected',   // 'disconnected' | 'connecting' | 'connected' | 'error'
-  statusMsg:'',
-  deviceInfo:null,
-  deviceUsers:[],           // [{uid,userId,name}]
-  userMapping:{},           // { deviceUserId: employeeId }
-  pulledRecords:[],         // raw records from last pull
-  importPreview:[],         // mapped+deduped ready to import
+  devices:[],                // [{serial,lastSeen,pendingCount}] from the server
+  deviceUsers:[],            // [{userId,name,cardNo,serial}] learned from device OPERLOG pushes
+  userMapping:{},            // { deviceUserId: employeeId } — admin-edited, persisted with app state
+  pulledRecords:[],          // raw pending punches fetched from the server
+  importPreview:[],          // mapped+deduped ready to import
   realtimeEnabled:false,
   lastSync:null,
+  loading:false,
 };
 
-async function zkFetch(path, opts={}){
-  const r=await fetch(ZK.bridgeUrl+path,{...opts,headers:{'Content-Type':'application/json',...(opts.headers||{})}});
-  if(!r.ok){const e=await r.json().catch(()=>({error:r.statusText}));throw new Error(e.error||r.statusText);}
-  return r.json();
+async function zkApi(path, opts={}){
+  if(!window.apiRequest)throw new Error('Not connected to the data service.');
+  return window.apiRequest('/zk'+path,opts);
 }
-async function zkConnect(){
-  ZK.status='connecting';ZK.statusMsg='Connecting...';render();
+async function zkRefreshStatus(){
+  ZK.loading=true;render();
   try{
-    const d=await zkFetch('/connect',{method:'POST',body:JSON.stringify({ip:ZK.deviceIp,port:ZK.devicePort})});
-    ZK.status='connected';ZK.statusMsg='';ZK.deviceInfo=d.deviceInfo||null;
-    alert(`Connected to ${ZK.deviceIp}:${ZK.devicePort}`);
-  }catch(e){ZK.status='error';ZK.statusMsg=e.message;}
-  render();
-}
-async function zkDisconnect(){
-  try{await zkFetch('/disconnect',{method:'POST'});}catch(_){}
-  ZK.status='disconnected';ZK.statusMsg='';ZK.deviceInfo=null;render();
-}
-async function zkGetUsers(){
-  try{
-    ZK.deviceUsers=await zkFetch('/users');
-    render();
-    alert(`Fetched ${ZK.deviceUsers.length} device user(s).`);
-  }catch(e){alert('Error: '+e.message);}
+    const d=await zkApi('/status');
+    ZK.devices=d.devices||[];
+    ZK.deviceUsers=d.deviceUsers||[];
+    if(d.userMapping&&!Object.keys(ZK.userMapping).length)ZK.userMapping=d.userMapping;
+  }catch(e){/* surfaced via the page's own empty/error states */}
+  ZK.loading=false;render();
 }
 async function zkPullAttendance(){
-  const from=document.getElementById('zk-from')?.value||'';
-  const to=document.getElementById('zk-to')?.value||'';
   try{
-    const q=[];if(from)q.push('start='+from);if(to)q.push('end='+to);
-    const data=await zkFetch('/attendance'+(q.length?'?'+q.join('&'):''));
+    const data=await zkApi('/pending');
     ZK.pulledRecords=data.records||[];
     ZK.lastSync=new Date().toISOString();
     zkBuildPreview();
     render();
-  }catch(e){alert('Pull error: '+e.message);}
+  }catch(e){alert('Could not fetch pending punches: '+e.message);}
 }
 function zkBuildPreview(){
   ZK.importPreview=[];
   ZK.pulledRecords.forEach(r=>{
     const empId=ZK.userMapping[r.userId];
     const emp=empId?USERS.find(u=>u.id===empId):null;
-    // group by userId+date to find check-in / check-out
     ZK.importPreview.push({...r,empId,empName:emp?emp.name:'[Unmapped]',mapped:!!empId});
   });
-  // deduplicate vs existing attendance
   ZK.importPreview=ZK.importPreview.map(r=>{
     const dup=ATT.some(a=>a.eid===r.empId&&a.date===r.date);
     return{...r,duplicate:dup};
@@ -1416,7 +1396,7 @@ function zkSaveMapping(){
   render();
   alert('User mapping saved!');
 }
-function zkImport(){
+async function zkImport(){
   const toImport=ZK.importPreview.filter(r=>r.mapped&&!r.duplicate&&r.date);
   // Group by empId+date → find earliest (check-in) and latest (check-out) time
   const grouped={};
@@ -1431,35 +1411,16 @@ function zkImport(){
     const tin=g.times[0]||'';
     const tout=g.times.length>1?g.times[g.times.length-1]:'';
     const isLate=tin>='08:30';
-    const emp=USERS.find(u=>u.id===g.empId);
     upsertAttendance(g.empId,g.date,{tin,tout,status:isLate?'late':'present',ot:0,nd:0,notes:'ZKTeco import',source:'zkteco-import',approvalStatus:'approved',filedBy:'ZKTeco import'});
     added++;
   });
+  try{
+    await zkApi('/ack',{method:'POST',body:JSON.stringify({consumed:toImport.map(r=>({serial:r.serial,userId:r.userId,date:r.date,time:r.time}))})});
+  }catch(e){/* import already reflected locally; ack failure just means these may resurface on next pull */}
   alert(`Imported ${added} attendance record${added!==1?'s':''}. Duplicate/unmapped rows skipped.`);
   ZK.pulledRecords=[];ZK.importPreview=[];
   render();
 }
-async function zkClearDevice(){
-  if(!confirm('⚠️ This will permanently delete ALL attendance logs from the device memory. Are you sure?'))return;
-  try{
-    await zkFetch('/attendance',{method:'DELETE'});
-    alert('Device attendance log cleared.');
-  }catch(e){alert('Error: '+e.message);}
-}
-async function zkSyncTime(){
-  try{const d=await zkFetch('/time-sync',{method:'POST'});alert('Device time synced: '+d.serverTime);}
-  catch(e){alert('Error: '+e.message);}
-}
-async function zkCheckBridge(){
-  try{
-    const d=await zkFetch('/status');
-    if(d.connected){ZK.status='connected';ZK.deviceInfo=d.deviceInfo;}
-    else{ZK.status='disconnected';}
-    render();
-  }catch(e){ZK.status='error';ZK.statusMsg='Bridge not running — start bridge.js';render();}
-}
-
-
 /* ---- Permission helper ---- */
 function canAccess(viewKey){
   if(!user)return false;
@@ -2338,6 +2299,7 @@ function goView(v){
   /* Reset statutory section collapsed state when switching tabs */
   if(v==='empdetail'&&view!=='empdetail')statCollapsed=STATUTORY_CONFIG.defaultCollapsed;
   view=v;tab=0;modal=null;aiText='';render();
+  if(v==='zksetup')zkRefreshStatus();
 }
 function goTab(i){tab=i;render();}
 function closeM(){modal=null;render();}
@@ -2474,7 +2436,7 @@ function renderSidebar(){
       ...(has('lookupsetup')?[{v:'lookupsetup',k:'settings',l:'Lookup Tables'}]:[]),
       ...(has('accesssetup')?[{v:'accesssetup',k:'shield',l:'Access & Permissions'}]:[]),
       ...(has('orgsetup')?[{v:'approvalsetup',k:'settings',l:'Approval Layers'}]:[]),
-      ...(has('zksetup')?[{v:'zksetup',k:'clock',l:'ZKTeco Device',badge:ZK.status==='connected'?0:'!'}]:[]),
+      ...(has('zksetup')?[{v:'zksetup',k:'clock',l:'ZKTeco Device',badge:ZK.devices.some(d=>d.lastSeen&&(Date.now()-new Date(d.lastSeen).getTime())<5*60*1000)?0:'!'}]:[]),
       ...(has('company')?[{v:'company',k:'settings',l:'Company Settings'}]:[]),
       ...(has('gsheets')?[{v:'gsheets',k:'file',l:'Google Sheets Sync',badge:GS.status==='connected'?0:''}]:[]),
       ...(has('fieldconfig')?[{v:'fieldconfig',k:'edit',l:'Field Configuration'}]:[]),
@@ -9673,57 +9635,37 @@ function saveAccessEdit(){
 }
 
 function pgZKSetup(){
-  const statusColor={disconnected:'var(--txt3)',connecting:'var(--amber)',connected:'var(--green)',error:'var(--red)'};
-  const statusIcon={disconnected:'○',connecting:'◌',connected:'●',error:'✕'};
+  const serverUrl=location.origin;
   const tabs=['Connection','User Mapping','Pull & Import','Real-time','Device Tools'];
+  const online=ZK.devices.filter(d=>d.lastSeen&&(Date.now()-new Date(d.lastSeen).getTime())<5*60*1000);
   let body='';
 
   /* ── Tab 0: Connection ── */
   if(tab===0){body=`
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem">
-      <div class="card">
-        <div class="card-title" style="margin-bottom:1rem">Bridge Server</div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem;padding:10px 12px;background:var(--bg);border-radius:8px">
-          <div style="width:10px;height:10px;border-radius:50%;background:${ZK.bridgeUrl?'var(--green)':'var(--red)'}"></div>
-          <div>
-            <div style="font-size:13px;font-weight:500">${ZK.bridgeUrl}</div>
-            <div style="font-size:11px;color:var(--txt3)">Local Node.js bridge server</div>
-          </div>
-        </div>
-        <div class="field"><label>Bridge URL</label>
-          <input class="finput" id="zk-bridge" value="${ZK.bridgeUrl}" style="font-family:'JetBrains Mono',monospace;font-size:12px"/>
-        </div>
-        <div style="margin-top:10px;display:flex;gap:6px">
-          <button class="btn btn-sm" onclick="ZK.bridgeUrl=document.getElementById('zk-bridge').value;zkCheckBridge()">Check Bridge</button>
-        </div>
-        <div style="margin-top:10px;padding:8px 10px;background:var(--bg);border-radius:6px;font-size:11px;color:var(--txt3)">
-          Start the bridge: <code style="background:#e5e7eb;padding:1px 5px;border-radius:3px">cd zkteco && node bridge.js</code>
-        </div>
+    <div class="card" style="margin-bottom:1rem">
+      <div class="card-title" style="margin-bottom:.875rem">Configure on the device</div>
+      <p style="font-size:13px;color:var(--txt2);margin-bottom:.75rem">This device supports ADMS — it pushes attendance to us, so no local bridge software is needed. On the device: <strong>Menu → Comm → Cloud Server Setting</strong>, then set:</p>
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px;margin-bottom:10px">
+        <div style="color:var(--txt3)">Server Address</div><div class="mono" style="font-weight:600">${esc(serverUrl.replace(/^https?:\/\//,''))}</div>
+        <div style="color:var(--txt3)">Server Port</div><div class="mono" style="font-weight:600">${serverUrl.startsWith('https')?'443':'80'}</div>
+        <div style="color:var(--txt3)">Enable Domain Name</div><div>${serverUrl.startsWith('https')?'Yes':'No'}</div>
+        <div style="color:var(--txt3)">Enable ADMS / Cloud Server</div><div>Yes</div>
       </div>
-      <div class="card">
-        <div class="card-title" style="margin-bottom:1rem">ZKTeco Device</div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:1rem;padding:10px 12px;background:var(--bg);border-radius:8px">
-          <div style="width:10px;height:10px;border-radius:50%;background:${statusColor[ZK.status]}"></div>
-          <div>
-            <div style="font-size:13px;font-weight:500">${statusIcon[ZK.status]} ${ZK.status.charAt(0).toUpperCase()+ZK.status.slice(1)}</div>
-            <div style="font-size:11px;color:var(--txt3)">${ZK.statusMsg||ZK.deviceIp+':'+ZK.devicePort}</div>
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="field"><label>Device IP Address</label><input class="finput" id="zk-ip" value="${ZK.deviceIp}" style="font-family:'JetBrains Mono',monospace;font-size:12px"/></div>
-          <div class="field"><label>Port (default 4370)</label><input class="finput" id="zk-port" value="${ZK.devicePort}" type="number"/></div>
-        </div>
-        <div style="margin-top:10px;display:flex;gap:6px">
-          ${ZK.status!=='connected'
-            ?`<button class="btn btn-sm btn-primary" onclick="ZK.deviceIp=document.getElementById('zk-ip').value;ZK.devicePort=parseInt(document.getElementById('zk-port').value)||4370;ZK.bridgeUrl=document.getElementById('zk-bridge')?.value||ZK.bridgeUrl;zkConnect()">⚡ Connect</button>`
-            :`<button class="btn btn-sm btn-danger" onclick="zkDisconnect()">Disconnect</button>`}
-        </div>
-      </div>
+      <button class="btn btn-sm" onclick="zkRefreshStatus()" ${ZK.loading?'disabled':''}>${ZK.loading?'Checking…':'↻ Refresh status'}</button>
     </div>
-    ${ZK.deviceInfo?`<div class="card"><div class="card-title" style="margin-bottom:.875rem">Device Information</div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px">
-      ${[['Firmware',ZK.deviceInfo.firmware||ZK.deviceInfo.firmwareVersion||'—'],['Device Name',ZK.deviceInfo.deviceName||'—'],['Serial No.',ZK.deviceInfo.serialNumber||ZK.deviceInfo.sn||'—'],['Platform',ZK.deviceInfo.platform||'—'],['Face Count',ZK.deviceInfo.faceCount??'—'],['Fingerprint Count',ZK.deviceInfo.fpCount??'—'],['Admin Count',ZK.deviceInfo.adminCount??'—'],['User Capacity',ZK.deviceInfo.userCapacity??'—'],['Record Count',ZK.deviceInfo.recordCount??'—'],['Record Capacity',ZK.deviceInfo.recordCapacity??'—']].map(([l,v])=>`<div class="metric" style="padding:.625rem"><div class="metric-label">${l}</div><div style="font-size:13px;font-weight:600;font-family:'JetBrains Mono',monospace">${v}</div></div>`).join('')}
-    </div></div>`:ZK.status==='connected'?`<div class="card"><div style="color:var(--txt3);font-size:13px">Device info not available. Try <button class="btn btn-sm" onclick="zkFetch('/device-info').then(d=>{ZK.deviceInfo=d;render()}).catch(e=>alert(e.message))">Fetch device info</button></div></div>`:''}
+    <div class="card">
+      <div class="card-title" style="margin-bottom:.875rem">Devices</div>
+      ${ZK.devices.length?`<table><thead><tr><th>Serial</th><th>Last check-in</th><th>Pending punches</th><th>Status</th></tr></thead>
+      <tbody>${ZK.devices.map(d=>{
+        const isOnline=online.includes(d);
+        return`<tr>
+          <td class="mono" style="font-size:12px">${esc(d.serial)}</td>
+          <td style="font-size:12px">${d.lastSeen?new Date(d.lastSeen).toLocaleString():'—'}</td>
+          <td style="text-align:center">${d.pendingCount}</td>
+          <td><span class="badge ${isOnline?'b-approved':'b-absent'}">${isOnline?'● Online':'○ Not seen recently'}</span></td>
+        </tr>`;}).join('')}</tbody></table>`
+      :`<div class="empty-state"><div class="ei">📡</div>No device has checked in yet. Once configured on the device, it should appear here within a minute or two.</div>`}
+    </div>
   `;}
 
   /* ── Tab 1: User Mapping ── */
@@ -9731,7 +9673,7 @@ function pgZKSetup(){
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.875rem">
       <div style="font-size:13px;color:var(--txt2)">Map each ZKTeco user ID to an employee. This is a one-time setup.</div>
       <div style="display:flex;gap:6px">
-        <button class="btn btn-sm" onclick="zkGetUsers()" ${ZK.status!=='connected'?'disabled':''}>↓ Fetch device users</button>
+        <button class="btn btn-sm" onclick="zkRefreshStatus()" ${ZK.loading?'disabled':''}>↻ Refresh device users</button>
         <button class="btn btn-sm btn-primary" onclick="zkSaveMapping()">Save mapping</button>
       </div>
     </div>
@@ -9748,7 +9690,7 @@ function pgZKSetup(){
         </select></td>
         <td>${mapped?`<span class="badge b-approved">${mapped.name}</span>`:`<span class="badge b-absent">Unmapped</span>`}</td>
       </tr>`;}).join('')}</tbody></table>`
-    :`<div class="empty-state"><div class="ei">👆</div>Click "Fetch device users" to load enrolled fingerprint/card users from the device.</div>`}
+    :`<div class="empty-state"><div class="ei">👆</div>No device users seen yet. Users appear here automatically as they're enrolled on the device (or edited), or click "Refresh device users".</div>`}
   `;}
 
   /* ── Tab 2: Pull & Import ── */
@@ -9757,10 +9699,9 @@ function pgZKSetup(){
     const dupCount=ZK.importPreview.filter(r=>r.duplicate).length;
     const readyCount=ZK.importPreview.filter(r=>r.mapped&&!r.duplicate).length;
     body=`
-    <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:1rem;flex-wrap:wrap">
-      <div class="field" style="margin:0;flex:1;min-width:140px"><label>From date</label><input class="finput" type="date" id="zk-from" value="${new Date(Date.now()-7*864e5).toISOString().split('T')[0]}"/></div>
-      <div class="field" style="margin:0;flex:1;min-width:140px"><label>To date</label><input class="finput" type="date" id="zk-to" value="${today()}"/></div>
-      <button class="btn btn-primary" onclick="zkPullAttendance()" ${ZK.status!=='connected'?'disabled':''}>⬇ Pull from Device</button>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:1rem;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="zkPullAttendance()" ${ZK.loading?'disabled':''}>⬇ Fetch pending punches</button>
+      ${ZK.lastSync?`<span style="font-size:12px;color:var(--txt3)">Last fetched: ${new Date(ZK.lastSync).toLocaleString()}</span>`:''}
     </div>
     ${ZK.pulledRecords.length?`
     <div style="display:flex;gap:10px;margin-bottom:.875rem;flex-wrap:wrap">
@@ -9798,59 +9739,37 @@ function pgZKSetup(){
         </tr>`;
       }).join('');
     })()}</tbody></table></div>`
-    :`<div class="empty-state"><div class="ei">📥</div>${ZK.status==='connected'?'Select a date range and click "Pull from Device".':'Connect to device first (Connection tab).'}</div>`}
+    :`<div class="empty-state"><div class="ei">📥</div>Click "Fetch pending punches" to see attendance the device has pushed since your last import.</div>`}
   `;}
 
   /* ── Tab 3: Real-time ── */
   else if(tab===3){body=`
     <div class="card" style="margin-bottom:1rem">
-      <div class="card-title" style="margin-bottom:.875rem">Real-time Attendance Capture</div>
-      <p style="font-size:13px;color:var(--txt2);margin-bottom:1rem">When enabled, the system polls the bridge every 20 seconds and auto-imports new punches as they happen on the device.</p>
+      <div class="card-title" style="margin-bottom:.875rem">Live Punch Monitor</div>
+      <p style="font-size:13px;color:var(--txt2);margin-bottom:1rem">ADMS devices push punches to the server as they happen — there's nothing to "enable" on the device side. Turn this on to auto-refresh the pending list here every 20 seconds while you're on this page; you still choose when to import (Pull &amp; Import tab).</p>
       <div style="display:flex;align-items:center;gap:14px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px">
           <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ZK.realtimeEnabled?'checked':''} onchange="ZK.realtimeEnabled=this.checked;if(ZK.realtimeEnabled)startRealtime();else stopRealtime();render()"/>
-          <span style="font-weight:500">${ZK.realtimeEnabled?'Real-time sync ON':'Real-time sync OFF'}</span>
+          <span style="font-weight:500">${ZK.realtimeEnabled?'Auto-refresh ON':'Auto-refresh OFF'}</span>
         </label>
         <span class="badge ${ZK.realtimeEnabled?'b-approved':'b-absent'}">${ZK.realtimeEnabled?'Active':'Inactive'}</span>
       </div>
-      ${ZK.lastSync?`<div style="font-size:12px;color:var(--txt3);margin-top:8px">Last sync: ${new Date(ZK.lastSync).toLocaleString()}</div>`:''}
-    </div>
-    <div style="padding:12px 16px;background:var(--amber-bg);border-radius:8px;font-size:12px;color:var(--amber-txt)">
-      <strong>Requirements:</strong> Device must be connected and User Mapping must be configured. Real-time mode uses the ZKTeco push log API — if your device doesn't support it, use Pull & Import instead.
+      ${ZK.lastSync?`<div style="font-size:12px;color:var(--txt3);margin-top:8px">Last refresh: ${new Date(ZK.lastSync).toLocaleString()}</div>`:''}
     </div>
   `;}
 
   /* ── Tab 4: Device Tools ── */
   else if(tab===4){body=`
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
-      <div class="card">
-        <div class="card-title" style="margin-bottom:.75rem">Clock Synchronization</div>
-        <p style="font-size:12px;color:var(--txt2);margin-bottom:10px">Sync the device's internal clock to this computer's system time. Prevents attendance time drift.</p>
-        <button class="btn btn-primary btn-sm" onclick="zkSyncTime()" ${ZK.status!=='connected'?'disabled':''}>⏰ Sync device time now</button>
-      </div>
-      <div class="card">
-        <div class="card-title" style="margin-bottom:.75rem">Device Restart</div>
-        <p style="font-size:12px;color:var(--txt2);margin-bottom:10px">Remotely restart the ZKTeco device. Takes about 30 seconds.</p>
-        <button class="btn btn-sm" style="border-color:var(--amber);color:var(--amber)" onclick="if(confirm('Restart device?'))zkFetch('/restart',{method:'POST'}).then(d=>alert(d.message)).catch(e=>alert(e.message))" ${ZK.status!=='connected'?'disabled':''}>↺ Restart device</button>
-      </div>
-      <div class="card" style="border-color:var(--red)">
-        <div class="card-title" style="margin-bottom:.75rem;color:var(--red)">⚠ Clear Device Logs</div>
-        <p style="font-size:12px;color:var(--txt2);margin-bottom:10px">Permanently deletes all attendance records from device memory. Always import first!</p>
-        <button class="btn btn-sm btn-danger" onclick="zkClearDevice()" ${ZK.status!=='connected'?'disabled':''}>✕ Clear device attendance log</button>
-      </div>
-      <div class="card">
-        <div class="card-title" style="margin-bottom:.75rem">Bridge Configuration</div>
-        <p style="font-size:12px;color:var(--txt2);margin-bottom:10px">The bridge is a single <code style="background:var(--bg);padding:1px 5px;border-radius:3px">zkteco_bridge.js</code> file with <strong>no npm install needed</strong>. Just run:</p>
-        <pre style="background:var(--bg);border-radius:6px;padding:8px 10px;font-size:11px;color:var(--txt2);white-space:pre-wrap">node zkteco_bridge.js</pre>
-        <p style="font-size:11px;color:var(--txt3);margin-top:8px">Requires Node.js 14+ · No npm · No node_modules · Single file</p>
-      </div>
+    <div class="card">
+      <div class="card-title" style="margin-bottom:.75rem">Remote device commands</div>
+      <p style="font-size:13px;color:var(--txt2)">Remote restart, clock sync, and clear-log aren't available yet in ADMS push mode — the server would need a command queue that the device polls for, which isn't built yet. For now these need physical access to the device's own menu.</p>
     </div>
   `;}
 
   return`<div class="page-header"><div><div class="page-title">ZKTeco Biometric Device</div>
   <div style="display:flex;align-items:center;gap:8px;margin-top:3px">
-    <div style="width:8px;height:8px;border-radius:50%;background:${statusColor[ZK.status]}"></div>
-    <span style="font-size:12px;color:${statusColor[ZK.status]}">${ZK.status} ${ZK.statusMsg?'— '+ZK.statusMsg:ZK.status==='connected'?'— '+ZK.deviceIp:''}</span>
+    <div style="width:8px;height:8px;border-radius:50%;background:${online.length?'var(--green)':'var(--txt3)'}"></div>
+    <span style="font-size:12px;color:${online.length?'var(--green)':'var(--txt3)'}">${online.length?online.length+' device(s) online':ZK.devices.length?'No device seen recently':'No device connected yet'}</span>
   </div></div></div>
   <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
   <div>${body}</div>`;
@@ -9860,22 +9779,8 @@ let realtimeTimer=null;
 function startRealtime(){
   if(realtimeTimer)clearInterval(realtimeTimer);
   realtimeTimer=setInterval(async()=>{
-    if(!ZK.realtimeEnabled||ZK.status!=='connected')return;
-    try{
-      const d=await zkFetch('/realtime?timeout=5000');
-      if(d.userId&&d.date){
-        const empId=ZK.userMapping[d.userId];
-        if(empId){
-          const dup=ATT.some(a=>a.eid===empId&&a.date===d.date&&a.tin===d.time);
-          if(!dup){
-            const existing=attendanceRecord(empId,d.date);
-            if(existing){upsertAttendance(empId,d.date,{tout:d.time,source:'zkteco-realtime',approvalStatus:'approved',filedBy:'ZKTeco realtime'});}
-            else{upsertAttendance(empId,d.date,{tin:d.time,tout:'',status:d.time>='08:30'?'late':'present',ot:0,nd:0,notes:'ZKTeco realtime',source:'zkteco-realtime',approvalStatus:'approved',filedBy:'ZKTeco realtime'});}
-            ZK.lastSync=new Date().toISOString();render();
-          }
-        }
-      }
-    }catch(_){}
+    if(!ZK.realtimeEnabled)return;
+    await zkPullAttendance();
   },20000);
 }
 function stopRealtime(){if(realtimeTimer){clearInterval(realtimeTimer);realtimeTimer=null;}}
