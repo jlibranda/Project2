@@ -9635,7 +9635,7 @@ function saveAccessEdit(){
 }
 
 function pgZKSetup(){
-  const serverUrl=location.origin;
+  const serverUrl=window.apiHost||location.origin;
   const tabs=['Connection','User Mapping','Pull & Import','Real-time','Device Tools'];
   const online=ZK.devices.filter(d=>d.lastSeen&&(Date.now()-new Date(d.lastSeen).getTime())<5*60*1000);
   let body='';

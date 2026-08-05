@@ -2,7 +2,9 @@
   'use strict';
 
   var remoteHosts = /(?:vercel\.app|chatgpt\.site)$/i;
-  var apiRoot = remoteHosts.test(location.hostname) ? 'https://sproutripple-ph-production.up.railway.app/api' : '/api';
+  var apiHost = remoteHosts.test(location.hostname) ? 'https://sproutripple-ph-production.up.railway.app' : location.origin;
+  var apiRoot = apiHost + '/api';
+  window.apiHost = apiHost;
   var token = sessionStorage.getItem('sproutripple_session') || '';
   var stateVersion = 0;
   var saveTimer = null;
