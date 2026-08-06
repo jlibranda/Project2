@@ -1,8 +1,5 @@
 $ cat /home/user/Project2/public/persistence.js
 
-(function () {
-  'use strict';
-
   var remoteHosts = /(?:vercel\.app|chatgpt\.site)$/i;
   var apiHost = remoteHosts.test(location.hostname) ? 'https://sproutripple-ph-production.up.railway.app' : location.origin;
   var apiRoot = apiHost + '/api';
