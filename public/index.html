@@ -2381,7 +2381,7 @@ function toggleLoginPassword(){const p=document.getElementById('lp'),b=document.
 function renderLoading(){return`<main style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg)">
   <div style="text-align:center">
     <div style="position:relative;width:64px;height:64px;margin:0 auto 22px">
-      <div class="sr-loading-mark">${COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'S')}</div>
+      <div class="sr-loading-mark"${COMPANY.logo?' style="background:none;box-shadow:none"':''}>${COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'S')}</div>
       <span class="sr-loading-ring"></span>
     </div>
     <div style="font-weight:700;font-size:15px;color:var(--txt);letter-spacing:-.2px">${esc(COMPANY.name)||'SproutRipple'}</div>
