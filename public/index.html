@@ -1383,8 +1383,14 @@ function zkBuildPreview(){
     ZK.importPreview.push({...r,empId,empName:emp?emp.name:'[Unmapped]',mapped:!!empId});
   });
   ZK.importPreview=ZK.importPreview.map(r=>{
-    const dup=ATT.some(a=>a.eid===r.empId&&a.date===r.date);
-    return{...r,duplicate:dup};
+    if(!r.empId||!r.date||!r.time)return{...r,duplicate:false};
+    const existing=ATT.find(a=>a.eid===r.empId&&a.date===r.date);
+    // Only skip as duplicate if this exact punch time is already covered by the
+    // recorded tin/tout range — a new punch outside that range (e.g. the actual
+    // check-out arriving after an earlier check-in was already imported) must
+    // still go through so it can extend the record instead of being lost.
+    const redundant=!!(existing&&existing.tin&&existing.tout&&r.time>=existing.tin&&r.time<=existing.tout);
+    return{...r,duplicate:redundant};
   });
 }
 function zkMappableUsers(){
@@ -1406,11 +1412,15 @@ function zkSaveMapping(){
 }
 async function zkImport(){
   const toImport=ZK.importPreview.filter(r=>r.mapped&&!r.duplicate&&r.date);
-  // Group by empId+date → find earliest (check-in) and latest (check-out) time
+  // Group by empId+date → merge with any already-imported tin/tout for that day,
+  // then take the earliest time as check-in and latest as check-out.
   const grouped={};
   toImport.forEach(r=>{
     const key=`${r.empId}_${r.date}`;
-    if(!grouped[key])grouped[key]={empId:r.empId,date:r.date,times:[]};
+    if(!grouped[key]){
+      const existing=attendanceRecord(r.empId,r.date);
+      grouped[key]={empId:r.empId,date:r.date,times:[existing&&existing.tin,existing&&existing.tout].filter(Boolean)};
+    }
     if(r.time)grouped[key].times.push(r.time);
   });
   let added=0;
