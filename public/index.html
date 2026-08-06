@@ -716,6 +716,14 @@ let COMPANY={
   darkMode:false,
 };
 try{if(localStorage.getItem('sr_dark_mode')==='1')COMPANY.darkMode=true;}catch(e){}
+try{
+  var _cachedBrand=JSON.parse(localStorage.getItem('sr_company_brand')||'null');
+  if(_cachedBrand){
+    if(_cachedBrand.logo)COMPANY.logo=_cachedBrand.logo;
+    if(_cachedBrand.name)COMPANY.name=_cachedBrand.name;
+    if(_cachedBrand.initials)COMPANY.initials=_cachedBrand.initials;
+  }
+}catch(e){}
 
 /* ---- EMPLOYEE MOVEMENT TRACKING ---- */
 /* Fields that trigger a movement record when changed */
@@ -12742,7 +12750,10 @@ function editStatItem(idx){
 
 function render(){
   if(COMPANY.darkMode){document.documentElement.setAttribute('data-dark','');}else{document.documentElement.removeAttribute('data-dark');}
-  try{localStorage.setItem('sr_dark_mode',COMPANY.darkMode?'1':'0');}catch(e){}
+  try{
+    localStorage.setItem('sr_dark_mode',COMPANY.darkMode?'1':'0');
+    localStorage.setItem('sr_company_brand',JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
+  }catch(e){}
   const root=document.getElementById('root');
   if(!user){
     if(sessionRestoring){root.innerHTML=renderLoading();return;}
