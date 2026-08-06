@@ -1387,8 +1387,16 @@ function zkBuildPreview(){
     return{...r,duplicate:dup};
   });
 }
+function zkMappableUsers(){
+  const known=new Set(ZK.deviceUsers.map(du=>du.userId));
+  const extra=[];
+  ZK.pulledRecords.forEach(r=>{
+    if(!known.has(r.userId)){known.add(r.userId);extra.push({userId:r.userId,name:'',cardNo:'',fromPunchesOnly:true});}
+  });
+  return ZK.deviceUsers.concat(extra);
+}
 function zkSaveMapping(){
-  ZK.deviceUsers.forEach(du=>{
+  zkMappableUsers().forEach(du=>{
     const sel=document.getElementById('zkmap-'+du.userId);
     if(sel)ZK.userMapping[du.userId]=sel.value?parseInt(sel.value):undefined;
   });
@@ -9668,8 +9676,10 @@ function pgZKSetup(){
     </div>
   `;}
 
-  /* ── Tab 1: User Mapping ── */
-  else if(tab===1){body=`
+   /* ── Tab 1: User Mapping ── */
+  else if(tab===1){
+    const mappableUsers=zkMappableUsers();
+    body=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.875rem">
       <div style="font-size:13px;color:var(--txt2)">Map each ZKTeco user ID to an employee. This is a one-time setup.</div>
       <div style="display:flex;gap:6px">
@@ -9677,12 +9687,12 @@ function pgZKSetup(){
         <button class="btn btn-sm btn-primary" onclick="zkSaveMapping()">Save mapping</button>
       </div>
     </div>
-    ${ZK.deviceUsers.length?`<table><thead><tr><th>Device User ID</th><th>Device Name</th><th>Card No.</th><th>Map to Employee</th><th>Current Match</th></tr></thead>
-    <tbody>${ZK.deviceUsers.map(du=>{
+    ${mappableUsers.length?`<table><thead><tr><th>Device User ID</th><th>Device Name</th><th>Card No.</th><th>Map to Employee</th><th>Current Match</th></tr></thead>
+    <tbody>${mappableUsers.map(du=>{
       const mapped=ZK.userMapping[du.userId]?USERS.find(u=>u.id===ZK.userMapping[du.userId]):null;
       return`<tr>
         <td class="mono" style="font-size:12px">${du.userId}</td>
-        <td>${du.name||'—'}</td>
+        <td>${du.name||(du.fromPunchesOnly?'<span style="color:var(--txt3);font-style:italic">seen in punches only</span>':'—')}</td>
         <td class="mono" style="font-size:11px">${du.cardNo||'—'}</td>
         <td><select id="zkmap-${du.userId}" class="finput" style="font-size:12px">
           <option value="">— Unmapped —</option>
@@ -9690,7 +9700,7 @@ function pgZKSetup(){
         </select></td>
         <td>${mapped?`<span class="badge b-approved">${mapped.name}</span>`:`<span class="badge b-absent">Unmapped</span>`}</td>
       </tr>`;}).join('')}</tbody></table>`
-    :`<div class="empty-state"><div class="ei">👆</div>No device users seen yet. Users appear here automatically as they're enrolled on the device (or edited), or click "Refresh device users".</div>`}
+
   `;}
 
   /* ── Tab 2: Pull & Import ── */
