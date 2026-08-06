@@ -136,6 +136,63 @@ async function zkAllDevices() {
   return result.rows;
 }
 
+// Row-level lock on app_state so this can never race the browser's PUT /api/state —
+// Postgres serializes any concurrent writer against the same row automatically.
+async function mutateAppState(mutator, actor) {
+  if (!pool) return null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const existing = await client.query('SELECT state, version FROM app_state WHERE tenant_key = $1 FOR UPDATE', [TENANT_KEY]);
+    const row = existing.rows[0];
+    const state = row ? row.state : {};
+    const outcome = mutator(state) || {};
+    if (!outcome.changed) { await client.query('ROLLBACK'); return { state, version: row ? Number(row.version) : 0, changed: false }; }
+    let version;
+    if (row) {
+      const updated = await client.query('UPDATE app_state SET state = $1, version = version + 1, updated_at = NOW(), updated_by = $2 WHERE tenant_key = $3 RETURNING version', [state, actor, TENANT_KEY]);
+      version = Number(updated.rows[0].version);
+    } else {
+      const inserted = await client.query('INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3) RETURNING version', [TENANT_KEY, state, actor]);
+      version = Number(inserted.rows[0].version);
+    }
+    await client.query('INSERT INTO app_state_audit (tenant_key, version, actor) VALUES ($1, $2, $3)', [TENANT_KEY, version, actor]);
+    await client.query('COMMIT');
+    return { state, version, changed: true };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// Mirrors the client's zkImport() merge logic: extend an existing day's tin/tout with new
+// punch times rather than overwrite, so a check-out committed after a check-in isn't lost.
+function zkCommitPunches(state, punchesByEmpDate) {
+  state.attendance = Array.isArray(state.attendance) ? state.attendance : [];
+  let nextId = state.attendance.reduce((max, r) => Math.max(max, Number(r.id) || 0), 0) + 1;
+  let committed = 0;
+  punchesByEmpDate.forEach((times, key) => {
+    const sep = key.indexOf('|');
+    const empId = Number(key.slice(0, sep));
+    const date = key.slice(sep + 1);
+    const existing = state.attendance.find(r => r.eid === empId && r.date === date && r.active !== false);
+    const allTimes = (existing ? [existing.tin, existing.tout] : []).concat(times).filter(Boolean);
+    allTimes.sort();
+    const tin = allTimes[0] || '';
+    const tout = allTimes.length > 1 ? allTimes[allTimes.length - 1] : '';
+    const isLate = tin >= '08:30';
+    if (existing) {
+      Object.assign(existing, { tin, tout, status: isLate ? 'late' : 'present', source: 'zkteco-realtime', approvalStatus: 'approved', filedBy: 'ZKTeco realtime', active: true, updatedAt: new Date().toISOString() });
+    } else {
+      state.attendance.push({ id: nextId++, eid: empId, date, tin, tout, status: isLate ? 'late' : 'present', ot: 0, nd: 0, notes: '', source: 'zkteco-realtime', approvalStatus: 'approved', filedBy: 'ZKTeco realtime', active: true, updatedAt: new Date().toISOString() });
+    }
+    committed++;
+  });
+  return committed;
+}
+
 app.get('/api/health', async (_req, res) => {
   try {
     if (pool) await pool.query('SELECT 1');
@@ -212,23 +269,53 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
   let count = 0;
   try {
     if (table === 'ATTLOG') {
-      await zkMutateDevice(sn, current => {
-        const seen = new Set(current.pending.map(r => zkKey(r.userId, r.date, r.time)));
-        lines.forEach(line => {
-          const cols = line.split('\t');
-          const userId = (cols[0] || '').trim();
-          const timestamp = (cols[1] || '').trim();
-          if (!userId || !timestamp) return;
-          const [date, time] = timestamp.split(' ');
-          if (!date || !time) return;
-          const key = zkKey(userId, date, time);
-          if (seen.has(key)) return;
-          seen.add(key);
-          current.pending.push({ userId, date, time, receivedAt: new Date().toISOString() });
-          count++;
-        });
-        return current;
+      const punches = [];
+      lines.forEach(line => {
+        const cols = line.split('\t');
+        const userId = (cols[0] || '').trim();
+        const timestamp = (cols[1] || '').trim();
+        if (!userId || !timestamp) return;
+        const [date, time] = timestamp.split(' ');
+        if (!date || !time) return;
+        punches.push({ userId, date, time });
       });
+      const record = await readState();
+      const userMapping = record?.state?.zk?.userMapping || {};
+      const mapped = punches.filter(p => userMapping[p.userId] != null);
+      const unmapped = punches.filter(p => userMapping[p.userId] == null);
+      if (mapped.length) {
+        const punchesByEmpDate = new Map();
+        mapped.forEach(p => {
+          const key = userMapping[p.userId] + '|' + p.date;
+          if (!punchesByEmpDate.has(key)) punchesByEmpDate.set(key, []);
+          punchesByEmpDate.get(key).push(p.time);
+        });
+        try {
+          await mutateAppState(state => {
+            const committed = zkCommitPunches(state, punchesByEmpDate);
+            return { changed: committed > 0 };
+          }, 'zk-device:' + sn);
+          count += mapped.length;
+        } catch (error) {
+          console.error('ADMS attendance auto-commit error:', error.message);
+          unmapped.push(...mapped); // fall back to pending so it isn't lost
+        }
+      }
+      if (unmapped.length) {
+        await zkMutateDevice(sn, current => {
+          const seen = new Set(current.pending.map(r => zkKey(r.userId, r.date, r.time)));
+          unmapped.forEach(p => {
+            const key = zkKey(p.userId, p.date, p.time);
+            if (seen.has(key)) return;
+            seen.add(key);
+            current.pending.push({ userId: p.userId, date: p.date, time: p.time, receivedAt: new Date().toISOString() });
+            count++;
+          });
+          return current;
+        });
+      } else {
+        await zkMutateDevice(sn, current => current); // still touch last_seen
+      }
     } else if (table === 'OPERLOG') {
       // Firmware varies on whether USER lines are tab- or space-delimited (and "USER PIN=16"
       // often arrives as one token), so extract known fields by regex instead of splitting.
