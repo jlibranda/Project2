@@ -1217,8 +1217,16 @@ function zkBuildPreview(){
     return{...r,duplicate:dup};
   });
 }
+function zkMappableUsers(){
+  const known=new Set(ZK.deviceUsers.map(du=>du.userId));
+  const extra=[];
+  ZK.pulledRecords.forEach(r=>{
+    if(!known.has(r.userId)){known.add(r.userId);extra.push({userId:r.userId,name:'',cardNo:'',fromPunchesOnly:true});}
+  });
+  return ZK.deviceUsers.concat(extra);
+}
 function zkSaveMapping(){
-  ZK.deviceUsers.forEach(du=>{
+  zkMappableUsers().forEach(du=>{
     const sel=document.getElementById('zkmap-'+du.userId);
     if(sel)ZK.userMapping[du.userId]=sel.value?parseInt(sel.value):undefined;
   });
