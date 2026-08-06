@@ -107,4 +107,43 @@
 
   var baseRender=render;
   render=function(){baseRender();if(user&&token)window.queueDatabaseSave();};
+
+  // A page refresh previously always dropped back to the login screen even with a
+  // still-valid session token sitting in sessionStorage. Decode the token (it's just
+  // signed, not encrypted) to recover identity, then re-hydrate state and resume.
+  function base64UrlDecode(str){
+    str=str.replace(/-/g,'+').replace(/_/g,'/');
+    while(str.length%4)str+='=';
+    return decodeURIComponent(atob(str).split('').map(function(c){return '%'+('00'+c.charCodeAt(0).toString(16)).slice(-2);}).join(''));
+  }
+  function decodeToken(t){
+    try{return JSON.parse(base64UrlDecode(t.split('.')[0]));}catch(e){return null;}
+  }
+  async function restoreSession(){
+    if(!token)return;
+    var payload=decodeToken(token);
+    if(!payload||!payload.exp||payload.exp<=Date.now()){
+      token='';sessionStorage.removeItem('sproutripple_session');return;
+    }
+    try{
+      var result=await request('/state');
+      stateVersion=result.version||0;
+      if(result.state){hydrate(result.state);lastSavedPayload=JSON.stringify(snapshot());}
+      if(payload.role==='platform'){
+        isPlatformAdmin=true;
+        user={id:0,name:'God Admin',email:payload.sub,role:'platform',initials:'GA'};
+        view='platform';
+      }else{
+        var match=USERS.find(function(u){return u.email===payload.sub;});
+        if(!match)return; // identity no longer resolvable — fall back to the login screen
+        user=match;view='dashboard';
+        if(typeof checkOffboarding==='function')checkOffboarding();
+      }
+      tab=0;modal=null;
+      render();
+    }catch(error){
+      token='';stateVersion=0;sessionStorage.removeItem('sproutripple_session');
+    }
+  }
+  restoreSession();
 }());
