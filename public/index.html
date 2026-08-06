@@ -1268,6 +1268,7 @@ let PAYROLL_AUDIT=[];
 USERS.forEach((u,i)=>{u.active=true;u.accessLevelId=u.role==='admin'?1:5;});
 
 let user=null,view='dashboard',tab=0,modal=null,aiText='',aiLoad=false;
+let sessionRestoring=!!sessionStorage.getItem('sproutripple_session');
 let sidebarCollapsed=window.innerWidth<=900; /* collapsible sidebar state */
 let sidebarSectionState={Overview:true,People:true,'Time & Attendance':true,Payroll:true,Talent:true,Setup:false,Tools:true};
 function toggleNavSection(title){sidebarSectionState[title]=!(sidebarSectionState[title]!==false);render();}
@@ -2366,6 +2367,14 @@ function renderDemoAccounts(){
 }
 
 function toggleLoginPassword(){const p=document.getElementById('lp'),b=document.getElementById('login-password-toggle');if(!p||!b)return;p.type=p.type==='password'?'text':'password';b.textContent=p.type==='password'?'Show':'Hide';}
+
+function renderLoading(){return`<main class="login-wrap" style="align-items:center;justify-content:center;display:flex">
+  <div style="text-align:center;color:var(--muted,#64748b)">
+    <div style="width:36px;height:36px;margin:0 auto 12px;border:3px solid rgba(148,163,184,.35);border-top-color:var(--accent,#4f46e5);border-radius:50%;animation:sr-spin .8s linear infinite"></div>
+    <span>Restoring your session…</span>
+  </div>
+  <style>@keyframes sr-spin{to{transform:rotate(360deg)}}</style>
+</main>`;}
 
 function renderLogin(){return`<main class="login-wrap">
   <section class="login-showcase" aria-label="SproutRipple platform overview">
@@ -12713,7 +12722,10 @@ function editStatItem(idx){
 function render(){
   if(COMPANY.darkMode){document.documentElement.setAttribute('data-dark','');}else{document.documentElement.removeAttribute('data-dark');}
   const root=document.getElementById('root');
-  if(!user){root.innerHTML=renderLogin();applyWallpaperPreview();return;}
+  if(!user){
+    if(sessionRestoring){root.innerHTML=renderLoading();return;}
+    root.innerHTML=renderLogin();applyWallpaperPreview();return;
+  }
   /* Platform admin portal (not inside a client) */
   if(isPlatformAdmin&&!activeClientId){
     root.innerHTML=`<div style="min-height:100vh;background:var(--surface2)">${pgPlatformAdmin()}</div>${renderModal()}`;
