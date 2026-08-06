@@ -32,7 +32,7 @@
       governmentRates:GOVT_RATES,birTaxVersions:BIR_TAX_VERSIONS,platformClients:PLATFORM_CLIENTS,
       enterprise:window.collectEnterpriseState?window.collectEnterpriseState():null,
       payrollGovernance:window.collectPayrollGovernanceState?window.collectPayrollGovernanceState():null,
-      zk:{userMapping:(typeof ZK!=='undefined'&&ZK.userMapping)||{}}
+      zk:{userMapping:(typeof ZK!=='undefined'&&ZK.userMapping)||{},realtimeEnabled:(typeof ZK!=='undefined'&&!!ZK.realtimeEnabled)}
     };
   }
 
@@ -51,8 +51,11 @@
     replaceArray(PAYROLL_ADJ,saved.payrollAdjustments);replaceArray(FINAL_PAY_LIST,saved.finalPayList);replaceArray(PAYROLL_AUDIT,saved.payrollAudit);replaceArray(SECURITY_AUDIT,saved.securityAudit);
     if(saved.governmentRates)GOVT_RATES=saved.governmentRates;replaceArray(BIR_TAX_VERSIONS,saved.birTaxVersions);replaceArray(PLATFORM_CLIENTS,saved.platformClients);
     if(window.applyEnterpriseState)window.applyEnterpriseState(saved.enterprise);
-    if(window.applyPayrollGovernanceState)window.applyPayrollGovernanceState(saved.payrollGovernance);
-    if(saved.zk&&typeof ZK!=='undefined')ZK.userMapping=saved.zk.userMapping||{};
+    if(window.applyPayrollGovernanceState)window.applyPayrollGovernanceState(saved.payrollGovernance    if(saved.zk&&typeof ZK!=='undefined'){
+      ZK.userMapping=saved.zk.userMapping||{};
+      ZK.realtimeEnabled=!!saved.zk.realtimeEnabled;
+      if(ZK.realtimeEnabled&&typeof startRealtime==='function')startRealtime();
+    }
     nAtt=ATT.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
     nLeave=LEAVES.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
     nLoan=LOANS.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
