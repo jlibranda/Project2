@@ -124,10 +124,11 @@
     try{return JSON.parse(base64UrlDecode(t.split('.')[0]));}catch(e){return null;}
   }
   async function restoreSession(){
-    if(!token)return;
+    if(!token){sessionRestoring=false;return;}
     var payload=decodeToken(token);
     if(!payload||!payload.exp||payload.exp<=Date.now()){
-      token='';sessionStorage.removeItem('sproutripple_session');return;
+      token='';sessionStorage.removeItem('sproutripple_session');
+      sessionRestoring=false;render();return;
     }
     try{
       var result=await request('/state');
@@ -139,14 +140,16 @@
         view='platform';
       }else{
         var match=USERS.find(function(u){return u.email===payload.sub;});
-        if(!match)return; // identity no longer resolvable — fall back to the login screen
+        if(!match){sessionRestoring=false;render();return;} // identity no longer resolvable — fall back to the login screen
         user=match;view='dashboard';
         if(typeof checkOffboarding==='function')checkOffboarding();
       }
       tab=0;modal=null;
+      sessionRestoring=false;
       render();
     }catch(error){
       token='';stateVersion=0;sessionStorage.removeItem('sproutripple_session');
+      sessionRestoring=false;render();
     }
   }
   restoreSession();
