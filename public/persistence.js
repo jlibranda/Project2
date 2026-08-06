@@ -51,7 +51,6 @@
     replaceArray(PAYROLL_ADJ,saved.payrollAdjustments);replaceArray(FINAL_PAY_LIST,saved.finalPayList);replaceArray(PAYROLL_AUDIT,saved.payrollAudit);replaceArray(SECURITY_AUDIT,saved.securityAudit);
     if(saved.governmentRates)GOVT_RATES=saved.governmentRates;replaceArray(BIR_TAX_VERSIONS,saved.birTaxVersions);replaceArray(PLATFORM_CLIENTS,saved.platformClients);
     if(window.applyEnterpriseState)window.applyEnterpriseState(saved.enterprise);
-    if(window.applyPayrollGovernanceState)window.applyPayrollGovernanceState(saved.payrollGovernance);    if(saved.zk&&typeof ZK!=='undefined'){
       ZK.userMapping=saved.zk.userMapping||{};
       ZK.realtimeEnabled=!!saved.zk.realtimeEnabled;
       if(ZK.realtimeEnabled&&typeof startRealtime==='function')startRealtime();
