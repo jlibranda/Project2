@@ -1410,6 +1410,11 @@ function zkMappableUsers(){
   ZK.pulledRecords.forEach(r=>{
     if(!known.has(r.userId)){known.add(r.userId);extra.push({userId:r.userId,name:'',cardNo:'',fromPunchesOnly:true});}
   });
+  // Already-saved mappings must stay visible/editable even when the device is
+  // offline or hasn't reported that user again this session.
+  Object.keys(ZK.userMapping).forEach(userId=>{
+    if(ZK.userMapping[userId]&&!known.has(userId)){known.add(userId);extra.push({userId,name:'',cardNo:'',fromPunchesOnly:true});}
+  });
   return ZK.deviceUsers.concat(extra);
 }
 function zkSaveMapping(){
