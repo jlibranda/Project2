@@ -1472,24 +1472,40 @@ function zkSaveMapping(){
   render();
   alert('User mapping saved!');
 }
+// Mirrors server.js's zkPunchKind/zkPickInOut: trust the device's own in/out toggle
+// (ATTLOG status code) when any punch that day has one, otherwise fall back to
+// earliest-in/latest-out.
+function zkPunchKind(statusCode){
+  if(statusCode==='0'||statusCode==='4')return'in';
+  if(statusCode==='1'||statusCode==='2'||statusCode==='3'||statusCode==='5')return'out';
+  return null;
+}
+function zkPickInOut(entries){
+  const ins=entries.filter(e=>e.kind==='in').map(e=>e.time).sort();
+  const outs=entries.filter(e=>e.kind==='out').map(e=>e.time).sort();
+  if(ins.length||outs.length)return{tin:ins[0]||'',tout:outs.length?outs[outs.length-1]:''};
+  const allTimes=entries.map(e=>e.time).filter(Boolean).sort();
+  return{tin:allTimes[0]||'',tout:allTimes.length>1?allTimes[allTimes.length-1]:''};
+}
 async function zkImport(){
   const toImport=ZK.importPreview.filter(r=>r.mapped&&!r.duplicate&&r.date);
   // Group by empId+date → merge with any already-imported tin/tout for that day,
-  // then take the earliest time as check-in and latest as check-out.
+  // then pick in/out using the device's own toggle where available.
   const grouped={};
   toImport.forEach(r=>{
     const key=`${r.empId}_${r.date}`;
     if(!grouped[key]){
       const existing=attendanceRecord(r.empId,r.date);
-      grouped[key]={empId:r.empId,date:r.date,times:[existing&&existing.tin,existing&&existing.tout].filter(Boolean)};
+      grouped[key]={empId:r.empId,date:r.date,entries:[
+        existing&&existing.tin?{time:existing.tin,kind:'in'}:null,
+        existing&&existing.tout?{time:existing.tout,kind:'out'}:null
+      ].filter(Boolean)};
     }
-    if(r.time)grouped[key].times.push(r.time);
+    if(r.time)grouped[key].entries.push({time:r.time,kind:zkPunchKind(r.statusCode)});
   });
   let added=0;
   Object.values(grouped).forEach(g=>{
-    g.times.sort();
-    const tin=g.times[0]||'';
-    const tout=g.times.length>1?g.times[g.times.length-1]:'';
+    const{tin,tout}=zkPickInOut(g.entries);
     const isLate=tin>='08:30';
     upsertAttendance(g.empId,g.date,{tin,tout,status:isLate?'late':'present',ot:0,nd:0,notes:'ZKTeco import',source:'zkteco-import',approvalStatus:'approved',filedBy:'ZKTeco import'});
     added++;
@@ -9877,26 +9893,27 @@ function pgZKSetup(){
       <button class="btn" onclick="ZK.pulledRecords=[];ZK.importPreview=[];render()">Clear</button>
       ${unmappedCount?`<span style="font-size:12px;color:var(--amber);align-self:center">⚠ ${unmappedCount} unmapped — go to User Mapping tab</span>`:''}
     </div>
-    <div style="overflow-x:auto"><table style="min-width:600px"><thead><tr><th>Device User ID</th><th>Employee</th><th>Date</th><th>First Punch</th><th>Last Punch</th><th>Punches</th><th>Status</th></tr></thead>
+    <div style="overflow-x:auto"><table style="min-width:640px"><thead><tr><th>Device User ID</th><th>Employee</th><th>Date</th><th>Time In</th><th>Time Out</th><th>Punches</th><th>Source</th><th>Status</th></tr></thead>
     <tbody>${(() => {
       // Group by userId+date
       const grp={};
       ZK.importPreview.forEach(r=>{
         const k=r.userId+'_'+r.date;
-        if(!grp[k])grp[k]={...r,times:[]};
-        if(r.time)grp[k].times.push(r.time);
+        if(!grp[k])grp[k]={...r,entries:[]};
+        if(r.time)grp[k].entries.push({time:r.time,kind:zkPunchKind(r.statusCode)});
       });
       return Object.values(grp).map(g=>{
-        g.times.sort();
-        const tin=g.times[0]||'—';const tout=g.times.length>1?g.times[g.times.length-1]:'—';
+        const{tin,tout}=zkPickInOut(g.entries);
+        const tagged=g.entries.some(e=>e.kind);
         const statusBadge=g.duplicate?'<span class="badge b-absent">duplicate</span>':!g.mapped?'<span class="badge b-pending">unmapped</span>':'<span class="badge b-approved">ready</span>';
         return`<tr>
           <td class="mono" style="font-size:12px">${g.userId}</td>
           <td>${g.mapped?`<div class="emp-cell"><div class="avatar sm">${ini(g.empName)}</div>${g.empName}</div>`:`<span style="color:var(--red);font-size:12px">Unmapped</span>`}</td>
           <td>${g.date||'—'}</td>
-          <td class="mono" style="font-size:12px">${tin}</td>
-          <td class="mono" style="font-size:12px">${tout}</td>
-          <td style="text-align:center">${g.times.length}</td>
+          <td class="mono" style="font-size:12px">${tin||'—'}</td>
+          <td class="mono" style="font-size:12px">${tout||'—'}</td>
+          <td style="text-align:center">${g.entries.length}</td>
+          <td style="font-size:11px;color:var(--txt3)" title="${tagged?'Using the device\'s own in/out toggle':'No in/out tag from the device — using earliest/latest punch instead'}">${tagged?'Device tag':'Earliest/latest'}</td>
           <td>${statusBadge}</td>
         </tr>`;
       }).join('');
