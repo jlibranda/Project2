@@ -454,6 +454,10 @@ function attendanceRecord(eid,date){return TimekeepingCore.canonicalRecord(ATT,e
 function attendanceRecords(){return TimekeepingCore.canonicalRecords(ATT);}
 function upsertAttendance(eid,date,patch){return TimekeepingCore.upsert(ATT,eid,date,patch,function(){return nAtt++;});}
 function attendancePeriodSummary(emp,from,to){return TimekeepingCore.periodSummary(ATT,emp,from,to,typeof SHIFT_DEFINITIONS==='undefined'?[]:SHIFT_DEFINITIONS);}
+function myFlaggedAttendance(){
+  if(!user)return[];
+  return attendanceRecords().filter(a=>a.eid===user.id&&a.approvalStatus==='pending'&&/Outside scheduled shift window/.test(a.notes||''));
+}
 let LEAVES=[
   {id:1,eid:3,type:'Sick Leave',s:'2025-05-20',e:'2025-05-20',reason:'Fever and flu',status:'approved',filed:'2025-05-19',days:1},
   {id:2,eid:2,type:'Vacation Leave',s:'2025-05-28',e:'2025-05-30',reason:'Family trip',status:'pending',filed:'2025-05-22',days:3},
@@ -1365,6 +1369,10 @@ let ZK={
   // only accept a numeric IP (e.g. behind Railway's TCP Proxy). Once an admin has actually found
   // working values, they're saved here so future setup/reset instructions show the real thing.
   connectionOverride:{address:'',port:'',https:false},
+  // How far outside an employee's scheduled shift (start/end) a punch can still be attributed
+  // to that shift day. Punches outside this window for employees who have a shift assigned
+  // are flagged for confirmation instead of guessed.
+  punchBuffer:{beforeMinutes:120,afterMinutes:480},
 };
 
 async function zkApi(path, opts={}){
@@ -1393,6 +1401,14 @@ function zkSaveConnectionOverride(){
 function zkResetConnectionOverride(){
   ZK.connectionOverride={address:'',port:'',https:false};
   render();
+}
+function zkSavePunchBuffer(){
+  const before=parseInt(document.getElementById('zk-buffer-before').value,10);
+  const after=parseInt(document.getElementById('zk-buffer-after').value,10);
+  if(!(before>=0)||!(after>=0)){alert('Please enter valid non-negative numbers.');return;}
+  ZK.punchBuffer={beforeMinutes:before,afterMinutes:after};
+  render();
+  alert('Saved. New punches will use this window going forward.');
 }
 const ZK_COMMAND_LABELS={reboot:'Restart device',resync:'Resync attendance log',clearlog:'Clear attendance log'};
 async function zkSendCommand(serial,action,confirmMsg){
@@ -1489,31 +1505,39 @@ function zkPickInOut(entries){
 }
 async function zkImport(){
   const toImport=ZK.importPreview.filter(r=>r.mapped&&!r.duplicate&&r.date);
-  // Group by empId+date → merge with any already-imported tin/tout for that day,
-  // then pick in/out using the device's own toggle where available.
+  // Group by empId+shift-day (not raw device date) → merge with any already-imported
+  // tin/tout for that day, then pick in/out using the device's own toggle where available.
   const grouped={};
+  const outOfBufferKeys=new Set();
   toImport.forEach(r=>{
-    const key=`${r.empId}_${r.date}`;
+    const emp=USERS.find(u=>u.id===r.empId);
+    const hasShift=!!(emp&&emp.shiftId!=null);
+    const resolvedDate=hasShift?TimekeepingCore.resolveShiftDay(emp,r.date,r.time,COMPANY.shifts||[],ZK.punchBuffer.beforeMinutes,ZK.punchBuffer.afterMinutes):r.date;
+    const finalDate=resolvedDate||r.date;
+    const key=`${r.empId}_${finalDate}`;
     if(!grouped[key]){
-      const existing=attendanceRecord(r.empId,r.date);
-      grouped[key]={empId:r.empId,date:r.date,entries:[
+      const existing=attendanceRecord(r.empId,finalDate);
+      grouped[key]={empId:r.empId,date:finalDate,entries:[
         existing&&existing.tin?{time:existing.tin,kind:'in'}:null,
         existing&&existing.tout?{time:existing.tout,kind:'out'}:null
       ].filter(Boolean)};
     }
     if(r.time)grouped[key].entries.push({time:r.time,kind:zkPunchKind(r.statusCode)});
+    if(hasShift&&!resolvedDate)outOfBufferKeys.add(key);
   });
-  let added=0;
+  let added=0,flaggedCount=0;
   Object.values(grouped).forEach(g=>{
     const{tin,tout}=zkPickInOut(g.entries);
     const isLate=tin>='08:30';
-    upsertAttendance(g.empId,g.date,{tin,tout,status:isLate?'late':'present',ot:0,nd:0,notes:'ZKTeco import',source:'zkteco-import',approvalStatus:'approved',filedBy:'ZKTeco import'});
+    const flagged=outOfBufferKeys.has(`${g.empId}_${g.date}`);
+    if(flagged)flaggedCount++;
+    upsertAttendance(g.empId,g.date,{tin,tout,status:isLate?'late':'present',ot:0,nd:0,notes:flagged?'ZKTeco import · Outside scheduled shift window — needs confirmation':'ZKTeco import',source:'zkteco-import',approvalStatus:flagged?'pending':'approved',filedBy:'ZKTeco import'});
     added++;
   });
   try{
     await zkApi('/ack',{method:'POST',body:JSON.stringify({consumed:toImport.map(r=>({serial:r.serial,userId:r.userId,date:r.date,time:r.time}))})});
   }catch(e){/* import already reflected locally; ack failure just means these may resurface on next pull */}
-  alert(`Imported ${added} attendance record${added!==1?'s':''}. Duplicate/unmapped rows skipped.`);
+  alert(`Imported ${added} attendance record${added!==1?'s':''}. Duplicate/unmapped rows skipped.`+(flaggedCount?` ${flaggedCount} record${flaggedCount!==1?'s were':' was'} outside the employee's scheduled shift window and flagged for confirmation.`:''));
   ZK.pulledRecords=[];ZK.importPreview=[];
   render();
 }
@@ -8364,14 +8388,17 @@ function renderModal(){
   }else if(modal.type==='notifications'){
     const pending=LEAVES.filter(l=>l.status==='pending');
     const crPending=CHANGE_REQUESTS.filter(r=>r.status==='pending');
+    const myFlagged=myFlaggedAttendance();
     const isA=user.role==='admin'||isPlatformAdmin;
+    const hasAny=(isA&&(pending.length||crPending.length))||myFlagged.length;
     inner=`<div class="modal-title">🔔 Notifications
       <button class="close-x" onclick="closeM()">×</button>
     </div>
     <div style="display:grid;gap:6px;max-height:400px;overflow-y:auto">
+      ${myFlagged.length?myFlagged.map(a=>`<div onclick="closeM();goView('attendance')" style="display:flex;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--amber);background:var(--amber-bg);cursor:pointer" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'"><span style="font-size:20px;flex-shrink:0">⏱️</span><div><div style="font-weight:600;font-size:13px">Attendance needs confirmation — ${esc(a.date)}</div><div style="font-size:12px;color:var(--amber-txt)">A punch on this day was outside your scheduled shift window. Please review and confirm or correct it.</div></div></div>`).join(''):''}
       ${isA&&pending.length?pending.map(l=>{const emp=USERS.find(u=>u.id===l.eid);return`<div onclick="closeM();goView('leave')" style="display:flex;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--amber);background:var(--amber-bg);cursor:pointer" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'"><span style="font-size:20px;flex-shrink:0">📋</span><div><div style="font-weight:600;font-size:13px">${esc(emp?.name||'Unknown')} — Leave Request</div><div style="font-size:12px;color:var(--amber-txt)">${esc(l.type)} · ${esc(l.from)} to ${esc(l.to)}</div></div></div>`;}).join(''):''}
       ${isA&&crPending.length?crPending.map(r=>{const emp=USERS.find(u=>u.id===r.eid);return`<div onclick="closeM();goView('profilechanges')" style="display:flex;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);cursor:pointer" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'"><span style="font-size:20px;flex-shrink:0">✏️</span><div><div style="font-weight:600;font-size:13px">${esc(emp?.name||'Unknown')} — Profile Change</div><div style="font-size:12px;color:var(--txt3)">Awaiting your approval</div></div></div>`;}).join(''):''}
-      ${(!isA||(pending.length===0&&crPending.length===0))?`<div style="padding:2rem;text-align:center;color:var(--txt3)"><div style="font-size:32px;margin-bottom:8px">🎉</div><div style="font-weight:600">All caught up!</div><div style="font-size:12px;margin-top:4px">No pending actions.</div></div>`:''}
+      ${!hasAny?`<div style="padding:2rem;text-align:center;color:var(--txt3)"><div style="font-size:32px;margin-bottom:8px">🎉</div><div style="font-weight:600">All caught up!</div><div style="font-size:12px;margin-top:4px">No pending actions.</div></div>`:''}
     </div>`;
   }else if(modal.type==='bulkAdj'){
     const adjTypes=['Retro Pay','Missed Allowance','Missed Deduction','OT Correction','Tax Adjustment','Incentive','Overpayment Recovery','Other'];
@@ -9818,6 +9845,15 @@ function pgZKSetup(){
         </div>
       </div>
       <p style="font-size:12px;color:var(--txt3);margin-top:10px">Note: if your hosting provider only gives you a hostname (like Railway's "TCP Proxy" under Networking settings), resolve it to a numeric IP as shown above, then save that IP and port here so this screen shows the right thing next time.</p>
+    </div>
+    <div class="card" style="margin-bottom:1rem">
+      <div class="card-title" style="margin-bottom:.5rem">Shift matching window</div>
+      <p style="font-size:13px;color:var(--txt2);margin-bottom:.75rem">For employees with an assigned shift, a punch is matched to that shift's day if it falls within this window before/after the shift's start and end times (this also correctly handles overnight shifts that cross midnight). Punches outside this window are still recorded, but flagged as pending so the employee and their approver can confirm them. Employees without an assigned shift aren't affected — their punches use the device's raw date as before.</p>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+        <label style="font-size:13px;color:var(--txt2)">Before shift start<br/><input id="zk-buffer-before" type="number" min="0" step="15" class="finput mono" style="font-size:12px;width:100px;margin-top:4px" value="${ZK.punchBuffer.beforeMinutes}"/> minutes</label>
+        <label style="font-size:13px;color:var(--txt2)">After shift end<br/><input id="zk-buffer-after" type="number" min="0" step="15" class="finput mono" style="font-size:12px;width:100px;margin-top:4px" value="${ZK.punchBuffer.afterMinutes}"/> minutes</label>
+      </div>
+      <button class="btn btn-sm btn-primary" onclick="zkSavePunchBuffer()">💾 Save shift matching window</button>
     </div>
     <div class="card">
       <div class="card-title" style="margin-bottom:.875rem">Devices</div>
@@ -12988,7 +13024,7 @@ function render(){
       <!-- Bell: pending leave/approval notifications -->
       <div class="notif-btn" style="position:relative" onclick="modal={type:'notifications'};render()" title="Notifications">
         ${ico('bell',16)}
-        ${(()=>{const cnt=(user.role==='admin'||isPlatformAdmin)?(LEAVES.filter(l=>l.status==='pending').length+CHANGE_REQUESTS.filter(r=>r.status==='pending').length):0;return cnt>0?`<span style="position:absolute;top:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center">${cnt}</span>`:'';})()}
+        ${(()=>{const cnt=((user.role==='admin'||isPlatformAdmin)?(LEAVES.filter(l=>l.status==='pending').length+CHANGE_REQUESTS.filter(r=>r.status==='pending').length):0)+myFlaggedAttendance().length;return cnt>0?`<span style="position:absolute;top:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center">${cnt}</span>`:'';})()}
       </div>
       <!-- Settings: go to Company Settings -->
       <div class="notif-btn" onclick="goView('company')" title="Company Settings">${ico('settings',16)}</div>

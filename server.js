@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const express = require('express');
 const path = require('path');
 const { Pool } = require('pg');
+const TimekeepingCore = require('./public/timekeeping-core.js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -189,9 +190,18 @@ function zkPickInOut(entries) {
   return { tin: allTimes[0] || '', tout: allTimes.length > 1 ? allTimes[allTimes.length - 1] : '' };
 }
 
+const OUT_OF_BUFFER_NOTE = 'Outside scheduled shift window — needs confirmation';
+function appendNote(existingNotes, note) {
+  const notes = String(existingNotes || '').split(' · ').filter(Boolean);
+  if (notes.indexOf(note) < 0) notes.push(note);
+  return notes.join(' · ');
+}
+
 // Mirrors the client's zkImport() merge logic: extend an existing day's tin/tout with new
 // punches rather than overwrite, so a check-out committed after a check-in isn't lost.
-function zkCommitPunches(state, punchesByEmpDate) {
+// outOfBufferKeys (empId|date) mark days where the punch fell outside the employee's
+// scheduled shift buffer — those are committed but flagged pending instead of auto-approved.
+function zkCommitPunches(state, punchesByEmpDate, outOfBufferKeys) {
   state.attendance = Array.isArray(state.attendance) ? state.attendance : [];
   let nextId = state.attendance.reduce((max, r) => Math.max(max, Number(r.id) || 0), 0) + 1;
   let committed = 0;
@@ -205,10 +215,17 @@ function zkCommitPunches(state, punchesByEmpDate) {
     if (existing && existing.tout) allEntries.push({ time: existing.tout, kind: 'out' });
     const { tin, tout } = zkPickInOut(allEntries);
     const isLate = tin >= '08:30';
+    const flagged = !!(outOfBufferKeys && outOfBufferKeys.has(key));
+    const patch = {
+      tin, tout, status: isLate ? 'late' : 'present', source: 'zkteco-realtime',
+      approvalStatus: flagged ? 'pending' : 'approved', filedBy: 'ZKTeco realtime',
+      active: true, updatedAt: new Date().toISOString()
+    };
+    if (flagged) patch.notes = appendNote(existing && existing.notes, OUT_OF_BUFFER_NOTE);
     if (existing) {
-      Object.assign(existing, { tin, tout, status: isLate ? 'late' : 'present', source: 'zkteco-realtime', approvalStatus: 'approved', filedBy: 'ZKTeco realtime', active: true, updatedAt: new Date().toISOString() });
+      Object.assign(existing, patch);
     } else {
-      state.attendance.push({ id: nextId++, eid: empId, date, tin, tout, status: isLate ? 'late' : 'present', ot: 0, nd: 0, notes: '', source: 'zkteco-realtime', approvalStatus: 'approved', filedBy: 'ZKTeco realtime', active: true, updatedAt: new Date().toISOString() });
+      state.attendance.push(Object.assign({ id: nextId++, eid: empId, date, ot: 0, nd: 0, notes: '' }, patch));
     }
     committed++;
   });
@@ -304,18 +321,33 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
       });
       const record = await readState();
       const userMapping = record?.state?.zk?.userMapping || {};
+      const employees = record?.state?.users || [];
+      const shifts = record?.state?.company?.shifts || [];
+      const punchBuffer = record?.state?.zk?.punchBuffer || { beforeMinutes: 120, afterMinutes: 480 };
       const mapped = punches.filter(p => userMapping[p.userId] != null);
       const unmapped = punches.filter(p => userMapping[p.userId] == null);
       if (mapped.length) {
         const punchesByEmpDate = new Map();
+        const outOfBufferKeys = new Set();
         mapped.forEach(p => {
-          const key = userMapping[p.userId] + '|' + p.date;
+          const empId = userMapping[p.userId];
+          const employee = employees.find(u => u.id === empId);
+          // Only attempt shift-day resolution for employees who actually have a shift
+          // assigned — otherwise there's no schedule to validate against, so keep the
+          // punch on its raw device-reported date exactly like before.
+          const hasShift = employee && employee.shiftId != null;
+          const resolvedDate = hasShift
+            ? TimekeepingCore.resolveShiftDay(employee, p.date, p.time, shifts, punchBuffer.beforeMinutes, punchBuffer.afterMinutes)
+            : p.date;
+          const finalDate = resolvedDate || p.date;
+          const key = empId + '|' + finalDate;
           if (!punchesByEmpDate.has(key)) punchesByEmpDate.set(key, []);
           punchesByEmpDate.get(key).push({ time: p.time, kind: zkPunchKind(p.statusCode) });
+          if (hasShift && !resolvedDate) outOfBufferKeys.add(key);
         });
         try {
           await mutateAppState(state => {
-            const committed = zkCommitPunches(state, punchesByEmpDate);
+            const committed = zkCommitPunches(state, punchesByEmpDate, outOfBufferKeys);
             return { changed: committed > 0 };
           }, 'zk-device:' + sn);
           count += mapped.length;
