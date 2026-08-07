@@ -1377,6 +1377,15 @@ async function zkRefreshStatus(){
   }catch(e){/* surfaced via the page's own empty/error states */}
   ZK.loading=false;render();
 }
+const ZK_COMMAND_LABELS={reboot:'Restart device',resync:'Resync attendance log',clearlog:'Clear attendance log'};
+async function zkSendCommand(serial,action,confirmMsg){
+  if(confirmMsg&&!confirm(confirmMsg))return;
+  try{
+    await zkApi('/command',{method:'POST',body:JSON.stringify({serial,action})});
+    alert(`"${ZK_COMMAND_LABELS[action]}" queued. It will run next time the device checks in (usually within a minute).`);
+    await zkRefreshStatus();
+  }catch(e){alert('Could not queue command: '+e.message);}
+}
 async function zkPullAttendance(){
   try{
     const data=await zkApi('/pending');
@@ -9852,11 +9861,34 @@ function pgZKSetup(){
   `;}
 
   /* ── Tab 4: Device Tools ── */
-  else if(tab===4){body=`
-    <div class="card">
-      <div class="card-title" style="margin-bottom:.75rem">Remote device commands</div>
-      <p style="font-size:13px;color:var(--txt2)">Remote restart, clock sync, and clear-log aren't available yet in ADMS push mode — the server would need a command queue that the device polls for, which isn't built yet. For now these need physical access to the device's own menu.</p>
+  else if(tab===4){
+    const statusBadge=s=>({pending:'b-pending',sent:'b-processing',done:'b-approved',failed:'b-absent'}[s]||'b-pending');
+    body=`
+    <div class="card" style="margin-bottom:1rem">
+      <div class="card-title" style="margin-bottom:.5rem">About remote commands</div>
+      <p style="font-size:13px;color:var(--txt2)">Commands are queued here and run the next time the device checks in with the server (usually within a minute). Clock sync isn't included — there's no single ADMS command that reliably works across all ZKTeco firmware, so please set the date/time directly on the device's own menu instead.</p>
     </div>
+    ${ZK.devices.length?ZK.devices.map(d=>`
+      <div class="card" style="margin-bottom:1rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem;flex-wrap:wrap;gap:8px">
+          <div class="card-title mono" style="margin-bottom:0">${esc(d.serial)}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn btn-sm" onclick="zkSendCommand('${esc(d.serial)}','reboot')">🔄 Restart device</button>
+            <button class="btn btn-sm" onclick="zkSendCommand('${esc(d.serial)}','resync')">📡 Resync attendance log</button>
+            <button class="btn btn-sm" style="color:var(--red)" onclick="zkSendCommand('${esc(d.serial)}','clearlog','⚠ This permanently deletes the attendance log stored on the device itself. Any punches the server hasn\\'t received yet will be lost. Continue?')">🗑️ Clear attendance log</button>
+          </div>
+        </div>
+        ${(d.commands||[]).length?`<table><thead><tr><th>Command</th><th>Status</th><th>Queued</th><th>Completed</th><th>Result</th></tr></thead>
+        <tbody>${d.commands.map(c=>`<tr>
+          <td>${esc(c.label||c.command)}</td>
+          <td><span class="badge ${statusBadge(c.status)}">${esc(c.status)}</span></td>
+          <td style="font-size:12px">${c.queuedAt?new Date(c.queuedAt).toLocaleString():'—'}</td>
+          <td style="font-size:12px">${c.completedAt?new Date(c.completedAt).toLocaleString():'—'}</td>
+          <td style="font-size:12px">${c.returnCode!=null?(c.returnCode==='0'?'Success':'Return code '+esc(c.returnCode)):'—'}</td>
+        </tr>`).join('')}</tbody></table>`
+        :`<div style="font-size:13px;color:var(--txt2)">No commands sent yet.</div>`}
+      </div>
+    `).join(''):`<div class="empty-state"><div class="ei">📡</div>No device has checked in yet. Once it appears under Connection, you can send it commands here.</div>`}
   `;}
 
   return`<div class="page-header"><div><div class="page-title">ZKTeco Biometric Device</div>
