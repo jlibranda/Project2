@@ -32,7 +32,7 @@
       governmentRates:GOVT_RATES,birTaxVersions:BIR_TAX_VERSIONS,platformClients:PLATFORM_CLIENTS,
       enterprise:window.collectEnterpriseState?window.collectEnterpriseState():null,
       payrollGovernance:window.collectPayrollGovernanceState?window.collectPayrollGovernanceState():null,
-      zk:{userMapping:(typeof ZK!=='undefined'&&ZK.userMapping)||{},realtimeEnabled:(typeof ZK!=='undefined'&&!!ZK.realtimeEnabled),connectionOverride:(typeof ZK!=='undefined'&&ZK.connectionOverride)||{address:'',port:'',https:false}}
+      zk:{userMapping:(typeof ZK!=='undefined'&&ZK.userMapping)||{},realtimeEnabled:(typeof ZK!=='undefined'&&!!ZK.realtimeEnabled),connectionOverride:(typeof ZK!=='undefined'&&ZK.connectionOverride)||{address:'',port:'',https:false},punchBuffer:(typeof ZK!=='undefined'&&ZK.punchBuffer)||{beforeMinutes:120,afterMinutes:480}}
     };
   }
 
@@ -56,6 +56,7 @@
       ZK.userMapping=saved.zk.userMapping||{};
       ZK.realtimeEnabled=!!saved.zk.realtimeEnabled;
       ZK.connectionOverride=saved.zk.connectionOverride||{address:'',port:'',https:false};
+      ZK.punchBuffer=saved.zk.punchBuffer||{beforeMinutes:120,afterMinutes:480};
       if(ZK.realtimeEnabled&&typeof startRealtime==='function')startRealtime();
     }
     nAtt=ATT.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
