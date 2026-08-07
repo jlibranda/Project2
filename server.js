@@ -169,21 +169,41 @@ async function mutateAppState(mutator, actor) {
   }
 }
 
+// ZKTeco ATTLOG status codes: 0/4 mean the employee punched "in" on the device's own
+// toggle, 1/2/3/5 mean "out" (check-out / break-out / break-in / overtime-out all read as
+// an "out" in our simple tin/tout model). Anything else (missing or unrecognized) is left
+// unclassified so that day falls back to the earliest/latest heuristic instead of guessing.
+function zkPunchKind(statusCode) {
+  if (statusCode === '0' || statusCode === '4') return 'in';
+  if (statusCode === '1' || statusCode === '2' || statusCode === '3' || statusCode === '5') return 'out';
+  return null;
+}
+// Prefer the device's own in/out tag when any punch that day has one; only fall back to
+// earliest-in/latest-out (the old behavior) when none of the day's punches are tagged —
+// e.g. older firmware that doesn't send a status code at all.
+function zkPickInOut(entries) {
+  const ins = entries.filter(e => e.kind === 'in').map(e => e.time).sort();
+  const outs = entries.filter(e => e.kind === 'out').map(e => e.time).sort();
+  if (ins.length || outs.length) return { tin: ins[0] || '', tout: outs.length ? outs[outs.length - 1] : '' };
+  const allTimes = entries.map(e => e.time).filter(Boolean).sort();
+  return { tin: allTimes[0] || '', tout: allTimes.length > 1 ? allTimes[allTimes.length - 1] : '' };
+}
+
 // Mirrors the client's zkImport() merge logic: extend an existing day's tin/tout with new
-// punch times rather than overwrite, so a check-out committed after a check-in isn't lost.
+// punches rather than overwrite, so a check-out committed after a check-in isn't lost.
 function zkCommitPunches(state, punchesByEmpDate) {
   state.attendance = Array.isArray(state.attendance) ? state.attendance : [];
   let nextId = state.attendance.reduce((max, r) => Math.max(max, Number(r.id) || 0), 0) + 1;
   let committed = 0;
-  punchesByEmpDate.forEach((times, key) => {
+  punchesByEmpDate.forEach((entries, key) => {
     const sep = key.indexOf('|');
     const empId = Number(key.slice(0, sep));
     const date = key.slice(sep + 1);
     const existing = state.attendance.find(r => r.eid === empId && r.date === date && r.active !== false);
-    const allTimes = (existing ? [existing.tin, existing.tout] : []).concat(times).filter(Boolean);
-    allTimes.sort();
-    const tin = allTimes[0] || '';
-    const tout = allTimes.length > 1 ? allTimes[allTimes.length - 1] : '';
+    const allEntries = entries.slice();
+    if (existing && existing.tin) allEntries.push({ time: existing.tin, kind: 'in' });
+    if (existing && existing.tout) allEntries.push({ time: existing.tout, kind: 'out' });
+    const { tin, tout } = zkPickInOut(allEntries);
     const isLate = tin >= '08:30';
     if (existing) {
       Object.assign(existing, { tin, tout, status: isLate ? 'late' : 'present', source: 'zkteco-realtime', approvalStatus: 'approved', filedBy: 'ZKTeco realtime', active: true, updatedAt: new Date().toISOString() });
@@ -276,10 +296,11 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
         const cols = line.split('\t');
         const userId = (cols[0] || '').trim();
         const timestamp = (cols[1] || '').trim();
+        const statusCode = (cols[2] || '').trim();
         if (!userId || !timestamp) return;
         const [date, time] = timestamp.split(' ');
         if (!date || !time) return;
-        punches.push({ userId, date, time });
+        punches.push({ userId, date, time, statusCode });
       });
       const record = await readState();
       const userMapping = record?.state?.zk?.userMapping || {};
@@ -290,7 +311,7 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
         mapped.forEach(p => {
           const key = userMapping[p.userId] + '|' + p.date;
           if (!punchesByEmpDate.has(key)) punchesByEmpDate.set(key, []);
-          punchesByEmpDate.get(key).push(p.time);
+          punchesByEmpDate.get(key).push({ time: p.time, kind: zkPunchKind(p.statusCode) });
         });
         try {
           await mutateAppState(state => {
@@ -310,7 +331,7 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
             const key = zkKey(p.userId, p.date, p.time);
             if (seen.has(key)) return;
             seen.add(key);
-            current.pending.push({ userId: p.userId, date: p.date, time: p.time, receivedAt: new Date().toISOString() });
+            current.pending.push({ userId: p.userId, date: p.date, time: p.time, statusCode: p.statusCode || '', receivedAt: new Date().toISOString() });
             count++;
           });
           return current;
