@@ -94,9 +94,11 @@ async function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS zk_devices (
       tenant_key TEXT NOT NULL, serial TEXT NOT NULL,
       last_seen TIMESTAMPTZ, pending JSONB NOT NULL DEFAULT '[]', device_users JSONB NOT NULL DEFAULT '[]',
+      commands JSONB NOT NULL DEFAULT '[]',
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (tenant_key, serial)
     );
+    ALTER TABLE zk_devices ADD COLUMN IF NOT EXISTS commands JSONB NOT NULL DEFAULT '[]';
   `);
 }
 async function readState() {
@@ -113,14 +115,14 @@ async function zkMutateDevice(serial, mutator) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const existing = await client.query('SELECT pending, device_users FROM zk_devices WHERE tenant_key = $1 AND serial = $2 FOR UPDATE', [TENANT_KEY, serial]);
-    const row = existing.rows[0] || { pending: [], device_users: [] };
-    const next = mutator({ pending: row.pending || [], deviceUsers: row.device_users || [] }) || {};
+    const existing = await client.query('SELECT pending, device_users, commands FROM zk_devices WHERE tenant_key = $1 AND serial = $2 FOR UPDATE', [TENANT_KEY, serial]);
+    const row = existing.rows[0] || { pending: [], device_users: [], commands: [] };
+    const next = mutator({ pending: row.pending || [], deviceUsers: row.device_users || [], commands: row.commands || [] }) || {};
     await client.query(
-      `INSERT INTO zk_devices (tenant_key, serial, last_seen, pending, device_users, updated_at)
-       VALUES ($1, $2, NOW(), $3, $4, NOW())
-       ON CONFLICT (tenant_key, serial) DO UPDATE SET last_seen = NOW(), pending = $3, device_users = $4, updated_at = NOW()`,
-      [TENANT_KEY, serial, JSON.stringify(next.pending || []), JSON.stringify(next.deviceUsers || [])]
+      `INSERT INTO zk_devices (tenant_key, serial, last_seen, pending, device_users, commands, updated_at)
+       VALUES ($1, $2, NOW(), $3, $4, $5, NOW())
+       ON CONFLICT (tenant_key, serial) DO UPDATE SET last_seen = NOW(), pending = $3, device_users = $4, commands = $5, updated_at = NOW()`,
+      [TENANT_KEY, serial, JSON.stringify(next.pending || []), JSON.stringify(next.deviceUsers || []), JSON.stringify(next.commands || [])]
     );
     await client.query('COMMIT');
   } catch (error) {
@@ -132,7 +134,7 @@ async function zkMutateDevice(serial, mutator) {
 }
 async function zkAllDevices() {
   if (!pool) return [];
-  const result = await pool.query('SELECT serial, last_seen, pending, device_users FROM zk_devices WHERE tenant_key = $1', [TENANT_KEY]);
+  const result = await pool.query('SELECT serial, last_seen, pending, device_users, commands FROM zk_devices WHERE tenant_key = $1', [TENANT_KEY]);
   return result.rows;
 }
 
@@ -344,12 +346,54 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
   res.type('text/plain').send(`OK: ${count}`);
 });
 
-app.get('/iclock/getrequest', (req, res) => {
-  // Command queue not implemented yet — always tell the device there's nothing pending.
-  res.type('text/plain').send('OK');
+app.get('/iclock/getrequest', async (req, res) => {
+  const sn = String(req.query.SN || req.query.sn || 'unknown');
+  try {
+    let toSend = [];
+    await zkMutateDevice(sn, current => {
+      toSend = (current.commands || []).filter(c => c.status === 'pending');
+      const sentAt = new Date().toISOString();
+      toSend.forEach(c => { c.status = 'sent'; c.sentAt = sentAt; });
+      return current;
+    });
+    if (!toSend.length) return res.type('text/plain').send('OK');
+    res.type('text/plain').send(toSend.map(c => `C:${c.id}:${c.command}`).join('\r\n') + '\r\n');
+  } catch (error) {
+    console.error('ADMS getrequest error:', error.message);
+    res.type('text/plain').send('OK');
+  }
 });
 
-app.post('/iclock/devicecmd', express.text({ type: '*/*', limit: '256kb' }), (_req, res) => {
+// Devices report command results as key=value pairs (query string and/or body — this varies
+// by firmware, so both are checked) like "ID=3&Return=0&CMD=REBOOT". Return=0 means success.
+function parseAdmsKV(str) {
+  const out = {};
+  String(str || '').split('&').forEach(pair => {
+    const idx = pair.indexOf('=');
+    if (idx < 0) return;
+    out[decodeURIComponent(pair.slice(0, idx))] = decodeURIComponent(pair.slice(idx + 1).replace(/\+/g, ' '));
+  });
+  return out;
+}
+app.post('/iclock/devicecmd', express.text({ type: '*/*', limit: '256kb' }), async (req, res) => {
+  const sn = String(req.query.SN || req.query.sn || 'unknown');
+  try {
+    const kv = Object.assign({}, parseAdmsKV(req.body), req.query);
+    const cmdId = Number(kv.ID);
+    if (cmdId) {
+      await zkMutateDevice(sn, current => {
+        const entry = (current.commands || []).find(c => c.id === cmdId);
+        if (entry) {
+          entry.status = String(kv.Return) === '0' ? 'done' : 'failed';
+          entry.returnCode = kv.Return != null ? String(kv.Return) : null;
+          entry.completedAt = new Date().toISOString();
+        }
+        return current;
+      });
+    }
+  } catch (error) {
+    console.error('ADMS devicecmd error:', error.message);
+  }
   res.type('text/plain').send('OK');
 });
 
@@ -361,10 +405,43 @@ app.get('/api/zk/status', requireAuth, async (_req, res) => {
   const [record, devices] = await Promise.all([readState(), zkAllDevices()]);
   const userMapping = record?.state?.zk?.userMapping || {};
   res.json({
-    devices: devices.map(d => ({ serial: d.serial, lastSeen: d.last_seen, pendingCount: (d.pending || []).length })),
+    devices: devices.map(d => ({
+      serial: d.serial, lastSeen: d.last_seen, pendingCount: (d.pending || []).length,
+      commands: (d.commands || []).slice(-10).reverse()
+    })),
     deviceUsers: devices.flatMap(d => (d.device_users || []).map(u => ({ ...u, serial: d.serial }))),
     userMapping
   });
+});
+// Commands are an allowlist, not free-text, so the browser can never queue an arbitrary
+// ADMS directive — only the ones vetted here. CLEAR LOG is destructive on the device (it
+// erases attendance records not yet pushed), so the UI must confirm before calling this.
+const ZK_COMMANDS = {
+  reboot: { content: 'REBOOT', label: 'Restart device' },
+  resync: { content: 'DATA QUERY ATTLOG', label: 'Resync attendance log' },
+  clearlog: { content: 'CLEAR LOG', label: 'Clear attendance log' }
+};
+app.post('/api/zk/command', requireAuth, async (req, res) => {
+  const serial = String(req.body.serial || '');
+  const def = ZK_COMMANDS[String(req.body.action || '')];
+  if (!serial || !def) return res.status(400).json({ error: 'A valid device and command are required.' });
+  try {
+    let queuedId;
+    await zkMutateDevice(serial, current => {
+      const commands = current.commands || [];
+      queuedId = commands.reduce((max, c) => Math.max(max, Number(c.id) || 0), 0) + 1;
+      commands.push({
+        id: queuedId, command: def.content, label: def.label, status: 'pending',
+        queuedAt: new Date().toISOString(), sentAt: null, completedAt: null, returnCode: null,
+        queuedBy: req.session.sub
+      });
+      current.commands = commands;
+      return current;
+    });
+    res.json({ ok: true, id: queuedId });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to queue command.', detail: error.message });
+  }
 });
 app.get('/api/zk/pending', requireAuth, async (_req, res) => {
   const devices = await zkAllDevices();
