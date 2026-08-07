@@ -116,6 +116,50 @@
     return assigned ? { start: assigned.start, end: assigned.end, graceMinutes: Number(assigned.graceMinutes || 0), source: 'assigned-shift' } : null;
   }
 
+  function timeToMinutes(value) {
+    var parts = String(value || '').split(':');
+    if (parts.length < 2) return null;
+    var hour = Number(parts[0]);
+    var minute = Number(parts[1]);
+    return Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : null;
+  }
+
+  function addDaysToDateStr(dateStr, days) {
+    var d = new Date(dateStr + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  }
+
+  // Determine which "shift day" a punch belongs to, using the employee's assigned shift
+  // start/end plus a configurable buffer window, so a punch near midnight (e.g. the tail
+  // end of an overnight shift) lands on the correct day instead of splitting by raw
+  // calendar date. Returns null if the punch falls outside every candidate shift's window
+  // — the caller should treat that as needing manual confirmation rather than guess.
+  function resolveShiftDay(employee, punchDate, punchTime, shifts, bufferBeforeMinutes, bufferAfterMinutes) {
+    var punchMin = timeToMinutes(punchTime);
+    if (punchMin == null) return null;
+    var before = Number(bufferBeforeMinutes) || 0;
+    var after = Number(bufferAfterMinutes) || 0;
+    var best = null;
+    [-1, 0, 1].forEach(function (offset) {
+      var day = addDaysToDateStr(punchDate, offset);
+      var sched = scheduleForDate(employee, day, shifts);
+      if (!sched) return;
+      var shiftStart = timeToMinutes(sched.start);
+      var shiftEnd = timeToMinutes(sched.end);
+      if (shiftStart == null || shiftEnd == null) return;
+      if (shiftEnd <= shiftStart) shiftEnd += 24 * 60; // this shift crosses midnight
+      var dayOffsetMin = offset * 24 * 60;
+      var windowStart = dayOffsetMin + shiftStart - before;
+      var windowEnd = dayOffsetMin + shiftEnd + after;
+      if (punchMin >= windowStart && punchMin <= windowEnd) {
+        var dist = Math.min(Math.abs(punchMin - (dayOffsetMin + shiftStart)), Math.abs(punchMin - (dayOffsetMin + shiftEnd)));
+        if (!best || dist < best.dist) best = { day: day, dist: dist };
+      }
+    });
+    return best ? best.day : null;
+  }
+
   function periodSummary(records, employee, from, to, shifts) {
     var rows = canonicalRecords(records).filter(function (record) {
       return record.eid === employee.id && record.date >= from && record.date <= to && record.approvalStatus !== 'rejected';
@@ -152,6 +196,7 @@
     upsert: upsert,
     validateLinkedRecord: validateLinkedRecord,
     scheduleForDate: scheduleForDate,
+    resolveShiftDay: resolveShiftDay,
     periodSummary: periodSummary
   };
 });
