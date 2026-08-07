@@ -164,8 +164,23 @@
     var regularOt = ruleValue(rules,'OT_REGULAR_DAY',date,context,1.25);
     if (attendance.otHours) addLine(lines,Object.assign({code:'OT_REG',name:'Regular-Day Overtime',type:'earning',quantity:attendance.otHours,rate:hourly,multiplier:regularOt.value,amount:hourly*regularOt.value*attendance.otHours,taxable:true,formula:'Hourly rate × approved OT hours × '+regularOt.value},lineFromRule(regularOt.rule,'OT_REGULAR_DAY','Labor Code / DOLE')));
 
-    var restPremium = ruleValue(rules,'REST_HOLIDAY_WORK',date,context,1.30);
-    if (attendance.restDayHolidayHours) addLine(lines,Object.assign({code:'RDH',name:'Rest Day / Holiday Work',type:'earning',quantity:attendance.restDayHolidayHours,rate:hourly,multiplier:restPremium.value,amount:hourly*restPremium.value*attendance.restDayHolidayHours,taxable:true,formula:'Hourly rate × approved hours × '+restPremium.value},lineFromRule(restPremium.rule,'REST_HOLIDAY_WORK','Labor Code / DOLE')));
+    // Approved rest-day/holiday hours are broken down by holiday-pay code (RH_8, SH_8, DH_8,
+    // etc. — see the Overtime & Premium Rates table) when the date matches the holiday
+    // calendar, so each is paid at its own statutory rate instead of one flat premium for
+    // everything. Plain rest-day work with no matching holiday still uses the flat rule below.
+    var byCode = attendance.restDayHolidayHoursByCode || (attendance.restDayHolidayHours ? {RDH_GENERIC:attendance.restDayHolidayHours} : {});
+    Object.keys(byCode).forEach(function (code) {
+      var hrs = byCode[code];
+      if (!hrs) return;
+      if (code === 'RDH_GENERIC') {
+        var restPremium = ruleValue(rules,'REST_HOLIDAY_WORK',date,context,1.30);
+        addLine(lines,Object.assign({code:'RDH',name:'Rest Day Work',type:'earning',quantity:hrs,rate:hourly,multiplier:restPremium.value,amount:hourly*restPremium.value*hrs,taxable:true,formula:'Hourly rate × approved hours × '+restPremium.value},lineFromRule(restPremium.rule,'REST_HOLIDAY_WORK','Labor Code / DOLE')));
+        return;
+      }
+      var otRate = (input.otRates || []).find(function (r) { return r.code === code && r.active !== false; });
+      var multiplier = otRate ? number(otRate.rate) / 100 : 1;
+      addLine(lines, {code:code, name:(otRate && otRate.name) || code, type:'earning', quantity:hrs, rate:hourly, multiplier:multiplier, amount:hourly*multiplier*hrs, taxable:true, formula:'Hourly rate × approved hours × '+multiplier, ruleCode:code, legalSource:'Labor Code / DOLE — Overtime & Premium Rates', ruleVersion:1});
+    });
 
     var ndRule = ruleValue(rules,'NIGHT_DIFFERENTIAL',date,context,0.10);
     if (attendance.ndHours) addLine(lines,Object.assign({code:'ND',name:'Night Shift Differential',type:'earning',quantity:attendance.ndHours,rate:hourly,multiplier:ndRule.value,amount:hourly*ndRule.value*attendance.ndHours,taxable:true,formula:'Hourly rate × qualified NSD hours × '+ndRule.value},lineFromRule(ndRule.rule,'NIGHT_DIFFERENTIAL','Labor Code / DOLE')));

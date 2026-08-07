@@ -8385,6 +8385,23 @@ function renderModal(){
       ">✓ Update Password</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
+  }else if(modal.type==='holidayEditor'){
+    const d=modal.draft;
+    const typeOptions=[['regular','Regular Holiday (200% if worked)'],['special-non-working','Special Non-Working Holiday (130% if worked)'],['special-working','Special Working Holiday (no premium — normal work day)'],['double','Double Holiday (300% if worked)']];
+    inner=`<div class="modal-title">${modal.isNew?'Add':'Edit'} Holiday
+      <button class="close-x" onclick="closeM()">×</button>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Date</label><input type="date" class="finput" value="${esc(d.date)}" onchange="modal.draft.date=this.value"/></div>
+      <div class="field"><label>Holiday Name</label><input class="finput" value="${esc(d.name)}" oninput="modal.draft.name=this.value" placeholder="e.g. Independence Day"/></div>
+    </div>
+    <div class="field" style="margin-top:.75rem"><label>Type</label><select class="finput" onchange="modal.draft.type=this.value;render()">
+      ${typeOptions.map(([v,l])=>`<option value="${v}" ${d.type===v?'selected':''}>${l}</option>`).join('')}
+    </select></div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn btn-primary" onclick="saveHolidayEditor()">Save Holiday</button>
+      <button class="btn" onclick="closeM()">Cancel</button>
+    </div>`;
   }else if(modal.type==='shiftEditor'){
     const d=modal.draft;
     const dayLabels={mon:'Monday',tue:'Tuesday',wed:'Wednesday',thu:'Thursday',fri:'Friday',sat:'Saturday',sun:'Sunday'};
