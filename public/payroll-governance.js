@@ -75,7 +75,10 @@
   }
   function approvedAttendanceSummary(emp,from,to) {
     var approved = attendanceRecords().filter(function (record) { return record.approvalStatus === 'approved'; });
-    return TimekeepingCore.periodSummary(approved,emp,from,to,typeof SHIFT_DEFINITIONS==='undefined'?[]:SHIFT_DEFINITIONS);
+    // COMPANY.shifts/holidays (not the enterprise.js-local SHIFT_DEFINITIONS/HOLIDAYS vars,
+    // which aren't visible from this file's own scope) are the shared source of truth kept
+    // in sync by saveShiftConfig()/saveHolidayConfig().
+    return TimekeepingCore.periodSummary(approved,emp,from,to,COMPANY.shifts||[],COMPANY.holidays||[]);
   }
   function periodForCalculation(period) {
     if (period) return period;
@@ -148,7 +151,7 @@
     var baseBasic=computeBasicByPayType(appliedEmp,grp,p);
     var recurringAllowances=effectiveRecurringAllowances(emp,grp,p);
     var adjustments=effectiveAdjustments(emp,p),taxYear=Number(p.taxYear||String(p.bir1601CMonth||p.releaseDate||p.to).slice(0,4)),taxProfile=employeeTaxRecord(emp,taxYear,false)||{},benefitYtd=employeeYtdBenefitSnapshot(emp.id,taxYear,p.bir1601CMonth||String(taxYear)+'-12',p.id||null);
-    var result=PayrollRuleEngine.calculate({employee:appliedEmp,group:grp,period:p,attendance:attendance,rules:PAYROLL_RULEBOOK,baseBasic:baseBasic,defaultDivisor:COMPANY.dailyDivisor||22,recurringAllowances:recurringAllowances,adjustments:adjustments,annualBenefitContext:{limit:90000,previousEmployerNonTaxable:Number(taxProfile.previousEmployerNonTaxableBenefits||0),currentEmployerYtdNonTaxable:benefitYtd.exempt},loans:LOANS.filter(function(loan){return loan.eid===emp.id;}),statutory:statutoryAmounts,tax:birTaxByFreq});
+    var result=PayrollRuleEngine.calculate({employee:appliedEmp,group:grp,period:p,attendance:attendance,rules:PAYROLL_RULEBOOK,baseBasic:baseBasic,defaultDivisor:COMPANY.dailyDivisor||22,recurringAllowances:recurringAllowances,adjustments:adjustments,annualBenefitContext:{limit:90000,previousEmployerNonTaxable:Number(taxProfile.previousEmployerNonTaxableBenefits||0),currentEmployerYtdNonTaxable:benefitYtd.exempt},loans:LOANS.filter(function(loan){return loan.eid===emp.id;}),statutory:statutoryAmounts,tax:birTaxByFreq,otRates:(typeof OT_RATES==='undefined'?[]:OT_RATES)});
     result.birTaxTableVersion=birTaxVersionSnapshot(p.releaseDate||p.to);
     if(adjustments.some(function(a){return a.benefitTreatment==='annual-benefit-bucket';})){
       BIRAnnualizationCore.validateProfile(taxProfile,taxYear,COMPANY.taxPolicy.requireConfirmedTaxRecord!==false).concat(window.BIRTaxVersionCore?BIRTaxVersionCore.validatePreviousEmployer(taxProfile):[]).forEach(function(message){result.issues.push({severity:'blocker',code:'BENEFIT_PROFILE_INCOMPLETE',message:message});});

@@ -137,6 +137,34 @@
     return { start: day.start, end: day.end, breakStart: day.breakStart || '', breakEnd: day.breakEnd || '', graceMinutes: Number(normalized.graceMinutes || 0), source: 'assigned-shift' };
   }
 
+  // True only when this weekday is explicitly marked as a rest day on the employee's
+  // assigned shift — unlike scheduleForDate()'s null return, this never conflates "no
+  // shift assigned at all" with "designated rest day" (matters for holiday-pay math, where
+  // those two cases lead to different pay rules).
+  function isRestDay(employee, date, shifts) {
+    var assigned = (shifts || []).find(function (item) { return employee && item.id === employee.shiftId; });
+    if (!assigned) return false;
+    var normalized = normalizeShift(assigned);
+    var dayKey = GETDAY_TO_KEY[new Date(date + 'T00:00:00Z').getUTCDay()];
+    var day = normalized.schedule[dayKey];
+    return !!(day && day.restDay);
+  }
+
+  // Maps a holiday calendar entry + whether the date was the employee's rest day to the
+  // matching Overtime & Premium Rates code (see OT_RATES in index.html), so payroll can look
+  // up the admin-configured percentage instead of a single flat premium for all holiday work.
+  // Special Working Holidays intentionally return null — DOLE doesn't mandate extra pay for
+  // those, they're just a normal working day.
+  function classifyHolidayPremium(employee, date, shifts, holidays) {
+    var holiday = (holidays || []).find(function (h) { return h.date === date; });
+    if (!holiday || holiday.type === 'special-working') return null;
+    if (holiday.type === 'double') return 'DH_8';
+    var restDay = isRestDay(employee, date, shifts);
+    if (holiday.type === 'regular') return restDay ? 'RH_RD_8' : 'RH_8';
+    if (holiday.type === 'special-non-working') return restDay ? 'SH_RD_8' : 'SH_8';
+    return null;
+  }
+
   function timeToMinutes(value) {
     var parts = String(value || '').split(':');
     if (parts.length < 2) return null;
@@ -181,17 +209,24 @@
     return best ? best.day : null;
   }
 
-  function periodSummary(records, employee, from, to, shifts) {
+  function periodSummary(records, employee, from, to, shifts, holidays) {
     var rows = canonicalRecords(records).filter(function (record) {
       return record.eid === employee.id && record.date >= from && record.date <= to && record.approvalStatus !== 'rejected';
     });
-    var summary = { records: rows, presentDays: 0, lateMinutes: 0, undertimeMinutes: 0, absentDays: 0, otHours: 0, ndHours: 0, restDayHolidayHours: 0 };
+    var summary = { records: rows, presentDays: 0, lateMinutes: 0, undertimeMinutes: 0, absentDays: 0, otHours: 0, ndHours: 0, restDayHolidayHours: 0, restDayHolidayHoursByCode: {} };
     rows.forEach(function (record) {
       if (record.status === 'present' || record.status === 'late') summary.presentDays += 1;
       if (record.status === 'absent') summary.absentDays += 1;
       summary.otHours += Number(record.ot || 0);
       summary.ndHours += Number(record.nd || 0);
-      summary.restDayHolidayHours += Number(record.restDayHolidayHours || 0);
+      var rdhHours = Number(record.restDayHolidayHours || 0);
+      summary.restDayHolidayHours += rdhHours;
+      if (rdhHours) {
+        // A specific holiday-pay rate code when this date is a configured holiday, otherwise
+        // 'RDH_GENERIC' — plain (non-holiday) rest-day work, kept at the old flat rate.
+        var code = classifyHolidayPremium(employee, record.date, shifts, holidays) || 'RDH_GENERIC';
+        summary.restDayHolidayHoursByCode[code] = (summary.restDayHolidayHoursByCode[code] || 0) + rdhHours;
+      }
       var schedule = scheduleForDate(employee, record.date, shifts);
       var actualIn = minutes(record.tin);
       var actualOut = minutes(record.tout);
@@ -204,6 +239,9 @@
     });
     Object.keys(summary).forEach(function (key) {
       if (key !== 'records' && typeof summary[key] === 'number') summary[key] = Math.round(summary[key] * 100) / 100;
+    });
+    Object.keys(summary.restDayHolidayHoursByCode).forEach(function (code) {
+      summary.restDayHolidayHoursByCode[code] = Math.round(summary.restDayHolidayHoursByCode[code] * 100) / 100;
     });
     return summary;
   }
@@ -219,6 +257,8 @@
     scheduleForDate: scheduleForDate,
     normalizeShift: normalizeShift,
     resolveShiftDay: resolveShiftDay,
+    isRestDay: isRestDay,
+    classifyHolidayPremium: classifyHolidayPremium,
     periodSummary: periodSummary
   };
 });

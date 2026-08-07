@@ -542,6 +542,67 @@
       '</tbody></table></div></div>';
   }
 
+  /* ---- Holiday Calendar ----
+   * Dates entered here get auto-matched against attendance so approved holiday/rest-day
+   * work is paid at the correct statutory rate instead of one flat premium for everything. */
+  var HOLIDAY_TYPE_LABELS={
+    'regular':'Regular Holiday',
+    'special-non-working':'Special Non-Working Holiday',
+    'special-working':'Special Working Holiday',
+    'double':'Double Holiday'
+  };
+  var HOLIDAYS=(COMPANY.holidays&&COMPANY.holidays.length?COMPANY.holidays:[]);
+  var nextHolidayId=HOLIDAYS.reduce(function(max,h){return Math.max(max,h.id||0);},0)+1;
+
+  function saveHolidayConfig(){
+    COMPANY.holidays=HOLIDAYS;
+    queueSync('Holiday_Config');
+  }
+
+  window.openHolidayEditor=function(holidayId){
+    if(!(user.role==='admin'||isPlatformAdmin))return;
+    var existing=holidayId?HOLIDAYS.find(function(h){return h.id===holidayId;}):null;
+    modal={type:'holidayEditor',draft:existing?Object.assign({},existing):{id:null,date:'',name:'',type:'regular'},isNew:!existing};
+    render();
+  };
+
+  window.saveHolidayEditor=function(){
+    if(!(user.role==='admin'||isPlatformAdmin))return;
+    var d=modal.draft;
+    if(!d.date){toast('Please pick a date.','warning');return;}
+    if(!d.name||!d.name.trim()){toast('Holiday name is required.','warning');return;}
+    if(!HOLIDAY_TYPE_LABELS[d.type]){toast('Please choose a holiday type.','warning');return;}
+    var dup=HOLIDAYS.find(function(h){return h.date===d.date&&h.id!==d.id;});
+    if(dup&&d.type!=='double'&&dup.type!=='double'){
+      if(!confirm('Another holiday ("'+dup.name+'") is already set on '+d.date+'. If two regular holidays genuinely coincide, use the "Double Holiday" type instead. Save anyway?'))return;
+    }
+    if(d.id){
+      var existing=HOLIDAYS.find(function(h){return h.id===d.id;});
+      Object.assign(existing,{date:d.date,name:d.name.trim(),type:d.type});
+    }else{
+      HOLIDAYS.push({id:nextHolidayId++,date:d.date,name:d.name.trim(),type:d.type});
+    }
+    HOLIDAYS.sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:0;});
+    saveHolidayConfig();closeM();toast('Holiday saved.','success');
+  };
+
+  window.deleteHoliday=function(id){
+    if(!(user.role==='admin'||isPlatformAdmin))return;
+    var index=HOLIDAYS.findIndex(function(h){return h.id===id;});if(index<0)return;
+    if(!confirm('Delete this holiday?'))return;
+    HOLIDAYS.splice(index,1);saveHolidayConfig();render();
+  };
+
+  function renderHolidayManager(){
+    var upcoming=HOLIDAYS.slice().sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:0;});
+    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Holiday Calendar</div><div class="card-sub">Dates here are automatically matched against attendance, and payroll uses the matching holiday pay rate for approved holiday work</div></div><button class="btn btn-primary btn-sm" onclick="openHolidayEditor()">+ Add Holiday</button></div>'+
+      '<div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Holiday</th><th>Type</th><th>Actions</th></tr></thead><tbody>'+
+      (upcoming.length?upcoming.map(function(h){
+        return '<tr><td class="mono">'+esc(h.date)+'</td><td style="font-weight:700">'+esc(h.name)+'</td><td><span class="badge">'+esc(HOLIDAY_TYPE_LABELS[h.type]||h.type)+'</span></td><td><div class="action-row"><button class="btn btn-sm" onclick="openHolidayEditor('+h.id+')">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteHoliday('+h.id+')">Delete</button></div></td></tr>';
+      }).join(''):'<tr><td colspan="4" style="text-align:center;color:var(--txt3);padding:2rem">No holidays configured yet.</td></tr>')+
+      '</tbody></table></div></div>';
+  }
+
   var ATTENDANCE_FORM_CONFIG = [
     {key:'time_correction',label:'Time In / Time Out Correction',short:'TC',description:'File multiple missing or incorrect punches in one batch.',kind:'punch',visible:true,core:true},
     {key:'schedule_adjustment',label:'Schedule Adjustment',short:'SA',description:'Request a temporary change to the assigned shift schedule.',kind:'schedule',visible:true},
@@ -769,7 +830,7 @@
   var baseCompanySettings=window.pgCompanySettings;
   window.showCompanySettingsTab=function(key){window._companySettingsTab=key;render();};
   function companySettingsTabs(active){
-    var items=[{key:'general',label:'General & Payroll'},{key:'shifts',label:'Shift Setup'},{key:'attendance',label:'Attendance Forms'}];
+    var items=[{key:'general',label:'General & Payroll'},{key:'shifts',label:'Shift Setup'},{key:'holidays',label:'Holiday Calendar'},{key:'attendance',label:'Attendance Forms'}];
     return '<div class="settings-tabbar" role="tablist" aria-label="Company Settings sections">'+items.map(function(item){return '<button class="settings-tab'+(active===item.key?' active':'')+'" role="tab" aria-selected="'+(active===item.key?'true':'false')+'" onclick="showCompanySettingsTab(\''+item.key+'\')">'+item.label+'</button>';}).join('')+'</div>';
   }
   window.pgCompanySettings=pgCompanySettings=function(){
@@ -780,8 +841,9 @@
       var general=baseCompanySettings(),marker='<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">';
       return general.indexOf(marker)>=0?general.replace(marker,tabs+marker):tabs+general;
     }
-    var subtitle=active==='shifts'?'Create reusable schedules and manage employee shift assignments.':'Choose which attendance request forms employees can access.';
-    return '<div class="page-header"><div><div class="page-title">Company Settings</div><div class="page-sub">'+subtitle+'</div></div></div>'+tabs+(active==='shifts'?renderShiftManager():renderAttendanceFormManager());
+    var subtitle=active==='shifts'?'Create reusable schedules and manage employee shift assignments.':active==='holidays'?'Manage holiday dates so attendance and payroll automatically apply the correct rate.':'Choose which attendance request forms employees can access.';
+    var body=active==='shifts'?renderShiftManager():active==='holidays'?renderHolidayManager():renderAttendanceFormManager();
+    return '<div class="page-header"><div><div class="page-title">Company Settings</div><div class="page-sub">'+subtitle+'</div></div></div>'+tabs+body;
   };
 
   /* Extend payroll approval: approved runs release payslips and create audit events. */
