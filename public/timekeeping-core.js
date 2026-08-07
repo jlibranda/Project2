@@ -104,6 +104,22 @@
     return Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : null;
   }
 
+  var SHIFT_DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  // JS Date#getUTCDay() is 0=Sunday..6=Saturday; this maps that index straight to our keys.
+  var GETDAY_TO_KEY = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+  // Older shifts are a single flat {start,end,breakMinutes} applied every day. Normalizing
+  // to the newer per-day {schedule:{mon:{...},...,sun:{...}}} shape here means every other
+  // function only ever has to handle one shape.
+  function normalizeShift(shift) {
+    if (!shift) return null;
+    if (shift.schedule) return shift;
+    var day = { restDay: false, start: shift.start || '', end: shift.end || '', breakStart: '', breakEnd: '' };
+    var schedule = {};
+    SHIFT_DAY_KEYS.forEach(function (k) { schedule[k] = Object.assign({}, day); });
+    return Object.assign({}, shift, { schedule: schedule });
+  }
+
   function scheduleForDate(employee, date, shifts) {
     var assigned = (shifts || []).find(function (item) { return employee && item.id === employee.shiftId; });
     var approved = (employee && employee.scheduleAdjustments || []).filter(function (adjustment) {
@@ -113,7 +129,12 @@
       var latest = approved[approved.length - 1];
       return { start: latest.start, end: latest.end, graceMinutes: Number(assigned && assigned.graceMinutes || 0), source: 'schedule-adjustment' };
     }
-    return assigned ? { start: assigned.start, end: assigned.end, graceMinutes: Number(assigned.graceMinutes || 0), source: 'assigned-shift' } : null;
+    if (!assigned) return null;
+    var normalized = normalizeShift(assigned);
+    var dayKey = GETDAY_TO_KEY[new Date(date + 'T00:00:00Z').getUTCDay()];
+    var day = normalized.schedule[dayKey];
+    if (!day || day.restDay || !day.start || !day.end) return null; // rest day / not configured — no shift expected
+    return { start: day.start, end: day.end, breakStart: day.breakStart || '', breakEnd: day.breakEnd || '', graceMinutes: Number(normalized.graceMinutes || 0), source: 'assigned-shift' };
   }
 
   function timeToMinutes(value) {
@@ -196,6 +217,7 @@
     upsert: upsert,
     validateLinkedRecord: validateLinkedRecord,
     scheduleForDate: scheduleForDate,
+    normalizeShift: normalizeShift,
     resolveShiftDay: resolveShiftDay,
     periodSummary: periodSummary
   };

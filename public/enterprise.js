@@ -424,10 +424,23 @@
    * Configurable attendance request catalog. Administrators control which
    * employee-facing forms are available without removing historical requests.
    */
+  var SHIFT_DAY_KEYS=['mon','tue','wed','thu','fri','sat','sun'];
+  var SHIFT_DAY_LABELS={mon:'Monday',tue:'Tuesday',wed:'Wednesday',thu:'Thursday',fri:'Friday',sat:'Saturday',sun:'Sunday'};
+  var SHIFT_DAY_SHORT={mon:'Mon',tue:'Tue',wed:'Wed',thu:'Thu',fri:'Fri',sat:'Sat',sun:'Sun'};
+
+  function defaultShiftSchedule(){
+    var schedule={};
+    SHIFT_DAY_KEYS.forEach(function(k){
+      schedule[k]=(k==='sun')?{restDay:true,start:'',end:'',breakStart:'',breakEnd:''}
+        :{restDay:false,start:'08:00',end:'17:00',breakStart:'12:00',breakEnd:'13:00'};
+    });
+    return schedule;
+  }
+
   var SHIFT_DEFINITIONS=(COMPANY.shifts&&COMPANY.shifts.length?COMPANY.shifts:[
-    {id:1,name:'Regular Day Shift',start:'08:00',end:'17:00',breakMinutes:60,graceMinutes:5,active:true},
-    {id:2,name:'Early Shift',start:'06:00',end:'15:00',breakMinutes:60,graceMinutes:5,active:true},
-    {id:3,name:'Night Shift',start:'22:00',end:'06:00',breakMinutes:60,graceMinutes:5,active:true}
+    {id:1,name:'Regular Day Shift',graceMinutes:5,active:true,schedule:defaultShiftSchedule()},
+    {id:2,name:'Early Shift',graceMinutes:5,active:true,schedule:(function(){var s=defaultShiftSchedule();SHIFT_DAY_KEYS.forEach(function(k){if(!s[k].restDay){s[k].start='06:00';s[k].end='15:00';}});return s;})()},
+    {id:3,name:'Night Shift',graceMinutes:5,active:true,schedule:(function(){var s=defaultShiftSchedule();SHIFT_DAY_KEYS.forEach(function(k){if(!s[k].restDay){s[k].start='22:00';s[k].end='06:00';s[k].breakStart='02:00';s[k].breakEnd='03:00';}});return s;})()}
   ]);
   var nextShiftId=SHIFT_DEFINITIONS.reduce(function(max,s){return Math.max(max,s.id||0);},0)+1;
   USERS.filter(function(e){return e.role==='employee';}).forEach(function(e){if(!e.shiftId)e.shiftId=1;});
@@ -439,28 +452,65 @@
 
   function validShiftTime(value){return /^([01]\d|2[0-3]):[0-5]\d$/.test(value||'');}
 
-  window.addShift=function(){
+  // Groups consecutive days that share the exact same start/end/rest-day status into a
+  // single readable range, e.g. "Mon–Sat 8:00–17:00, Sun Rest Day" instead of 7 rows.
+  function describeShiftPattern(shift){
+    var normalized=TimekeepingCore.normalizeShift(shift);
+    var groups=[];
+    SHIFT_DAY_KEYS.forEach(function(k){
+      var day=normalized.schedule[k]||{restDay:true};
+      var sig=day.restDay?'REST':(day.start+'-'+day.end);
+      var last=groups[groups.length-1];
+      if(last&&last.sig===sig)last.days.push(k);
+      else groups.push({sig:sig,days:[k],restDay:day.restDay,start:day.start,end:day.end});
+    });
+    return groups.map(function(g){
+      var label=g.days.length>1?SHIFT_DAY_SHORT[g.days[0]]+'–'+SHIFT_DAY_SHORT[g.days[g.days.length-1]]:SHIFT_DAY_SHORT[g.days[0]];
+      return g.restDay?label+' Rest Day':label+' '+g.start+'–'+g.end;
+    }).join(', ');
+  }
+
+  window.openShiftEditor=function(shiftId){
     if(!(user.role==='admin'||isPlatformAdmin))return;
-    var name=prompt('Shift name:');if(!name||!name.trim())return;
-    var start=prompt('Shift start (24-hour HH:MM):','08:00');if(!validShiftTime(start)){toast('Use a valid HH:MM start time.','warning');return;}
-    var end=prompt('Shift end (24-hour HH:MM):','17:00');if(!validShiftTime(end)){toast('Use a valid HH:MM end time.','warning');return;}
-    var breakMinutes=parseInt(prompt('Unpaid break minutes:','60'),10);if(isNaN(breakMinutes)||breakMinutes<0){toast('Enter valid break minutes.','warning');return;}
-    var graceMinutes=parseInt(prompt('Late grace period in minutes:','5'),10);if(isNaN(graceMinutes)||graceMinutes<0){toast('Enter a valid grace period.','warning');return;}
-    SHIFT_DEFINITIONS.push({id:nextShiftId++,name:name.trim(),start:start,end:end,breakMinutes:breakMinutes,graceMinutes:graceMinutes,active:true});
-    saveShiftConfig();toast('Shift created.','success');render();
+    var existing=shiftId?SHIFT_DEFINITIONS.find(function(s){return s.id===shiftId;}):null;
+    var draft=existing?JSON.parse(JSON.stringify(TimekeepingCore.normalizeShift(existing))):{
+      id:null,name:'',graceMinutes:5,active:true,schedule:defaultShiftSchedule()
+    };
+    modal={type:'shiftEditor',draft:draft,isNew:!existing};
+    render();
   };
 
-  window.editShift=function(id){
+  window.shiftEditorApplyToAll=function(dayKey){
+    if(!modal||modal.type!=='shiftEditor')return;
+    var src=modal.draft.schedule[dayKey];
+    SHIFT_DAY_KEYS.forEach(function(k){
+      if(k===dayKey||modal.draft.schedule[k].restDay)return;
+      modal.draft.schedule[k]=Object.assign({},src,{restDay:false});
+    });
+    render();
+  };
+
+  window.saveShiftEditor=function(){
     if(!(user.role==='admin'||isPlatformAdmin))return;
-    var s=SHIFT_DEFINITIONS.find(function(x){return x.id===id;});if(!s)return;
-    var name=prompt('Shift name:',s.name);if(!name||!name.trim())return;
-    var start=prompt('Shift start (24-hour HH:MM):',s.start);if(!validShiftTime(start)){toast('Use a valid HH:MM start time.','warning');return;}
-    var end=prompt('Shift end (24-hour HH:MM):',s.end);if(!validShiftTime(end)){toast('Use a valid HH:MM end time.','warning');return;}
-    var breakMinutes=parseInt(prompt('Unpaid break minutes:',s.breakMinutes),10);
-    var graceMinutes=parseInt(prompt('Late grace period in minutes:',s.graceMinutes),10);
-    if(isNaN(breakMinutes)||breakMinutes<0||isNaN(graceMinutes)||graceMinutes<0){toast('Break and grace minutes must be zero or greater.','warning');return;}
-    Object.assign(s,{name:name.trim(),start:start,end:end,breakMinutes:breakMinutes,graceMinutes:graceMinutes});
-    saveShiftConfig();toast('Shift updated.','success');render();
+    var d=modal.draft;
+    if(!d.name||!d.name.trim()){toast('Shift name is required.','warning');return;}
+    for(var i=0;i<SHIFT_DAY_KEYS.length;i++){
+      var k=SHIFT_DAY_KEYS[i],day=d.schedule[k];
+      if(day.restDay)continue;
+      if(!validShiftTime(day.start)||!validShiftTime(day.end)){toast('Enter valid start/end times for '+SHIFT_DAY_LABELS[k]+', or mark it as a rest day.','warning');return;}
+      if(day.breakStart&&!validShiftTime(day.breakStart)){toast('Enter a valid break start time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
+      if(day.breakEnd&&!validShiftTime(day.breakEnd)){toast('Enter a valid break end time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
+    }
+    var graceMinutes=parseInt(d.graceMinutes,10);
+    if(isNaN(graceMinutes)||graceMinutes<0){toast('Enter a valid grace period.','warning');return;}
+    if(d.id){
+      var existing=SHIFT_DEFINITIONS.find(function(s){return s.id===d.id;});
+      Object.assign(existing,{name:d.name.trim(),graceMinutes:graceMinutes,schedule:d.schedule});
+      delete existing.start;delete existing.end;delete existing.breakMinutes;
+    }else{
+      SHIFT_DEFINITIONS.push({id:nextShiftId++,name:d.name.trim(),graceMinutes:graceMinutes,active:true,schedule:d.schedule});
+    }
+    saveShiftConfig();closeM();toast('Shift saved.','success');
   };
 
   window.toggleShift=function(id){
@@ -486,9 +536,9 @@
   };
 
   function renderShiftManager(){
-    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Shift Setup</div><div class="card-sub">Create reusable employee schedules and assign them from each employee profile</div></div><button class="btn btn-primary btn-sm" onclick="addShift()">+ Add Shift</button></div>'+
-      '<div style="overflow-x:auto"><table><thead><tr><th>Shift</th><th>Schedule</th><th>Break</th><th>Grace</th><th>Employees</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
-      SHIFT_DEFINITIONS.map(function(s){var count=USERS.filter(function(e){return e.role==='employee'&&e.shiftId===s.id;}).length;return '<tr><td style="font-weight:700">'+esc(s.name)+'</td><td class="mono">'+s.start+' – '+s.end+'</td><td>'+s.breakMinutes+' min</td><td>'+s.graceMinutes+' min</td><td>'+count+'</td><td><span class="badge '+(s.active?'b-approved':'b-rejected')+'">'+(s.active?'Active':'Inactive')+'</span></td><td><div class="action-row"><button class="btn btn-sm" onclick="editShift('+s.id+')">Edit</button><button class="btn btn-sm" onclick="toggleShift('+s.id+')">'+(s.active?'Deactivate':'Activate')+'</button><button class="btn btn-sm btn-danger" onclick="deleteShift('+s.id+')">Delete</button></div></td></tr>';}).join('')+
+    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Shift Setup</div><div class="card-sub">Set a start/end and break per day of the week, with rest days, and assign from each employee profile</div></div><button class="btn btn-primary btn-sm" onclick="openShiftEditor()">+ Add Shift</button></div>'+
+      '<div style="overflow-x:auto"><table><thead><tr><th>Shift</th><th>Weekly Pattern</th><th>Grace</th><th>Employees</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
+      SHIFT_DEFINITIONS.map(function(s){var count=USERS.filter(function(e){return e.role==='employee'&&e.shiftId===s.id;}).length;return '<tr><td style="font-weight:700">'+esc(s.name)+'</td><td class="mono" style="font-size:12px">'+esc(describeShiftPattern(s))+'</td><td>'+s.graceMinutes+' min</td><td>'+count+'</td><td><span class="badge '+(s.active?'b-approved':'b-rejected')+'">'+(s.active?'Active':'Inactive')+'</span></td><td><div class="action-row"><button class="btn btn-sm" onclick="openShiftEditor('+s.id+')">Edit</button><button class="btn btn-sm" onclick="toggleShift('+s.id+')">'+(s.active?'Deactivate':'Activate')+'</button><button class="btn btn-sm btn-danger" onclick="deleteShift('+s.id+')">Delete</button></div></td></tr>';}).join('')+
       '</tbody></table></div></div>';
   }
 
@@ -705,8 +755,8 @@
     var shift=SHIFT_DEFINITIONS.find(function(s){return s.id===employee.shiftId;});
     var adjustments=(employee.scheduleAdjustments||[]).slice().reverse().slice(0,5);
     return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Assigned Work Shift</div><div class="card-sub">Employee profile schedule used for attendance policy and schedule-adjustment requests</div></div><span class="badge '+(shift&&shift.active?'b-approved':'b-pending')+'">'+(shift&&shift.active?'Active shift':'Needs assignment')+'</span></div>'+
-      '<div class="form-row"><div class="field"><label>Shift Assignment</label><select onchange="assignEmployeeShift('+employee.id+',parseInt(this.value,10))">'+SHIFT_DEFINITIONS.filter(function(s){return s.active||s.id===employee.shiftId;}).map(function(s){return '<option value="'+s.id+'" '+(s.id===employee.shiftId?'selected':'')+'>'+esc(s.name)+' · '+s.start+' – '+s.end+(s.active?'':' (inactive)')+'</option>';}).join('')+'</select></div>'+
-      '<div style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;align-self:end;margin-bottom:10px">'+(shift?'<strong>'+esc(shift.name)+'</strong><br>'+shift.start+' – '+shift.end+' · '+shift.breakMinutes+'-minute break · '+shift.graceMinutes+'-minute grace':'No shift is assigned.')+'</div></div>'+
+      '<div class="form-row"><div class="field"><label>Shift Assignment</label><select onchange="assignEmployeeShift('+employee.id+',parseInt(this.value,10))">'+SHIFT_DEFINITIONS.filter(function(s){return s.active||s.id===employee.shiftId;}).map(function(s){return '<option value="'+s.id+'" '+(s.id===employee.shiftId?'selected':'')+'>'+esc(s.name)+(s.active?'':' (inactive)')+'</option>';}).join('')+'</select></div>'+
+      '<div style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;align-self:end;margin-bottom:10px">'+(shift?'<strong>'+esc(shift.name)+'</strong><br>'+esc(describeShiftPattern(shift))+' · '+shift.graceMinutes+'-minute grace':'No shift is assigned.')+'</div></div>'+
       (adjustments.length?'<div class="section-header" style="margin-top:8px">Recent approved schedule adjustments</div>'+adjustments.map(function(a){return '<div class="info-row"><span>'+a.from+(a.to&&a.to!==a.from?' – '+a.to:'')+'</span><strong class="mono">'+a.start+' – '+a.end+'</strong></div>';}).join(''):'')+'</div>';
   }
 
