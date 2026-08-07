@@ -9754,6 +9754,8 @@ function pgZKSetup(){
     const mappableUsers=zkMappableUsers();
     const empUseCount={};
     Object.values(ZK.userMapping).forEach(empId=>{if(empId)empUseCount[empId]=(empUseCount[empId]||0)+1;});
+    const mappedEmpIds=new Set(Object.values(ZK.userMapping).filter(Boolean));
+    const unmappedEmployees=USERS.filter(u=>u.role==='employee'&&u.active!==false&&!mappedEmpIds.has(u.id));
     body=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.875rem">
       <div style="font-size:13px;color:var(--txt2)">Map each ZKTeco user ID to an employee. This is a one-time setup.</div>
@@ -9777,6 +9779,11 @@ function pgZKSetup(){
         <td>${mapped?`<span class="badge b-approved">${mapped.name}</span>`:`<span class="badge b-absent">Unmapped</span>`}${isDuplicate?` <span class="badge b-late" title="This employee is also mapped to another device user ID — their punches from all mapped IDs will be merged into one attendance record.">⚠ Already mapped elsewhere</span>`:''}</td>
       </tr>`;}).join('')}</tbody></table>`
     :`<div class="empty-state"><div class="ei">👆</div>No device users seen yet. Users appear here automatically as they're enrolled on the device or as punches come in, or click "Refresh device users".</div>`}
+    <div class="card" style="margin-top:1rem">
+      <div class="card-title" style="margin-bottom:.5rem">Employees without a mapped biometric (${unmappedEmployees.length})</div>
+      ${unmappedEmployees.length?`<div style="display:flex;flex-wrap:wrap;gap:6px">${unmappedEmployees.map(e=>`<span class="badge b-absent">${e.name} (${e.eid})</span>`).join('')}</div>`
+        :`<div style="font-size:13px;color:var(--txt2)">Every active employee has a mapped biometric ID. 🎉</div>`}
+    </div>
   `;}
 
   /* ── Tab 2: Pull & Import ── */
