@@ -1289,6 +1289,15 @@ function saveSetLeaveBalance(){
   bucket.adjustments=bucket.adjustments||[];
   bucket.adjustments.unshift({id:Date.now(),date:today(),from:bucket.balance,to:+newBalance.toFixed(3),reason:modal.data.reason.trim(),by:user.name});
   bucket.balance=+newBalance.toFixed(3);
+  if(!bucket.firstGrantDate){
+    /* first time this employee's balance for this type is ever recorded manually — mark it as
+       already granted so the next Run Leave Accrual doesn't treat them as a brand-new grant and
+       stack or overwrite on top of this balance. */
+    const t=(COMPANY.leaveTypes||[]).find(x=>x.id===modal.typeId);
+    bucket.firstGrantDate=today();
+    if(t&&t.accrualMethod==='monthly')bucket.lastAccrualMonth=today().slice(0,7);
+    else bucket.lastAccrualYear=leaveFiscalYear(today());
+  }
   emp.leaveBalances[modal.typeId]=bucket;
   queueSync('Employees');closeM();toast('Leave balance updated for '+emp.name+'.','success');
 }
@@ -1429,6 +1438,14 @@ function applyBulkLeaveBalances(){
     bucket.adjustments=bucket.adjustments||[];
     bucket.adjustments.unshift({id:Date.now()+Math.random(),date:today(),from:bucket.balance,to:+balance.toFixed(3),reason:(r.reason||'Migration balance').trim(),by:user.name});
     bucket.balance=+balance.toFixed(3);
+    if(!bucket.firstGrantDate){
+      /* migrated balance counts as this employee's first grant — without this, the next Run
+         Leave Accrual sees no firstGrantDate, treats them as newly eligible, and stacks (monthly)
+         or overwrites (upfront) a fresh grant on top of the balance just migrated in. */
+      bucket.firstGrantDate=today();
+      if(t.accrualMethod==='monthly')bucket.lastAccrualMonth=today().slice(0,7);
+      else bucket.lastAccrualYear=leaveFiscalYear(today());
+    }
     emp.leaveBalances[t.id]=bucket;
     if(!emp.leaveOverrides)emp.leaveOverrides={};
     if(emp.leaveOverrides[t.id]===undefined)emp.leaveOverrides[t.id]=true; /* imported balance implies they're assigned */
