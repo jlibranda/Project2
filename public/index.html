@@ -3077,7 +3077,7 @@ function pgEmployees(){
   // record like that becomes invisible here (unreachable for editing or deletion) while still
   // being directly viewable via its 201 page, exactly the trap that made one impossible to
   // clean up from this list.
-  const allEmps=USERS.filter(u=>u.role==='employee'||!u.role);
+  const allEmps=USERS.filter(u=>u.role==='employee'||!u.role||u.role==='undefined'||u.role==='null');
   const emps=filterEmps(allEmps,empSearch);
   const tabs=['All Employees','Org Chart','Bulk Upload','Bulk Update'];
   if(tab===1){
