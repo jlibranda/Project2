@@ -424,7 +424,7 @@ const USERS=[
    pos:'Sales Associate',bandLevel:'L2',nonMass:'Mass',costCenter:'CC-004',
    currency:'PHP',salaryPA:118260,salaryPM:9855,basis13:'13-month',mobileAllowance:500,riceAllowance:2000,
    stockOptions:'N',esopGranted:'N',esopEntity:'',loanEligibility:'N',
-   status:'probationary',type:'probationary',hired:'2025-03-01',probEndDate:'2025-08-29',
+   status:'active',type:'probationary',hired:'2025-03-01',probEndDate:'2025-08-29',
    bday:'1999-07-20',gender:'Female',maritalStatus:'Single',spouseName:'',religion:'Catholic',
    city:'Mandaluyong',rdo:'RDO 43A',permanentAddress:'33 Shaw Blvd, Mandaluyong',temporaryAddress:'',
    contact:'09571234567',contact2:'09572222222',
@@ -997,6 +997,11 @@ function checkOffboarding(){
   const tod=today();
   let terminated=0,converted=0;
   USERS.forEach(u=>{
+    /* Self-heal legacy records where status was mistakenly set to the employment type
+       ('probationary') instead of the lifecycle state — status (active/terminated) and type
+       (regular/probationary/etc) are independent dimensions; a probationary employee is still
+       actively employed, so status should read 'active' regardless of type. */
+    if(u.status==='probationary'&&u.active!==false)u.status='active';
     /* Auto-convert probationary → regular when probation end date is reached */
     if(u.type==='probationary'&&u.probEndDate&&u.probEndDate<=tod){
       u.type='regular';u.status='active';converted++;
@@ -3564,8 +3569,8 @@ function pgEmployees(){
     const dupes=dupeMap.get(e.id)||[];
     return`<tr${dupes.length?' style="background:var(--amber-bg)"':''}>
     <td class="mono" style="font-size:11px;color:var(--txt3)">${e.eid}${dupes.some(d=>d.field==='eid')?'<span title="Duplicate Employee ID" style="margin-left:4px;color:var(--amber);font-size:10px">⚠</span>':''}</td>
-    <td><div class="emp-cell"><div class="avatar" style="${!e.active?'opacity:.4':''}">${ini(e.name)}</div><div>
-      <div style="font-weight:500;${!e.active?'color:var(--txt3);text-decoration:line-through':''}">${e.name}</div>
+    <td><div class="emp-cell"><div class="avatar" style="${e.active===false?'opacity:.4':''}">${ini(e.name)}</div><div>
+      <div style="font-weight:500;${e.active===false?'color:var(--txt3);text-decoration:line-through':''}">${e.name}</div>
       <div style="font-size:11px;color:var(--txt3)">${e.email}</div>
       ${dupes.length?`<div style="font-size:10px;color:var(--amber);margin-top:2px">⚠ ${dupes.map(d=>`${d.label} conflict`).join(' · ')}</div>`:''}
     </div></div></td>
@@ -4582,7 +4587,7 @@ function confirmBulkUpload(validatedRows){
       ...r,...customVals,id:newId,eid,
       name:`${r.firstName} ${r.lastName}`.trim(),
       address:r.permanentAddress||r.city||'',
-      role:'employee',status:r.type==='probationary'?'probationary':'active',
+      role:'employee',status:'active',
       active:true,accessLevelId:5,
       hired,bday,
       rate,salaryPM:+salPM.toFixed(2),
@@ -10327,7 +10332,7 @@ function saveEmp(){
     ...ae,id:newId,
     name:`${ae.firstName} ${ae.lastName}`,
     address:ae.permanentAddress||ae.city||'',
-    role:'employee',status:ae.type==='probationary'?'probationary':'active',
+    role:'employee',status:'active',
     managerFirst:mgrObj?.firstName||'',managerLast:mgrObj?.lastName||'',managerTitle:mgrObj?.pos||'',
     nextLevelId:'',nextLevelFirst:'',nextLevelLast:'',nextLevelTitle:'',immediateHeadEid:'',approverEid:'',
     lastWorkDate:'',lastEmpDate:'',effectiveTermDate:'',
@@ -13565,7 +13570,7 @@ function cancelOffboarding(){
   e.projectedAttrition=false;
   /* Re-enable account */
   e.active=true;
-  e.status=e.type==='probationary'?'probationary':'active';
+  e.status='active';
   /* Clear draft if in edit mode */
   detailEdit=false;
   detailDraft={};
