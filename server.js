@@ -190,18 +190,31 @@ function zkPickInOut(entries) {
   return { tin: allTimes[0] || '', tout: allTimes.length > 1 ? allTimes[allTimes.length - 1] : '' };
 }
 
-const OUT_OF_BUFFER_NOTE = 'Outside scheduled shift window — needs confirmation';
 function appendNote(existingNotes, note) {
   const notes = String(existingNotes || '').split(' · ').filter(Boolean);
   if (notes.indexOf(note) < 0) notes.push(note);
   return notes.join(' · ');
 }
 
+// Builds a specific, approver-facing reason for why a punch couldn't be matched to a
+// scheduled shift day, instead of a single generic message — rest-day punches (by far the
+// most common case) need to read differently from a genuinely missing/misconfigured shift.
+function describeOutOfWindowReason(employee, punchDate, shifts) {
+  const name = (employee && employee.name) || 'This employee';
+  const shift = (shifts || []).find(s => s.id === (employee && employee.shiftId));
+  if (!shift) return `No matching shift configuration found for ${name} — needs manual confirmation.`;
+  if (TimekeepingCore.isRestDay(employee, punchDate, shifts)) {
+    return `Rest day punch — ${punchDate} is a scheduled rest day (not a working day) on ${name}'s "${shift.name || 'assigned'}" shift. Confirm this is authorized rest-day work before approving.`;
+  }
+  return `Punch time falls outside the allowed buffer around ${name}'s scheduled shift hours — needs confirmation.`;
+}
+
 // Mirrors the client's zkImport() merge logic: extend an existing day's tin/tout with new
 // punches rather than overwrite, so a check-out committed after a check-in isn't lost.
-// outOfBufferKeys (empId|date) mark days where the punch fell outside the employee's
-// scheduled shift buffer — those are committed but flagged pending instead of auto-approved.
-function zkCommitPunches(state, punchesByEmpDate, outOfBufferKeys) {
+// outOfBufferReasons (empId|date -> reason text) mark days where the punch fell outside the
+// employee's scheduled shift buffer — those are committed but flagged pending instead of
+// auto-approved, with the specific reason surfaced to the approver.
+function zkCommitPunches(state, punchesByEmpDate, outOfBufferReasons) {
   state.attendance = Array.isArray(state.attendance) ? state.attendance : [];
   let nextId = state.attendance.reduce((max, r) => Math.max(max, Number(r.id) || 0), 0) + 1;
   let committed = 0;
@@ -215,13 +228,13 @@ function zkCommitPunches(state, punchesByEmpDate, outOfBufferKeys) {
     if (existing && existing.tout) allEntries.push({ time: existing.tout, kind: 'out' });
     const { tin, tout } = zkPickInOut(allEntries);
     const isLate = tin >= '08:30';
-    const flagged = !!(outOfBufferKeys && outOfBufferKeys.has(key));
+    const reason = outOfBufferReasons && outOfBufferReasons.get(key);
     const patch = {
       tin, tout, status: isLate ? 'late' : 'present', source: 'zkteco-realtime',
-      approvalStatus: flagged ? 'pending' : 'approved', filedBy: 'ZKTeco realtime',
+      approvalStatus: reason ? 'pending' : 'approved', filedBy: 'ZKTeco realtime',
       active: true, updatedAt: new Date().toISOString()
     };
-    if (flagged) patch.notes = appendNote(existing && existing.notes, OUT_OF_BUFFER_NOTE);
+    if (reason) patch.notes = appendNote(existing && existing.notes, reason);
     if (existing) {
       Object.assign(existing, patch);
     } else {
@@ -328,7 +341,7 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
       const unmapped = punches.filter(p => userMapping[p.userId] == null);
       if (mapped.length) {
         const punchesByEmpDate = new Map();
-        const outOfBufferKeys = new Set();
+        const outOfBufferReasons = new Map();
         mapped.forEach(p => {
           const empId = userMapping[p.userId];
           const employee = employees.find(u => u.id === empId);
@@ -343,11 +356,11 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
           const key = empId + '|' + finalDate;
           if (!punchesByEmpDate.has(key)) punchesByEmpDate.set(key, []);
           punchesByEmpDate.get(key).push({ time: p.time, kind: zkPunchKind(p.statusCode) });
-          if (hasShift && !resolvedDate) outOfBufferKeys.add(key);
+          if (hasShift && !resolvedDate) outOfBufferReasons.set(key, describeOutOfWindowReason(employee, p.date, shifts));
         });
         try {
           await mutateAppState(state => {
-            const committed = zkCommitPunches(state, punchesByEmpDate, outOfBufferKeys);
+            const committed = zkCommitPunches(state, punchesByEmpDate, outOfBufferReasons);
             return { changed: committed > 0 };
           }, 'zk-device:' + sn);
           count += mapped.length;
