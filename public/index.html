@@ -1224,6 +1224,12 @@ function openSetLeaveBalance(empId,typeId){
   modal={type:'setLeaveBalance',empId,typeId,typeName:t.name,current:bal.balance,data:{balance:bal.balance,reason:''}};
   render();
 }
+function openLeaveHistory(empId,typeId){
+  const emp=USERS.find(u=>u.id===empId),t=(COMPANY.leaveTypes||[]).find(x=>x.id===typeId);
+  if(!emp||!t)return;
+  modal={type:'leaveHistory',empId,typeId,typeName:t.name};
+  render();
+}
 function saveSetLeaveBalance(){
   if(!isAdminUser(user))return;
   const emp=USERS.find(u=>u.id===modal.empId);if(!emp)return;
@@ -1233,8 +1239,8 @@ function saveSetLeaveBalance(){
   if(!emp.leaveBalances)emp.leaveBalances={};
   const bucket=emp.leaveBalances[modal.typeId]||{balance:0,adjustments:[]};
   bucket.adjustments=bucket.adjustments||[];
-  bucket.adjustments.unshift({id:Date.now(),date:today(),from:bucket.balance,to:newBalance,reason:modal.data.reason.trim(),by:user.name});
-  bucket.balance=+newBalance.toFixed(2);
+  bucket.adjustments.unshift({id:Date.now(),date:today(),from:bucket.balance,to:+newBalance.toFixed(3),reason:modal.data.reason.trim(),by:user.name});
+  bucket.balance=+newBalance.toFixed(3);
   emp.leaveBalances[modal.typeId]=bucket;
   queueSync('Employees');closeM();toast('Leave balance updated for '+emp.name+'.','success');
 }
@@ -4799,7 +4805,7 @@ function myLeaveBalanceSummary(){
   const opts=myLeaveTypeOptions();
   if(!opts.length)return'';
   return`<div class="card" style="margin-bottom:1rem"><div class="card-title" style="margin-bottom:.6rem">My Leave Balances</div>
-  <div style="display:flex;flex-wrap:wrap;gap:10px">${opts.map(t=>{const bal=leaveBalanceFor(user,t.id);return`<div style="padding:8px 14px;border:1px solid var(--border);border-radius:8px;min-width:110px"><div style="font-size:11px;color:var(--txt3)">${esc(t.code)}</div><div style="font-weight:700;font-size:16px">${bal.balance}</div><div style="font-size:10px;color:var(--txt3)">days</div></div>`;}).join('')}</div></div>`;
+  <div style="display:flex;flex-wrap:wrap;gap:10px">${opts.map(t=>{const bal=leaveBalanceFor(user,t.id);return`<div onclick="openLeaveHistory(${user.id},${t.id})" style="padding:8px 14px;border:1px solid var(--border);border-radius:8px;min-width:110px;cursor:pointer" title="View history"><div style="font-size:11px;color:var(--txt3)">${esc(t.code)}</div><div style="font-weight:700;font-size:16px">${bal.balance}</div><div style="font-size:10px;color:var(--txt3)">days</div></div>`;}).join('')}</div></div>`;
 }
 function updateLeaveBalanceHint(){
   const sel=document.getElementById('lt'),hint=document.getElementById('lt-balance-hint');
@@ -4849,8 +4855,8 @@ function actLeave(id,ok){
       if(!emp.leaveBalances)emp.leaveBalances={};
       const bucket=emp.leaveBalances[t.id]||{balance:0,adjustments:[]};
       bucket.adjustments=bucket.adjustments||[];
-      bucket.adjustments.unshift({id:Date.now(),date:today(),from:bucket.balance,to:+(bucket.balance-l.days).toFixed(2),reason:'Leave approved: '+l.s+(l.e!==l.s?' – '+l.e:''),by:user.name});
-      bucket.balance=+(bucket.balance-l.days).toFixed(2);
+      bucket.adjustments.unshift({id:Date.now(),date:today(),from:bucket.balance,to:+(bucket.balance-l.days).toFixed(3),reason:'Leave approved: '+l.s+(l.e!==l.s?' – '+l.e:''),by:user.name});
+      bucket.balance=+(bucket.balance-l.days).toFixed(3);
       emp.leaveBalances[t.id]=bucket;
     }
   }
@@ -8622,11 +8628,32 @@ function renderModal(){
       <button class="close-x" onclick="closeM()">×</button>
     </div>
     <div style="font-size:12px;color:var(--txt3);margin-bottom:10px">Current balance: <strong style="color:var(--txt)">${modal.current}</strong> days</div>
-    <div class="field"><label>New Balance (days)</label><input type="number" step="0.5" class="finput" value="${modal.data.balance}" oninput="modal.data.balance=this.value"/></div>
+    <div class="field"><label>New Balance (days)</label><input type="number" step="0.001" class="finput" value="${modal.data.balance}" oninput="modal.data.balance=this.value"/><div style="font-size:10px;color:var(--txt3);margin-top:2px">Up to 3 decimal places.</div></div>
     <div class="field" style="margin-top:.75rem"><label>Reason</label><input class="finput" value="${esc(modal.data.reason)}" oninput="modal.data.reason=this.value" placeholder="e.g. Annual grant for 2026, Migration balance, Correction"/></div>
     <div style="display:flex;gap:8px;margin-top:1rem">
       <button class="btn btn-primary" onclick="saveSetLeaveBalance()">Save Balance</button>
       <button class="btn" onclick="closeM()">Cancel</button>
+    </div>`;
+  }else if(modal.type==='leaveHistory'){
+    const emp=USERS.find(u=>u.id===modal.empId);
+    const bal=emp&&emp.leaveBalances&&emp.leaveBalances[modal.typeId]?emp.leaveBalances[modal.typeId]:{balance:0,adjustments:[],yearlyClosingBalances:{}};
+    const closingYears=Object.keys(bal.yearlyClosingBalances||{}).sort((a,b)=>b-a);
+    inner=`<div class="modal-title">Leave History — ${esc(modal.typeName)}
+      <button class="close-x" onclick="closeM()">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">${esc(emp?.name||'')} · Current balance: <strong style="color:var(--txt)">${bal.balance}</strong> days</div>
+    ${closingYears.length?`<div class="section-header">Year-end Closing Balances</div>
+    <table style="margin-bottom:14px"><thead><tr><th>Policy Year</th><th>Balance at year-end</th></tr></thead><tbody>
+      ${closingYears.map(y=>`<tr><td>${y}</td><td class="mono">${bal.yearlyClosingBalances[y]}</td></tr>`).join('')}
+    </tbody></table>`:''}
+    <div class="section-header">Adjustment History</div>
+    <div style="max-height:320px;overflow-y:auto;margin-top:6px">
+    <table><thead><tr><th>Date</th><th>Change</th><th>Reason</th><th>By</th></tr></thead><tbody>
+      ${(bal.adjustments||[]).length?(bal.adjustments||[]).map(a=>`<tr><td class="mono" style="font-size:11px">${esc(a.date)}</td><td class="mono" style="font-size:11px">${a.from} → ${a.to}</td><td style="font-size:12px">${esc(a.reason||'—')}</td><td style="font-size:11px;color:var(--txt3)">${esc(a.by||'—')}</td></tr>`).join(''):'<tr><td colspan="4" class="empty-state">No adjustments recorded yet.</td></tr>'}
+    </tbody></table>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn" onclick="closeM()">Close</button>
     </div>`;
   }else if(modal.type==='notifications'){
     const pending=LEAVES.filter(l=>l.status==='pending');
@@ -12733,7 +12760,7 @@ function pgEmpDetail(){
     const overrides=e.leaveOverrides||{};
     const balances=e.leaveBalances||{};
     tabBody=`<div class="card-hd" style="padding:0;margin-bottom:12px"><div><div class="card-title">Leave Balances</div><div class="card-sub">Eligibility follows Company Settings &gt; Leave Policy unless manually overridden below. Balances are set manually or via annual accrual.</div></div></div>
-    <div style="overflow-x:auto"><table><thead><tr><th>Leave Type</th><th>Eligibility</th><th>Balance</th>${isA?'<th>Actions</th>':''}</tr></thead><tbody>
+    <div style="overflow-x:auto"><table><thead><tr><th>Leave Type</th><th>Eligibility</th><th>Balance</th><th>History</th>${isA?'<th>Actions</th>':''}</tr></thead><tbody>
     ${leaveTypes.length?leaveTypes.map(t=>{
       const overridden=overrides[t.id]!==undefined;
       const eligible=leaveTypeEligible(e,t);
@@ -12742,13 +12769,14 @@ function pgEmpDetail(){
         <td style="font-weight:700">${esc(t.name)} <span class="badge" style="font-size:10px">${esc(t.code)}</span>${t.active?'':' <span class="badge b-rejected" style="font-size:10px">inactive</span>'}</td>
         <td><span class="badge ${eligible?'b-approved':'b-rejected'}">${eligible?'Assigned':'Not assigned'}</span>${overridden?' <span style="font-size:10px;color:var(--txt3)">(manual)</span>':''}</td>
         <td class="mono" style="font-weight:700">${bal.balance}${t.paid?'':' (unpaid)'}</td>
+        <td><button class="btn btn-sm" onclick="openLeaveHistory(${e.id},${t.id})">View</button></td>
         ${isA?`<td><div class="action-row">
           <button class="btn btn-sm" onclick="openSetLeaveBalance(${e.id},${t.id})">Set Balance</button>
           <button class="btn btn-sm" onclick="toggleLeaveAssignment(${e.id},${t.id})">${eligible?'Unassign':'Assign'}</button>
           ${overridden?`<button class="btn btn-sm" onclick="resetLeaveAssignment(${e.id},${t.id})" title="Remove manual override, use policy default">Reset</button>`:''}
         </div></td>`:''}
       </tr>`;
-    }).join(''):`<tr><td colspan="${isA?4:3}" class="empty-state">No leave types configured. Set them up in Company Settings &gt; Leave Policy.</td></tr>`}
+    }).join(''):`<tr><td colspan="${isA?5:4}" class="empty-state">No leave types configured. Set them up in Company Settings &gt; Leave Policy.</td></tr>`}
     </tbody></table></div>`;
   }
   return`
