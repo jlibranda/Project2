@@ -800,12 +800,22 @@
     return 12-elapsed;
   }
 
+  // 'YYYY-MM' -> a comparable/subtractable absolute month count.
+  function monthIndex(ym){var p=ym.split('-');return parseInt(p[0],10)*12+parseInt(p[1],10);}
+  function prevYearMonth(ym){
+    var y=parseInt(ym.slice(0,4),10),m=parseInt(ym.slice(5,7),10)-1;
+    if(m<1){m=12;y--;}
+    return y+'-'+(m<10?'0':'')+m;
+  }
+
   // Grants leave balances per policy.
   //
-  // 'monthly' types always just tick by annualDays/12 per call, guarded by lastAccrualMonth —
-  // including their very first credit, so proration happens naturally by only starting once
-  // eligible, never as a back-dated lump sum for however long the employee has actually been
-  // eligible.
+  // 'monthly' types tick by annualDays/12 per elapsed calendar month, guarded by
+  // lastAccrualMonth. Since the sweep only runs when someone logs in (not on a fixed monthly
+  // clock), a gap between logins — or an employee's very first sweep long after their
+  // eligibility start date — has to catch up every month in between at once, not just credit a
+  // single month's worth: monthsToCredit counts every month from (lastAccrualMonth, or the
+  // month before eligibility started, for a first grant) through the current month inclusive.
   //
   // 'upfront' types special-case the FIRST grant an employee ever receives (tracked via
   // bucket.firstGrantDate): if the type prorates first grants AND eligibility started within
@@ -837,10 +847,13 @@
     if(t.accrualMethod==='monthly'){
       if(bucket.lastAccrualMonth===yearMonth)return false;
       var isFirst=!bucket.firstGrantDate;
-      var monthlyGrant=+(t.annualDays/12).toFixed(3);
-      bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+((bucket.balance||0)+monthlyGrant).toFixed(3),
-        reason:(isFirst?'Initial monthly accrual ':'Monthly accrual ')+yearMonth,by:actor});
-      bucket.balance=+((bucket.balance||0)+monthlyGrant).toFixed(3);
+      var referenceYM=isFirst?prevYearMonth(startDate.slice(0,7)):bucket.lastAccrualMonth;
+      var monthsToCredit=monthIndex(yearMonth)-monthIndex(referenceYM);
+      if(monthsToCredit<1)return false;
+      var grantAmount=+(t.annualDays/12*monthsToCredit).toFixed(3);
+      bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+((bucket.balance||0)+grantAmount).toFixed(3),
+        reason:(isFirst?'Initial monthly accrual — ':'Monthly accrual — ')+monthsToCredit+' month(s) through '+yearMonth,by:actor});
+      bucket.balance=+((bucket.balance||0)+grantAmount).toFixed(3);
       bucket.lastAccrualMonth=yearMonth;
       if(isFirst)bucket.firstGrantDate=tod;
     }else if(!bucket.firstGrantDate){
