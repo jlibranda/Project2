@@ -137,26 +137,66 @@
     });
   }
 
+  // Routes a decision through the employee's configured multi-layer approval chain
+  // (Company Settings > Approval Layers) instead of a single flat status flip. Employees
+  // with no configured chain (no immediateHeadEid hierarchy set up) fall back to the old
+  // behavior — any user who can see the pending queue can act directly.
+  function applyAttendanceDecision(row, decision) {
+    var emp = USERS.find(function (u) { return u.id === row.eid; });
+    var chain = (emp && typeof getApprovalChain === 'function') ? getApprovalChain(emp.eid) : [];
+    var currentLayer = row.approvalLayer || 1;
+    var layerEntry = chain.find(function (c) { return c.layer === currentLayer; });
+    var isDesignatedApprover = layerEntry && user && layerEntry.approver.id === user.id;
+    var isAdmin = user && (user.role === 'admin' || isPlatformAdmin);
+    if (layerEntry && !isDesignatedApprover && !isAdmin) {
+      return { ok: false, message: 'Only '+layerEntry.approver.name+' (Layer '+currentLayer+' approver) can act on this record.' };
+    }
+    var actor = user ? user.name : 'Administrator';
+    if (decision === 'rejected') {
+      row.approvalStatus = 'rejected'; row.reviewedBy = actor; row.reviewedAt = new Date().toISOString();
+      row.approvalHistory = (row.approvalHistory || []).concat([{ layer: currentLayer, decision: 'rejected', by: actor, at: new Date().toISOString() }]);
+      return { ok: true, message: 'Attendance rejected.', decision: 'rejected' };
+    }
+    row.approvalHistory = (row.approvalHistory || []).concat([{ layer: currentLayer, decision: 'approved', by: actor, at: new Date().toISOString() }]);
+    if (layerEntry && currentLayer < chain.length) {
+      row.approvalLayer = currentLayer + 1;
+      return { ok: true, message: 'Approved at Layer '+currentLayer+'. Routed to Layer '+(currentLayer+1)+' ('+chain[currentLayer].approver.name+').', decision: 'approved' };
+    }
+    row.approvalStatus = 'approved'; row.reviewedBy = actor; row.reviewedAt = new Date().toISOString();
+    return { ok: true, message: 'Attendance approved.', decision: 'approved' };
+  }
+
   window.actAttendance = function (id, decision) {
     var row = ATT.find(function (a) { return a.id === id; });
     if (!row) return;
-    row.approvalStatus = decision;
-    row.reviewedBy = user ? user.name : 'Administrator';
-    row.reviewedAt = new Date().toISOString();
+    var result = applyAttendanceDecision(row, decision);
+    if (!result.ok) { toast(result.message, 'warning'); return; }
     queueSync('Attendance');
-    toast('Attendance '+decision+'.', decision === 'approved' ? 'success' : 'warning');
+    toast(result.message, result.decision === 'approved' ? 'success' : 'warning');
     render();
   };
 
   window.approveAllAttendance = function () {
     var pending = attendanceRecords().filter(function (a) { return a.approvalStatus === 'pending'; });
-    pending.forEach(function (a) {
-      a.approvalStatus = 'approved';
-      a.reviewedBy = user ? user.name : 'Administrator';
-      a.reviewedAt = new Date().toISOString();
-    });
-    if (pending.length) queueSync('Attendance');
-    toast(pending.length ? pending.length+' attendance record(s) approved.' : 'No pending attendance.', pending.length ? 'success' : 'info');
+    var acted = 0;
+    pending.forEach(function (a) { if (applyAttendanceDecision(a, 'approved').ok) acted++; });
+    if (acted) queueSync('Attendance');
+    toast(acted ? acted+' attendance record(s) approved.' : 'No pending attendance you can approve.', acted ? 'success' : 'info');
+    render();
+  };
+
+  // Admin-only escape hatch: skip any remaining approval layers (e.g. an approver is
+  // unavailable) rather than leaving payroll blocked on a stuck chain.
+  window.forceApproveAttendance = function (id) {
+    if (!(user && (user.role === 'admin' || isPlatformAdmin))) return;
+    var row = ATT.find(function (a) { return a.id === id; });
+    if (!row) return;
+    if (!confirm('Force-approve this record, skipping any remaining approval layers?')) return;
+    var actor = user.name;
+    row.approvalStatus = 'approved'; row.reviewedBy = actor+' (forced)'; row.reviewedAt = new Date().toISOString();
+    row.approvalHistory = (row.approvalHistory || []).concat([{ layer: row.approvalLayer || 1, decision: 'force-approved', by: actor, at: new Date().toISOString() }]);
+    queueSync('Attendance');
+    toast('Force-approved.', 'success');
     render();
   };
 
@@ -169,19 +209,27 @@
       var pending = attendanceRecords().filter(function (a) { return a.approvalStatus === 'pending'; }).sort(function (a,b) {
         return (b.date+b.id).localeCompare(a.date+a.id);
       });
+      var isAdminView = user.role === 'admin' || isPlatformAdmin;
       body = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'+
-        '<div><div class="card-title">Attendance approval queue</div><div class="card-sub">Only approved records are included in payroll.</div></div>'+
-        '<button class="btn btn-sm btn-success" onclick="approveAllAttendance()" '+(!pending.length?'disabled':'')+'>Approve all ('+pending.length+')</button></div>'+
-        '<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>In / Out</th><th>Work status</th><th>OT</th><th>ND</th><th>Filed by</th><th>Actions</th></tr></thead><tbody>'+
+        '<div><div class="card-title">Attendance approval queue</div><div class="card-sub">Routed through each employee\'s configured approval layers (Company Settings &gt; Approval Layers). Only approved records are included in payroll.</div></div>'+
+        '<button class="btn btn-sm btn-success" onclick="approveAllAttendance()" '+(!pending.length?'disabled':'')+'>Approve all I can ('+pending.length+')</button></div>'+
+        '<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>In / Out</th><th>Work status</th><th>OT</th><th>ND</th><th>Filed by</th><th>Awaiting</th><th>Actions</th></tr></thead><tbody>'+
         (pending.length ? pending.map(function (a) {
           var emp = USERS.find(function (u) { return u.id === a.eid; });
+          var chain = (emp && typeof getApprovalChain === 'function') ? getApprovalChain(emp.eid) : [];
+          var currentLayer = a.approvalLayer || 1;
+          var layerEntry = chain.find(function (c) { return c.layer === currentLayer; });
+          var awaiting = layerEntry ? 'Layer '+currentLayer+' · '+esc(layerEntry.approver.name) : 'Any approver';
           return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(emp ? emp.name : '?')+'</div><div><div style="font-weight:600">'+esc(emp ? emp.name : '?')+'</div><div style="font-size:10px;color:var(--txt3)">'+esc(emp ? emp.eid : '')+'</div></div></div></td>'+
             '<td class="mono">'+a.date+'</td><td class="mono">'+(a.tin || '—')+' – '+(a.tout || '—')+'</td>'+
             '<td><span class="badge b-'+a.status+'">'+esc(a.status)+'</span></td><td>'+(a.ot || '—')+'</td><td>'+(a.nd || '—')+'</td>'+
             '<td style="font-size:11px;color:var(--txt3)">'+esc(a.filedBy || 'Employee')+'</td>'+
+            '<td style="font-size:11px">'+awaiting+(chain.length?' <span style="color:var(--txt3)">('+currentLayer+'/'+chain.length+')</span>':'')+'</td>'+
             '<td><div class="action-row"><button class="btn btn-sm btn-success" onclick="actAttendance('+a.id+',\'approved\')">Approve</button>'+
-            '<button class="btn btn-sm btn-danger" onclick="actAttendance('+a.id+',\'rejected\')">Reject</button></div></td></tr>';
-        }).join('') : '<tr><td colspan="8" class="empty-state">No pending attendance records.</td></tr>')+
+            '<button class="btn btn-sm btn-danger" onclick="actAttendance('+a.id+',\'rejected\')">Reject</button>'+
+            (isAdminView ? '<button class="btn btn-sm" onclick="forceApproveAttendance('+a.id+')" title="Skip remaining approval layers">Force Approve</button>' : '')+
+            '</div></td></tr>';
+        }).join('') : '<tr><td colspan="9" class="empty-state">No pending attendance records.</td></tr>')+
         '</tbody></table></div>';
     } else if ((!isA && tab === 0) || (isA && tab === 1)) {
       var mine = attendanceRecords().filter(function (a) { return a.eid === user.id; }).slice().reverse();
