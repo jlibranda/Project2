@@ -4845,7 +4845,7 @@ function updateLeaveComputation(){
   const box=document.getElementById('leave-calc-box'),sel=document.getElementById('lt');
   if(!lsEl||!leEl)return;
   const dayType=dayTypeEl?dayTypeEl.value:'whole';
-  if(dayType!=='whole'){leEl.value=lsEl.value;leEl.disabled=true;}else{leEl.disabled=false;}
+  if(dayType!=='whole'){leEl.value=lsEl.value;leEl.disabled=true;setLeaveDraftField('le2',leEl.value);}else{leEl.disabled=false;}
   const start=lsEl.value,end=leEl.value||start;
   let days;
   if(dayType!=='whole')days=0.5;
@@ -4870,43 +4870,67 @@ function leaveDaysCell(l){
   if(l.unpaidDays>0)out+=' <span class="badge b-pending" style="font-size:9px" title="'+l.paidDays+' paid + '+l.unpaidDays+' unpaid">'+(l.paidDays>0?'partial unpaid':'unpaid')+'</span>';
   return out;
 }
+function leaveDraft(){
+  if(!window._leaveDraft)window._leaveDraft={lt:'',dayType:'whole',ls:today(),le2:today(),reason:''};
+  return window._leaveDraft;
+}
+function setLeaveDraftField(key,value){leaveDraft()[key]=value;}
+function cancelLeaveRequest(id){
+  const l=LEAVES.find(x=>x.id===id);
+  if(!l||l.eid!==user.id||l.status!=='pending')return;
+  if(!confirm('Cancel this leave request?'))return;
+  l.status='cancelled';
+  queueSync('Leave_Requests');render();
+}
+function myLeaveRequestsTable(){
+  const mine=LEAVES.filter(l=>l.eid===user.id);
+  return myLeaveBalanceSummary()+`<div class="card"><table><thead><tr><th>Type</th><th>Start</th><th>End</th><th>Days</th><th>Reason</th><th>Status</th><th></th></tr></thead>
+  <tbody>${mine.length?mine.map(l=>`<tr><td>${l.type}</td><td>${l.s}</td><td>${l.e}</td><td style="text-align:center">${leaveDaysCell(l)}</td><td>${l.reason}</td><td><span class="badge b-${l.status}">${l.status}</span></td><td>${l.status==='pending'?`<button class="btn btn-sm btn-danger" onclick="cancelLeaveRequest(${l.id})">Cancel</button>`:''}</td></tr>`).join(''):'<tr><td colspan="7" class="empty-state">No leave requests yet</td></tr>'}</tbody></table></div>`;
+}
 function pgLeave(){
   const isA=isAdminUser(user);
-  const tabs=isA?['Pending Approval','All Requests','File Leave']:['My Leaves','File Leave'];
+  const tabs=isA?['Pending Approval','My Leaves','All Requests','File Leave']:['My Leaves','File Leave'];
   let body='';
   if(isA&&tab===0){
     const pend=LEAVES.filter(l=>l.status==='pending');
     body=`<table><thead><tr><th>Employee</th><th>Type</th><th>Period</th><th>Days</th><th>Reason</th><th>Actions</th></tr></thead>
     <tbody>${pend.length?pend.map(l=>{const emp=USERS.find(u=>u.id===l.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${l.type}</td><td class="mono" style="font-size:12px">${l.s}${l.e!==l.s?' – '+l.e:''}</td><td style="text-align:center">${leaveDaysCell(l)}</td><td>${l.reason}</td><td><div style="display:flex;gap:5px"><button class="btn btn-sm btn-success" onclick="actLeave(${l.id},true)">Approve</button><button class="btn btn-sm btn-danger" onclick="actLeave(${l.id},false)">Reject</button></div></td></tr>`;}).join(''):'<tr><td colspan="6" class="empty-state">No pending requests 🎉</td></tr>'}</tbody></table>`;
-  }else if(isA&&tab===1){
+  }else if(isA&&tab===2){
     body=`<table><thead><tr><th>Employee</th><th>Type</th><th>Period</th><th>Days</th><th>Filed</th><th>Status</th></tr></thead>
     <tbody>${LEAVES.map(l=>{const emp=USERS.find(u=>u.id===l.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${l.type}</td><td class="mono" style="font-size:12px">${l.s}${l.e!==l.s?' – '+l.e:''}</td><td style="text-align:center">${leaveDaysCell(l)}</td><td style="color:var(--txt3)">${l.filed}</td><td><span class="badge b-${l.status}">${l.status}</span></td></tr>`;}).join('')}</tbody></table>`;
-  }else if(!isA&&tab===0){
-    const mine=LEAVES.filter(l=>l.eid===user.id);
-    body=myLeaveBalanceSummary()+`<div class="card"><table><thead><tr><th>Type</th><th>Start</th><th>End</th><th>Days</th><th>Reason</th><th>Status</th></tr></thead>
-    <tbody>${mine.length?mine.map(l=>`<tr><td>${l.type}</td><td>${l.s}</td><td>${l.e}</td><td style="text-align:center">${leaveDaysCell(l)}</td><td>${l.reason}</td><td><span class="badge b-${l.status}">${l.status}</span></td></tr>`).join(''):'<tr><td colspan="6" class="empty-state">No leave requests yet</td></tr>'}</tbody></table></div>`;
+  }else if((isA&&tab===1)||(!isA&&tab===0)){
+    body=myLeaveRequestsTable();
     return`<div class="page-header"><div class="page-title">Leave Management</div></div>
     <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
     ${body}`;
   }else{
     const opts=myLeaveTypeOptions();
     if(opts.length){
-      const initDays=countLeaveWorkingDays(today(),today());
-      const initHint=leaveBalanceHintText(opts[0],initDays);
+      const d=leaveDraft();
+      if(!opts.some(t=>t.name===d.lt))d.lt=opts[0].name;
+      const initDays=d.dayType==='whole'?countLeaveWorkingDays(d.ls,d.le2):0.5;
+      window._leaveDays=initDays;
+      const selectedType=opts.find(t=>t.name===d.lt)||opts[0];
+      const initHint=leaveBalanceHintText(selectedType,initDays);
+      let calcExtra='';
+      if(d.dayType==='whole'){
+        const calSpan=calendarDaySpan(d.ls,d.le2),restExcluded=calSpan-initDays;
+        calcExtra=` <span style="font-size:11px;color:var(--txt3)">(${calSpan} calendar day${calSpan===1?'':'s'}${restExcluded>0?', '+restExcluded+' rest day'+(restExcluded===1?'':'s')+' excluded':''})</span>`;
+      }
       body=`<div class="form-row">
-      <div class="field"><label>Leave Type</label><select id="lt" onchange="updateLeaveComputation()">${opts.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('')}</select></div>
-      <div class="field"><label>Day Type</label><select id="ldaytype" onchange="updateLeaveComputation()">
-        <option value="whole">Whole Day(s)</option>
-        <option value="half_am">Half Day — Morning</option>
-        <option value="half_pm">Half Day — Afternoon</option>
+      <div class="field"><label>Leave Type</label><select id="lt" onchange="setLeaveDraftField('lt',this.value);updateLeaveComputation()">${opts.map(t=>`<option value="${esc(t.name)}" ${t.name===d.lt?'selected':''}>${esc(t.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Day Type</label><select id="ldaytype" onchange="setLeaveDraftField('dayType',this.value);updateLeaveComputation()">
+        <option value="whole" ${d.dayType==='whole'?'selected':''}>Whole Day(s)</option>
+        <option value="half_am" ${d.dayType==='half_am'?'selected':''}>Half Day — First Half</option>
+        <option value="half_pm" ${d.dayType==='half_pm'?'selected':''}>Half Day — Second Half</option>
       </select></div>
       </div>
-      <div class="form-row"><div class="field"><label>Start Date</label><input type="date" id="ls" value="${today()}" onchange="updateLeaveComputation()"/></div><div class="field"><label>End Date</label><input type="date" id="le2" value="${today()}" onchange="updateLeaveComputation()"/></div></div>
+      <div class="form-row"><div class="field"><label>Start Date</label><input type="date" id="ls" value="${d.ls}" onchange="setLeaveDraftField('ls',this.value);updateLeaveComputation()"/></div><div class="field"><label>End Date</label><input type="date" id="le2" value="${d.le2}" ${d.dayType!=='whole'?'disabled':''} onchange="setLeaveDraftField('le2',this.value);updateLeaveComputation()"/></div></div>
       <div id="leave-calc-box" style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;margin-bottom:.875rem">
-        <strong>Total requested: ${initDays} day${initDays===1?'':'s'}</strong>
+        <strong>Total requested: ${initDays} day${initDays===1?'':'s'}</strong>${calcExtra}
         <div style="margin-top:4px;font-size:11px;color:${initHint.exceeds?'var(--amber-txt)':'var(--txt3)'}">${esc(initHint.text)}</div>
       </div>
-      <div class="field"><label>Reason / Remarks</label><textarea id="lr" rows="3" placeholder="Briefly describe your leave..."></textarea></div>
+      <div class="field"><label>Reason / Remarks</label><textarea id="lr" rows="3" placeholder="Briefly describe your leave..." oninput="setLeaveDraftField('reason',this.value)">${esc(d.reason)}</textarea></div>
       <div style="margin-top:4px"><button class="btn btn-primary" onclick="submitLeave()">Submit Request</button></div>`;
     }else{
       body=`<div class="empty-state">No leave types are currently assigned to you. Contact HR if you believe this is incorrect.</div>`;
@@ -4941,7 +4965,7 @@ function submitLeave(){
   const days=window._leaveDays||0;
   if(!reason){alert('Please provide a reason.');return;}
   if(days<=0){alert(dayType==='whole'?'The selected date range has no working days (all rest days). Adjust the dates or file this as a different request.':'Number of days must be greater than 0.');return;}
-  const halfLabel=dayType==='half_am'?'Half Day — Morning':dayType==='half_pm'?'Half Day — Afternoon':'';
+  const halfLabel=dayType==='half_am'?'Half Day — First Half':dayType==='half_pm'?'Half Day — Second Half':'';
   const t=(COMPANY.leaveTypes||[]).find(x=>x.name===type);
   let paidDays=days,unpaidDays=0;
   if(t){
@@ -4956,7 +4980,10 @@ function submitLeave(){
     }
   }
   LEAVES.push({id:nLeave++,eid:user.id,type,s,e,reason,status:'pending',filed:today(),days,paidDays,unpaidDays,dayType,halfDayLabel:halfLabel});
-  queueSync('Leave_Requests');alert('Leave request submitted!'+(unpaidDays>0?' ('+unpaidDays+' day(s) will be unpaid.)':''));goTab(0);
+  queueSync('Leave_Requests');
+  window._leaveDraft=null; /* clear the draft so the next visit to File Leave starts fresh */
+  alert('Leave request submitted!'+(unpaidDays>0?' ('+unpaidDays+' day(s) will be unpaid.)':''));
+  goTab(isAdminUser(user)?1:0);
 }
 
 function pgMyProfile(){
