@@ -12637,7 +12637,7 @@ function pgEmpDetail(){
       <!-- Tab bar + Edit/Save controls -->
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0;border-bottom:1px solid var(--border)">
         <div style="display:flex;gap:0;flex-wrap:wrap;min-width:0">
-          ${tabs.map((t,i)=>`<div class="tab${detailTab===i?' active':''}" onclick="detailTab=${i};detailEdit=false;detailDraft={};render()" style="white-space:nowrap">${t}</div>`).join('')}
+          ${tabs.map((t,i)=>`<div class="tab${detailTab===i?' active':''}" onclick="detailTab=${i};render()" style="white-space:nowrap">${t}</div>`).join('')}
         </div>
         ${isA&&detailTab!==3&&detailTab!==7&&detailTab!==8?`<div style="display:flex;gap:6px;padding-bottom:8px;flex-shrink:0;margin-left:12px">
           ${detailEdit
