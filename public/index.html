@@ -855,6 +855,7 @@ const DEFAULT_FIELDS={
     {key:'spouseName',label:'Spouse Name'},
     {key:'religion',label:'Religion'},
     {key:'city',label:'City'},
+    {key:'rdo',label:'RDO Code'},
     {key:'permanentAddress',label:'Permanent Address'},
     {key:'zipCode',label:'Permanent Address ZIP Code'},
     {key:'temporaryAddress',label:'Temporary Address'},
@@ -959,6 +960,10 @@ function validateGovtNum(key,value){
   return null;
 }
 
+// Same visibility check as the local `fv` used inside the Employee 201 edit page, promoted to
+// a standalone function so other field-config-aware forms (Add Employee) can reuse it too.
+function fieldVisible(tabKey,key){return FIELD_CONFIG[tabKey]?.visible[key]!==false;}
+
 /* RDO must remain text so numeric codes retain a leading zero (for example 043). */
 function normalizeRdoCode(value){
   let code=String(value||'').toUpperCase().replace(/^RDO[\s-]*/,'').replace(/[^0-9A-Z]/g,'');
@@ -969,6 +974,31 @@ function normalizeRdoCode(value){
 
 function validateGovtAll(e){
   return['sss','ph','pi','tin'].map(k=>validateGovtNum(k,e[k])).filter(Boolean);
+}
+
+/* Live inline flag while filling out a govt-ID or bank-account field — neither case blocks
+   saving, it's purely informational so the admin notices before they move on. Blank govt IDs
+   are common for a brand-new hire waiting on their numbers, so that's flagged amber (not red);
+   a value matching another employee's is flagged red as a likely data-entry mistake. */
+function govtFieldHint(key,value){
+  const v=(value||'').trim();
+  if(key==='bankAccount'){
+    if(!v)return null; /* blank bank account is normal — no employer-issued number to withhold */
+    const dup=USERS.find(u=>u.bankAccount&&u.bankAccount.trim()===v);
+    return dup?{text:'⚠ Already used by '+dup.name,color:'var(--red)'}:null;
+  }
+  if(!v||v==='—')return{text:'Not yet provided — can be added later',color:'var(--amber-txt)'};
+  const digits=v.replace(/\D/g,'');
+  const dup=USERS.find(u=>digits.length>5&&(u[key]||'').replace(/\D/g,'')===digits);
+  return dup?{text:'⚠ Already used by '+dup.name,color:'var(--red)'}:null;
+}
+function govtFieldHintHtml(key,value){
+  const h=govtFieldHint(key,value);
+  return h?`<span style="color:${h.color}">${esc(h.text)}</span>`:'';
+}
+function updateGovtHint(key,value){
+  const hint=document.getElementById('hint-'+key);if(!hint)return;
+  hint.innerHTML=govtFieldHintHtml(key,value);
 }
 
 /* ---- DUPLICATE DETECTION ---- */
@@ -984,6 +1014,8 @@ function findDuplicates(candidate,excludeId){
     if(v.length>5&&others.find(u=>(u[k]||'').replace(/\D/g,'')===v))
       dupes.push(`${GOVT_FORMATS[k]?.label} number already exists on another employee`);
   });
+  if(candidate.bankAccount&&candidate.bankAccount.trim().length>3&&others.find(u=>u.bankAccount&&u.bankAccount.trim()===candidate.bankAccount.trim()))
+    dupes.push(`Bank Account Number "${candidate.bankAccount.trim()}" already exists on another employee`);
   return dupes;
 }
 
@@ -2297,7 +2329,7 @@ function renderModuleManagerModal(){
   const planColors={Enterprise:'var(--accent)',Professional:'var(--green)',Starter:'var(--blue)',Internal:'var(--txt3)'};
   return`<div class="modal-title">
     🧩 Module Access — <strong>${esc(c.name)}</strong>
-    <button class="close-x" onclick="closeM()">×</button>
+    <button class="close-x" onclick="closeMConfirmed()">×</button>
   </div>
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
     <span class="badge" style="background:${planColors[c.plan]||'#6b7280'}22;color:${planColors[c.plan]||'#6b7280'}">${c.plan} Plan</span>
@@ -8199,13 +8231,13 @@ function renderModal(){
         <div><div style="font-size:16px;font-weight:700">${e.name}</div><div style="font-size:12px;color:var(--txt3)">${e.eid} · ${e.pos} · ${e.dept}</div>
         <div style="margin-top:4px"><span class="badge b-${e.status}">${e.status}</span> <span class="badge b-${e.type}">${e.type}</span></div></div>
       </div>
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div class="tabs" style="margin-top:-.5rem">${tabBtns}</div>
     ${tabBody}`;
   }else if(modal.type==='payroll'){
     const r=modal.run;
-    inner=`<div class="modal-title">Payroll — ${r.from} to ${r.to} <button class="close-x" onclick="closeM()">×</button></div>
+    inner=`<div class="modal-title">Payroll — ${r.from} to ${r.to} <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div style="overflow-x:auto"><table style="min-width:620px"><thead><tr><th>Employee</th><th>Days</th><th>Basic</th><th>OT</th><th>ND</th><th>Gross</th><th>SSS</th><th>PH</th><th>PI</th><th>Tax</th><th>Loan</th><th>Net</th></tr></thead>
     <tbody>${r.items.map(i=>`<tr>
       <td><div class="emp-cell" style="gap:6px"><div class="avatar sm">${ini(i.name)}</div>${i.name.split(' ')[0]}</div></td>
@@ -8228,7 +8260,7 @@ function renderModal(){
   }else if(modal.type==='slip'){
     const{item:i,run:r}=modal;
     const emp=USERS.find(u=>u.id===user.id);
-    inner=`<div class="modal-title">Payslip <button class="close-x" onclick="closeM()">×</button></div>
+    inner=`<div class="modal-title">Payslip <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div style="text-align:center;margin-bottom:1.125rem;padding-bottom:1rem;border-bottom:1px solid var(--border)">
       <div style="font-size:18px;font-weight:800;letter-spacing:-.4px">${esc(COMPANY.name)}</div>
       <div style="font-size:12px;color:var(--txt3)">Payslip for ${r.from} to ${r.to}</div>
@@ -8263,7 +8295,7 @@ function renderModal(){
     const teamList=deptObj?deptObj.teams.map(t=>`<option value="${t.name}" ${ae.team===t.name?'selected':''}>${t.name}</option>`).join(''):'';
     const teamObj=deptObj?.teams.find(t=>t.name===ae.team);
     const subList=teamObj?teamObj.subteams.map(s=>`<option value="${s}" ${ae.subteam===s?'selected':''}>${s}</option>`).join(''):'';
-    inner=`<div class="modal-title">Add Employee <button class="close-x" onclick="closeM()">×</button></div>
+    inner=`<div class="modal-title">Add Employee <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div style="display:flex;gap:8px;border-bottom:1px solid var(--border);margin-bottom:1rem;overflow-x:auto">
       ${['Personal','Employment','Compensation','Gov\'t & Bank','Emergency'].map((l,i)=>`<div class="tab${(modal.addTab||0)===i?' active':''}" onclick="modal.addTab=${i};render()" style="font-size:12px;white-space:nowrap">${l}</div>`).join('')}
     </div>
@@ -8273,7 +8305,7 @@ function renderModal(){
     <div class="form-row"><div class="field"><label>Date of Birth</label><input type="date" id="ne-bday" value="${ae.bday||''}" oninput="setAeField('bday',this.value)"/></div><div class="field"><label>Gender</label><select id="ne-gender" onchange="setAeField('gender',this.value)"><option ${ae.gender==='Female'?'selected':''}>Female</option><option ${ae.gender==='Male'?'selected':''}>Male</option><option ${ae.gender==='Non-binary'?'selected':''}>Non-binary</option><option>Prefer not to say</option></select></div></div>
     <div class="form-row"><div class="field"><label>Marital Status</label><select id="ne-ms" onchange="setAeField('maritalStatus',this.value)"><option>Single</option><option ${ae.maritalStatus==='Married'?'selected':''}>Married</option><option>Widowed</option><option>Separated</option></select></div><div class="field"><label>Spouse Name</label><input id="ne-sp" value="${ae.spouseName||''}" oninput="setAeField('spouseName',this.value)"/></div></div>
     <div class="form-row"><div class="field"><label>Religion</label><input id="ne-rel" value="${ae.religion||''}" oninput="setAeField('religion',this.value)"/></div><div class="field"><label>City</label><input id="ne-city" value="${ae.city||''}" oninput="setAeField('city',this.value)"/></div></div>
-    <div class="field"><label>Permanent Address</label><input id="ne-addr" value="${ae.permanentAddress||''}" oninput="setAeField('permanentAddress',this.value)"/></div>
+    <div class="form-row"><div class="field"><label>Permanent Address</label><input id="ne-addr" value="${ae.permanentAddress||''}" oninput="setAeField('permanentAddress',this.value)"/></div>${fieldVisible('personal','zipCode')?`<div class="field"><label>ZIP Code</label><input id="ne-zip" value="${ae.zipCode||''}" maxlength="4" oninput="setAeField('zipCode',this.value)"/></div>`:''}</div>
     <div class="field"><label>Temporary Address</label><input id="ne-taddr" value="${ae.temporaryAddress||''}" oninput="setAeField('temporaryAddress',this.value)"/></div>
     <div class="form-row"><div class="field"><label>Primary Contact *</label><input id="ne-c1" value="${ae.contact||''}" oninput="setAeField('contact',this.value)"/></div><div class="field"><label>Secondary Contact</label><input id="ne-c2" value="${ae.contact2||''}" oninput="setAeField('contact2',this.value)"/></div></div>
     <div class="form-row"><div class="field"><label>Company Email *</label><input type="email" id="ne-email" value="${ae.email||''}" oninput="setAeField('email',this.value)"/></div><div class="field"><label>Personal Email</label><input type="email" id="ne-pemail" value="${ae.personalEmail||''}" oninput="setAeField('personalEmail',this.value)"/></div></div>
@@ -8291,18 +8323,18 @@ function renderModal(){
     <div class="form-row"><div class="field"><label>Discipline</label><select id="ne-disc" onchange="setAeField('discipline',this.value)"><option value="">— Select —</option>${LOOKUPS.disciplines.map(d=>`<option value="${d.name}" ${ae.discipline===d.name?'selected':''}>${d.name}</option>`).join('')}</select></div><div class="field"><label>Pod</label><select id="ne-pod" onchange="setAeField('pod',this.value)"><option value="">— None —</option>${LOOKUPS.pods.map(p=>`<option value="${p.name}" ${ae.pod===p.name?'selected':''}>${p.name}</option>`).join('')}</select></div></div>
     <div class="field"><label>Position *</label><input id="ne-pos" value="${ae.pos||''}" oninput="setAeField('pos',this.value)"/></div>
     <div class="form-row"><div class="field"><label>Band Level</label><select id="ne-band" onchange="setAeField('bandLevel',this.value)"><option value="">—</option>${LOOKUPS.bandLevels.map(l=>`<option value="${l.code}" ${ae.bandLevel===l.code?'selected':''}>${l.label}</option>`).join('')}</select></div></div>
-    <div class="form-row"><div class="field"><label>Non-Mass / Mass</label><select id="ne-nm" onchange="setAeField('nonMass',this.value)"><option>Non-Mass</option><option ${ae.nonMass==='Mass'?'selected':''}>Mass</option></select></div><div class="field"><label>Employment Type</label><select id="ne-type" onchange="setAeField('type',this.value)">${LOOKUPS.employmentTypes.map(t=>`<option value="${t.code}" ${ae.type===t.code?'selected':''}>${t.label}</option>`).join('')}</select></div></div>
+    <div class="form-row">${fieldVisible('employment','nonMass')?`<div class="field"><label>Non-Mass / Mass</label><select id="ne-nm" onchange="setAeField('nonMass',this.value)"><option value="" ${!ae.nonMass?'selected':''}>— Select —</option><option ${ae.nonMass==='Non-Mass'?'selected':''}>Non-Mass</option><option ${ae.nonMass==='Mass'?'selected':''}>Mass</option></select></div>`:''}<div class="field"><label>Employment Type</label><select id="ne-type" onchange="setAeField('type',this.value);autoSetProbationEndDate();render()"><option value="" ${!ae.type?'selected':''}>— Select —</option>${LOOKUPS.employmentTypes.map(t=>`<option value="${t.code}" ${ae.type===t.code?'selected':''}>${t.label}</option>`).join('')}</select></div></div>
     <div class="form-row"><div class="field"><label>Start Date *</label><input type="date" id="ne-start" value="${ae.hired||today()}" oninput="setAeField('hired',this.value)"/></div><div class="field"><label>Probation End Date</label><input type="date" id="ne-prob" value="${ae.probEndDate||''}" oninput="setAeField('probEndDate',this.value)"/></div></div>
     <div class="form-row"><div class="field"><label>Cost Center</label><select id="ne-cc" onchange="setAeField('costCenter',this.value)"><option value="">— Select —</option>${LOOKUPS.costCenters.map(c=>`<option value="${c.code}" ${ae.costCenter===c.code?'selected':''}>${c.label}</option>`).join('')}</select></div></div>
-    <div class="form-row"><div class="field"><label>Rehireable</label><select id="ne-reh" onchange="setAeField('rehireable',this.value)"><option value="Y">Yes</option><option value="N" ${ae.rehireable==='N'?'selected':''}>No</option><option value="">TBD</option></select></div><div class="field"><label>Loan Eligibility</label><select id="ne-loan" onchange="setAeField('loanEligibility',this.value)"><option value="Y">Yes</option><option value="N" ${ae.loanEligibility==='N'?'selected':''}>No</option></select></div></div>
-    <div class="form-row"><div class="field"><label>Manager</label><select id="ne-mgr" onchange="setAeField('managerId',this.value)"><option value="">— None —</option>${USERS.map(u=>`<option value="${u.eid}" ${ae.managerId===u.eid?'selected':''}>${u.eid} — ${u.name}</option>`).join('')}</select></div><div class="field"><label>Functional Head</label><input id="ne-fh" value="${ae.functionalHead||''}" oninput="setAeField('functionalHead',this.value)"/></div></div>`
+    <div class="form-row"><div class="field"><label>Rehireable</label><select id="ne-reh" onchange="setAeField('rehireable',this.value)"><option value="Y" ${ae.rehireable==='Y'?'selected':''}>Yes</option><option value="N" ${ae.rehireable==='N'?'selected':''}>No</option><option value="" ${!ae.rehireable?'selected':''}>TBD</option></select></div>${fieldVisible('employment','loanEligibility')?`<div class="field"><label>Loan Eligibility</label><select id="ne-loan" onchange="setAeField('loanEligibility',this.value)"><option value="" ${!ae.loanEligibility?'selected':''}>— Select —</option><option value="Y" ${ae.loanEligibility==='Y'?'selected':''}>Yes</option><option value="N" ${ae.loanEligibility==='N'?'selected':''}>No</option></select></div>`:''}</div>
+    <div class="form-row"><div class="field"><label>Manager</label><select id="ne-mgr" onchange="setAeField('managerId',this.value)"><option value="">— None —</option>${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.eid}" ${ae.managerId===u.eid?'selected':''}>${u.eid} — ${u.name}</option>`).join('')}</select></div><div class="field"><label>Functional Head</label><input id="ne-fh" value="${ae.functionalHead||''}" oninput="setAeField('functionalHead',this.value)"/></div></div>`
     :(modal.addTab||0)===2?`
     <div class="form-row"><div class="field"><label>Currency</label><select id="ne-curr" onchange="setAeField('currency',this.value)"><option>PHP</option><option ${ae.currency==='USD'?'selected':''}>USD</option></select></div></div>
-    <div class="field"><label>Daily Rate (₱) *</label><input type="number" id="ne-rate" value="${ae.rate||''}" oninput="setAeField('rate',parseFloat(this.value)||0);recalcSalary();"/></div>
+    <div class="field"><label>Monthly Rate (₱) *</label><input type="number" id="ne-ratepm" value="${ae.salaryPM||''}" oninput="setAeField('salaryPM',parseFloat(this.value)||0);recalcSalary();"/></div>
     <div style="background:var(--accent-bg);border-radius:8px;padding:10px 12px;margin:8px 0;font-size:12px;color:var(--accent-txt)" id="salary-preview">
-      ${ae.rate?`<strong>Auto-computed:</strong> ₱${parseFloat(ae.rate).toLocaleString()} × 22 days × ${COMPANY.salaryMultiplier||13} months = <strong>₱${(ae.rate*22*(COMPANY.salaryMultiplier||13)).toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> per annum · <strong>₱${(ae.rate*22).toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> per month`:'Enter daily rate above to auto-compute annual and monthly salary.'}
+      ${ae.salaryPM?`<strong>Auto-computed:</strong> ₱${parseFloat(ae.salaryPM).toLocaleString()} ÷ ${formatDailyDivisor(COMPANY.dailyDivisor||22)} days = <strong>₱${(ae.salaryPM/(COMPANY.dailyDivisor||22)).toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> daily rate · × ${COMPANY.salaryMultiplier||13} months = <strong>₱${(ae.salaryPM*(COMPANY.salaryMultiplier||13)).toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> per annum`:'Enter monthly rate above to auto-compute daily rate and annual salary.'}
     </div>
-    <div class="form-row"><div class="field"><label>Salary Per Annum (auto)</label><input type="number" id="ne-spa" value="${ae.rate?(ae.rate*22*(COMPANY.salaryMultiplier||13)).toFixed(2):ae.salaryPA||''}" readonly style="background:var(--bg);color:var(--txt2)"/></div><div class="field"><label>Salary Per Month (auto)</label><input type="number" id="ne-spm" value="${ae.rate?(ae.rate*22).toFixed(2):ae.salaryPM||''}" readonly style="background:var(--bg);color:var(--txt2)"/></div></div>
+    <div class="form-row"><div class="field"><label>Daily Rate (auto)</label><input type="number" id="ne-rate" value="${ae.salaryPM?(ae.salaryPM/(COMPANY.dailyDivisor||22)).toFixed(4):ae.rate||''}" readonly style="background:var(--bg);color:var(--txt2)"/></div><div class="field"><label>Salary Per Annum (auto)</label><input type="number" id="ne-spa" value="${ae.salaryPM?(ae.salaryPM*(COMPANY.salaryMultiplier||13)).toFixed(2):ae.salaryPA||''}" readonly style="background:var(--bg);color:var(--txt2)"/></div></div>
     <div class="form-row"><div class="field"><label>Mobile Allowance</label><input type="number" id="ne-mob" value="${ae.mobileAllowance||0}" oninput="setAeField('mobileAllowance',parseFloat(this.value)||0)"/></div><div class="field"><label>Rice Allowance</label><input type="number" id="ne-rice" value="${ae.riceAllowance||2000}" oninput="setAeField('riceAllowance',parseFloat(this.value)||0)"/></div></div>
     <div class="form-row"><div class="field"><label>Stock Options</label><select id="ne-so" onchange="setAeField('stockOptions',this.value)"><option value="N">No</option><option value="Y" ${ae.stockOptions==='Y'?'selected':''}>Yes</option></select></div><div class="field"><label>ESOP Granted</label><select id="ne-esop" onchange="setAeField('esopGranted',this.value)"><option value="N">No</option><option value="Y" ${ae.esopGranted==='Y'?'selected':''}>Yes</option></select></div></div>
     <div class="field"><label>ESOP Entity Name</label><input id="ne-esopent" value="${ae.esopEntity||''}" oninput="setAeField('esopEntity',this.value)"/></div>`
@@ -8310,24 +8342,32 @@ function renderModal(){
     <div class="form-row">
       <div class="field"><label>SSS No. <span style="font-weight:400;color:var(--txt3);font-size:11px">12-3456789-0</span></label>
         <input id="ne-sss" value="${fmtGovt('sss',ae.sss||'')}" placeholder="12-3456789-0" style="font-family:'JetBrains Mono',monospace;letter-spacing:.5px"
-          oninput="const v=fmtGovt('sss',this.value);this.value=v;this.style.borderColor=validateGovtNum('sss',v)?'var(--red)':'var(--border)';setAeField('sss',v)"/>
+          oninput="const v=fmtGovt('sss',this.value);this.value=v;this.style.borderColor=validateGovtNum('sss',v)?'var(--red)':'var(--border)';setAeField('sss',v);updateGovtHint('sss',v)"/>
+        <div id="hint-sss" style="font-size:10px;margin-top:3px">${govtFieldHintHtml('sss',ae.sss)}</div>
       </div>
       <div class="field"><label>PhilHealth No. <span style="font-weight:400;color:var(--txt3);font-size:11px">12-345678901-2</span></label>
         <input id="ne-ph" value="${fmtGovt('ph',ae.ph||'')}" placeholder="12-345678901-2" style="font-family:'JetBrains Mono',monospace;letter-spacing:.5px"
-          oninput="const v=fmtGovt('ph',this.value);this.value=v;this.style.borderColor=validateGovtNum('ph',v)?'var(--red)':'var(--border)';setAeField('ph',v)"/>
+          oninput="const v=fmtGovt('ph',this.value);this.value=v;this.style.borderColor=validateGovtNum('ph',v)?'var(--red)':'var(--border)';setAeField('ph',v);updateGovtHint('ph',v)"/>
+        <div id="hint-ph" style="font-size:10px;margin-top:3px">${govtFieldHintHtml('ph',ae.ph)}</div>
       </div>
     </div>
     <div class="form-row">
       <div class="field"><label>Pag-IBIG No. <span style="font-weight:400;color:var(--txt3);font-size:11px">1234-5678-9012</span></label>
         <input id="ne-pi" value="${fmtGovt('pi',ae.pi||'')}" placeholder="1234-5678-9012" style="font-family:'JetBrains Mono',monospace;letter-spacing:.5px"
-          oninput="const v=fmtGovt('pi',this.value);this.value=v;this.style.borderColor=validateGovtNum('pi',v)?'var(--red)':'var(--border)';setAeField('pi',v)"/>
+          oninput="const v=fmtGovt('pi',this.value);this.value=v;this.style.borderColor=validateGovtNum('pi',v)?'var(--red)':'var(--border)';setAeField('pi',v);updateGovtHint('pi',v)"/>
+        <div id="hint-pi" style="font-size:10px;margin-top:3px">${govtFieldHintHtml('pi',ae.pi)}</div>
       </div>
       <div class="field"><label>TIN / BIR <span style="font-weight:400;color:var(--txt3);font-size:11px">123-456-789-000</span></label>
         <input id="ne-tin" value="${fmtGovt('tin',ae.tin||'')}" placeholder="123-456-789-000" style="font-family:'JetBrains Mono',monospace;letter-spacing:.5px"
-          oninput="const v=fmtGovt('tin',this.value);this.value=v;this.style.borderColor=validateGovtNum('tin',v)?'var(--red)':'var(--border)';setAeField('tin',v)"/>
+          oninput="const v=fmtGovt('tin',this.value);this.value=v;this.style.borderColor=validateGovtNum('tin',v)?'var(--red)':'var(--border)';setAeField('tin',v);updateGovtHint('tin',v)"/>
+        <div id="hint-tin" style="font-size:10px;margin-top:3px">${govtFieldHintHtml('tin',ae.tin)}</div>
       </div>
     </div>
-    <div class="form-row"><div class="field"><label>Bank (free text)</label><input id="ne-bank" value="${ae.bank||''}" placeholder="e.g. BDO, BPI, GCash, PayMaya…" oninput="setAeField('bank',this.value)"/></div><div class="field"><label>Bank Account No.</label><input id="ne-bacc" value="${ae.bankAccount||''}" oninput="setAeField('bankAccount',this.value)"/></div></div>`
+    ${fieldVisible('personal','rdo')?`<div class="form-row"><div class="field"><label>RDO Code <span style="font-weight:400;color:var(--txt3);font-size:11px">e.g. 043 — leading zero preserved</span></label><input id="ne-rdo" value="${esc(ae.rdo||'')}" placeholder="043" oninput="setAeField('rdo',this.value)"/></div></div>`:''}
+    <div class="form-row"><div class="field"><label>Bank (free text)</label><input id="ne-bank" value="${ae.bank||''}" placeholder="e.g. BDO, BPI, GCash, PayMaya…" oninput="setAeField('bank',this.value)"/></div>
+      <div class="field"><label>Bank Account No.</label><input id="ne-bacc" value="${ae.bankAccount||''}" oninput="setAeField('bankAccount',this.value);updateGovtHint('bankAccount',this.value)"/>
+        <div id="hint-bankAccount" style="font-size:10px;margin-top:3px">${govtFieldHintHtml('bankAccount',ae.bankAccount)}</div>
+      </div></div>`
     :`
     <div class="section-header">Emergency Contact 1</div>
     <div class="form-row"><div class="field"><label>Name</label><input id="ne-ec1n" value="${ae.ec1Name||''}" oninput="setAeField('ec1Name',this.value)"/></div><div class="field"><label>Relationship</label><input id="ne-ec1r" value="${ae.ec1Rel||''}" oninput="setAeField('ec1Rel',this.value)"/></div></div>
@@ -8342,7 +8382,7 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='editProfile'){
     const d=modal.draft;
-    inner=`<div class="modal-title">Edit My Details <button class="close-x" onclick="closeM()">×</button></div>
+    inner=`<div class="modal-title">Edit My Details <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div style="background:var(--amber-bg);border-radius:8px;padding:9px 12px;margin-bottom:1rem;font-size:12px;color:var(--amber-txt)">
       <strong>Note:</strong> Changes to personal details require admin approval before taking effect. Employment, compensation, and government ID fields can only be changed by HR/Admin.
     </div>
@@ -8395,7 +8435,7 @@ function renderModal(){
   }else if(modal.type==='accessEdit'){
     const e=modal.emp;
     const alColors={purple:'#7c3aed',blue:'#2563eb',green:'#059669',amber:'#d97706',gray:'#6b7280'};
-    inner=`<div class="modal-title">Access Level — ${e.name} <button class="close-x" onclick="closeM()">×</button></div>
+    inner=`<div class="modal-title">Access Level — ${e.name} <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg);border-radius:8px;margin-bottom:1rem">
       <div class="avatar">${ini(e.name)}</div>
       <div><div style="font-weight:600">${e.name}</div><div style="font-size:12px;color:var(--txt3)">${e.pos} · ${e.eid}</div></div>
@@ -8430,7 +8470,7 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='addAdmin'){
     const d=modal.data;
-    inner=`<div class="modal-title">+ Add Administrator <button class="close-x" onclick="closeM()">×</button></div>
+    inner=`<div class="modal-title">+ Add Administrator <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">Creates a Super Admin account with full system access — separate from the regular "Add Employee" flow, which is for rank-and-file staff.</div>
     <div class="form-row">
       <div class="field"><label>Full Name <span style="color:var(--red)">*</span></label>
@@ -8456,7 +8496,7 @@ function renderModal(){
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
   }else if(modal.type==='addLoan'){
-    inner=`<div class="modal-title">Add Loan <button class="close-x" onclick="closeM()">×</button></div>
+    inner=`<div class="modal-title">Add Loan <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div class="field"><label>Employee</label><select id="ml-emp">${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}</select></div>
     <div class="field"><label>Loan Type</label><select id="ml-type"><option>SSS Salary Loan</option><option>Pag-IBIG MP2 Loan</option><option>Pag-IBIG Housing Loan</option><option>Company Loan</option><option>Emergency Loan</option></select></div>
     <div class="form-row"><div class="field"><label>Loan Amount</label><input type="number" id="ml-amt" placeholder="50000"/></div><div class="field"><label>Monthly Deduction</label><input type="number" id="ml-mo" placeholder="2000"/></div></div>
@@ -8467,7 +8507,7 @@ function renderModal(){
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
   }else if(modal.type==='addCand'){
-    inner=`<div class="modal-title">Add Candidate <button class="close-x" onclick="closeM()">×</button></div>
+    inner=`<div class="modal-title">Add Candidate <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div class="field"><label>Full Name</label><input type="text" id="cn-name" placeholder="Juan dela Cruz"/></div>
     <div class="form-row"><div class="field"><label>Position Applied</label><input type="text" id="cn-pos" placeholder="e.g. Software Developer"/></div><div class="field"><label>Department</label><select id="cn-dept"><option>Engineering</option><option>Marketing</option><option>Finance</option><option>HR</option><option>Sales</option></select></div></div>
     <div class="field"><label>Email</label><input type="email" id="cn-email" placeholder="candidate@email.com"/></div>
@@ -8505,7 +8545,7 @@ function renderModal(){
       reqFields.find(rf=>rf.key===f.key)||errKeys.has(f.key)||errKeys.has(f.label)
     );
     inner=`<div class="modal-title">✎ Fix Row ${modal.idx+1} — ${esc((d.firstName||'')+(d.lastName?' '+d.lastName:''))||'Employee'}
-      <button class="close-x" onclick="closeM()">×</button></div>
+      <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     ${r.errors.length?`<div style="padding:8px 12px;background:var(--red-bg);border-radius:6px;margin-bottom:10px;font-size:12px;color:var(--red-txt)">
       ${r.errors.map(e=>`❌ ${esc(e)}`).join('<br>')}</div>`:''}
     ${r.warnings.length?`<div style="padding:8px 12px;background:var(--amber-bg);border-radius:6px;margin-bottom:10px;font-size:12px;color:var(--amber-txt)">
@@ -8536,7 +8576,7 @@ function renderModal(){
     const tc=typeColors[modal.mType]||'var(--accent)';
     inner=`<div class="modal-title">
       Employee Movement — <strong>${esc(e?.name||'')}</strong>
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:20px;background:${tc}18;color:${tc};font-size:12px;font-weight:700;margin-bottom:12px">
       ${modal.mType}
@@ -8596,7 +8636,7 @@ function renderModal(){
     const colors=['purple','blue','green','amber','gray','red','teal','pink'];
     const alColors={purple:'#7c3aed',blue:'#2563eb',green:'#059669',amber:'#d97706',gray:'#6b7280',red:'#dc2626',teal:'#0d9488',pink:'#db2777'};
     inner=`<div class="modal-title">${isNew?'+ New Access Level':'✎ Edit Access Level'}
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div class="field" style="margin-bottom:10px">
       <label>Level Name <span style="color:var(--red)">*</span></label>
@@ -8621,7 +8661,7 @@ function renderModal(){
     const client=PLATFORM_CLIENTS.find(x=>x.id===modal.clientId);
     const availableUsers=USERS.filter(u=>u.active!==false).sort((a,b)=>a.name.localeCompare(b.name));
     inner=`<div class="modal-title">Log in as user — ${esc(client?.name||COMPANY.name)}
-      <button class="close-x" onclick="closeM()">×</button></div>
+      <button class="close-x" onclick="closeMConfirmed()">×</button></div>
       <div style="padding:9px 11px;background:var(--amber-bg);border:1px solid var(--amber);border-radius:8px;color:var(--amber-txt);font-size:11px;margin-bottom:10px">The selected account's actual permissions will apply. Passwords are not used or revealed, and start/end events are added to the security audit.</div>
       <div style="display:grid;gap:6px;max-height:420px;overflow-y:auto">
         ${availableUsers.length?availableUsers.map(u=>`<button class="btn" style="display:flex;align-items:center;text-align:left;justify-content:flex-start;padding:9px 10px" onclick="impersonateUser(${u.id})"><span class="avatar sm">${ini(u.name)}</span><span style="flex:1"><strong>${esc(u.name)}</strong><br><span style="font-size:10px;color:var(--txt3)">${esc(u.eid||u.email)} · ${esc(u.role||'employee')}</span></span><span style="font-size:11px;color:var(--accent)">Log in →</span></button>`).join(''):'<div class="empty-state">No active users are available in this company.</div>'}
@@ -8629,7 +8669,7 @@ function renderModal(){
   }else if(modal.type==='editPOC'){
     const c=PLATFORM_CLIENTS.find(x=>x.id===modal.clientId);
     inner=`<div class="modal-title">👤 Edit Point of Contact — <strong>${esc(c?.name||'')}</strong>
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div class="form-row">
       <div class="field"><label>Full Name</label>
@@ -8659,7 +8699,7 @@ function renderModal(){
     const settingTab=modal.settingTab||'security';
     const tabs2=[{k:'security',l:'🔐 Security'},{k:'audit',l:'🧾 Impersonation Audit'},{k:'plans',l:'📦 Plan Defaults'},{k:'passwords',l:'🔑 All Passwords'},{k:'branding',l:'🎨 Branding'}];
     inner=`<div class="modal-title">⚙ God Admin Settings
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="display:flex;gap:6px;margin-bottom:14px;border-bottom:1px solid var(--border);padding-bottom:10px;flex-wrap:wrap">
       ${tabs2.map(t=>`<button onclick="modal.settingTab='${t.k}';render()"
@@ -8759,7 +8799,7 @@ function renderModal(){
         <div style="font-weight:700;font-size:15px">${esc(user.name)}</div>
         <div style="font-size:12px;color:var(--txt3)">${esc(user.email||'')} · <span class="badge b-${user.role}">${user.role}</span></div>
       </div>
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="display:grid;gap:4px;margin-bottom:12px">
       <button onclick="closeM();goView('myprofile')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);cursor:pointer;font-size:13px;color:var(--txt);text-align:left;width:100%" onmouseover="this.style.background='var(--accent-bg)'" onmouseout="this.style.background='var(--bg)'">
@@ -8782,7 +8822,7 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='changeOwnPassword'){
     inner=`<div class="modal-title">🔑 Change Password
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;background:var(--bg);border-radius:8px;border:1px solid var(--border);margin-bottom:14px">
       <div class="avatar sm">${ini(user.name)}</div>
@@ -8820,7 +8860,7 @@ function renderModal(){
     const d=modal.draft;
     const typeOptions=[['regular','Regular Holiday (200% if worked)'],['special-non-working','Special Non-Working Holiday (130% if worked)'],['special-working','Special Working Holiday (no premium — normal work day)'],['double','Double Holiday (300% if worked)']];
     inner=`<div class="modal-title">${modal.isNew?'Add':'Edit'} Holiday
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div class="form-row">
       <div class="field"><label>Date</label><input type="date" class="finput" value="${esc(d.date)}" onchange="modal.draft.date=this.value"/></div>
@@ -8838,7 +8878,7 @@ function renderModal(){
     const dayLabels={mon:'Monday',tue:'Tuesday',wed:'Wednesday',thu:'Thursday',fri:'Friday',sat:'Saturday',sun:'Sunday'};
     const dayKeys=['mon','tue','wed','thu','fri','sat','sun'];
     inner=`<div class="modal-title">${modal.isNew?'Add':'Edit'} Shift
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div class="form-row" style="margin-bottom:.875rem">
       <div class="field"><label>Shift Name</label><input class="finput" value="${esc(d.name)}" oninput="modal.draft.name=this.value"/></div>
@@ -8866,7 +8906,7 @@ function renderModal(){
     const d=modal.draft;
     const genderOptions=[['','Any gender'],['female','Female only'],['male','Male only']];
     inner=`<div class="modal-title">${modal.isNew?'Add':'Edit'} Leave Type
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div class="form-row">
       <div class="field"><label>Leave Type Name</label><input class="finput" value="${esc(d.name)}" oninput="modal.draft.name=this.value" placeholder="e.g. Vacation Leave"/></div>
@@ -8916,7 +8956,7 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='setLeaveBalance'){
     inner=`<div class="modal-title">Set Leave Balance — ${esc(modal.typeName)}
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="font-size:12px;color:var(--txt3);margin-bottom:10px">Current balance: <strong style="color:var(--txt)">${modal.current}</strong> days</div>
     <div class="field"><label>New Balance (days)</label><input type="number" step="0.001" class="finput" value="${modal.data.balance}" oninput="modal.data.balance=this.value"/><div style="font-size:10px;color:var(--txt3);margin-top:2px">Up to 3 decimal places.</div></div>
@@ -8930,7 +8970,7 @@ function renderModal(){
     const bal=emp&&emp.leaveBalances&&emp.leaveBalances[modal.typeId]?emp.leaveBalances[modal.typeId]:{balance:0,adjustments:[],yearlyClosingBalances:{}};
     const closingYears=Object.keys(bal.yearlyClosingBalances||{}).sort((a,b)=>b-a);
     inner=`<div class="modal-title">Leave History — ${esc(modal.typeName)}
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">${esc(emp?.name||'')} · Current balance: <strong style="color:var(--txt)">${bal.balance}</strong> days</div>
     ${closingYears.length?`<div class="section-header">Year-end Closing Balances</div>
@@ -8953,7 +8993,7 @@ function renderModal(){
     inner=`<div class="modal-title" style="position:sticky;top:0;z-index:2;background:var(--surface)">
       <span>📋 Bulk Leave Balance Import</span>
       <span style="font-size:11px;color:var(--txt3);font-weight:400;margin-left:8px">${rows.length} row${rows.length!==1?'s':''} · ${readyCount} ready</span>
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">For migrating a client mid-year with existing leave balances. Only active employees are applied; matching EID + Leave Type Code sets the balance and logs it in that employee's history.</div>
     <div style="background:var(--accent-bg);border:1px solid var(--accent);border-radius:10px;padding:10px 14px;margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
@@ -9004,7 +9044,7 @@ function renderModal(){
     const isA=isAdminUser(user)||isPlatformAdmin;
     const hasAny=(isA&&(pending.length||crPending.length))||myFlagged.length;
     inner=`<div class="modal-title">🔔 Notifications
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="display:grid;gap:6px;max-height:400px;overflow-y:auto">
       ${myFlagged.length?myFlagged.map(a=>`<div onclick="closeM();goView('attendance')" style="display:flex;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--amber);background:var(--amber-bg);cursor:pointer" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'"><span style="font-size:20px;flex-shrink:0">⏱️</span><div><div style="font-weight:600;font-size:13px">Attendance needs confirmation — ${esc(a.date)}</div><div style="font-size:12px;color:var(--amber-txt)">A punch on this day was outside your scheduled shift window. Please review and confirm or correct it.</div></div></div>`).join(''):''}
@@ -9024,7 +9064,7 @@ function renderModal(){
     inner=`<div class="modal-title" style="position:sticky;top:0;z-index:2;background:var(--surface)">
       <span>📋 Bulk Payroll Adjustments</span>
       <span style="font-size:11px;color:var(--txt3);font-weight:400;margin-left:8px">${rows.length} row${rows.length!==1?'s':''} · ${readyCount} ready</span>
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
 
     <!-- Pay Period selector -->
@@ -9157,7 +9197,7 @@ function renderModal(){
     const openPeriods=PAY_PERIODS.filter(p=>p.status==='open');
     const configuredTypes=INCOME_TYPES.filter(t=>!t.isStatutory&&t.code&&t.name);
     inner=`<div class="modal-title">📋 New Payroll Adjustment
-      <button class="close-x" onclick="closeM()">×</button></div>
+      <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div class="field"><label>Employee <span style="color:var(--red)">*</span></label>
       <select id="adj-emp" class="finput">
         <option value="">— Select Employee —</option>
@@ -9193,7 +9233,7 @@ function renderModal(){
     inner=`<div class="modal-title" style="gap:10px">
       <span style="width:14px;height:14px;border-radius:50%;background:${gc[g.color]||'var(--accent)'};display:inline-block;flex-shrink:0"></span>
       ${esc(g.name)}
-      <button class="close-x" onclick="closeM()">×</button></div>
+      <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:14px">
       ${[['Code',g.code],['Frequency',g.freq],['Tax Table',taxLabel],['Statutory Timing',statLabel],['Status',g.active?'Active':'Inactive']].map(([l,v])=>`
       <div style="padding:8px 12px;background:var(--bg);border-radius:8px">
@@ -9244,7 +9284,7 @@ function renderModal(){
     modal._isNew=isNew;
     modal._groupId=isNew?null:d.id;
     inner=`<div class="modal-title">${isNew?'+ Add Payroll Group':'✎ Edit Payroll Group'}
-      <button class="close-x" onclick="closeM()">×</button></div>
+      <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div class="form-row">
       <div class="field"><label>Group Name <span style="color:var(--red)">*</span></label>
         <input id="pg-name" class="finput" value="${esc(_d.name)}" placeholder="e.g. Monthly Employees"/></div>
@@ -9412,7 +9452,7 @@ function renderModal(){
     const curY=now.getFullYear();
     const curM=now.getMonth()+1;
     inner=`<div class="modal-title">+ Add Pay Period
-      <button class="close-x" onclick="closeM()">×</button></div>
+      <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div class="field"><label>Payroll Group <span style="color:var(--red)">*</span></label>
       <select id="pp-grp" class="finput" onchange="
         var gid=parseInt(this.value);
@@ -9549,7 +9589,7 @@ function renderModal(){
     const recurringEnabled=recurringAllowancesEnabled(p);
     const validGroups=PAYROLL_GROUPS.filter(g=>g.active);
     inner=`<div class="modal-title">✎ Edit Pay Period
-      <button class="close-x" onclick="closeM()">×</button></div>
+      <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div class="field"><label>Payroll Group <span style="color:var(--red)">*</span></label>
       <select id="epp-grp" class="finput">
         <option value="">— Select Group —</option>
@@ -9655,7 +9695,7 @@ function renderModal(){
         <span>📋 Bulk Add — Income / Deduction Types</span>
         <span style="font-size:11px;color:var(--txt3);font-weight:400">${rows.length} row${rows.length!==1?'s':''} · ${rows.filter(r=>rowOk(r)).length} ready to save</span>
       </div>
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
 
     <!-- Entry table -->
@@ -9779,7 +9819,7 @@ function renderModal(){
     const d=modal.data||{};
     const types=recurringAllowanceTypes();
     const selected=types.find(t=>t.code===d.payItemCode);
-    inner=`<div class="modal-title">${d.id?'Edit':'Add'} Recurring Allowance<button class="close-x" onclick="closeM()">×</button></div>
+    inner=`<div class="modal-title">${d.id?'Edit':'Add'} Recurring Allowance<button class="close-x" onclick="closeMConfirmed()">×</button></div>
       <div class="field"><label>Allowance Type <span style="color:var(--red)">*</span></label>
         <select id="ra-type" class="finput" onchange="modal.data.payItemCode=this.value;render()">
           <option value="">— Select configured Income Type —</option>
@@ -9806,7 +9846,7 @@ function renderModal(){
   }else if(modal.type==='editIT'){
     const t=modal.it;const isNew=!t.id;
     inner=`<div class="modal-title">${isNew?'+ Add Income/Deduction Type':'✎ Edit Income/Deduction Type'}
-      <button class="close-x" onclick="closeM()">×</button></div>
+      <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div class="form-row">
       <div class="field"><label>Code <span style="color:var(--red)">*</span></label>
         <input id="it-code" class="finput" value="${esc(t.code)}" placeholder="BONUS" style="text-transform:uppercase" ${t.builtIn?'disabled':''}/></div>
@@ -9940,7 +9980,7 @@ function renderModal(){
   }else if(modal.type==='__confirm__'){
     inner=`<div class="modal-title" style="gap:10px">
       <span style="font-size:20px">${modal.icon||'⚠'}</span>${esc(modal.title||'Confirm')}
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="font-size:14px;color:var(--txt);margin-bottom:20px;line-height:1.6">${esc(modal.msg||'')}</div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
@@ -9949,7 +9989,7 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='changelog'){
     inner=`<div class="modal-title">📋 System Updates & How to Update
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="padding:8px 12px;background:var(--accent-bg);border-radius:7px;font-size:12px;margin-bottom:14px;border:1px solid var(--accent)">
       <strong>Current Version:</strong> ${esc(COMPANY.version||'1.0.0')} · Built ${esc(COMPANY.buildDate||today())} · Single-file HTML app
@@ -9989,7 +10029,7 @@ function renderModal(){
     const d=modal.data||{};
     const planColors={Enterprise:'#4f46e5',Professional:'#059669',Starter:'#0891b2',Internal:'#64748b'};
     inner=`<div class="modal-title">＋ Add New Company
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div class="form-row">
       <div class="field"><label>Company Name <span style="color:var(--red)">*</span></label>
@@ -10036,7 +10076,7 @@ function renderModal(){
   }else if(modal.type==='platformPasswordReset'){
     const c=PLATFORM_CLIENTS.find(x=>x.id===modal.clientId);
     inner=`<div class="modal-title">🔑 Reset Admin Password — <strong>${esc(c?.name||'')}</strong>
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="padding:8px 12px;background:var(--bg);border-radius:7px;font-size:12px;margin-bottom:12px;border:1px solid var(--border)">
       <div style="font-weight:600;margin-bottom:4px">Current Credentials</div>
@@ -10062,7 +10102,7 @@ function renderModal(){
   }else if(modal.type==='resetPassword'){
     const e=modal.emp;
     inner=`<div class="modal-title">🔑 Reset Password — <strong>${esc(e?.name||'')}</strong>
-      <button class="close-x" onclick="closeM()">×</button>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="font-size:13px;color:var(--txt3);margin-bottom:14px">
       Set a new password for <strong>${esc(e?.email||'')}</strong>. The user must use this to log in next time.
@@ -10120,7 +10160,7 @@ function renderModal(){
 
       inner=`<div class="modal-title">
         Configure Approval Layers — <strong>${esc(emp.name)}</strong>
-        <button class="close-x" onclick="closeM()">×</button>
+        <button class="close-x" onclick="closeMConfirmed()">×</button>
       </div>
       <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">${esc(emp.pos||'')}${emp.dept?' · '+esc(emp.dept):''}</div>
 
@@ -10215,7 +10255,7 @@ function renderModal(){
     const cfTabLabels={personal:'Personal',employment:'Employment',compensation:'Compensation'};
     /* Helper: persist current inputs to modal.draft before any render() call */
     const syncDraft=`modal.draft.label=document.getElementById('cf-label')?.value||modal.draft.label;modal.draft.description=document.getElementById('cf-desc')?.value||modal.draft.description;modal.draft.options=document.getElementById('cf-opts')?.value||modal.draft.options;`;
-    inner=`<div class="modal-title">${modal.idx===null?'Add':'Edit'} Custom Field — ${cfTabLabels[modal.tabKey]||modal.tabKey} tab <button class="close-x" onclick="closeM()">×</button></div>
+    inner=`<div class="modal-title">${modal.idx===null?'Add':'Edit'} Custom Field — ${cfTabLabels[modal.tabKey]||modal.tabKey} tab <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div class="field"><label>Field Label <span style="color:var(--red)">*</span></label>
       <input id="cf-label" class="finput" value="${esc(d.label)}" placeholder="e.g. Blood Type, Shirt Size, Emergency Fund…"/>
     </div>
@@ -10265,14 +10305,16 @@ function renderModal(){
   return html;
 }
 function recalcSalary(){
-  const rate=parseFloat(document.getElementById('ne-rate')?.value)||0;
+  const pm=parseFloat(document.getElementById('ne-ratepm')?.value)||0;
+  const div=COMPANY.dailyDivisor||22;
   const months=COMPANY.salaryMultiplier||13;
-  const pa=+(rate*22*months).toFixed(2);
-  const pm=+(rate*22).toFixed(2);
+  const dr=+(pm/div).toFixed(4);
+  const pa=+(pm*months).toFixed(2);
+  if(modal&&modal.type==='addEmp'){setAeField('rate',dr);setAeField('salaryPA',pa);}
+  const rateEl=document.getElementById('ne-rate');if(rateEl)rateEl.value=dr||'';
   const spa=document.getElementById('ne-spa');if(spa)spa.value=pa||'';
-  const spm=document.getElementById('ne-spm');if(spm)spm.value=pm||'';
   const prev=document.getElementById('salary-preview');
-  if(prev&&rate)prev.innerHTML=`<strong>Auto-computed:</strong> ₱${rate.toLocaleString()} × 22 × ${months} months = <strong>₱${pa.toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> per annum · <strong>₱${pm.toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> per month`;
+  if(prev&&pm)prev.innerHTML=`<strong>Auto-computed:</strong> ₱${pm.toLocaleString()} ÷ ${formatDailyDivisor(div)} days = <strong>₱${dr.toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> daily rate · × ${months} months = <strong>₱${pa.toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> per annum`;
 }
 // The realtime ZK biometric poll (zkPullAttendance, every 20s) calls render() unconditionally
 // regardless of which page/modal is open. Most Add Employee fields used to only get read into
@@ -10285,13 +10327,23 @@ function setAeField(key,value){
   if(!modal.ae)modal.ae={};
   modal.ae[key]=value;
 }
+// Suggests a Probation End Date (Start Date + 6 months) the moment Employment Type is set to
+// probationary, since that's the standard PH probation window. Never overwrites a date the
+// admin already entered themselves — this is a convenience default, not a forced value.
+function autoSetProbationEndDate(){
+  if(!modal||modal.type!=='addEmp'||!modal.ae)return;
+  if(modal.ae.type!=='probationary'||modal.ae.probEndDate)return;
+  const hd=modal.ae.hired||today();
+  const d=new Date(hd+'T00:00:00');d.setMonth(d.getMonth()+6);
+  modal.ae.probEndDate=d.toISOString().slice(0,10);
+}
 function collectAddEmp(){
   const g=id=>{const el=document.getElementById(id);return el?el.value.trim():'';};
   return{
     firstName:g('ne-fn'),lastName:g('ne-ln'),middleName:g('ne-mn'),suffix:g('ne-sx'),
     email:g('ne-email'),personalEmail:g('ne-pemail'),pass:g('ne-pass'),
     bday:g('ne-bday'),gender:g('ne-gender'),maritalStatus:g('ne-ms'),spouseName:g('ne-sp'),
-    religion:g('ne-rel'),city:g('ne-city'),permanentAddress:g('ne-addr'),temporaryAddress:g('ne-taddr'),
+    religion:g('ne-rel'),city:g('ne-city'),rdo:g('ne-rdo'),permanentAddress:g('ne-addr'),zipCode:g('ne-zip'),temporaryAddress:g('ne-taddr'),
     contact:g('ne-c1'),contact2:g('ne-c2'),
     entityName:g('ne-entity'),bu:g('ne-bu'),dept:g('ne-dept'),team:g('ne-team'),subteam:g('ne-sub'),
     discipline:g('ne-disc'),pod:g('ne-pod'),pos:g('ne-pos'),
@@ -10299,7 +10351,7 @@ function collectAddEmp(){
     rehireable:g('ne-reh'),managerId:g('ne-mgr'),functionalHead:g('ne-fh'),
     loanEligibility:g('ne-loan'),
     currency:g('ne-curr')||'PHP',basis13:g('ne-basis')||'13-month',
-    rate:parseFloat(g('ne-rate'))||0,mobileAllowance:parseFloat(g('ne-mob'))||0,
+    salaryPM:parseFloat(g('ne-ratepm'))||0,rate:parseFloat(g('ne-rate'))||0,mobileAllowance:parseFloat(g('ne-mob'))||0,
     riceAllowance:parseFloat(g('ne-rice'))||2000,
     stockOptions:g('ne-so')||'N',esopGranted:g('ne-esop')||'N',esopEntity:g('ne-esopent'),
     sss:g('ne-sss')||'—',ph:g('ne-ph')||'—',pi:g('ne-pi')||'—',tin:g('ne-tin')||'—',
@@ -10315,12 +10367,14 @@ function genEIDPreview(){
 }
 function saveEmp(){
   const ae=collectAddEmp();
+  ['sss','ph','pi','tin'].forEach(k=>{if(!ae[k])ae[k]='—';}); /* normalize blank govt IDs to the app's placeholder */
+  if(ae.rdo)ae.rdo=normalizeRdoCode(ae.rdo);
   /* Required field checks */
   if(!ae.firstName||!ae.lastName){alert('First and last name are required (Personal tab).');modal.addTab=0;render();return;}
   if(!ae.email){alert('Company email is required (Personal tab).');modal.addTab=0;render();return;}
   if(!ae.pass){alert('Login password is required (Personal tab).');modal.addTab=0;render();return;}
   if(!ae.pos){alert('Position is required (Employment tab).');modal.addTab=1;render();return;}
-  if(!ae.rate){alert('Daily rate is required (Compensation tab).');modal.addTab=2;render();return;}
+  if(!ae.salaryPM){alert('Monthly rate is required (Compensation tab).');modal.addTab=2;render();return;}
 
   /* EID — from input field or auto-generate */
   const eidInput=document.getElementById('ne-eid')?.value?.trim();
@@ -10342,8 +10396,9 @@ function saveEmp(){
 
   const newId=Math.max(...USERS.map(u=>u.id))+1;
   const months=COMPANY.salaryMultiplier||13;
-  ae.salaryPM=+(ae.rate*22).toFixed(2);
-  ae.salaryPA=+(ae.rate*22*months).toFixed(2);
+  const div=COMPANY.dailyDivisor||22;
+  ae.rate=+(ae.salaryPM/div).toFixed(4);
+  ae.salaryPA=+(ae.salaryPM*months).toFixed(2);
   const mgrObj=ae.managerId?USERS.find(u=>u.eid===ae.managerId):null;
   const newEmp={
     ...ae,id:newId,
@@ -10357,7 +10412,9 @@ function saveEmp(){
   };
   USERS.push(newEmp);
   queueSync('Employees');
-  alert(`✅ ${newEmp.name} (${newEmp.eid}) added!\nLogin: ${ae.email} / ${ae.pass}`);
+  const blankGovt=['sss','ph','pi','tin'].filter(k=>!newEmp[k]||newEmp[k]==='—').map(k=>GOVT_FORMATS[k]?.label||k);
+  const blankNote=blankGovt.length?`\n\n⚠ Not yet provided: ${blankGovt.join(', ')} — can be added later from the employee's 201 file.`:'';
+  alert(`✅ ${newEmp.name} (${newEmp.eid}) added!\nLogin: ${ae.email} / ${ae.pass}${blankNote}`);
   closeM();
 }
 function addLoan(){
