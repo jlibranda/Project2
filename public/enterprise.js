@@ -725,12 +725,26 @@
     return parts.join(' · ');
   }
 
-  // How many months remain (inclusive of the start month) in the calendar year from a given
-  // date — used to prorate a first grant, e.g. regularized in July (month index 6) leaves
-  // 6 months (Jul–Dec) of the year's entitlement.
-  function monthsRemainingInYear(dateStr){
-    var d=new Date((dateStr||today())+'T00:00:00Z');
-    return 12-d.getUTCMonth();
+  // Leave policy year can run on the calendar (default, start month 1) or a fiscal year
+  // (e.g. start month 4 = April–March), set company-wide via COMPANY.leaveFiscalYearStartMonth.
+  window.leaveFiscalYearStartMonth=function(){
+    var m=Number(COMPANY.leaveFiscalYearStartMonth)||1;
+    return m>=1&&m<=12?m:1;
+  };
+  // The "leave year" label a date falls into — e.g. with a July page date, if the policy year
+  // starts in April, that's still fiscal year "2026" (Apr 2026–Mar 2027); a February 2026
+  // date would fall in fiscal year "2025" (Apr 2025–Mar 2026).
+  window.leaveFiscalYear=function(dateStr){
+    var d=new Date((dateStr||today())+'T00:00:00Z'),startMonth=leaveFiscalYearStartMonth(),month=d.getUTCMonth()+1;
+    return month>=startMonth?d.getUTCFullYear():d.getUTCFullYear()-1;
+  };
+  // How many months remain (inclusive of the start month) in the current policy year from a
+  // given date — used to prorate a first grant, e.g. regularized in the 2nd month of the
+  // policy year leaves 10 of the year's 12 months of entitlement remaining.
+  function leaveFiscalMonthsRemaining(dateStr){
+    var d=new Date((dateStr||today())+'T00:00:00Z'),startMonth=leaveFiscalYearStartMonth(),month=d.getUTCMonth()+1;
+    var elapsed=(month-startMonth+12)%12;
+    return 12-elapsed;
   }
 
   // Grants leave balances per policy.
@@ -742,17 +756,19 @@
   //
   // 'upfront' types special-case the FIRST grant an employee ever receives (tracked via
   // bucket.firstGrantDate): if the type prorates first grants AND eligibility started within
-  // THIS calendar year (a genuinely new mid-year hire/regularization), the grant is cut down to
-  // the months remaining in the year. Otherwise — including any employee whose eligibility
-  // started in a past year, e.g. backfilling an already-tenured employee when this system is
-  // first set up — they get the full annualDays now; there's no attempt to reconstruct what
-  // they "should" have accrued in prior years, since Set Balance is the right tool for migrating
-  // a real historical balance. After the first grant, 'upfront' types renew the full annualDays
-  // once per calendar year (plus any carried-over balance, capped at maxCarryOverDays — the
-  // rest is forfeited), guarded by lastAccrualYear.
+  // THE CURRENT policy year (a genuinely new mid-year hire/regularization), the grant is cut
+  // down to the months remaining in that policy year. Otherwise — including any employee whose
+  // eligibility started in a past policy year, e.g. backfilling an already-tenured employee
+  // when this system is first set up — they get the full annualDays now; there's no attempt to
+  // reconstruct what they "should" have accrued in prior years, since Set Balance is the right
+  // tool for migrating a real historical balance. After the first grant, 'upfront' types renew
+  // the full annualDays once per policy year (plus any carried-over balance, capped at
+  // maxCarryOverDays — the rest is forfeited), guarded by lastAccrualYear. Right before that
+  // reset, the outgoing balance is snapshotted into bucket.yearlyClosingBalances so a forfeited
+  // or carried-over prior year's balance stays visible (Leave tab > History) even after reset.
   window.runLeaveAccrual=function(){
     if(!(isAdminUser(user)||isPlatformAdmin))return;
-    var now=new Date(),year=now.getFullYear(),yearMonth=year+'-'+String(now.getMonth()+1).padStart(2,'0'),tod=today();
+    var tod=today(),fiscalYear=leaveFiscalYear(tod),yearMonth=tod.slice(0,7);
     var eligibleEmps=USERS.filter(function(e){return e.role==='employee'&&e.active!==false;});
     var credited=0;
     eligibleEmps.forEach(function(emp){
@@ -763,33 +779,35 @@
         if(!emp.leaveBalances)emp.leaveBalances={};
         var bucket=emp.leaveBalances[t.id]||{balance:0,adjustments:[]};
         bucket.adjustments=bucket.adjustments||[];
+        bucket.yearlyClosingBalances=bucket.yearlyClosingBalances||{};
         if(t.accrualMethod==='monthly'){
           if(bucket.lastAccrualMonth===yearMonth)return;
           var isFirst=!bucket.firstGrantDate;
-          var monthlyGrant=+(t.annualDays/12).toFixed(2);
-          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+((bucket.balance||0)+monthlyGrant).toFixed(2),
+          var monthlyGrant=+(t.annualDays/12).toFixed(3);
+          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+((bucket.balance||0)+monthlyGrant).toFixed(3),
             reason:(isFirst?'Initial monthly accrual ':'Monthly accrual ')+yearMonth,by:user.name});
-          bucket.balance=+((bucket.balance||0)+monthlyGrant).toFixed(2);
+          bucket.balance=+((bucket.balance||0)+monthlyGrant).toFixed(3);
           bucket.lastAccrualMonth=yearMonth;
           if(isFirst)bucket.firstGrantDate=tod;
           credited++;
         }else if(!bucket.firstGrantDate){
-          var startedThisYear=new Date(startDate+'T00:00:00Z').getUTCFullYear()===year;
-          var initialGrant=(t.prorateFirstGrant&&startedThisYear)?+(t.annualDays*monthsRemainingInYear(startDate)/12).toFixed(2):t.annualDays;
+          var startedThisYear=leaveFiscalYear(startDate)===fiscalYear;
+          var initialGrant=(t.prorateFirstGrant&&startedThisYear)?+(t.annualDays*leaveFiscalMonthsRemaining(startDate)/12).toFixed(3):t.annualDays;
           bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:initialGrant,
             reason:'Initial grant ('+(t.eligibilityBasis==='regularization'?'regularization':'hire')+' '+startDate+')'+(t.prorateFirstGrant&&startedThisYear?' — prorated':''),by:user.name});
           bucket.balance=initialGrant;
           bucket.firstGrantDate=tod;
-          bucket.lastAccrualYear=year;
+          bucket.lastAccrualYear=fiscalYear;
           credited++;
         }else{
-          if(bucket.lastAccrualYear===year)return;
+          if(bucket.lastAccrualYear===fiscalYear)return;
           var carry=t.carryOver?Math.min(bucket.balance||0,t.maxCarryOverDays||0):0;
           var forfeited=Math.max(0,(bucket.balance||0)-carry);
-          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+(carry+t.annualDays).toFixed(2),
-            reason:'Annual accrual '+year+(carry?' (+'+carry+' carried over)':'')+(forfeited?' ('+forfeited+' forfeited)':''),by:user.name});
-          bucket.balance=+(carry+t.annualDays).toFixed(2);
-          bucket.lastAccrualYear=year;
+          bucket.yearlyClosingBalances[bucket.lastAccrualYear]=bucket.balance||0;
+          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+(carry+t.annualDays).toFixed(3),
+            reason:'Annual accrual '+fiscalYear+(carry?' (+'+carry+' carried over)':'')+(forfeited?' ('+forfeited+' forfeited)':''),by:user.name});
+          bucket.balance=+(carry+t.annualDays).toFixed(3);
+          bucket.lastAccrualYear=fiscalYear;
           credited++;
         }
         emp.leaveBalances[t.id]=bucket;
@@ -800,8 +818,26 @@
     render();
   };
 
+  var LEAVE_MONTH_NAMES=['January','February','March','April','May','June','July','August','September','October','November','December'];
+  window.saveLeaveFiscalYearStartMonth=function(v){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    COMPANY.leaveFiscalYearStartMonth=Number(v)||1;
+    queueSync('Leave_Policy');
+    toast('Leave policy year updated.','success');
+    render();
+  };
+  function renderLeaveFiscalYearCard(){
+    var fyStart=leaveFiscalYearStartMonth(),isCalendar=fyStart===1;
+    return '<div class="card"><div class="card-hd"><div><div class="card-title">Leave Policy Year</div><div class="card-sub">'+
+      (isCalendar?'Calendar year (Jan–Dec).':'Fiscal year: '+LEAVE_MONTH_NAMES[fyStart-1]+'–'+LEAVE_MONTH_NAMES[(fyStart+10)%12]+'. Current policy year is labeled '+leaveFiscalYear(today())+'.')+
+      ' Controls when annual accrual, carry-over/forfeiture, and first-grant proration reset.</div></div>'+
+      '<div class="field" style="margin:0;width:220px"><label>Policy year starts in</label><select class="finput" onchange="saveLeaveFiscalYearStartMonth(this.value)">'+
+      LEAVE_MONTH_NAMES.map(function(m,i){return '<option value="'+(i+1)+'" '+(fyStart===i+1?'selected':'')+'>'+m+'</option>';}).join('')+
+      '</select></div></div>';
+  }
   function renderLeavePolicyManager(){
-    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Leave Policy</div><div class="card-sub">Define leave types, entitlement, accrual, and eligibility — used for balance tracking and the File Leave form</div></div><div class="action-row"><button class="btn btn-sm" onclick="if(confirm(\'Grant leave accrual to every eligible active employee? Upfront types are credited once per year, monthly types once per month — already-credited employees for this period are skipped.\'))runLeaveAccrual()">Run Leave Accrual</button><button class="btn btn-primary btn-sm" onclick="openLeaveTypeEditor()">+ Add Leave Type</button></div></div>'+
+    return renderLeaveFiscalYearCard()+
+      '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Leave Policy</div><div class="card-sub">Define leave types, entitlement, accrual, and eligibility — used for balance tracking and the File Leave form</div></div><div class="action-row"><button class="btn btn-sm" onclick="if(confirm(\'Grant leave accrual to every eligible active employee? Upfront types are credited once per policy year, monthly types once per month — already-credited employees for this period are skipped.\'))runLeaveAccrual()">Run Leave Accrual</button><button class="btn btn-primary btn-sm" onclick="openLeaveTypeEditor()">+ Add Leave Type</button></div></div>'+
       '<div style="overflow-x:auto"><table><thead><tr><th>Type</th><th>Paid</th><th>Annual Days</th><th>Accrual</th><th>Carry-over</th><th>Eligibility</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
       (LEAVE_TYPES.length?LEAVE_TYPES.map(function(t){
         return '<tr><td style="font-weight:700">'+esc(t.name)+' <span class="badge" style="font-size:10px">'+esc(t.code)+'</span></td>'+
