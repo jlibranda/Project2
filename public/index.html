@@ -3377,7 +3377,7 @@ function pgEmployees(){
     </label></td>
     <td><div style="display:flex;gap:5px">
       <button class="btn btn-sm" onclick="openEmp(${e.id})">201 →</button>
-      <button class="btn btn-sm" onclick="modal={type:'accessEdit',emp:USERS.find(u=>u.id===${e.id})};render()" title="Edit access level" style="padding:4px 8px">${ico('shield',13)}</button>
+      <button class="btn btn-sm" onclick="modal={type:'accessEdit',emp:USERS.find(u=>u.id===${e.id}),origRole:'${e.role}'};render()" title="Edit access level" style="padding:4px 8px">${ico('shield',13)}</button>
       ${(isPlatformAdmin||canAccess('emp_reset_password'))?`<button class="btn btn-sm" onclick="modal={type:'resetPassword',emp:USERS.find(u=>u.id===${e.id}),newPass:''};render()" title="Reset password" style="padding:4px 8px">🔑</button>`:''}
       ${isPlatformAdmin?`<button class="btn btn-sm" style="padding:4px 8px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${e.id})" title="Log in with this user's actual access — Super Admin only">Log in as user</button>`:''}
       ${(isPlatformAdmin||isAdminUser(user)||canAccess('emp_delete'))?`<button class="btn btn-sm btn-danger" onclick="deleteEmp(${e.id})" title="Delete" style="padding:4px 8px">✕</button>`:''}
@@ -8029,8 +8029,8 @@ function renderModal(){
         <div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:3px">${Object.entries(al.perms).filter(([,v])=>v).map(([k])=>`<span style="font-size:10px;background:var(--bg);padding:1px 6px;border-radius:4px;color:var(--txt3)">${k}</span>`).join('')}</div></div>
       </label>`).join('')}
     </div>
-    ${e.accessLevelId===1?`<div class="section-header" style="margin-top:14px">Account Type</div>
-    <div style="font-size:12px;color:var(--txt3);margin:2px 0 8px">Super Admin has full access either way — this only controls whether the account is treated as one of your own employees.</div>
+    ${modal.origRole==='admin'?`<div class="section-header" style="margin-top:14px">Account Type</div>
+    <div style="font-size:12px;color:var(--txt3);margin:2px 0 8px">This account started as a system/service admin (not a regular employee record). Super Admin has full access either way — this only controls whether it's also treated as one of your own employees.</div>
     <div style="display:grid;gap:8px">
       <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1.5px solid ${(e.role||'employee')==='employee'?'var(--accent)':'var(--border)'};border-radius:9px;cursor:pointer;background:${(e.role||'employee')==='employee'?'var(--accent-bg)':'var(--surface)'}">
         <input type="radio" name="admtype" style="width:auto;margin-top:2px;accent-color:var(--accent)" ${(e.role||'employee')==='employee'?'checked':''} onchange="modal.emp.role='employee';render()"/>
@@ -10533,7 +10533,7 @@ function renderCredRows(filter){
       <td><span class="badge" style="background:${c}22;color:${c};font-size:10px">${al.name}</span></td>
       <td><code style="font-size:11px;background:var(--surface2);padding:2px 7px;border-radius:4px;border:1px solid var(--border)">${esc(u.pass||'—')}</code></td>
       <td><div style="display:flex;gap:4px;flex-wrap:wrap">
-        <button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'accessEdit',emp:USERS.find(x=>x.id===${u.id})};render()">🛡 Level</button>
+        <button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'accessEdit',emp:USERS.find(x=>x.id===${u.id}),origRole:'${u.role}'};render()">🛡 Level</button>
         ${(isPlatformAdmin||canAccess('emp_reset_password'))?`<button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'resetPassword',emp:USERS.find(x=>x.id===${u.id}),newPass:''};render()">🔑 Reset</button>`:''}
         ${u.id!==user.id?(isPlatformAdmin?`<button class="btn btn-sm" style="font-size:11px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${u.id})">Log in as user</button>`:''):'<span style="font-size:11px;color:var(--txt3)">← You</span>'}
       </div></td>
@@ -12621,7 +12621,7 @@ function pgEmpDetail(){
         <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
           <div style="font-size:11px;font-weight:600;color:var(--txt3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">Access Level</div>
           <span class="badge" style="background:${alColors[al.color]||'#6b7280'}22;color:${alColors[al.color]||'#6b7280'}">${al.name}</span>
-          ${isA?`<button class="btn btn-sm" style="margin-top:8px;width:100%;font-size:11px" onclick="modal={type:'accessEdit',emp:USERS.find(u=>u.id===${e.id})};render()">Change level</button>`:''}
+          ${isA?`<button class="btn btn-sm" style="margin-top:8px;width:100%;font-size:11px" onclick="modal={type:'accessEdit',emp:USERS.find(u=>u.id===${e.id}),origRole:'${e.role}'};render()">Change level</button>`:''}
         </div>
       </div>
     </div>
