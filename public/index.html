@@ -4921,8 +4921,8 @@ function pgLeave(){
       <div class="field"><label>Leave Type</label><select id="lt" onchange="setLeaveDraftField('lt',this.value);updateLeaveComputation()">${opts.map(t=>`<option value="${esc(t.name)}" ${t.name===d.lt?'selected':''}>${esc(t.name)}</option>`).join('')}</select></div>
       <div class="field"><label>Day Type</label><select id="ldaytype" onchange="setLeaveDraftField('dayType',this.value);updateLeaveComputation()">
         <option value="whole" ${d.dayType==='whole'?'selected':''}>Whole Day(s)</option>
-        <option value="half_am" ${d.dayType==='half_am'?'selected':''}>Half Day — Morning</option>
-        <option value="half_pm" ${d.dayType==='half_pm'?'selected':''}>Half Day — Afternoon</option>
+        <option value="half_am" ${d.dayType==='half_am'?'selected':''}>Half Day — First Half</option>
+        <option value="half_pm" ${d.dayType==='half_pm'?'selected':''}>Half Day — Second Half</option>
       </select></div>
       </div>
       <div class="form-row"><div class="field"><label>Start Date</label><input type="date" id="ls" value="${d.ls}" onchange="setLeaveDraftField('ls',this.value);updateLeaveComputation()"/></div><div class="field"><label>End Date</label><input type="date" id="le2" value="${d.le2}" ${d.dayType!=='whole'?'disabled':''} onchange="setLeaveDraftField('le2',this.value);updateLeaveComputation()"/></div></div>
@@ -4965,7 +4965,7 @@ function submitLeave(){
   const days=window._leaveDays||0;
   if(!reason){alert('Please provide a reason.');return;}
   if(days<=0){alert(dayType==='whole'?'The selected date range has no working days (all rest days). Adjust the dates or file this as a different request.':'Number of days must be greater than 0.');return;}
-  const halfLabel=dayType==='half_am'?'Half Day — Morning':dayType==='half_pm'?'Half Day — Afternoon':'';
+  const halfLabel=dayType==='half_am'?'Half Day — First Half':dayType==='half_pm'?'Half Day — Second Half':'';
   const t=(COMPANY.leaveTypes||[]).find(x=>x.name===type);
   let paidDays=days,unpaidDays=0;
   if(t){
