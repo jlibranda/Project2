@@ -603,6 +603,116 @@
       '</tbody></table></div></div>';
   }
 
+  /* ---- Leave Policy ----
+   * Defines leave TYPES (entitlement, accrual, paid/unpaid, carry-over, eligibility rules) —
+   * replaces the old hardcoded dropdown in File Leave with configurable policy, and is the
+   * basis for per-employee balance tracking and eligibility checks (Stage 2/3). */
+  var LEAVE_GENDER_LABELS={'':'Any gender','female':'Female only','male':'Male only'};
+  var LEAVE_ACCRUAL_LABELS={'upfront':'Full amount at year start','monthly':'Accrues monthly (1/12 per month)'};
+  var LEAVE_TYPES=(COMPANY.leaveTypes&&COMPANY.leaveTypes.length?COMPANY.leaveTypes:[
+    {id:1,name:'Vacation Leave',code:'VL',paid:true,annualDays:15,accrualMethod:'upfront',carryOver:true,maxCarryOverDays:5,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true},
+    {id:2,name:'Sick Leave',code:'SL',paid:true,annualDays:15,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true},
+    {id:3,name:'Emergency Leave',code:'EL',paid:true,annualDays:5,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true},
+    {id:4,name:'Maternity Leave',code:'ML',paid:true,annualDays:105,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'female',minTenureMonths:0,employeeTypes:[],active:true},
+    {id:5,name:'Paternity Leave',code:'PL',paid:true,annualDays:7,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'male',minTenureMonths:0,employeeTypes:[],active:true},
+    {id:6,name:'Solo Parent Leave',code:'SPL',paid:true,annualDays:7,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:12,employeeTypes:[],active:true},
+    {id:7,name:'Bereavement Leave',code:'BL',paid:true,annualDays:3,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true}
+  ]);
+  var nextLeaveTypeId=LEAVE_TYPES.reduce(function(max,t){return Math.max(max,t.id||0);},0)+1;
+
+  function saveLeaveTypeConfig(){
+    COMPANY.leaveTypes=LEAVE_TYPES;
+    queueSync('Leave_Policy');
+  }
+
+  function tenureMonths(employee){
+    if(!employee||!employee.hired)return 0;
+    var hired=new Date(employee.hired+'T00:00:00Z'),now=new Date();
+    return Math.max(0,(now.getUTCFullYear()-hired.getUTCFullYear())*12+(now.getUTCMonth()-hired.getUTCMonth()));
+  }
+
+  // Default (policy-based) eligibility for a leave type — gender, minimum tenure, and
+  // employment type all have to match. An explicit per-employee override (Stage 2, stored on
+  // employee.leaveOverrides[typeId]) always takes precedence over this when present.
+  function leaveTypePolicyEligible(employee,leaveType){
+    if(!employee||!leaveType)return false;
+    if(leaveType.genderRestriction&&employee.gender&&employee.gender.toLowerCase()!==leaveType.genderRestriction)return false;
+    if(tenureMonths(employee)<(leaveType.minTenureMonths||0))return false;
+    if(leaveType.employeeTypes&&leaveType.employeeTypes.length&&leaveType.employeeTypes.indexOf(employee.type)<0)return false;
+    return true;
+  }
+  window.leaveTypeEligible=function(employee,leaveType){
+    var override=employee&&employee.leaveOverrides&&employee.leaveOverrides[leaveType.id];
+    if(override!==undefined)return !!override;
+    return leaveTypePolicyEligible(employee,leaveType);
+  };
+
+  window.openLeaveTypeEditor=function(typeId){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var existing=typeId?LEAVE_TYPES.find(function(t){return t.id===typeId;}):null;
+    modal={type:'leaveTypeEditor',isNew:!existing,draft:existing?Object.assign({},existing,{employeeTypes:(existing.employeeTypes||[]).slice()}):
+      {id:null,name:'',code:'',paid:true,annualDays:0,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true}};
+    render();
+  };
+
+  window.saveLeaveTypeEditor=function(){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var d=modal.draft;
+    if(!d.name||!d.name.trim()){toast('Leave type name is required.','warning');return;}
+    if(!d.code||!d.code.trim()){toast('A short code (e.g. VL, SL) is required.','warning');return;}
+    var dupCode=LEAVE_TYPES.find(function(t){return t.code.toLowerCase()===d.code.trim().toLowerCase()&&t.id!==d.id;});
+    if(dupCode){toast('Code "'+d.code+'" is already used by '+dupCode.name+'.','warning');return;}
+    if(Number(d.annualDays)<0){toast('Annual entitlement cannot be negative.','warning');return;}
+    var payload={name:d.name.trim(),code:d.code.trim().toUpperCase(),paid:!!d.paid,annualDays:Number(d.annualDays)||0,
+      accrualMethod:d.accrualMethod==='monthly'?'monthly':'upfront',carryOver:!!d.carryOver,
+      maxCarryOverDays:d.carryOver?(Number(d.maxCarryOverDays)||0):0,genderRestriction:d.genderRestriction||'',
+      minTenureMonths:Number(d.minTenureMonths)||0,employeeTypes:(d.employeeTypes||[]).slice(),active:d.active!==false};
+    if(d.id){
+      Object.assign(LEAVE_TYPES.find(function(t){return t.id===d.id;}),payload);
+    }else{
+      LEAVE_TYPES.push(Object.assign({id:nextLeaveTypeId++},payload));
+    }
+    saveLeaveTypeConfig();closeM();toast('Leave policy saved.','success');
+  };
+
+  window.toggleLeaveType=function(id){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var t=LEAVE_TYPES.find(function(x){return x.id===id;});if(!t)return;
+    t.active=!t.active;saveLeaveTypeConfig();toast(t.name+' is now '+(t.active?'active':'inactive')+'.','success');render();
+  };
+
+  window.deleteLeaveType=function(id){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var t=LEAVE_TYPES.find(function(x){return x.id===id;});if(!t)return;
+    var used=LEAVES.some(function(l){return l.type===t.name;});
+    if(used){toast('Cannot delete: existing leave requests reference "'+t.name+'". Deactivate it instead.','warning');return;}
+    if(!confirm('Delete "'+t.name+'"? This cannot be undone.'))return;
+    LEAVE_TYPES.splice(LEAVE_TYPES.indexOf(t),1);saveLeaveTypeConfig();render();
+  };
+
+  function describeLeaveEligibility(t){
+    var parts=[];
+    if(t.genderRestriction)parts.push(LEAVE_GENDER_LABELS[t.genderRestriction]);
+    if(t.minTenureMonths)parts.push(t.minTenureMonths+'+ months tenure');
+    if(t.employeeTypes&&t.employeeTypes.length)parts.push(t.employeeTypes.map(function(c){var lt=LOOKUPS.employmentTypes.find(function(x){return x.code===c;});return lt?lt.code:c;}).join('/'));
+    return parts.length?parts.join(' · '):'All employees';
+  }
+
+  function renderLeavePolicyManager(){
+    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Leave Policy</div><div class="card-sub">Define leave types, entitlement, accrual, and eligibility — used for balance tracking and the File Leave form</div></div><button class="btn btn-primary btn-sm" onclick="openLeaveTypeEditor()">+ Add Leave Type</button></div>'+
+      '<div style="overflow-x:auto"><table><thead><tr><th>Type</th><th>Paid</th><th>Annual Days</th><th>Accrual</th><th>Carry-over</th><th>Eligibility</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
+      (LEAVE_TYPES.length?LEAVE_TYPES.map(function(t){
+        return '<tr><td style="font-weight:700">'+esc(t.name)+' <span class="badge" style="font-size:10px">'+esc(t.code)+'</span></td>'+
+          '<td>'+(t.paid?'Paid':'Unpaid')+'</td><td style="text-align:center">'+t.annualDays+'</td>'+
+          '<td style="font-size:12px">'+LEAVE_ACCRUAL_LABELS[t.accrualMethod]+'</td>'+
+          '<td style="font-size:12px">'+(t.carryOver?'Up to '+t.maxCarryOverDays+' days':'No carry-over')+'</td>'+
+          '<td style="font-size:11px;color:var(--txt3)">'+esc(describeLeaveEligibility(t))+'</td>'+
+          '<td><span class="badge '+(t.active?'b-approved':'b-rejected')+'">'+(t.active?'Active':'Inactive')+'</span></td>'+
+          '<td><div class="action-row"><button class="btn btn-sm" onclick="openLeaveTypeEditor('+t.id+')">Edit</button><button class="btn btn-sm" onclick="toggleLeaveType('+t.id+')">'+(t.active?'Deactivate':'Activate')+'</button><button class="btn btn-sm btn-danger" onclick="deleteLeaveType('+t.id+')">Delete</button></div></td></tr>';
+      }).join(''):'<tr><td colspan="8" style="text-align:center;color:var(--txt3);padding:2rem">No leave types configured yet.</td></tr>')+
+      '</tbody></table></div></div>';
+  }
+
   var ATTENDANCE_FORM_CONFIG = [
     {key:'time_correction',label:'Time In / Time Out Correction',short:'TC',description:'File multiple missing or incorrect punches in one batch.',kind:'punch',visible:true,core:true},
     {key:'schedule_adjustment',label:'Schedule Adjustment',short:'SA',description:'Request a temporary change to the assigned shift schedule.',kind:'schedule',visible:true},
@@ -839,7 +949,7 @@
   var baseCompanySettings=window.pgCompanySettings;
   window.showCompanySettingsTab=function(key){window._companySettingsTab=key;render();};
   function companySettingsTabs(active){
-    var items=[{key:'general',label:'General & Payroll'},{key:'shifts',label:'Shift Setup'},{key:'holidays',label:'Holiday Calendar'},{key:'attendance',label:'Attendance Forms'}];
+    var items=[{key:'general',label:'General & Payroll'},{key:'shifts',label:'Shift Setup'},{key:'holidays',label:'Holiday Calendar'},{key:'leave',label:'Leave Policy'},{key:'attendance',label:'Attendance Forms'}];
     return '<div class="settings-tabbar" role="tablist" aria-label="Company Settings sections">'+items.map(function(item){return '<button class="settings-tab'+(active===item.key?' active':'')+'" role="tab" aria-selected="'+(active===item.key?'true':'false')+'" onclick="showCompanySettingsTab(\''+item.key+'\')">'+item.label+'</button>';}).join('')+'</div>';
   }
   window.pgCompanySettings=pgCompanySettings=function(){
@@ -850,9 +960,9 @@
       var general=baseCompanySettings(),marker='<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">';
       return general.indexOf(marker)>=0?general.replace(marker,tabs+marker):tabs+general;
     }
-    var subtitle=active==='shifts'?'Create reusable schedules and manage employee shift assignments.':active==='holidays'?'Manage holiday dates so attendance and payroll automatically apply the correct rate.':'Choose which attendance request forms employees can access.';
-    var body=active==='shifts'?renderShiftManager():active==='holidays'?renderHolidayManager():renderAttendanceFormManager();
-    return '<div class="page-header"><div><div class="page-title">Company Settings</div><div class="page-sub">'+subtitle+'</div></div></div>'+tabs+body;
+    var subtitles={shifts:'Create reusable schedules and manage employee shift assignments.',holidays:'Manage holiday dates so attendance and payroll automatically apply the correct rate.',leave:'Define leave types, entitlement, accrual, and eligibility rules.',attendance:'Choose which attendance request forms employees can access.'};
+    var body=active==='shifts'?renderShiftManager():active==='holidays'?renderHolidayManager():active==='leave'?renderLeavePolicyManager():renderAttendanceFormManager();
+    return '<div class="page-header"><div><div class="page-title">Company Settings</div><div class="page-sub">'+(subtitles[active]||'')+'</div></div></div>'+tabs+body;
   };
 
   /* Extend payroll approval: approved runs release payslips and create audit events. */
