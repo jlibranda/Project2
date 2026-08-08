@@ -8221,74 +8221,73 @@ function renderModal(){
       ${['Personal','Employment','Compensation','Gov\'t & Bank','Emergency'].map((l,i)=>`<div class="tab${(modal.addTab||0)===i?' active':''}" onclick="modal.addTab=${i};render()" style="font-size:12px;white-space:nowrap">${l}</div>`).join('')}
     </div>
     ${(modal.addTab||0)===0?`
-    <div class="form-row"><div class="field"><label>Legal First Name *</label><input id="ne-fn" value="${ae.firstName||''}"/></div><div class="field"><label>Legal Last Name *</label><input id="ne-ln" value="${ae.lastName||''}"/></div></div>
-    <div class="form-row"><div class="field"><label>Middle Name</label><input id="ne-mn" value="${ae.middleName||''}"/></div><div class="field"><label>Suffix</label><input id="ne-sx" value="${ae.suffix||''}"/></div></div>
-    <div class="form-row"><div class="field"><label>Date of Birth</label><input type="date" id="ne-bday" value="${ae.bday||''}"/></div><div class="field"><label>Gender</label><select id="ne-gender"><option ${ae.gender==='Female'?'selected':''}>Female</option><option ${ae.gender==='Male'?'selected':''}>Male</option><option ${ae.gender==='Non-binary'?'selected':''}>Non-binary</option><option>Prefer not to say</option></select></div></div>
-    <div class="form-row"><div class="field"><label>Marital Status</label><select id="ne-ms"><option>Single</option><option ${ae.maritalStatus==='Married'?'selected':''}>Married</option><option>Widowed</option><option>Separated</option></select></div><div class="field"><label>Spouse Name</label><input id="ne-sp" value="${ae.spouseName||''}"/></div></div>
-    <div class="form-row"><div class="field"><label>Religion</label><input id="ne-rel" value="${ae.religion||''}"/></div><div class="field"><label>City</label><input id="ne-city" value="${ae.city||''}"/></div></div>
-    <div class="field"><label>Permanent Address</label><input id="ne-addr" value="${ae.permanentAddress||''}"/></div>
-    <div class="field"><label>Temporary Address</label><input id="ne-taddr" value="${ae.temporaryAddress||''}"/></div>
-    <div class="form-row"><div class="field"><label>Primary Contact *</label><input id="ne-c1" value="${ae.contact||''}"/></div><div class="field"><label>Secondary Contact</label><input id="ne-c2" value="${ae.contact2||''}"/></div></div>
-    <div class="form-row"><div class="field"><label>Company Email *</label><input type="email" id="ne-email" value="${ae.email||''}"/></div><div class="field"><label>Personal Email</label><input type="email" id="ne-pemail" value="${ae.personalEmail||''}"/></div></div>
-    <div class="field"><label>Login Password *</label><input id="ne-pass" value="${ae.pass||'emp123'}"/></div>`
+    <div class="form-row"><div class="field"><label>Legal First Name *</label><input id="ne-fn" value="${ae.firstName||''}" oninput="setAeField('firstName',this.value)"/></div><div class="field"><label>Legal Last Name *</label><input id="ne-ln" value="${ae.lastName||''}" oninput="setAeField('lastName',this.value)"/></div></div>
+    <div class="form-row"><div class="field"><label>Middle Name</label><input id="ne-mn" value="${ae.middleName||''}" oninput="setAeField('middleName',this.value)"/></div><div class="field"><label>Suffix</label><input id="ne-sx" value="${ae.suffix||''}" oninput="setAeField('suffix',this.value)"/></div></div>
+    <div class="form-row"><div class="field"><label>Date of Birth</label><input type="date" id="ne-bday" value="${ae.bday||''}" oninput="setAeField('bday',this.value)"/></div><div class="field"><label>Gender</label><select id="ne-gender" onchange="setAeField('gender',this.value)"><option ${ae.gender==='Female'?'selected':''}>Female</option><option ${ae.gender==='Male'?'selected':''}>Male</option><option ${ae.gender==='Non-binary'?'selected':''}>Non-binary</option><option>Prefer not to say</option></select></div></div>
+    <div class="form-row"><div class="field"><label>Marital Status</label><select id="ne-ms" onchange="setAeField('maritalStatus',this.value)"><option>Single</option><option ${ae.maritalStatus==='Married'?'selected':''}>Married</option><option>Widowed</option><option>Separated</option></select></div><div class="field"><label>Spouse Name</label><input id="ne-sp" value="${ae.spouseName||''}" oninput="setAeField('spouseName',this.value)"/></div></div>
+    <div class="form-row"><div class="field"><label>Religion</label><input id="ne-rel" value="${ae.religion||''}" oninput="setAeField('religion',this.value)"/></div><div class="field"><label>City</label><input id="ne-city" value="${ae.city||''}" oninput="setAeField('city',this.value)"/></div></div>
+    <div class="field"><label>Permanent Address</label><input id="ne-addr" value="${ae.permanentAddress||''}" oninput="setAeField('permanentAddress',this.value)"/></div>
+    <div class="field"><label>Temporary Address</label><input id="ne-taddr" value="${ae.temporaryAddress||''}" oninput="setAeField('temporaryAddress',this.value)"/></div>
+    <div class="form-row"><div class="field"><label>Primary Contact *</label><input id="ne-c1" value="${ae.contact||''}" oninput="setAeField('contact',this.value)"/></div><div class="field"><label>Secondary Contact</label><input id="ne-c2" value="${ae.contact2||''}" oninput="setAeField('contact2',this.value)"/></div></div>
+    <div class="form-row"><div class="field"><label>Company Email *</label><input type="email" id="ne-email" value="${ae.email||''}" oninput="setAeField('email',this.value)"/></div><div class="field"><label>Personal Email</label><input type="email" id="ne-pemail" value="${ae.personalEmail||''}" oninput="setAeField('personalEmail',this.value)"/></div></div>
+    <div class="field"><label>Login Password *</label><input id="ne-pass" value="${ae.pass||'emp123'}" oninput="setAeField('pass',this.value)"/></div>`
     :(modal.addTab||0)===1?`
     <div class="form-row"><div class="field"><label>Employee ID ${EMP_NUM_CONFIG.manual?'(manual entry)':'(auto-generated)'}</label>
       <div style="display:flex;gap:7px;align-items:center">
-        <input id="ne-eid" value="${ae.eid||genEIDPreview()}" placeholder="${EMP_NUM_CONFIG.prefix}${EMP_NUM_CONFIG.separator}XXX" ${EMP_NUM_CONFIG.manual?'':'readonly style="background:var(--bg);color:var(--txt2)"'} oninput="modal.ae=collectAddEmp();modal.ae.eid=this.value"/>
+        <input id="ne-eid" value="${ae.eid||genEIDPreview()}" placeholder="${EMP_NUM_CONFIG.prefix}${EMP_NUM_CONFIG.separator}XXX" ${EMP_NUM_CONFIG.manual?'':'readonly style="background:var(--bg);color:var(--txt2)"'} oninput="setAeField('eid',this.value)"/>
         ${!EMP_NUM_CONFIG.manual?`<button class="btn btn-sm" onclick="modal.ae=collectAddEmp();modal.ae.eid=genEID();render()" title="Regenerate">↺</button>`:''}
       </div>
-    </div><div class="field"><label>Entity Name</label><input id="ne-entity" value="${ae.entityName||'TiltPay PH Inc.'}"/></div></div>
-    <div class="field"><label>Cost Center</label><input id="ne-cc" value="${ae.costCenter||''}"/></div>
+    </div><div class="field"><label>Entity Name</label><input id="ne-entity" value="${ae.entityName||'TiltPay PH Inc.'}" oninput="setAeField('entityName',this.value)"/></div></div>
     <div class="field"><label>Business Unit</label><select id="ne-bu" onchange="modal.ae=collectAddEmp();modal.ae.bu=this.value;modal.ae.dept='';modal.ae.team='';modal.ae.subteam='';render()"><option value="">— Select BU —</option>${buList}</select></div>
     <div class="field"><label>Department</label><select id="ne-dept" onchange="modal.ae=collectAddEmp();modal.ae.dept=this.value;modal.ae.team='';modal.ae.subteam='';render()"><option value="">— Select Dept —</option>${deptList}</select></div>
-    <div class="form-row"><div class="field"><label>Team</label><select id="ne-team" onchange="modal.ae=collectAddEmp();modal.ae.team=this.value;modal.ae.subteam='';render()"><option value="">— Select Team —</option>${teamList}</select></div><div class="field"><label>Subteam</label><select id="ne-sub"><option value="">— Select Subteam —</option>${subList}</select></div></div>
-    <div class="form-row"><div class="field"><label>Discipline</label><select id="ne-disc"><option value="">— Select —</option>${LOOKUPS.disciplines.map(d=>`<option value="${d.name}" ${ae.discipline===d.name?'selected':''}>${d.name}</option>`).join('')}</select></div><div class="field"><label>Pod</label><select id="ne-pod"><option value="">— None —</option>${LOOKUPS.pods.map(p=>`<option value="${p.name}" ${ae.pod===p.name?'selected':''}>${p.name}</option>`).join('')}</select></div></div>
-    <div class="field"><label>Position *</label><input id="ne-pos" value="${ae.pos||''}"/></div>
-    <div class="form-row"><div class="field"><label>Band Level</label><select id="ne-band"><option value="">—</option>${LOOKUPS.bandLevels.map(l=>`<option value="${l.code}" ${ae.bandLevel===l.code?'selected':''}>${l.label}</option>`).join('')}</select></div></div>
-    <div class="form-row"><div class="field"><label>Non-Mass / Mass</label><select id="ne-nm"><option>Non-Mass</option><option ${ae.nonMass==='Mass'?'selected':''}>Mass</option></select></div><div class="field"><label>Employment Type</label><select id="ne-type">${LOOKUPS.employmentTypes.map(t=>`<option value="${t.code}" ${ae.type===t.code?'selected':''}>${t.label}</option>`).join('')}</select></div></div>
-    <div class="form-row"><div class="field"><label>Start Date *</label><input type="date" id="ne-start" value="${ae.hired||today()}"/></div><div class="field"><label>Probation End Date</label><input type="date" id="ne-prob" value="${ae.probEndDate||''}"/></div></div>
-    <div class="form-row"><div class="field"><label>Cost Center</label><select id="ne-cc"><option value="">— Select —</option>${LOOKUPS.costCenters.map(c=>`<option value="${c.code}" ${ae.costCenter===c.code?'selected':''}>${c.label}</option>`).join('')}</select></div></div>
-    <div class="form-row"><div class="field"><label>Rehireable</label><select id="ne-reh"><option value="Y">Yes</option><option value="N" ${ae.rehireable==='N'?'selected':''}>No</option><option value="">TBD</option></select></div><div class="field"><label>Loan Eligibility</label><select id="ne-loan"><option value="Y">Yes</option><option value="N" ${ae.loanEligibility==='N'?'selected':''}>No</option></select></div></div>
-    <div class="form-row"><div class="field"><label>Manager</label><select id="ne-mgr"><option value="">— None —</option>${USERS.map(u=>`<option value="${u.eid}" ${ae.managerId===u.eid?'selected':''}>${u.eid} — ${u.name}</option>`).join('')}</select></div><div class="field"><label>Functional Head</label><input id="ne-fh" value="${ae.functionalHead||''}"/></div></div>`
+    <div class="form-row"><div class="field"><label>Team</label><select id="ne-team" onchange="modal.ae=collectAddEmp();modal.ae.team=this.value;modal.ae.subteam='';render()"><option value="">— Select Team —</option>${teamList}</select></div><div class="field"><label>Subteam</label><select id="ne-sub" onchange="setAeField('subteam',this.value)"><option value="">— Select Subteam —</option>${subList}</select></div></div>
+    <div class="form-row"><div class="field"><label>Discipline</label><select id="ne-disc" onchange="setAeField('discipline',this.value)"><option value="">— Select —</option>${LOOKUPS.disciplines.map(d=>`<option value="${d.name}" ${ae.discipline===d.name?'selected':''}>${d.name}</option>`).join('')}</select></div><div class="field"><label>Pod</label><select id="ne-pod" onchange="setAeField('pod',this.value)"><option value="">— None —</option>${LOOKUPS.pods.map(p=>`<option value="${p.name}" ${ae.pod===p.name?'selected':''}>${p.name}</option>`).join('')}</select></div></div>
+    <div class="field"><label>Position *</label><input id="ne-pos" value="${ae.pos||''}" oninput="setAeField('pos',this.value)"/></div>
+    <div class="form-row"><div class="field"><label>Band Level</label><select id="ne-band" onchange="setAeField('bandLevel',this.value)"><option value="">—</option>${LOOKUPS.bandLevels.map(l=>`<option value="${l.code}" ${ae.bandLevel===l.code?'selected':''}>${l.label}</option>`).join('')}</select></div></div>
+    <div class="form-row"><div class="field"><label>Non-Mass / Mass</label><select id="ne-nm" onchange="setAeField('nonMass',this.value)"><option>Non-Mass</option><option ${ae.nonMass==='Mass'?'selected':''}>Mass</option></select></div><div class="field"><label>Employment Type</label><select id="ne-type" onchange="setAeField('type',this.value)">${LOOKUPS.employmentTypes.map(t=>`<option value="${t.code}" ${ae.type===t.code?'selected':''}>${t.label}</option>`).join('')}</select></div></div>
+    <div class="form-row"><div class="field"><label>Start Date *</label><input type="date" id="ne-start" value="${ae.hired||today()}" oninput="setAeField('hired',this.value)"/></div><div class="field"><label>Probation End Date</label><input type="date" id="ne-prob" value="${ae.probEndDate||''}" oninput="setAeField('probEndDate',this.value)"/></div></div>
+    <div class="form-row"><div class="field"><label>Cost Center</label><select id="ne-cc" onchange="setAeField('costCenter',this.value)"><option value="">— Select —</option>${LOOKUPS.costCenters.map(c=>`<option value="${c.code}" ${ae.costCenter===c.code?'selected':''}>${c.label}</option>`).join('')}</select></div></div>
+    <div class="form-row"><div class="field"><label>Rehireable</label><select id="ne-reh" onchange="setAeField('rehireable',this.value)"><option value="Y">Yes</option><option value="N" ${ae.rehireable==='N'?'selected':''}>No</option><option value="">TBD</option></select></div><div class="field"><label>Loan Eligibility</label><select id="ne-loan" onchange="setAeField('loanEligibility',this.value)"><option value="Y">Yes</option><option value="N" ${ae.loanEligibility==='N'?'selected':''}>No</option></select></div></div>
+    <div class="form-row"><div class="field"><label>Manager</label><select id="ne-mgr" onchange="setAeField('managerId',this.value)"><option value="">— None —</option>${USERS.map(u=>`<option value="${u.eid}" ${ae.managerId===u.eid?'selected':''}>${u.eid} — ${u.name}</option>`).join('')}</select></div><div class="field"><label>Functional Head</label><input id="ne-fh" value="${ae.functionalHead||''}" oninput="setAeField('functionalHead',this.value)"/></div></div>`
     :(modal.addTab||0)===2?`
-    <div class="form-row"><div class="field"><label>Currency</label><select id="ne-curr"><option>PHP</option><option ${ae.currency==='USD'?'selected':''}>USD</option></select></div></div>
-    <div class="field"><label>Daily Rate (₱) *</label><input type="number" id="ne-rate" value="${ae.rate||''}" oninput="modal.ae=collectAddEmp();modal.ae.rate=parseFloat(this.value)||0;recalcSalary();"/></div>
+    <div class="form-row"><div class="field"><label>Currency</label><select id="ne-curr" onchange="setAeField('currency',this.value)"><option>PHP</option><option ${ae.currency==='USD'?'selected':''}>USD</option></select></div></div>
+    <div class="field"><label>Daily Rate (₱) *</label><input type="number" id="ne-rate" value="${ae.rate||''}" oninput="setAeField('rate',parseFloat(this.value)||0);recalcSalary();"/></div>
     <div style="background:var(--accent-bg);border-radius:8px;padding:10px 12px;margin:8px 0;font-size:12px;color:var(--accent-txt)" id="salary-preview">
       ${ae.rate?`<strong>Auto-computed:</strong> ₱${parseFloat(ae.rate).toLocaleString()} × 22 days × ${COMPANY.salaryMultiplier||13} months = <strong>₱${(ae.rate*22*(COMPANY.salaryMultiplier||13)).toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> per annum · <strong>₱${(ae.rate*22).toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> per month`:'Enter daily rate above to auto-compute annual and monthly salary.'}
     </div>
     <div class="form-row"><div class="field"><label>Salary Per Annum (auto)</label><input type="number" id="ne-spa" value="${ae.rate?(ae.rate*22*(COMPANY.salaryMultiplier||13)).toFixed(2):ae.salaryPA||''}" readonly style="background:var(--bg);color:var(--txt2)"/></div><div class="field"><label>Salary Per Month (auto)</label><input type="number" id="ne-spm" value="${ae.rate?(ae.rate*22).toFixed(2):ae.salaryPM||''}" readonly style="background:var(--bg);color:var(--txt2)"/></div></div>
-    <div class="form-row"><div class="field"><label>Mobile Allowance</label><input type="number" id="ne-mob" value="${ae.mobileAllowance||0}"/></div><div class="field"><label>Rice Allowance</label><input type="number" id="ne-rice" value="${ae.riceAllowance||2000}"/></div></div>
-    <div class="form-row"><div class="field"><label>Stock Options</label><select id="ne-so"><option value="N">No</option><option value="Y" ${ae.stockOptions==='Y'?'selected':''}>Yes</option></select></div><div class="field"><label>ESOP Granted</label><select id="ne-esop"><option value="N">No</option><option value="Y" ${ae.esopGranted==='Y'?'selected':''}>Yes</option></select></div></div>
-    <div class="field"><label>ESOP Entity Name</label><input id="ne-esopent" value="${ae.esopEntity||''}"/></div>`
+    <div class="form-row"><div class="field"><label>Mobile Allowance</label><input type="number" id="ne-mob" value="${ae.mobileAllowance||0}" oninput="setAeField('mobileAllowance',parseFloat(this.value)||0)"/></div><div class="field"><label>Rice Allowance</label><input type="number" id="ne-rice" value="${ae.riceAllowance||2000}" oninput="setAeField('riceAllowance',parseFloat(this.value)||0)"/></div></div>
+    <div class="form-row"><div class="field"><label>Stock Options</label><select id="ne-so" onchange="setAeField('stockOptions',this.value)"><option value="N">No</option><option value="Y" ${ae.stockOptions==='Y'?'selected':''}>Yes</option></select></div><div class="field"><label>ESOP Granted</label><select id="ne-esop" onchange="setAeField('esopGranted',this.value)"><option value="N">No</option><option value="Y" ${ae.esopGranted==='Y'?'selected':''}>Yes</option></select></div></div>
+    <div class="field"><label>ESOP Entity Name</label><input id="ne-esopent" value="${ae.esopEntity||''}" oninput="setAeField('esopEntity',this.value)"/></div>`
     :(modal.addTab||0)===3?`
     <div class="form-row">
       <div class="field"><label>SSS No. <span style="font-weight:400;color:var(--txt3);font-size:11px">12-3456789-0</span></label>
         <input id="ne-sss" value="${fmtGovt('sss',ae.sss||'')}" placeholder="12-3456789-0" style="font-family:'JetBrains Mono',monospace;letter-spacing:.5px"
-          oninput="const v=fmtGovt('sss',this.value);this.value=v;this.style.borderColor=validateGovtNum('sss',v)?'var(--red)':'var(--border)'"/>
+          oninput="const v=fmtGovt('sss',this.value);this.value=v;this.style.borderColor=validateGovtNum('sss',v)?'var(--red)':'var(--border)';setAeField('sss',v)"/>
       </div>
       <div class="field"><label>PhilHealth No. <span style="font-weight:400;color:var(--txt3);font-size:11px">12-345678901-2</span></label>
         <input id="ne-ph" value="${fmtGovt('ph',ae.ph||'')}" placeholder="12-345678901-2" style="font-family:'JetBrains Mono',monospace;letter-spacing:.5px"
-          oninput="const v=fmtGovt('ph',this.value);this.value=v;this.style.borderColor=validateGovtNum('ph',v)?'var(--red)':'var(--border)'"/>
+          oninput="const v=fmtGovt('ph',this.value);this.value=v;this.style.borderColor=validateGovtNum('ph',v)?'var(--red)':'var(--border)';setAeField('ph',v)"/>
       </div>
     </div>
     <div class="form-row">
       <div class="field"><label>Pag-IBIG No. <span style="font-weight:400;color:var(--txt3);font-size:11px">1234-5678-9012</span></label>
         <input id="ne-pi" value="${fmtGovt('pi',ae.pi||'')}" placeholder="1234-5678-9012" style="font-family:'JetBrains Mono',monospace;letter-spacing:.5px"
-          oninput="const v=fmtGovt('pi',this.value);this.value=v;this.style.borderColor=validateGovtNum('pi',v)?'var(--red)':'var(--border)'"/>
+          oninput="const v=fmtGovt('pi',this.value);this.value=v;this.style.borderColor=validateGovtNum('pi',v)?'var(--red)':'var(--border)';setAeField('pi',v)"/>
       </div>
       <div class="field"><label>TIN / BIR <span style="font-weight:400;color:var(--txt3);font-size:11px">123-456-789-000</span></label>
         <input id="ne-tin" value="${fmtGovt('tin',ae.tin||'')}" placeholder="123-456-789-000" style="font-family:'JetBrains Mono',monospace;letter-spacing:.5px"
-          oninput="const v=fmtGovt('tin',this.value);this.value=v;this.style.borderColor=validateGovtNum('tin',v)?'var(--red)':'var(--border)'"/>
+          oninput="const v=fmtGovt('tin',this.value);this.value=v;this.style.borderColor=validateGovtNum('tin',v)?'var(--red)':'var(--border)';setAeField('tin',v)"/>
       </div>
     </div>
-    <div class="form-row"><div class="field"><label>Bank (free text)</label><input id="ne-bank" value="${ae.bank||''}" placeholder="e.g. BDO, BPI, GCash, PayMaya…"/></div><div class="field"><label>Bank Account No.</label><input id="ne-bacc" value="${ae.bankAccount||''}"/></div></div>`
+    <div class="form-row"><div class="field"><label>Bank (free text)</label><input id="ne-bank" value="${ae.bank||''}" placeholder="e.g. BDO, BPI, GCash, PayMaya…" oninput="setAeField('bank',this.value)"/></div><div class="field"><label>Bank Account No.</label><input id="ne-bacc" value="${ae.bankAccount||''}" oninput="setAeField('bankAccount',this.value)"/></div></div>`
     :`
     <div class="section-header">Emergency Contact 1</div>
-    <div class="form-row"><div class="field"><label>Name</label><input id="ne-ec1n" value="${ae.ec1Name||''}"/></div><div class="field"><label>Relationship</label><input id="ne-ec1r" value="${ae.ec1Rel||''}"/></div></div>
-    <div class="form-row"><div class="field"><label>Contact Number</label><input id="ne-ec1c" value="${ae.ec1Contact||''}"/></div><div class="field"><label>Home Address</label><input id="ne-ec1a" value="${ae.ec1Addr||''}"/></div></div>
+    <div class="form-row"><div class="field"><label>Name</label><input id="ne-ec1n" value="${ae.ec1Name||''}" oninput="setAeField('ec1Name',this.value)"/></div><div class="field"><label>Relationship</label><input id="ne-ec1r" value="${ae.ec1Rel||''}" oninput="setAeField('ec1Rel',this.value)"/></div></div>
+    <div class="form-row"><div class="field"><label>Contact Number</label><input id="ne-ec1c" value="${ae.ec1Contact||''}" oninput="setAeField('ec1Contact',this.value)"/></div><div class="field"><label>Home Address</label><input id="ne-ec1a" value="${ae.ec1Addr||''}" oninput="setAeField('ec1Addr',this.value)"/></div></div>
     <div class="section-header">Emergency Contact 2</div>
-    <div class="form-row"><div class="field"><label>Name</label><input id="ne-ec2n" value="${ae.ec2Name||''}"/></div><div class="field"><label>Relationship</label><input id="ne-ec2r" value="${ae.ec2Rel||''}"/></div></div>
-    <div class="form-row"><div class="field"><label>Contact Number</label><input id="ne-ec2c" value="${ae.ec2Contact||''}"/></div><div class="field"><label>Home Address</label><input id="ne-ec2a" value="${ae.ec2Addr||''}"/></div></div>`}
+    <div class="form-row"><div class="field"><label>Name</label><input id="ne-ec2n" value="${ae.ec2Name||''}" oninput="setAeField('ec2Name',this.value)"/></div><div class="field"><label>Relationship</label><input id="ne-ec2r" value="${ae.ec2Rel||''}" oninput="setAeField('ec2Rel',this.value)"/></div></div>
+    <div class="form-row"><div class="field"><label>Contact Number</label><input id="ne-ec2c" value="${ae.ec2Contact||''}" oninput="setAeField('ec2Contact',this.value)"/></div><div class="field"><label>Home Address</label><input id="ne-ec2a" value="${ae.ec2Addr||''}" oninput="setAeField('ec2Addr',this.value)"/></div></div>`}
     <div style="margin-top:14px;display:flex;gap:8px;border-top:1px solid var(--border);padding-top:12px">
       ${(modal.addTab||0)>0?`<button class="btn" onclick="modal.ae=collectAddEmp();modal.addTab=${(modal.addTab||0)-1};render()">← Back</button>`:''}
       ${(modal.addTab||0)<4?`<button class="btn btn-primary" onclick="modal.ae=collectAddEmp();modal.addTab=${(modal.addTab||0)+1};render()">Next →</button>`:`<button class="btn btn-primary" onclick="saveEmp()">Save Employee</button>`}
@@ -10227,6 +10226,17 @@ function recalcSalary(){
   const spm=document.getElementById('ne-spm');if(spm)spm.value=pm||'';
   const prev=document.getElementById('salary-preview');
   if(prev&&rate)prev.innerHTML=`<strong>Auto-computed:</strong> ₱${rate.toLocaleString()} × 22 × ${months} months = <strong>₱${pa.toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> per annum · <strong>₱${pm.toLocaleString('en-PH',{minimumFractionDigits:2})}</strong> per month`;
+}
+// The realtime ZK biometric poll (zkPullAttendance, every 20s) calls render() unconditionally
+// regardless of which page/modal is open. Most Add Employee fields used to only get read into
+// modal.ae at tab-navigation clicks (collectAddEmp()), so a poll landing mid-typing on the
+// current tab would blow away the live DOM inputs' values back to that stale snapshot — same
+// bug class as the earlier File Leave draft-loss fix. Every field now writes straight into
+// modal.ae on each keystroke so it survives any background re-render, not just this one timer.
+function setAeField(key,value){
+  if(!modal||modal.type!=='addEmp')return;
+  if(!modal.ae)modal.ae={};
+  modal.ae[key]=value;
 }
 function collectAddEmp(){
   const g=id=>{const el=document.getElementById(id);return el?el.value.trim():'';};
