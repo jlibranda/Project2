@@ -807,6 +807,13 @@
     if(m<1){m=12;y--;}
     return y+'-'+(m<10?'0':'')+m;
   }
+  // Half-month proration rule for a first grant: eligibility starting on the 1st-15th of a
+  // month counts that whole month toward the grant; starting on the 16th-end only counts it as
+  // half a month. Only ever applies once, to the single month eligibility actually began in —
+  // every other month in the grant (before or after) is a normal full month.
+  function halfMonthDiscount(dateStr){
+    return parseInt(dateStr.slice(8,10),10)>=16?0.5:0;
+  }
   function fiscalYearStartYM(fiscalYearLabel){
     var m=leaveFiscalYearStartMonth();
     return fiscalYearLabel+'-'+(m<10?'0':'')+m;
@@ -866,8 +873,12 @@
       }else{
         referenceYM=leaveFiscalYear(bucket.lastAccrualMonth+'-01')===fiscalYear?bucket.lastAccrualMonth:prevYearMonth(currentFYStartYM);
       }
-      var monthsToCredit=monthIndex(yearMonth)-monthIndex(referenceYM);
-      if(monthsToCredit<1)return false;
+      // The month eligibility actually started in only counts as half a month if that start
+      // date falls on the 16th or later — applied once, on a first grant only, regardless of
+      // how many total months are being caught up in this single call.
+      var discount=isFirst?halfMonthDiscount(startDate):0;
+      var monthsToCredit=monthIndex(yearMonth)-monthIndex(referenceYM)-discount;
+      if(monthsToCredit<=0)return false;
       var grantAmount=+(t.annualDays/12*monthsToCredit).toFixed(3);
       bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+((bucket.balance||0)+grantAmount).toFixed(3),
         reason:(isFirst?'Initial monthly accrual — ':'Monthly accrual — ')+monthsToCredit+' month(s) through '+yearMonth,by:actor});
@@ -876,7 +887,8 @@
       if(isFirst)bucket.firstGrantDate=tod;
     }else if(!bucket.firstGrantDate){
       var startedThisYear=leaveFiscalYear(startDate)===fiscalYear;
-      var initialGrant=(t.prorateFirstGrant&&startedThisYear)?+(t.annualDays*leaveFiscalMonthsRemaining(startDate)/12).toFixed(3):t.annualDays;
+      var monthsRemaining=leaveFiscalMonthsRemaining(startDate)-halfMonthDiscount(startDate);
+      var initialGrant=(t.prorateFirstGrant&&startedThisYear)?+(t.annualDays*monthsRemaining/12).toFixed(3):t.annualDays;
       bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:initialGrant,
         reason:'Initial grant ('+(t.eligibilityBasis==='regularization'?'regularization':'hire')+' '+startDate+')'+(t.prorateFirstGrant&&startedThisYear?' — prorated':''),by:actor});
       bucket.balance=initialGrant;
