@@ -11171,16 +11171,17 @@ function renderCredRows(filter){
     const al=ACCESS_LEVELS.find(a=>a.id===u.accessLevelId)||ACCESS_LEVELS[4];
     const c=alColors[al.color]||'#6b7280';
     return`<tr>
-      <td><div class="emp-cell"><div class="avatar sm">${ini(u.name)}</div>
-        <div><div style="font-weight:500">${esc(u.name)}</div><div style="font-size:11px;color:var(--txt3)">${esc(u.eid||'')}</div></div>
+      <td><div class="emp-cell"><div class="avatar sm">${ini(u.name||'?')}</div>
+        <div><div style="font-weight:500">${esc(u.name||'Unnamed')}</div><div style="font-size:11px;color:var(--txt3)">${esc(u.eid||'')}</div></div>
       </div></td>
-      <td style="color:var(--txt3)">${esc(u.email)}</td>
+      <td style="color:var(--txt3)">${esc(u.email||'—')}</td>
       <td><span class="badge" style="background:${c}22;color:${c};font-size:10px">${al.name}</span></td>
       <td><code style="font-size:11px;background:var(--surface2);padding:2px 7px;border-radius:4px;border:1px solid var(--border)">${esc(u.pass||'—')}</code></td>
       <td><div style="display:flex;gap:4px;flex-wrap:wrap">
         <button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'accessEdit',emp:USERS.find(x=>x.id===${u.id}),origRole:'${u.role}'};render()">🛡 Level</button>
         ${(isPlatformAdmin||canAccess('emp_reset_password'))?`<button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'resetPassword',emp:USERS.find(x=>x.id===${u.id}),newPass:''};render()">🔑 Reset</button>`:''}
         ${u.id!==user.id?(isPlatformAdmin?`<button class="btn btn-sm" style="font-size:11px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${u.id})">Log in as user</button>`:''):'<span style="font-size:11px;color:var(--txt3)">← You</span>'}
+        ${u.id!==user.id&&(isPlatformAdmin||isAdminUser(user)||canAccess('emp_delete'))?`<button class="btn btn-sm btn-danger" style="font-size:11px" onclick="deleteEmp(${u.id})">✕ Delete</button>`:''}
       </div></td>
     </tr>`;
   }).join('')||'<tr><td colspan="5" class="empty-state">No employees found.</td></tr>';
