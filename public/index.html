@@ -4789,6 +4789,26 @@ function submitAtt(isA){
   queueSync('Attendance');alert(existing?'Attendance updated. The employee now has one authoritative record for this date.':'Attendance filed!');goTab(0);
 }
 
+function myLeaveTypeOptions(){
+  return (COMPANY.leaveTypes||[]).filter(t=>t.active&&leaveTypeEligible(user,t));
+}
+function leaveBalanceFor(emp,typeId){
+  return (emp&&emp.leaveBalances&&emp.leaveBalances[typeId])||{balance:0,adjustments:[]};
+}
+function myLeaveBalanceSummary(){
+  const opts=myLeaveTypeOptions();
+  if(!opts.length)return'';
+  return`<div class="card" style="margin-bottom:1rem"><div class="card-title" style="margin-bottom:.6rem">My Leave Balances</div>
+  <div style="display:flex;flex-wrap:wrap;gap:10px">${opts.map(t=>{const bal=leaveBalanceFor(user,t.id);return`<div style="padding:8px 14px;border:1px solid var(--border);border-radius:8px;min-width:110px"><div style="font-size:11px;color:var(--txt3)">${esc(t.code)}</div><div style="font-weight:700;font-size:16px">${bal.balance}</div><div style="font-size:10px;color:var(--txt3)">days</div></div>`;}).join('')}</div></div>`;
+}
+function updateLeaveBalanceHint(){
+  const sel=document.getElementById('lt'),hint=document.getElementById('lt-balance-hint');
+  if(!sel||!hint)return;
+  const t=(COMPANY.leaveTypes||[]).find(x=>x.name===sel.value);
+  if(!t){hint.textContent='';return;}
+  const bal=leaveBalanceFor(user,t.id);
+  hint.textContent='Available balance: '+bal.balance+' day'+(bal.balance===1?'':'s')+(t.paid?'':' (unpaid)');
+}
 function pgLeave(){
   const isA=isAdminUser(user);
   const tabs=isA?['Pending Approval','All Requests','File Leave']:['My Leaves','File Leave'];
@@ -4802,22 +4822,49 @@ function pgLeave(){
     <tbody>${LEAVES.map(l=>{const emp=USERS.find(u=>u.id===l.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${l.type}</td><td class="mono" style="font-size:12px">${l.s}${l.e!==l.s?' – '+l.e:''}</td><td style="text-align:center">${l.days}</td><td style="color:var(--txt3)">${l.filed}</td><td><span class="badge b-${l.status}">${l.status}</span></td></tr>`;}).join('')}</tbody></table>`;
   }else if(!isA&&tab===0){
     const mine=LEAVES.filter(l=>l.eid===user.id);
-    body=`<table><thead><tr><th>Type</th><th>Start</th><th>End</th><th>Days</th><th>Reason</th><th>Status</th></tr></thead>
-    <tbody>${mine.length?mine.map(l=>`<tr><td>${l.type}</td><td>${l.s}</td><td>${l.e}</td><td style="text-align:center">${l.days}</td><td>${l.reason}</td><td><span class="badge b-${l.status}">${l.status}</span></td></tr>`).join(''):'<tr><td colspan="6" class="empty-state">No leave requests yet</td></tr>'}</tbody></table>`;
+    body=myLeaveBalanceSummary()+`<div class="card"><table><thead><tr><th>Type</th><th>Start</th><th>End</th><th>Days</th><th>Reason</th><th>Status</th></tr></thead>
+    <tbody>${mine.length?mine.map(l=>`<tr><td>${l.type}</td><td>${l.s}</td><td>${l.e}</td><td style="text-align:center">${l.days}</td><td>${l.reason}</td><td><span class="badge b-${l.status}">${l.status}</span></td></tr>`).join(''):'<tr><td colspan="6" class="empty-state">No leave requests yet</td></tr>'}</tbody></table></div>`;
+    return`<div class="page-header"><div class="page-title">Leave Management</div></div>
+    <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
+    ${body}`;
   }else{
-    body=`<div class="form-row"><div class="field"><label>Leave Type</label><select id="lt"><option>Sick Leave</option><option>Vacation Leave</option><option>Emergency Leave</option><option>Maternity Leave</option><option>Paternity Leave</option><option>Solo Parent Leave</option><option>Bereavement Leave</option></select></div><div class="field"><label>Number of Days</label><input type="number" id="ldays" value="1" min="1"/></div></div>
+    const opts=myLeaveTypeOptions();
+    body=opts.length?`<div class="form-row"><div class="field"><label>Leave Type</label><select id="lt" onchange="updateLeaveBalanceHint()">${opts.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('')}</select><div id="lt-balance-hint" style="font-size:11px;color:var(--txt3);margin-top:4px"></div></div><div class="field"><label>Number of Days</label><input type="number" id="ldays" value="1" min="1"/></div></div>
     <div class="form-row"><div class="field"><label>Start Date</label><input type="date" id="ls" value="${today()}"/></div><div class="field"><label>End Date</label><input type="date" id="le2" value="${today()}"/></div></div>
     <div class="field"><label>Reason / Remarks</label><textarea id="lr" rows="3" placeholder="Briefly describe your leave..."></textarea></div>
-    <div style="margin-top:4px"><button class="btn btn-primary" onclick="submitLeave()">Submit Request</button></div>`;
+    <div style="margin-top:4px"><button class="btn btn-primary" onclick="submitLeave()">Submit Request</button></div>`
+    :`<div class="empty-state">No leave types are currently assigned to you. Contact HR if you believe this is incorrect.</div>`;
   }
   return`<div class="page-header"><div class="page-title">Leave Management</div></div>
   <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
   <div class="card">${body}</div>`;
 }
-function actLeave(id,ok){const l=LEAVES.find(x=>x.id===id);if(l){l.status=ok?'approved':'rejected';queueSync('Leave_Requests');}render();}
+function actLeave(id,ok){
+  const l=LEAVES.find(x=>x.id===id);
+  if(!l)return;
+  l.status=ok?'approved':'rejected';
+  if(ok){
+    const emp=USERS.find(u=>u.id===l.eid),t=(COMPANY.leaveTypes||[]).find(x=>x.name===l.type);
+    if(emp&&t){
+      if(!emp.leaveBalances)emp.leaveBalances={};
+      const bucket=emp.leaveBalances[t.id]||{balance:0,adjustments:[]};
+      bucket.adjustments=bucket.adjustments||[];
+      bucket.adjustments.unshift({id:Date.now(),date:today(),from:bucket.balance,to:+(bucket.balance-l.days).toFixed(2),reason:'Leave approved: '+l.s+(l.e!==l.s?' – '+l.e:''),by:user.name});
+      bucket.balance=+(bucket.balance-l.days).toFixed(2);
+      emp.leaveBalances[t.id]=bucket;
+    }
+  }
+  queueSync('Leave_Requests');
+  render();
+}
 function submitLeave(){
   const type=document.getElementById('lt').value,s=document.getElementById('ls').value,e=document.getElementById('le2').value,days=parseInt(document.getElementById('ldays').value)||1,reason=document.getElementById('lr').value.trim();
   if(!reason){alert('Please provide a reason.');return;}
+  const t=(COMPANY.leaveTypes||[]).find(x=>x.name===type);
+  if(t){
+    const bal=leaveBalanceFor(user,t.id);
+    if(days>bal.balance&&!confirm('You only have '+bal.balance+' day(s) of '+t.name+' available, but requested '+days+'. File anyway? HR will need to review the shortfall.'))return;
+  }
   LEAVES.push({id:nLeave++,eid:user.id,type,s,e,reason,status:'pending',filed:today(),days});
   queueSync('Leave_Requests');alert('Leave request submitted!');goTab(0);
 }
