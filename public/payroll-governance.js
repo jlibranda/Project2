@@ -205,7 +205,7 @@
   window.approvePayroll=function(runId){
     var run=PAYROLLS.find(function(item){return item.id===runId;});
     if(!run||run.status!=='pending_approval')return;
-    if(!(user.role==='admin'||canAccess('payroll_approve'))){toast('You do not have payroll approval permission.','error');return;}
+    if(!(isAdminUser(user)||canAccess('payroll_approve'))){toast('You do not have payroll approval permission.','error');return;}
     var stageIndex=numberOr(run.approvalStage,1),stage=PAYROLL_WORKFLOW[stageIndex];
     if(!stage){lockPayrollRun(run);return;}
     var previous=(run.workflow||[])[run.workflow.length-1];
@@ -239,7 +239,7 @@
   };
 
   function canManagePayrollCalendar(){
-    return !!(user&&(user.role==='admin'||isPlatformAdmin||canAccess('payroll_approve')));
+    return !!(user&&(isAdminUser(user)||isPlatformAdmin||canAccess('payroll_approve')));
   }
   function periodAudit(action,period,notes,runId){
     PAYROLL_AUDIT.push({runId:runId||period.runId||null,periodId:period.id,action:action,by:user.name,at:new Date().toISOString(),notes:notes||period.label});

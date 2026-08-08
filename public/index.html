@@ -1541,10 +1541,19 @@ async function zkImport(){
   ZK.pulledRecords=[];ZK.importPreview=[];
   render();
 }
-/* ---- Permission helper ---- */
+/* ---- Permission helper ----
+   Two ways a user can be a full administrator: the legacy `role:'admin'` flag (an
+   outsourced/service account, deliberately excluded from `role==='employee'` headcount
+   filters), or `role:'employee'` combined with the "Super Admin" access level (id 1) — a
+   staff member who is also a full admin, e.g. an in-house HR/payroll manager in SaaS mode.
+   Every admin-only gate should go through this instead of checking `user.role==='admin'`
+   directly, so both patterns work identically. */
+function isAdminUser(u){
+  return !!(u && (u.role==='admin' || u.accessLevelId===1));
+}
 function canAccess(viewKey){
   if(!user)return false;
-  if(user.role==='admin'||isPlatformAdmin)return true; /* admin + God Admin = full access */
+  if(isAdminUser(user)||isPlatformAdmin)return true; /* admin + God Admin = full access */
   const al=ACCESS_LEVELS.find(a=>a.id===user.accessLevelId);
   if(!al)return false;
   return al.perms[viewKey]===true;
@@ -2545,7 +2554,7 @@ function doGuestBundy(){
 }
 /* ========== SIDEBAR ========== */
 function renderSidebar(){
-  const isA=user.role==='admin'||isPlatformAdmin;
+  const isA=isAdminUser(user)||isPlatformAdmin;
   /* God Admin inside a company: all modules EXCEPT leave (not a company employee) */
   const godInCompany=isPlatformAdmin&&activeClientId;
   const has=v=>{
@@ -2666,7 +2675,7 @@ function findAllDuplicates(){
 }
 
 function pgDashboard(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const myA=attendanceRecords().filter(a=>a.eid===user.id);
   const pr=myA.filter(a=>a.status==='present').length;
   const la=myA.filter(a=>a.status==='late').length;
@@ -3371,7 +3380,7 @@ function pgEmployees(){
       <button class="btn btn-sm" onclick="modal={type:'accessEdit',emp:USERS.find(u=>u.id===${e.id})};render()" title="Edit access level" style="padding:4px 8px">${ico('shield',13)}</button>
       ${(isPlatformAdmin||canAccess('emp_reset_password'))?`<button class="btn btn-sm" onclick="modal={type:'resetPassword',emp:USERS.find(u=>u.id===${e.id}),newPass:''};render()" title="Reset password" style="padding:4px 8px">🔑</button>`:''}
       ${isPlatformAdmin?`<button class="btn btn-sm" style="padding:4px 8px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${e.id})" title="Log in with this user's actual access — Super Admin only">Log in as user</button>`:''}
-      ${(isPlatformAdmin||user.role==='admin'||canAccess('emp_delete'))?`<button class="btn btn-sm btn-danger" onclick="deleteEmp(${e.id})" title="Delete" style="padding:4px 8px">✕</button>`:''}
+      ${(isPlatformAdmin||isAdminUser(user)||canAccess('emp_delete'))?`<button class="btn btn-sm btn-danger" onclick="deleteEmp(${e.id})" title="Delete" style="padding:4px 8px">✕</button>`:''}
     </div></td>
   </tr>`;}).join('')})():`<tr><td colspan="10" class="empty-state">No employees match "${esc(empSearch)}"</td></tr>`}</tbody></table></div>`;
 }
@@ -4711,7 +4720,7 @@ function pgOnboarding(){
 function markStep(eid,idx){const o=ONBOARD.find(x=>x.eid===eid);if(o)o.steps[idx].done=true;render();}
 
 function pgAttendance(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const tabs=isA?['My Records','All Employees','File Attendance']:['My Records','File Attendance'];
   let body='';
   if(tab===0){
@@ -4742,7 +4751,7 @@ function submitAtt(isA){
 }
 
 function pgLeave(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const tabs=isA?['Pending Approval','All Requests','File Leave']:['My Leaves','File Leave'];
   let body='';
   if(isA&&tab===0){
@@ -5357,7 +5366,7 @@ function pgPayroll(){
           ${!isLocked?`<button class="btn btn-sm" title="Edit period" onclick="modal={type:'editPayPeriod',period:JSON.parse(JSON.stringify(PAY_PERIODS.find(x=>x.id===${p.id})))};render()">✎ Edit</button>`:''}
           ${p.status==='open'?`<button class="btn btn-sm btn-amber" onclick="lockPayPeriod(${p.id})">🔒 Lock</button>`:''}
           ${p.status==='locked'?`<button class="btn btn-sm" onclick="unlockPayPeriod(${p.id})">🔓 Unlock</button>`:''}
-          ${p.status==='closed'&&(user.role==='admin'||isPlatformAdmin||canAccess('payroll_approve'))?`<button class="btn btn-sm btn-amber" title="Void the linked payroll while preserving its audit history, then reopen this period" onclick="reopenClosedPayPeriod(${p.id})">↩ Void & Reopen</button>`:''}
+          ${p.status==='closed'&&(isAdminUser(user)||isPlatformAdmin||canAccess('payroll_approve'))?`<button class="btn btn-sm btn-amber" title="Void the linked payroll while preserving its audit history, then reopen this period" onclick="reopenClosedPayPeriod(${p.id})">↩ Void & Reopen</button>`:''}
           ${!isLocked?`<button class="btn btn-sm btn-danger" title="Delete period" onclick="deletePayPeriod(${p.id})">🗑 Delete</button>`:''}
         </div></td>
       </tr>`;}).join('')}</tbody></table>`
@@ -7129,7 +7138,7 @@ function pgMySlips(){
 function openSlip(rid){const run=PAYROLLS.find(r=>r.id===rid);const item=run.items.find(i=>i.eid===user.id);modal={type:'slip',run,item};render();}
 
 function pgLoans(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const myLoans=isA?LOANS:LOANS.filter(l=>l.eid===user.id);
   return`<div class="page-header"><div><div class="page-title">Loans</div><div class="page-sub">${isA?'All employee loans':'My active loans'}</div></div>
   ${isA?`<button class="btn btn-primary" onclick="modal={type:'addLoan'};render()">${ico('loan',14)} Add Loan</button>`:''}</div>
@@ -7202,7 +7211,7 @@ function advCand(id){
 function rejectCand(id){const c=CANDIDATES.find(x=>x.id===id);c.stage='rejected';render();}
 
 function pgPerformance(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const records=isA?PERF:PERF.filter(p=>p.eid===user.id);
   return`<div class="page-header"><div class="page-title">Performance Management</div></div>
   <div class="card">
@@ -8020,8 +8029,47 @@ function renderModal(){
         <div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:3px">${Object.entries(al.perms).filter(([,v])=>v).map(([k])=>`<span style="font-size:10px;background:var(--bg);padding:1px 6px;border-radius:4px;color:var(--txt3)">${k}</span>`).join('')}</div></div>
       </label>`).join('')}
     </div>
+    ${e.accessLevelId===1?`<div class="section-header" style="margin-top:14px">Account Type</div>
+    <div style="font-size:12px;color:var(--txt3);margin:2px 0 8px">Super Admin has full access either way — this only controls whether the account is treated as one of your own employees.</div>
+    <div style="display:grid;gap:8px">
+      <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1.5px solid ${(e.role||'employee')==='employee'?'var(--accent)':'var(--border)'};border-radius:9px;cursor:pointer;background:${(e.role||'employee')==='employee'?'var(--accent-bg)':'var(--surface)'}">
+        <input type="radio" name="admtype" style="width:auto;margin-top:2px;accent-color:var(--accent)" ${(e.role||'employee')==='employee'?'checked':''} onchange="modal.emp.role='employee';render()"/>
+        <div><div style="font-weight:600;font-size:13px">Staff admin — SaaS mode</div><div style="font-size:12px;color:var(--txt3)">Counts as one of your employees. Appears in the Employee list, Org Chart, headcount, and payroll.</div></div>
+      </label>
+      <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1.5px solid ${e.role==='admin'?'var(--accent)':'var(--border)'};border-radius:9px;cursor:pointer;background:${e.role==='admin'?'var(--accent-bg)':'var(--surface)'}">
+        <input type="radio" name="admtype" style="width:auto;margin-top:2px;accent-color:var(--accent)" ${e.role==='admin'?'checked':''} onchange="modal.emp.role='admin';render()"/>
+        <div><div style="font-weight:600;font-size:13px">Outsourced / service admin — full outsource mode</div><div style="font-size:12px;color:var(--txt3)">A provider account managing HR/payroll on the company's behalf. Hidden from the Employee list, Org Chart, headcount, and payroll — not one of the company's own staff.</div></div>
+      </label>
+    </div>`:''}
     <div style="margin-top:14px;display:flex;gap:8px;border-top:1px solid var(--border);padding-top:12px">
       <button class="btn btn-primary" onclick="saveAccessEdit()">Save Changes</button>
+      <button class="btn" onclick="closeM()">Cancel</button>
+    </div>`;
+  }else if(modal.type==='addAdmin'){
+    const d=modal.data;
+    inner=`<div class="modal-title">+ Add Administrator <button class="close-x" onclick="closeM()">×</button></div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">Creates a Super Admin account with full system access — separate from the regular "Add Employee" flow, which is for rank-and-file staff.</div>
+    <div class="form-row">
+      <div class="field"><label>Full Name <span style="color:var(--red)">*</span></label>
+        <input class="finput" value="${esc(d.name)}" placeholder="e.g. Maria Santos" oninput="modal.data.name=this.value"/></div>
+      <div class="field"><label>Email <span style="color:var(--red)">*</span></label>
+        <input class="finput" type="email" value="${esc(d.email)}" placeholder="e.g. admin@company.com" oninput="modal.data.email=this.value"/></div>
+    </div>
+    <div class="field" style="margin-bottom:14px"><label>Password <span style="color:var(--red)">*</span></label>
+      <input class="finput" value="${esc(d.pass)}" placeholder="Login password" oninput="modal.data.pass=this.value"/></div>
+    <div class="section-header">Account Type</div>
+    <div style="display:grid;gap:8px;margin-top:6px">
+      <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1.5px solid ${d.role==='employee'?'var(--accent)':'var(--border)'};border-radius:9px;cursor:pointer;background:${d.role==='employee'?'var(--accent-bg)':'var(--surface)'}">
+        <input type="radio" name="newadmtype" style="width:auto;margin-top:2px;accent-color:var(--accent)" ${d.role==='employee'?'checked':''} onchange="modal.data.role='employee';render()"/>
+        <div><div style="font-weight:600;font-size:13px">Staff admin — SaaS mode</div><div style="font-size:12px;color:var(--txt3)">This admin is also one of your own employees. Will appear in the Employee list, Org Chart, headcount, and payroll.</div></div>
+      </label>
+      <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1.5px solid ${d.role==='admin'?'var(--accent)':'var(--border)'};border-radius:9px;cursor:pointer;background:${d.role==='admin'?'var(--accent-bg)':'var(--surface)'}">
+        <input type="radio" name="newadmtype" style="width:auto;margin-top:2px;accent-color:var(--accent)" ${d.role==='admin'?'checked':''} onchange="modal.data.role='admin';render()"/>
+        <div><div style="font-weight:600;font-size:13px">Outsourced / service admin — full outsource mode</div><div style="font-size:12px;color:var(--txt3)">A provider account managing HR/payroll on the company's behalf. Hidden from the Employee list, Org Chart, headcount, and payroll.</div></div>
+      </label>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:8px;border-top:1px solid var(--border);padding-top:12px">
+      <button class="btn btn-primary" onclick="saveAddAdmin()">✓ Create Administrator</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
   }else if(modal.type==='addLoan'){
@@ -8337,7 +8385,7 @@ function renderModal(){
       <button onclick="modal={type:'changeOwnPassword',oldPass:'',newPass:'',newPass2:''};render()" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);cursor:pointer;font-size:13px;color:var(--txt);text-align:left;width:100%" onmouseover="this.style.background='var(--accent-bg)'" onmouseout="this.style.background='var(--bg)'">
         🔑 <span><div style="font-weight:500">Change Password</div><div style="font-size:11px;color:var(--txt3)">Update your login password</div></span>
       </button>
-      ${(user.role==='admin'||isPlatformAdmin)?`<button onclick="closeM();goView('company')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);cursor:pointer;font-size:13px;color:var(--txt);text-align:left;width:100%" onmouseover="this.style.background='var(--accent-bg)'" onmouseout="this.style.background='var(--bg)'">
+      ${(isAdminUser(user)||isPlatformAdmin)?`<button onclick="closeM();goView('company')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);cursor:pointer;font-size:13px;color:var(--txt);text-align:left;width:100%" onmouseover="this.style.background='var(--accent-bg)'" onmouseout="this.style.background='var(--bg)'">
         ${ico('settings',16)} <span><div style="font-weight:500">Company Settings</div><div style="font-size:11px;color:var(--txt3)">Manage system-wide configuration</div></span>
       </button>
       <button onclick="closeM();goView('accesssetup')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);cursor:pointer;font-size:13px;color:var(--txt);text-align:left;width:100%" onmouseover="this.style.background='var(--accent-bg)'" onmouseout="this.style.background='var(--bg)'">
@@ -8435,7 +8483,7 @@ function renderModal(){
     const pending=LEAVES.filter(l=>l.status==='pending');
     const crPending=CHANGE_REQUESTS.filter(r=>r.status==='pending');
     const myFlagged=myFlaggedAttendance();
-    const isA=user.role==='admin'||isPlatformAdmin;
+    const isA=isAdminUser(user)||isPlatformAdmin;
     const hasAny=(isA&&(pending.length||crPending.length))||myFlagged.length;
     inner=`<div class="modal-title">🔔 Notifications
       <button class="close-x" onclick="closeM()">×</button>
@@ -9823,11 +9871,48 @@ function submitProfileChange(){
   alert(`${changes.length} change${changes.length!==1?'s':''} submitted for admin approval.`);
   closeM();
 }
+// Backfills the minimal fields employee-facing screens (Employee list, Org Chart, payroll
+// group matching) assume exist, when an admin-only account is switched to count as staff.
+// Every check is guarded so it's a no-op for accounts that already have a full profile
+// (e.g. a Maria-style admin who was seeded with complete HR data from day one).
+function ensureEmployeeShape(u){
+  if(!u.eid){
+    const nums=USERS.map(x=>parseInt((x.eid||'').replace(/\D/g,''),10)||0);
+    u.eid='EMP-'+String(Math.max(0,...nums)+1).padStart(3,'0');
+  }
+  if(!u.dept)u.dept='Administration';
+  if(!u.pos)u.pos='Administrator';
+  if(!u.status)u.status='active';
+  if(!u.type)u.type='regular';
+  if(!u.hired)u.hired=new Date().toISOString().slice(0,10);
+  if(!Array.isArray(u.taxYearRecords))u.taxYearRecords=[];
+  if(!Array.isArray(u.movements))u.movements=[];
+  if(u.includeInPayroll===undefined)u.includeInPayroll='N'; /* opt-in later via Compensation tab */
+  if(u.includeInTimekeeping===undefined)u.includeInTimekeeping='N';
+}
 function saveAccessEdit(){
   const e=modal.emp;
   const target=USERS.find(u=>u.id===e.id);
-  if(target){target.accessLevelId=e.accessLevelId;target.active=e.active;}
+  if(target){
+    target.accessLevelId=e.accessLevelId;target.active=e.active;target.role=e.role||target.role;
+    if(target.role==='employee')ensureEmployeeShape(target);
+  }
   alert(`Access level updated for ${e.name}.`);closeM();
+}
+function openAddAdmin(){
+  modal={type:'addAdmin',data:{name:'',email:'',pass:'',role:'admin'}};render();
+}
+function saveAddAdmin(){
+  const d=modal.data;
+  if(!d.name?.trim()||!d.email?.trim()||!d.pass?.trim()){alert('Name, email, and password are required.');return;}
+  if(USERS.some(u=>(u.email||'').toLowerCase()===d.email.trim().toLowerCase())){alert('A user with that email already exists.');return;}
+  const newId=Math.max(0,...USERS.map(u=>u.id))+1;
+  const newAdmin={id:newId,name:d.name.trim(),email:d.email.trim(),pass:d.pass,role:d.role,accessLevelId:1,active:true};
+  if(newAdmin.role==='employee')ensureEmployeeShape(newAdmin);
+  USERS.push(newAdmin);
+  queueSync('Employees');
+  alert(`✅ ${newAdmin.name} added as ${d.role==='employee'?'a staff':'an outsourced service'} administrator.\nLogin: ${newAdmin.email} / ${newAdmin.pass}`);
+  closeM();
 }
 
 function pgZKSetup(){
@@ -10418,7 +10503,10 @@ function pgAccessSetup(){
         <div class="card-title">🔑 User Credentials &amp; Access</div>
         <div style="font-size:12px;color:var(--txt3);margin-top:2px">View logins, reset passwords, and replicate access (God Admin only).</div>
       </div>
-      <input class="finput" id="cred-search" style="max-width:200px;font-size:12px" placeholder="Search..." oninput="filterCreds(this.value)"/>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn btn-sm btn-primary" onclick="openAddAdmin()">+ Add Administrator</button>
+        <input class="finput" id="cred-search" style="max-width:200px;font-size:12px" placeholder="Search..." oninput="filterCreds(this.value)"/>
+      </div>
     </div>
     <div style="overflow-x:auto">
       <table style="font-size:12px;min-width:680px">
@@ -10544,7 +10632,7 @@ function togglePerm(alId,key,val){
 
 /* ========== PROFILE CHANGE REQUESTS ========== */
 function pgProfileChanges(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const mine=CHANGE_REQUESTS.filter(r=>r.eid===user.id);
   const pending=CHANGE_REQUESTS.filter(r=>r.status==='pending');
   const tabs=isA?['Pending Approval','All Requests']:['My Requests'];
@@ -10787,7 +10875,7 @@ function pgWebBundy(){
 }
 
 function pgBundyAdmin(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const tabs=isA?['Today\'s Status','All Logs','Office Zones']:['My Logs'];
   const todayAll=BUNDY_LOGS.filter(b=>b.date===today());
   let body='';
@@ -11809,7 +11897,7 @@ function pgEmpDetail(){
   ensureAnnualizedTaxConfig();
   const e=USERS.find(u=>u.id===detailEmpId);
   if(!e)return`<div class="page-header"><div class="page-title">Employee not found</div></div><button class="btn" onclick="goView('employees')">← Back</button>`;
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const ms=e.rate*22;
   const months=COMPANY.salaryMultiplier||13;
   const computedPA=+(e.rate*22*months).toFixed(2);
@@ -13071,7 +13159,7 @@ function render(){
       <!-- Bell: pending leave/approval notifications -->
       <div class="notif-btn" style="position:relative" onclick="modal={type:'notifications'};render()" title="Notifications">
         ${ico('bell',16)}
-        ${(()=>{const cnt=((user.role==='admin'||isPlatformAdmin)?(LEAVES.filter(l=>l.status==='pending').length+CHANGE_REQUESTS.filter(r=>r.status==='pending').length):0)+myFlaggedAttendance().length;return cnt>0?`<span style="position:absolute;top:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center">${cnt}</span>`:'';})()}
+        ${(()=>{const cnt=((isAdminUser(user)||isPlatformAdmin)?(LEAVES.filter(l=>l.status==='pending').length+CHANGE_REQUESTS.filter(r=>r.status==='pending').length):0)+myFlaggedAttendance().length;return cnt>0?`<span style="position:absolute;top:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center">${cnt}</span>`:'';})()}
       </div>
       <!-- Settings: go to Company Settings -->
       <div class="notif-btn" onclick="goView('company')" title="Company Settings">${ico('settings',16)}</div>
@@ -13226,7 +13314,7 @@ function doGlobalSearch(v) {
 var fabOpen = false;
 function renderFAB() {
   if (!user || (isPlatformAdmin && !activeClientId)) return '';
-  var isA = user.role === 'admin' || isPlatformAdmin;
+  var isA = isAdminUser(user) || isPlatformAdmin;
   var acts = [];
   if (isA || canAccess('emp_add'))       acts.push({l:'Add Employee',  ic:'👤', v:'employees', t:1});
   if (isA || canAccess('payroll'))       acts.push({l:'Process Payroll',ic:'💰', v:'payroll'});
@@ -13284,7 +13372,7 @@ document.addEventListener('keydown', function(e) {
   if ((e.ctrlKey || e.metaKey) && e.key === 'q') {
     e.preventDefault(); fabOpen = !fabOpen; render();
   }
-  if ((e.ctrlKey || e.metaKey) && e.key === 'n' && view === 'employees' && (user && (user.role === 'admin' || isPlatformAdmin))) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'n' && view === 'employees' && (user && (isAdminUser(user) || isPlatformAdmin))) {
     e.preventDefault(); tab = 1; render();
   }
 });

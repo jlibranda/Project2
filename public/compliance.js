@@ -147,7 +147,7 @@
     var currentLayer = row.approvalLayer || 1;
     var layerEntry = chain.find(function (c) { return c.layer === currentLayer; });
     var isDesignatedApprover = layerEntry && user && layerEntry.approver.id === user.id;
-    var isAdmin = user && (user.role === 'admin' || isPlatformAdmin);
+    var isAdmin = user && (isAdminUser(user) || isPlatformAdmin);
     if (layerEntry && !isDesignatedApprover && !isAdmin) {
       return { ok: false, message: 'Only '+layerEntry.approver.name+' (Layer '+currentLayer+' approver) can act on this record.' };
     }
@@ -188,7 +188,7 @@
   // Admin-only escape hatch: skip any remaining approval layers (e.g. an approver is
   // unavailable) rather than leaving payroll blocked on a stuck chain.
   window.forceApproveAttendance = function (id) {
-    if (!(user && (user.role === 'admin' || isPlatformAdmin))) return;
+    if (!(user && (isAdminUser(user) || isPlatformAdmin))) return;
     var row = ATT.find(function (a) { return a.id === id; });
     if (!row) return;
     if (!confirm('Force-approve this record, skipping any remaining approval layers?')) return;
@@ -201,7 +201,7 @@
   };
 
   window.pgAttendance = pgAttendance = function () {
-    var isA = user.role === 'admin' || isPlatformAdmin || canAccess('att_edit');
+    var isA = isAdminUser(user) || isPlatformAdmin || canAccess('att_edit');
     var tabs = isA ? ['Pending Approval','My Records','All Employees','File Attendance'] : ['My Records','File Attendance'];
     var body = '';
 
@@ -209,7 +209,7 @@
       var pending = attendanceRecords().filter(function (a) { return a.approvalStatus === 'pending'; }).sort(function (a,b) {
         return (b.date+b.id).localeCompare(a.date+a.id);
       });
-      var isAdminView = user.role === 'admin' || isPlatformAdmin;
+      var isAdminView = isAdminUser(user) || isPlatformAdmin;
       body = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'+
         '<div><div class="card-title">Attendance approval queue</div><div class="card-sub">Routed through each employee\'s configured approval layers (Company Settings &gt; Approval Layers). Only approved records are included in payroll.</div></div>'+
         '<button class="btn btn-sm btn-success" onclick="approveAllAttendance()" '+(!pending.length?'disabled':'')+'>Approve all I can ('+pending.length+')</button></div>'+
@@ -398,7 +398,7 @@
   window.approvePayroll = function (runId) {
     var run = PAYROLLS.find(function (r) { return r.id === runId; });
     if (!run || run.status !== 'pending_approval') return;
-    if (!(user.role === 'admin' || canAccess('payroll_approve'))) { toast('You do not have payroll approval permission.', 'error'); return; }
+    if (!(isAdminUser(user) || canAccess('payroll_approve'))) { toast('You do not have payroll approval permission.', 'error'); return; }
     run.status = 'approved';
     run.approvedBy = user.name;
     run.approvedAt = new Date().toISOString();
