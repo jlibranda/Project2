@@ -37,8 +37,8 @@
   var AI_HISTORY = [];
 
   function caseBadge(status) {
-    var map={open:'b-info',in_review:'b-pending',resolved:'b-approved',rejected:'b-rejected'};
-    var label={open:'Open',in_review:'In review',resolved:'Resolved',rejected:'Rejected'};
+    var map={open:'b-info',in_review:'b-pending',resolved:'b-approved',rejected:'b-rejected',cancelled:'b-rejected'};
+    var label={open:'Open',in_review:'In review',resolved:'Resolved',rejected:'Rejected',cancelled:'Cancelled'};
     return '<span class="badge '+(map[status]||'b-info')+'">'+(label[status]||status)+'</span>';
   }
 
@@ -182,6 +182,19 @@
     toast(c.caseNo+' '+(decision==='resolved'?'resolved':'closed without change')+'.',decision==='resolved'?'success':'warning');render();
   };
 
+  // Lets an employee withdraw their own request while it's still awaiting action — covers
+  // both plain Resolution Center cases and the Attendance Forms catalog (OT/undertime/
+  // schedule adjustment/etc.), since submitAttendanceFormRequest() files into this same
+  // RESOLUTION_CASES array. Once resolved/rejected/already cancelled, there's nothing to
+  // withdraw.
+  window.cancelResolutionCase=function(id){
+    var c=RESOLUTION_CASES.find(function(x){return x.id===id;});
+    if(!c||c.employeeId!==user.id||(c.status!=='open'&&c.status!=='in_review'))return;
+    if(!confirm('Cancel this request? This cannot be undone.'))return;
+    c.status='cancelled';c.resolution='Cancelled by employee';c.resolvedBy=user.name;c.resolvedAt=new Date().toISOString();
+    queueSync('Resolution_Cases');toast(c.caseNo+' cancelled.','success');render();
+  };
+
   window.pgResolution=function() {
     var isAdmin=isAdminUser(user)||isPlatformAdmin;
     var tabs=isAdmin?['Resolution Queue','All Cases','File a Case']:['My Cases','File a Case'];
@@ -212,7 +225,9 @@
             '<td>'+caseBadge(c.status)+'</td><td>'+(isAdmin&&(c.status==='open'||c.status==='in_review')?
               '<div class="action-row">'+(c.status==='open'?'<button class="btn btn-sm" onclick="startResolutionReview('+c.id+')">Review</button>':'')+
               '<button class="btn btn-sm btn-success" onclick="resolveCase('+c.id+',\'resolved\')">Resolve</button><button class="btn btn-sm btn-danger" onclick="resolveCase('+c.id+',\'rejected\')">Reject</button></div>':
-              '<button class="btn btn-sm" onclick="openResolutionForm(\''+c.category+'\',\''+(c.linkedType||'')+'\','+(c.linkedId||'null')+')">Follow up</button>')+'</td></tr>';
+              (!isAdmin&&c.employeeId===user.id&&(c.status==='open'||c.status==='in_review')?
+              '<button class="btn btn-sm btn-danger" onclick="cancelResolutionCase('+c.id+')">Cancel</button>':
+              '<button class="btn btn-sm" onclick="openResolutionForm(\''+c.category+'\',\''+(c.linkedType||'')+'\','+(c.linkedId||'null')+')">Follow up</button>'))+'</td></tr>';
         }).join(''):'<tr><td colspan="7" class="empty-state">No cases in this view.</td></tr>')+'</tbody></table></div>';
     }
     var open=records.filter(function(c){return c.status==='open';}).length;
@@ -993,6 +1008,23 @@
       '<div class="field"><label>Reason and supporting details</label><textarea id="att-form-reason" rows="4" placeholder="Explain the request and include the expected correction or approval."></textarea></div>';
   }
 
+  // Employees have no default access to the Resolution Center (no permission key gates it,
+  // so canAccess('resolution') is always false for a non-admin) — this is the only place they
+  // can actually see and withdraw the requests they filed through this catalog.
+  function myAttendanceFormRequests(){
+    var mine=RESOLUTION_CASES.filter(function(c){return c.employeeId===user.id&&c.attendanceRequestType;});
+    if(!mine.length)return'';
+    return '<div class="section-header" style="margin-top:18px">My Requests</div>'+
+      '<div style="overflow-x:auto"><table><thead><tr><th>Type</th><th>Date</th><th>Status</th><th></th></tr></thead><tbody>'+
+      mine.slice().reverse().map(function(c){
+        var formDef=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===c.attendanceRequestType;});
+        return '<tr><td>'+esc(formDef?formDef.label:c.attendanceRequestType)+'</td>'+
+          '<td class="mono" style="font-size:12px">'+esc(c.requestDate||'')+(c.requestEndDate&&c.requestEndDate!==c.requestDate?' – '+esc(c.requestEndDate):'')+'</td>'+
+          '<td>'+caseBadge(c.status)+'</td>'+
+          '<td>'+((c.status==='open'||c.status==='in_review')?'<button class="btn btn-sm btn-danger" onclick="cancelResolutionCase('+c.id+')">Cancel</button>':'')+'</td></tr>';
+      }).join('')+
+      '</tbody></table></div>';
+  }
   function renderEmployeeAttendanceForms(){
     var selected=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===window._attendanceFormKey&&f.visible;});
     var visible=ATTENDANCE_FORM_CONFIG.filter(function(f){return f.visible;});
@@ -1003,7 +1035,7 @@
       '<div class="action-row"><button class="btn btn-primary" onclick="submitAttendanceFormRequest()">Submit for approval</button><button class="btn" onclick="window._attendanceFormKey=null;render()">Cancel</button></div></div>':
       (visible.length?'<div class="attendance-catalog">'+visible.map(function(f){
         return '<button class="attendance-form-card" onclick="openAttendanceForm(\''+f.key+'\')"><span class="attendance-form-mark">'+f.short+'</span><span><strong>'+esc(f.label)+'</strong><small>'+esc(f.description)+'</small></span><span class="attendance-form-arrow">›</span></button>';
-      }).join('')+'</div>':'<div class="empty-state"><div style="font-weight:700;margin-bottom:5px">No attendance forms are currently available.</div>Please contact HR if you need an attendance correction or special request.</div>');
+      }).join('')+'</div>':'<div class="empty-state"><div style="font-weight:700;margin-bottom:5px">No attendance forms are currently available.</div>Please contact HR if you need an attendance correction or special request.</div>')+myAttendanceFormRequests();
     var myRecordsTab=(isAdminUser(user)||isPlatformAdmin)?1:0; /* admin tab layout puts "My Records" at index 1, not 0 */
     return '<div class="page-header"><div><div class="page-title">Attendance</div><div class="page-sub">Employee attendance records and approval-controlled requests</div></div></div>'+
       '<div class="tabs"><div class="tab" onclick="window._attendanceFormKey=null;goTab('+myRecordsTab+')">My Records</div><div class="tab active">Attendance Forms</div></div><div class="card">'+body+'</div>';
