@@ -1604,7 +1604,18 @@ async function zkPullAttendance(){
     ZK.pulledRecords=data.records||[];
     ZK.lastSync=new Date().toISOString();
     zkBuildPreview();
-    render();
+    // This fires on a 20s background timer regardless of what page/modal is open. A full
+    // render() replaces the DOM wholesale from each form's underlying draft/state object —
+    // any field the user is mid-typing into that hasn't been fixed to sync every keystroke
+    // into its own draft (like this one was for File Leave and Add Employee) would get reset
+    // to its last-synced value, i.e. silently lose whatever was just typed. Rather than
+    // auditing and hardening every single form in the app one at a time, skip the render
+    // outright whenever an input/textarea/select currently has focus — the pulled data above
+    // is already stored either way, so it shows up on whatever render happens next (the
+    // following poll, or the user's own next action) instead of being lost.
+    const active=document.activeElement;
+    const isEditing=active&&(active.tagName==='INPUT'||active.tagName==='TEXTAREA'||active.tagName==='SELECT');
+    if(!isEditing)render();
   }catch(e){alert('Could not fetch pending punches: '+e.message);}
 }
 function zkBuildPreview(){
@@ -2611,6 +2622,20 @@ function goView(v){
 }
 function goTab(i){tab=i;render();}
 function closeM(){modal=null;render();}
+// ESC and clicking outside the modal used to call closeM() unconditionally — instantly
+// discarding whatever was typed into a multi-field form (Add Employee, Edit Profile, bulk
+// import rows, etc.) with zero warning, unlike the explicit Cancel/× button which is at least
+// a deliberate click. This flags any modal that's carrying real form state so those two
+// accidental-dismissal paths confirm first; the button/link based ones (view-only modals like
+// payslip or leave history, or simple pickers) still close instantly since there's nothing to
+// lose.
+function modalHasEditableDraft(){
+  return !!(modal&&(modal.draft||modal.ae||modal.data||modal.rows||modal.it||modal.group||modal.period||modal.changes));
+}
+function closeMConfirmed(){
+  if(modalHasEditableDraft()&&!confirm('Discard unsaved changes and close this window?'))return;
+  closeM();
+}
 
 /* ========== SVG ICONS ========== */
 const ICONS={
@@ -10213,7 +10238,7 @@ function renderModal(){
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
   }
-  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeM()"><div class="modal-box" style="${modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance')?'width:1000px;max-width:98vw':''}">${inner}</div></div>`;
+  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeMConfirmed()"><div class="modal-box" style="${modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance')?'width:1000px;max-width:98vw':''}">${inner}</div></div>`;
   setTimeout(updatePayGroupPreview,0);
   return html;
 }
@@ -13870,7 +13895,7 @@ function wireFAB() {
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') {
     if (fabOpen) { fabOpen = false; render(); return; }
-    if (modal) { closeM(); return; }
+    if (modal) { closeMConfirmed(); return; }
     var gs = document.getElementById('gs-wrap');
     if (gs && gs.style.display !== 'none') { gs.style.display = 'none'; globalSearch = ''; return; }
   }
