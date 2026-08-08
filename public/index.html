@@ -4835,7 +4835,7 @@ function pgLeave(){
     ${body}`;
   }else{
     const opts=myLeaveTypeOptions();
-    body=opts.length?`<div class="form-row"><div class="field"><label>Leave Type</label><select id="lt" onchange="updateLeaveBalanceHint()">${opts.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('')}</select><div id="lt-balance-hint" style="font-size:11px;color:var(--txt3);margin-top:4px"></div></div><div class="field"><label>Number of Days</label><input type="number" id="ldays" value="1" min="1"/></div></div>
+    body=opts.length?`<div class="form-row"><div class="field"><label>Leave Type</label><select id="lt" onchange="updateLeaveBalanceHint()">${opts.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('')}</select><div id="lt-balance-hint" style="font-size:11px;color:var(--txt3);margin-top:4px"></div></div><div class="field"><label>Number of Days</label><input type="number" id="ldays" value="1" min="0.5" step="0.5"/><div style="font-size:10px;color:var(--txt3);margin-top:2px">Use 0.5 for a half-day.</div></div></div>
     <div class="form-row"><div class="field"><label>Start Date</label><input type="date" id="ls" value="${today()}"/></div><div class="field"><label>End Date</label><input type="date" id="le2" value="${today()}"/></div></div>
     <div class="field"><label>Reason / Remarks</label><textarea id="lr" rows="3" placeholder="Briefly describe your leave..."></textarea></div>
     <div style="margin-top:4px"><button class="btn btn-primary" onclick="submitLeave()">Submit Request</button></div>`
@@ -4864,8 +4864,9 @@ function actLeave(id,ok){
   render();
 }
 function submitLeave(){
-  const type=document.getElementById('lt').value,s=document.getElementById('ls').value,e=document.getElementById('le2').value,days=parseInt(document.getElementById('ldays').value)||1,reason=document.getElementById('lr').value.trim();
+  const type=document.getElementById('lt').value,s=document.getElementById('ls').value,e=document.getElementById('le2').value,days=parseFloat(document.getElementById('ldays').value)||1,reason=document.getElementById('lr').value.trim();
   if(!reason){alert('Please provide a reason.');return;}
+  if(days<=0){alert('Number of days must be greater than 0.');return;}
   const t=(COMPANY.leaveTypes||[]).find(x=>x.name===type);
   if(t){
     const bal=leaveBalanceFor(user,t.id);
