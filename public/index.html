@@ -8589,6 +8589,15 @@ function renderModal(){
       <input type="checkbox" style="width:auto" ${d.carryOver?'checked':''} onchange="modal.draft.carryOver=this.checked;render()"/> Allow carry-over to next year
     </label></div>
     ${d.carryOver?`<div class="field" style="margin-top:.5rem;margin-left:26px;max-width:220px"><label>Max carry-over (days)</label><input type="number" min="0" step="0.5" class="finput" value="${d.maxCarryOverDays}" oninput="modal.draft.maxCarryOverDays=this.value"/></div>`:''}
+    <div class="section-header" style="margin-top:1rem">Grant Timing</div>
+    <div class="field" style="margin-top:.5rem"><label>Entitlement clock starts from</label><select class="finput" onchange="modal.draft.eligibilityBasis=this.value;render()">
+      <option value="hire" ${(d.eligibilityBasis||'hire')==='hire'?'selected':''}>Date hired — available from day 1</option>
+      <option value="regularization" ${d.eligibilityBasis==='regularization'?'selected':''}>Date of regularization — not available while probationary</option>
+    </select></div>
+    ${d.accrualMethod==='upfront'?`<div class="field" style="margin-top:.5rem"><label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" style="width:auto" ${d.prorateFirstGrant?'checked':''} onchange="modal.draft.prorateFirstGrant=this.checked"/> Prorate the first grant by months remaining in the year
+    </label><div style="font-size:11px;color:var(--txt3);margin-top:2px;margin-left:26px">Unchecked = full ${d.annualDays||0} days regardless of when eligibility starts. Checked = e.g. eligible in July gets 6/12 of the annual amount for that first partial year, then the full amount every year after.</div></div>`
+      :`<div style="font-size:11px;color:var(--txt3);margin-top:6px">Monthly accrual already prorates naturally — it only starts ticking once eligible.</div>`}
     <div class="section-header" style="margin-top:1rem">Eligibility</div>
     <div class="form-row" style="margin-top:.5rem">
       <div class="field"><label>Gender restriction</label><select class="finput" onchange="modal.draft.genderRestriction=this.value">

@@ -611,14 +611,22 @@
    * basis for per-employee balance tracking and eligibility checks (Stage 2/3). */
   var LEAVE_GENDER_LABELS={'':'Any gender','female':'Female only','male':'Male only'};
   var LEAVE_ACCRUAL_LABELS={'upfront':'Full amount at year start','monthly':'Accrues monthly (1/12 per month)'};
+  var LEAVE_BASIS_LABELS={'hire':'Date hired','regularization':'Date of regularization'};
+  // eligibilityBasis: 'hire' (clock starts day 1) or 'regularization' (clock starts only once
+  // status leaves 'probationary' — see checkOffboarding()'s auto-convert on probEndDate;
+  // probationary employees are simply not eligible yet under this basis, full stop).
+  // prorateFirstGrant: for 'upfront' types, whether the very first grant (at eligibility) is
+  // cut down to the months remaining in the calendar year, vs. handing over the full
+  // annualDays regardless of when eligibility started. Meaningless for 'monthly' accrual,
+  // which already prorates naturally by only ticking forward from eligibility.
   var LEAVE_TYPES=(COMPANY.leaveTypes&&COMPANY.leaveTypes.length?COMPANY.leaveTypes:[
-    {id:1,name:'Vacation Leave',code:'VL',paid:true,annualDays:15,accrualMethod:'upfront',carryOver:true,maxCarryOverDays:5,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true},
-    {id:2,name:'Sick Leave',code:'SL',paid:true,annualDays:15,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true},
-    {id:3,name:'Emergency Leave',code:'EL',paid:true,annualDays:5,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true},
-    {id:4,name:'Maternity Leave',code:'ML',paid:true,annualDays:105,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'female',minTenureMonths:0,employeeTypes:[],active:true},
-    {id:5,name:'Paternity Leave',code:'PL',paid:true,annualDays:7,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'male',minTenureMonths:0,employeeTypes:[],active:true},
-    {id:6,name:'Solo Parent Leave',code:'SPL',paid:true,annualDays:7,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:12,employeeTypes:[],active:true},
-    {id:7,name:'Bereavement Leave',code:'BL',paid:true,annualDays:3,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true}
+    {id:1,name:'Vacation Leave',code:'VL',paid:true,annualDays:15,accrualMethod:'upfront',eligibilityBasis:'regularization',prorateFirstGrant:true,carryOver:true,maxCarryOverDays:5,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true},
+    {id:2,name:'Sick Leave',code:'SL',paid:true,annualDays:15,accrualMethod:'upfront',eligibilityBasis:'regularization',prorateFirstGrant:true,carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true},
+    {id:3,name:'Emergency Leave',code:'EL',paid:true,annualDays:5,accrualMethod:'upfront',eligibilityBasis:'hire',prorateFirstGrant:false,carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true},
+    {id:4,name:'Maternity Leave',code:'ML',paid:true,annualDays:105,accrualMethod:'upfront',eligibilityBasis:'hire',prorateFirstGrant:false,carryOver:false,maxCarryOverDays:0,genderRestriction:'female',minTenureMonths:0,employeeTypes:[],active:true},
+    {id:5,name:'Paternity Leave',code:'PL',paid:true,annualDays:7,accrualMethod:'upfront',eligibilityBasis:'hire',prorateFirstGrant:false,carryOver:false,maxCarryOverDays:0,genderRestriction:'male',minTenureMonths:0,employeeTypes:[],active:true},
+    {id:6,name:'Solo Parent Leave',code:'SPL',paid:true,annualDays:7,accrualMethod:'upfront',eligibilityBasis:'hire',prorateFirstGrant:false,carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:12,employeeTypes:[],active:true},
+    {id:7,name:'Bereavement Leave',code:'BL',paid:true,annualDays:3,accrualMethod:'upfront',eligibilityBasis:'hire',prorateFirstGrant:false,carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true}
   ]);
   COMPANY.leaveTypes=LEAVE_TYPES; /* keep readable from other files even before the first explicit save */
   var nextLeaveTypeId=LEAVE_TYPES.reduce(function(max,t){return Math.max(max,t.id||0);},0)+1;
@@ -634,12 +642,25 @@
     return Math.max(0,(now.getUTCFullYear()-hired.getUTCFullYear())*12+(now.getUTCMonth()-hired.getUTCMonth()));
   }
 
-  // Default (policy-based) eligibility for a leave type — gender, minimum tenure, and
-  // employment type all have to match. An explicit per-employee override (Stage 2, stored on
-  // employee.leaveOverrides[typeId]) always takes precedence over this when present.
+  // The date this employee's entitlement clock actually starts for a given type — 'hire' is
+  // always known; 'regularization' falls back to hired date if probEndDate was never recorded
+  // (e.g. a direct-hire regular with no tracked probation period).
+  function leaveEligibilityStartDate(employee,leaveType){
+    if(!employee)return null;
+    if(leaveType.eligibilityBasis==='regularization'){
+      if(employee.type==='probationary')return null; // not yet regularized — no start date at all
+      return employee.probEndDate||employee.hired||null;
+    }
+    return employee.hired||null;
+  }
+
+  // Default (policy-based) eligibility for a leave type — gender, regularization status,
+  // minimum tenure, and employment type all have to match. An explicit per-employee override
+  // (Stage 2, stored on employee.leaveOverrides[typeId]) always takes precedence when present.
   function leaveTypePolicyEligible(employee,leaveType){
     if(!employee||!leaveType)return false;
     if(leaveType.genderRestriction&&employee.gender&&employee.gender.toLowerCase()!==leaveType.genderRestriction)return false;
+    if(!leaveEligibilityStartDate(employee,leaveType))return false; /* covers the regularization gate */
     if(tenureMonths(employee)<(leaveType.minTenureMonths||0))return false;
     if(leaveType.employeeTypes&&leaveType.employeeTypes.length&&leaveType.employeeTypes.indexOf(employee.type)<0)return false;
     return true;
@@ -654,7 +675,7 @@
     if(!(isAdminUser(user)||isPlatformAdmin))return;
     var existing=typeId?LEAVE_TYPES.find(function(t){return t.id===typeId;}):null;
     modal={type:'leaveTypeEditor',isNew:!existing,draft:existing?Object.assign({},existing,{employeeTypes:(existing.employeeTypes||[]).slice()}):
-      {id:null,name:'',code:'',paid:true,annualDays:0,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true}};
+      {id:null,name:'',code:'',paid:true,annualDays:0,accrualMethod:'upfront',eligibilityBasis:'hire',prorateFirstGrant:false,carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true}};
     render();
   };
 
@@ -667,8 +688,10 @@
     if(dupCode){toast('Code "'+d.code+'" is already used by '+dupCode.name+'.','warning');return;}
     if(Number(d.annualDays)<0){toast('Annual entitlement cannot be negative.','warning');return;}
     var payload={name:d.name.trim(),code:d.code.trim().toUpperCase(),paid:!!d.paid,annualDays:Number(d.annualDays)||0,
-      accrualMethod:d.accrualMethod==='monthly'?'monthly':'upfront',carryOver:!!d.carryOver,
-      maxCarryOverDays:d.carryOver?(Number(d.maxCarryOverDays)||0):0,genderRestriction:d.genderRestriction||'',
+      accrualMethod:d.accrualMethod==='monthly'?'monthly':'upfront',
+      eligibilityBasis:d.eligibilityBasis==='regularization'?'regularization':'hire',
+      prorateFirstGrant:d.accrualMethod!=='monthly'&&!!d.prorateFirstGrant,
+      carryOver:!!d.carryOver,maxCarryOverDays:d.carryOver?(Number(d.maxCarryOverDays)||0):0,genderRestriction:d.genderRestriction||'',
       minTenureMonths:Number(d.minTenureMonths)||0,employeeTypes:(d.employeeTypes||[]).slice(),active:d.active!==false};
     if(d.id){
       Object.assign(LEAVE_TYPES.find(function(t){return t.id===d.id;}),payload);
@@ -694,43 +717,82 @@
   };
 
   function describeLeaveEligibility(t){
-    var parts=[];
+    var parts=[LEAVE_BASIS_LABELS[t.eligibilityBasis||'hire']];
+    if(t.accrualMethod==='upfront'&&t.prorateFirstGrant)parts.push('prorated first grant');
     if(t.genderRestriction)parts.push(LEAVE_GENDER_LABELS[t.genderRestriction]);
     if(t.minTenureMonths)parts.push(t.minTenureMonths+'+ months tenure');
     if(t.employeeTypes&&t.employeeTypes.length)parts.push(t.employeeTypes.map(function(c){var lt=LOOKUPS.employmentTypes.find(function(x){return x.code===c;});return lt?lt.code:c;}).join('/'));
-    return parts.length?parts.join(' · '):'All employees';
+    return parts.join(' · ');
   }
 
-  // Grants leave balances per policy: 'upfront' types get the full annualDays once per
-  // calendar year (plus any carried-over balance, capped at maxCarryOverDays); 'monthly'
-  // types get annualDays/12 once per calendar month. Guarded by lastAccrualYear/
-  // lastAccrualMonth per employee+type so re-running this doesn't double-credit.
+  // How many months remain (inclusive of the start month) in the calendar year from a given
+  // date — used to prorate a first grant, e.g. regularized in July (month index 6) leaves
+  // 6 months (Jul–Dec) of the year's entitlement.
+  function monthsRemainingInYear(dateStr){
+    var d=new Date((dateStr||today())+'T00:00:00Z');
+    return 12-d.getUTCMonth();
+  }
+
+  // Grants leave balances per policy.
+  //
+  // 'monthly' types always just tick by annualDays/12 per call, guarded by lastAccrualMonth —
+  // including their very first credit, so proration happens naturally by only starting once
+  // eligible, never as a back-dated lump sum for however long the employee has actually been
+  // eligible.
+  //
+  // 'upfront' types special-case the FIRST grant an employee ever receives (tracked via
+  // bucket.firstGrantDate): if the type prorates first grants AND eligibility started within
+  // THIS calendar year (a genuinely new mid-year hire/regularization), the grant is cut down to
+  // the months remaining in the year. Otherwise — including any employee whose eligibility
+  // started in a past year, e.g. backfilling an already-tenured employee when this system is
+  // first set up — they get the full annualDays now; there's no attempt to reconstruct what
+  // they "should" have accrued in prior years, since Set Balance is the right tool for migrating
+  // a real historical balance. After the first grant, 'upfront' types renew the full annualDays
+  // once per calendar year (plus any carried-over balance, capped at maxCarryOverDays — the
+  // rest is forfeited), guarded by lastAccrualYear.
   window.runLeaveAccrual=function(){
     if(!(isAdminUser(user)||isPlatformAdmin))return;
-    var now=new Date(),year=now.getFullYear(),yearMonth=year+'-'+String(now.getMonth()+1).padStart(2,'0');
+    var now=new Date(),year=now.getFullYear(),yearMonth=year+'-'+String(now.getMonth()+1).padStart(2,'0'),tod=today();
     var eligibleEmps=USERS.filter(function(e){return e.role==='employee'&&e.active!==false;});
     var credited=0;
     eligibleEmps.forEach(function(emp){
       LEAVE_TYPES.filter(function(t){return t.active;}).forEach(function(t){
         if(!leaveTypeEligible(emp,t))return;
+        var startDate=leaveEligibilityStartDate(emp,t);
+        if(!startDate||startDate>tod)return; /* not yet regularized / not yet hired */
         if(!emp.leaveBalances)emp.leaveBalances={};
         var bucket=emp.leaveBalances[t.id]||{balance:0,adjustments:[]};
         bucket.adjustments=bucket.adjustments||[];
         if(t.accrualMethod==='monthly'){
           if(bucket.lastAccrualMonth===yearMonth)return;
-          var grant=+(t.annualDays/12).toFixed(2);
-          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:today(),from:bucket.balance||0,to:+((bucket.balance||0)+grant).toFixed(2),reason:'Monthly accrual '+yearMonth,by:user.name});
-          bucket.balance=+((bucket.balance||0)+grant).toFixed(2);
+          var isFirst=!bucket.firstGrantDate;
+          var monthlyGrant=+(t.annualDays/12).toFixed(2);
+          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+((bucket.balance||0)+monthlyGrant).toFixed(2),
+            reason:(isFirst?'Initial monthly accrual ':'Monthly accrual ')+yearMonth,by:user.name});
+          bucket.balance=+((bucket.balance||0)+monthlyGrant).toFixed(2);
           bucket.lastAccrualMonth=yearMonth;
+          if(isFirst)bucket.firstGrantDate=tod;
+          credited++;
+        }else if(!bucket.firstGrantDate){
+          var startedThisYear=new Date(startDate+'T00:00:00Z').getUTCFullYear()===year;
+          var initialGrant=(t.prorateFirstGrant&&startedThisYear)?+(t.annualDays*monthsRemainingInYear(startDate)/12).toFixed(2):t.annualDays;
+          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:initialGrant,
+            reason:'Initial grant ('+(t.eligibilityBasis==='regularization'?'regularization':'hire')+' '+startDate+')'+(t.prorateFirstGrant&&startedThisYear?' — prorated':''),by:user.name});
+          bucket.balance=initialGrant;
+          bucket.firstGrantDate=tod;
+          bucket.lastAccrualYear=year;
+          credited++;
         }else{
           if(bucket.lastAccrualYear===year)return;
           var carry=t.carryOver?Math.min(bucket.balance||0,t.maxCarryOverDays||0):0;
-          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:today(),from:bucket.balance||0,to:+(carry+t.annualDays).toFixed(2),reason:'Annual accrual '+year+(carry?' (+'+carry+' carried over)':''),by:user.name});
+          var forfeited=Math.max(0,(bucket.balance||0)-carry);
+          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+(carry+t.annualDays).toFixed(2),
+            reason:'Annual accrual '+year+(carry?' (+'+carry+' carried over)':'')+(forfeited?' ('+forfeited+' forfeited)':''),by:user.name});
           bucket.balance=+(carry+t.annualDays).toFixed(2);
           bucket.lastAccrualYear=year;
+          credited++;
         }
         emp.leaveBalances[t.id]=bucket;
-        credited++;
       });
     });
     queueSync('Employees');
