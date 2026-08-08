@@ -4,6 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>SproutRipple PH — HR & Payroll Platform</title>
+<script>(function(){try{if(localStorage.getItem('sr_dark_mode')==='1')document.documentElement.setAttribute('data-dark','');}catch(e){}})();</script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -453,6 +454,10 @@ function attendanceRecord(eid,date){return TimekeepingCore.canonicalRecord(ATT,e
 function attendanceRecords(){return TimekeepingCore.canonicalRecords(ATT);}
 function upsertAttendance(eid,date,patch){return TimekeepingCore.upsert(ATT,eid,date,patch,function(){return nAtt++;});}
 function attendancePeriodSummary(emp,from,to){return TimekeepingCore.periodSummary(ATT,emp,from,to,typeof SHIFT_DEFINITIONS==='undefined'?[]:SHIFT_DEFINITIONS);}
+function myFlaggedAttendance(){
+  if(!user)return[];
+  return attendanceRecords().filter(a=>a.eid===user.id&&a.approvalStatus==='pending'&&/Outside scheduled shift window/.test(a.notes||''));
+}
 let LEAVES=[
   {id:1,eid:3,type:'Sick Leave',s:'2025-05-20',e:'2025-05-20',reason:'Fever and flu',status:'approved',filed:'2025-05-19',days:1},
   {id:2,eid:2,type:'Vacation Leave',s:'2025-05-28',e:'2025-05-30',reason:'Family trip',status:'pending',filed:'2025-05-22',days:3},
@@ -714,6 +719,15 @@ let COMPANY={
   taxPolicy:{annualizationEnabled:true,autoSuggestDecember:true,requireConfirmedTaxRecord:true,taxTableVersion:'BIR RR 11-2018 Annex E · 2023 onwards'},
   darkMode:false,
 };
+try{if(localStorage.getItem('sr_dark_mode')==='1')COMPANY.darkMode=true;}catch(e){}
+try{
+  var _cachedBrand=JSON.parse(localStorage.getItem('sr_company_brand')||'null');
+  if(_cachedBrand){
+    if(_cachedBrand.logo)COMPANY.logo=_cachedBrand.logo;
+    if(_cachedBrand.name)COMPANY.name=_cachedBrand.name;
+    if(_cachedBrand.initials)COMPANY.initials=_cachedBrand.initials;
+  }
+}catch(e){}
 
 /* ---- EMPLOYEE MOVEMENT TRACKING ---- */
 /* Fields that trigger a movement record when changed */
@@ -1200,6 +1214,51 @@ function saveEmployeeTaxYearRecord(empId,year){
   queueSync('Employees');toast('Tax year record saved.','success');render();
 }
 function setEmployeeHasPreviousEmployer(empId,year,checked){const emp=USERS.find(e=>e.id===empId),record=employeeTaxRecord(emp,year,true);record.hasPreviousEmployer=!!checked;if(!checked){['previousEmployerName','previousEmployerTin','previousEmployerAddress','previousEmployerZip','previousEmploymentFrom','previousEmploymentTo','previousEmployerNonTaxableBenefits','previousEmployerTaxableBenefits','previousEmployerDeMinimis','previousEmployerTaxable','previousEmployerTaxWithheld'].forEach(k=>record[k]=typeof record[k]==='number'?0:'');}render();}
+
+/* ---- Leave balances (Employee 201 > Leave tab) ---- */
+function openSetLeaveBalance(empId,typeId){
+  if(!isAdminUser(user))return;
+  const emp=USERS.find(u=>u.id===empId),t=(COMPANY.leaveTypes||[]).find(x=>x.id===typeId);
+  if(!emp||!t)return;
+  const bal=(emp.leaveBalances&&emp.leaveBalances[typeId])||{balance:0,adjustments:[]};
+  modal={type:'setLeaveBalance',empId,typeId,typeName:t.name,current:bal.balance,data:{balance:bal.balance,reason:''}};
+  render();
+}
+function openLeaveHistory(empId,typeId){
+  const emp=USERS.find(u=>u.id===empId),t=(COMPANY.leaveTypes||[]).find(x=>x.id===typeId);
+  if(!emp||!t)return;
+  modal={type:'leaveHistory',empId,typeId,typeName:t.name};
+  render();
+}
+function saveSetLeaveBalance(){
+  if(!isAdminUser(user))return;
+  const emp=USERS.find(u=>u.id===modal.empId);if(!emp)return;
+  const newBalance=parseFloat(modal.data.balance);
+  if(isNaN(newBalance)){alert('Enter a valid number of days.');return;}
+  if(!modal.data.reason||!modal.data.reason.trim()){alert('A reason is required (e.g. "Annual grant", "Migration balance", "Correction").');return;}
+  if(!emp.leaveBalances)emp.leaveBalances={};
+  const bucket=emp.leaveBalances[modal.typeId]||{balance:0,adjustments:[]};
+  bucket.adjustments=bucket.adjustments||[];
+  bucket.adjustments.unshift({id:Date.now(),date:today(),from:bucket.balance,to:+newBalance.toFixed(3),reason:modal.data.reason.trim(),by:user.name});
+  bucket.balance=+newBalance.toFixed(3);
+  emp.leaveBalances[modal.typeId]=bucket;
+  queueSync('Employees');closeM();toast('Leave balance updated for '+emp.name+'.','success');
+}
+function toggleLeaveAssignment(empId,typeId){
+  if(!isAdminUser(user))return;
+  const emp=USERS.find(u=>u.id===empId),t=(COMPANY.leaveTypes||[]).find(x=>x.id===typeId);
+  if(!emp||!t)return;
+  if(!emp.leaveOverrides)emp.leaveOverrides={};
+  const currentlyEligible=leaveTypeEligible(emp,t);
+  emp.leaveOverrides[typeId]=!currentlyEligible;
+  queueSync('Employees');toast((currentlyEligible?'Unassigned ':'Assigned ')+t.name+(currentlyEligible?' from ':' to ')+emp.name+'.','success');render();
+}
+function resetLeaveAssignment(empId,typeId){
+  if(!isAdminUser(user))return;
+  const emp=USERS.find(u=>u.id===empId);if(!emp||!emp.leaveOverrides)return;
+  delete emp.leaveOverrides[typeId];
+  queueSync('Employees');toast('Reset to policy default.','success');render();
+}
 function isPayrollAdjustmentReady(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.isReady(record):!!record&&['ready','approved','pending'].includes(record.status);}
 function canDeletePayrollAdjustment(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.canDelete(record):!!record&&record.status!=='applied'&&!record.payrollRunId;}
 function setPayrollPreviewFilter(kind,value){
@@ -1268,6 +1327,7 @@ let PAYROLL_AUDIT=[];
 USERS.forEach((u,i)=>{u.active=true;u.accessLevelId=u.role==='admin'?1:5;});
 
 let user=null,view='dashboard',tab=0,modal=null,aiText='',aiLoad=false;
+let sessionRestoring=!!sessionStorage.getItem('sproutripple_session');
 let sidebarCollapsed=window.innerWidth<=900; /* collapsible sidebar state */
 let sidebarSectionState={Overview:true,People:true,'Time & Attendance':true,Payroll:true,Talent:true,Setup:false,Tools:true};
 function toggleNavSection(title){sidebarSectionState[title]=!(sidebarSectionState[title]!==false);render();}
@@ -1350,6 +1410,14 @@ let ZK={
   realtimeEnabled:false,
   lastSync:null,
   loading:false,
+  // The auto-computed address (window.apiHost's domain + 80/443) doesn't work on devices that
+  // only accept a numeric IP (e.g. behind Railway's TCP Proxy). Once an admin has actually found
+  // working values, they're saved here so future setup/reset instructions show the real thing.
+  connectionOverride:{address:'',port:'',https:false},
+  // How far outside an employee's scheduled shift (start/end) a punch can still be attributed
+  // to that shift day. Punches outside this window for employees who have a shift assigned
+  // are flagged for confirmation instead of guessed.
+  punchBuffer:{beforeMinutes:120,afterMinutes:480},
 };
 
 async function zkApi(path, opts={}){
@@ -1365,6 +1433,36 @@ async function zkRefreshStatus(){
     if(d.userMapping&&!Object.keys(ZK.userMapping).length)ZK.userMapping=d.userMapping;
   }catch(e){/* surfaced via the page's own empty/error states */}
   ZK.loading=false;render();
+}
+function zkSaveConnectionOverride(){
+  const address=(document.getElementById('zk-conn-address').value||'').trim();
+  const port=(document.getElementById('zk-conn-port').value||'').trim();
+  const https=document.getElementById('zk-conn-https').value==='1';
+  if(!address){alert('Please enter a server address.');return;}
+  ZK.connectionOverride={address,port,https};
+  render();
+  alert('Saved. These settings will be shown here going forward.');
+}
+function zkResetConnectionOverride(){
+  ZK.connectionOverride={address:'',port:'',https:false};
+  render();
+}
+function zkSavePunchBuffer(){
+  const before=parseInt(document.getElementById('zk-buffer-before').value,10);
+  const after=parseInt(document.getElementById('zk-buffer-after').value,10);
+  if(!(before>=0)||!(after>=0)){alert('Please enter valid non-negative numbers.');return;}
+  ZK.punchBuffer={beforeMinutes:before,afterMinutes:after};
+  render();
+  alert('Saved. New punches will use this window going forward.');
+}
+const ZK_COMMAND_LABELS={reboot:'Restart device',resync:'Resync attendance log',clearlog:'Clear attendance log'};
+async function zkSendCommand(serial,action,confirmMsg){
+  if(confirmMsg&&!confirm(confirmMsg))return;
+  try{
+    await zkApi('/command',{method:'POST',body:JSON.stringify({serial,action})});
+    alert(`"${ZK_COMMAND_LABELS[action]}" queued. It will run next time the device checks in (usually within a minute).`);
+    await zkRefreshStatus();
+  }catch(e){alert('Could not queue command: '+e.message);}
 }
 async function zkPullAttendance(){
   try{
@@ -1383,48 +1481,124 @@ function zkBuildPreview(){
     ZK.importPreview.push({...r,empId,empName:emp?emp.name:'[Unmapped]',mapped:!!empId});
   });
   ZK.importPreview=ZK.importPreview.map(r=>{
-    const dup=ATT.some(a=>a.eid===r.empId&&a.date===r.date);
-    return{...r,duplicate:dup};
+    if(!r.empId||!r.date||!r.time)return{...r,duplicate:false};
+    const existing=ATT.find(a=>a.eid===r.empId&&a.date===r.date);
+    // Only skip as duplicate if this exact punch time is already covered by the
+    // recorded tin/tout range — a new punch outside that range (e.g. the actual
+    // check-out arriving after an earlier check-in was already imported) must
+    // still go through so it can extend the record instead of being lost.
+    const redundant=!!(existing&&existing.tin&&existing.tout&&r.time>=existing.tin&&r.time<=existing.tout);
+    return{...r,duplicate:redundant};
   });
 }
-function zkSaveMapping(){
-  ZK.deviceUsers.forEach(du=>{
-    const sel=document.getElementById('zkmap-'+du.userId);
-    if(sel)ZK.userMapping[du.userId]=sel.value?parseInt(sel.value):undefined;
+function zkMappableUsers(){
+  const known=new Set(ZK.deviceUsers.map(du=>du.userId));
+  const extra=[];
+  ZK.pulledRecords.forEach(r=>{
+    if(!known.has(r.userId)){known.add(r.userId);extra.push({userId:r.userId,name:'',cardNo:'',fromPunchesOnly:true});}
   });
+  // Already-saved mappings must stay visible/editable even when the device is
+  // offline or hasn't reported that user again this session.
+  Object.keys(ZK.userMapping).forEach(userId=>{
+    if(ZK.userMapping[userId]&&!known.has(userId)){known.add(userId);extra.push({userId,name:'',cardNo:'',fromPunchesOnly:true});}
+  });
+  return ZK.deviceUsers.concat(extra);
+}
+function zkSaveMapping(){
+  const newMapping={};
+  zkMappableUsers().forEach(du=>{
+    const sel=document.getElementById('zkmap-'+du.userId);
+    newMapping[du.userId]=sel&&sel.value?parseInt(sel.value):undefined;
+  });
+  // Warn when an employee ends up mapped to more than one device user ID —
+  // their punches from every mapped ID get silently merged into one
+  // attendance record per day, which can hide an accidental wrong mapping.
+  const byEmp={};
+  Object.keys(newMapping).forEach(uid=>{
+    const empId=newMapping[uid];
+    if(!empId)return;
+    (byEmp[empId]=byEmp[empId]||[]).push(uid);
+  });
+  const conflicts=Object.keys(byEmp).filter(empId=>byEmp[empId].length>1);
+  if(conflicts.length){
+    const lines=conflicts.map(empId=>{
+      const emp=USERS.find(u=>u.id===parseInt(empId));
+      return `• ${emp?emp.name:'Employee #'+empId}: device user IDs ${byEmp[empId].join(', ')}`;
+    }).join('\n');
+    const proceed=confirm(`⚠ The following employee(s) are mapped to more than one device user ID. Punches from all their mapped IDs will be merged into a single attendance record per day.\n\n${lines}\n\nSave this mapping anyway?`);
+    if(!proceed)return;
+  }
+  ZK.userMapping=newMapping;
   zkBuildPreview();
   render();
   alert('User mapping saved!');
 }
+// Mirrors server.js's zkPunchKind/zkPickInOut: trust the device's own in/out toggle
+// (ATTLOG status code) when any punch that day has one, otherwise fall back to
+// earliest-in/latest-out.
+function zkPunchKind(statusCode){
+  if(statusCode==='0'||statusCode==='4')return'in';
+  if(statusCode==='1'||statusCode==='2'||statusCode==='3'||statusCode==='5')return'out';
+  return null;
+}
+function zkPickInOut(entries){
+  const ins=entries.filter(e=>e.kind==='in').map(e=>e.time).sort();
+  const outs=entries.filter(e=>e.kind==='out').map(e=>e.time).sort();
+  if(ins.length||outs.length)return{tin:ins[0]||'',tout:outs.length?outs[outs.length-1]:''};
+  const allTimes=entries.map(e=>e.time).filter(Boolean).sort();
+  return{tin:allTimes[0]||'',tout:allTimes.length>1?allTimes[allTimes.length-1]:''};
+}
 async function zkImport(){
   const toImport=ZK.importPreview.filter(r=>r.mapped&&!r.duplicate&&r.date);
-  // Group by empId+date → find earliest (check-in) and latest (check-out) time
+  // Group by empId+shift-day (not raw device date) → merge with any already-imported
+  // tin/tout for that day, then pick in/out using the device's own toggle where available.
   const grouped={};
+  const outOfBufferKeys=new Set();
   toImport.forEach(r=>{
-    const key=`${r.empId}_${r.date}`;
-    if(!grouped[key])grouped[key]={empId:r.empId,date:r.date,times:[]};
-    if(r.time)grouped[key].times.push(r.time);
+    const emp=USERS.find(u=>u.id===r.empId);
+    const hasShift=!!(emp&&emp.shiftId!=null);
+    const resolvedDate=hasShift?TimekeepingCore.resolveShiftDay(emp,r.date,r.time,COMPANY.shifts||[],ZK.punchBuffer.beforeMinutes,ZK.punchBuffer.afterMinutes):r.date;
+    const finalDate=resolvedDate||r.date;
+    const key=`${r.empId}_${finalDate}`;
+    if(!grouped[key]){
+      const existing=attendanceRecord(r.empId,finalDate);
+      grouped[key]={empId:r.empId,date:finalDate,entries:[
+        existing&&existing.tin?{time:existing.tin,kind:'in'}:null,
+        existing&&existing.tout?{time:existing.tout,kind:'out'}:null
+      ].filter(Boolean)};
+    }
+    if(r.time)grouped[key].entries.push({time:r.time,kind:zkPunchKind(r.statusCode)});
+    if(hasShift&&!resolvedDate)outOfBufferKeys.add(key);
   });
-  let added=0;
+  let added=0,flaggedCount=0;
   Object.values(grouped).forEach(g=>{
-    g.times.sort();
-    const tin=g.times[0]||'';
-    const tout=g.times.length>1?g.times[g.times.length-1]:'';
+    const{tin,tout}=zkPickInOut(g.entries);
     const isLate=tin>='08:30';
-    upsertAttendance(g.empId,g.date,{tin,tout,status:isLate?'late':'present',ot:0,nd:0,notes:'ZKTeco import',source:'zkteco-import',approvalStatus:'approved',filedBy:'ZKTeco import'});
+    const flagged=outOfBufferKeys.has(`${g.empId}_${g.date}`);
+    if(flagged)flaggedCount++;
+    upsertAttendance(g.empId,g.date,{tin,tout,status:isLate?'late':'present',ot:0,nd:0,notes:flagged?'ZKTeco import · Outside scheduled shift window — needs confirmation':'ZKTeco import',source:'zkteco-import',approvalStatus:flagged?'pending':'approved',filedBy:'ZKTeco import'});
     added++;
   });
   try{
     await zkApi('/ack',{method:'POST',body:JSON.stringify({consumed:toImport.map(r=>({serial:r.serial,userId:r.userId,date:r.date,time:r.time}))})});
   }catch(e){/* import already reflected locally; ack failure just means these may resurface on next pull */}
-  alert(`Imported ${added} attendance record${added!==1?'s':''}. Duplicate/unmapped rows skipped.`);
+  alert(`Imported ${added} attendance record${added!==1?'s':''}. Duplicate/unmapped rows skipped.`+(flaggedCount?` ${flaggedCount} record${flaggedCount!==1?'s were':' was'} outside the employee's scheduled shift window and flagged for confirmation.`:''));
   ZK.pulledRecords=[];ZK.importPreview=[];
   render();
 }
-/* ---- Permission helper ---- */
+/* ---- Permission helper ----
+   Two ways a user can be a full administrator: the legacy `role:'admin'` flag (an
+   outsourced/service account, deliberately excluded from `role==='employee'` headcount
+   filters), or `role:'employee'` combined with the "Super Admin" access level (id 1) — a
+   staff member who is also a full admin, e.g. an in-house HR/payroll manager in SaaS mode.
+   Every admin-only gate should go through this instead of checking `user.role==='admin'`
+   directly, so both patterns work identically. */
+function isAdminUser(u){
+  return !!(u && (u.role==='admin' || u.accessLevelId===1));
+}
 function canAccess(viewKey){
   if(!user)return false;
-  if(user.role==='admin'||isPlatformAdmin)return true; /* admin + God Admin = full access */
+  if(isAdminUser(user)||isPlatformAdmin)return true; /* admin + God Admin = full access */
   const al=ACCESS_LEVELS.find(a=>a.id===user.accessLevelId);
   if(!al)return false;
   return al.perms[viewKey]===true;
@@ -2349,6 +2523,33 @@ function renderDemoAccounts(){
 
 function toggleLoginPassword(){const p=document.getElementById('lp'),b=document.getElementById('login-password-toggle');if(!p||!b)return;p.type=p.type==='password'?'text':'password';b.textContent=p.type==='password'?'Show':'Hide';}
 
+function renderLoading(){return`<main style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg)">
+  <div style="text-align:center">
+    <div style="position:relative;width:64px;height:64px;margin:0 auto 22px">
+      <div class="sr-loading-mark"${COMPANY.logo?' style="background:none;box-shadow:none"':''}>${COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'S')}</div>
+      <span class="sr-loading-ring"></span>
+    </div>
+    <div style="font-weight:700;font-size:15px;color:var(--txt);letter-spacing:-.2px">${esc(COMPANY.name)||'SproutRipple'}</div>
+    <div style="margin-top:8px;color:var(--txt3);font-size:12.5px;display:flex;align-items:center;justify-content:center;gap:8px">
+      <span>Restoring your session</span>
+      <span style="display:inline-flex;gap:3px">
+        <span class="sr-loading-dot"></span><span class="sr-loading-dot"></span><span class="sr-loading-dot"></span>
+      </span>
+    </div>
+  </div>
+  <style>
+    @keyframes sr-ring-spin{to{transform:rotate(360deg)}}
+    @keyframes sr-pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+    @keyframes sr-dot{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
+    .sr-loading-mark{width:64px;height:64px;display:grid;place-items:center;overflow:hidden;border-radius:18px;color:#fff;font-weight:800;font-size:22px;background:linear-gradient(145deg,#777af2,#8b5cf6);box-shadow:0 10px 30px rgba(99,102,241,.3);animation:sr-pulse 2s ease-in-out infinite}
+    .sr-loading-mark img{width:100%;height:100%;object-fit:contain}
+    .sr-loading-ring{position:absolute;inset:-6px;border-radius:22px;border:2.5px solid transparent;border-top-color:var(--accent);border-right-color:var(--accent);animation:sr-ring-spin 1s linear infinite}
+    .sr-loading-dot{width:5px;height:5px;border-radius:50%;background:var(--accent);display:inline-block;animation:sr-dot 1.2s ease-in-out infinite}
+    .sr-loading-dot:nth-child(2){animation-delay:.15s}
+    .sr-loading-dot:nth-child(3){animation-delay:.3s}
+  </style>
+</main>`;}
+
 function renderLogin(){return`<main class="login-wrap">
   <section class="login-showcase" aria-label="SproutRipple platform overview">
     <div class="login-glow login-glow-one"></div><div class="login-glow login-glow-two"></div>
@@ -2398,7 +2599,7 @@ function doGuestBundy(){
 }
 /* ========== SIDEBAR ========== */
 function renderSidebar(){
-  const isA=user.role==='admin'||isPlatformAdmin;
+  const isA=isAdminUser(user)||isPlatformAdmin;
   /* God Admin inside a company: all modules EXCEPT leave (not a company employee) */
   const godInCompany=isPlatformAdmin&&activeClientId;
   const has=v=>{
@@ -2519,7 +2720,7 @@ function findAllDuplicates(){
 }
 
 function pgDashboard(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const myA=attendanceRecords().filter(a=>a.eid===user.id);
   const pr=myA.filter(a=>a.status==='present').length;
   const la=myA.filter(a=>a.status==='late').length;
@@ -3221,10 +3422,10 @@ function pgEmployees(){
     </label></td>
     <td><div style="display:flex;gap:5px">
       <button class="btn btn-sm" onclick="openEmp(${e.id})">201 →</button>
-      <button class="btn btn-sm" onclick="modal={type:'accessEdit',emp:USERS.find(u=>u.id===${e.id})};render()" title="Edit access level" style="padding:4px 8px">${ico('shield',13)}</button>
+      <button class="btn btn-sm" onclick="modal={type:'accessEdit',emp:USERS.find(u=>u.id===${e.id}),origRole:'${e.role}'};render()" title="Edit access level" style="padding:4px 8px">${ico('shield',13)}</button>
       ${(isPlatformAdmin||canAccess('emp_reset_password'))?`<button class="btn btn-sm" onclick="modal={type:'resetPassword',emp:USERS.find(u=>u.id===${e.id}),newPass:''};render()" title="Reset password" style="padding:4px 8px">🔑</button>`:''}
       ${isPlatformAdmin?`<button class="btn btn-sm" style="padding:4px 8px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${e.id})" title="Log in with this user's actual access — Super Admin only">Log in as user</button>`:''}
-      ${(isPlatformAdmin||user.role==='admin'||canAccess('emp_delete'))?`<button class="btn btn-sm btn-danger" onclick="deleteEmp(${e.id})" title="Delete" style="padding:4px 8px">✕</button>`:''}
+      ${(isPlatformAdmin||isAdminUser(user)||canAccess('emp_delete'))?`<button class="btn btn-sm btn-danger" onclick="deleteEmp(${e.id})" title="Delete" style="padding:4px 8px">✕</button>`:''}
     </div></td>
   </tr>`;}).join('')})():`<tr><td colspan="10" class="empty-state">No employees match "${esc(empSearch)}"</td></tr>`}</tbody></table></div>`;
 }
@@ -4564,7 +4765,7 @@ function pgOnboarding(){
 function markStep(eid,idx){const o=ONBOARD.find(x=>x.eid===eid);if(o)o.steps[idx].done=true;render();}
 
 function pgAttendance(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const tabs=isA?['My Records','All Employees','File Attendance']:['My Records','File Attendance'];
   let body='';
   if(tab===0){
@@ -4594,37 +4795,168 @@ function submitAtt(isA){
   queueSync('Attendance');alert(existing?'Attendance updated. The employee now has one authoritative record for this date.':'Attendance filed!');goTab(0);
 }
 
+function myLeaveTypeOptions(){
+  return (COMPANY.leaveTypes||[]).filter(t=>t.active&&leaveTypeEligible(user,t));
+}
+function leaveBalanceFor(emp,typeId){
+  return (emp&&emp.leaveBalances&&emp.leaveBalances[typeId])||{balance:0,adjustments:[]};
+}
+function myLeaveBalanceSummary(){
+  const opts=myLeaveTypeOptions();
+  if(!opts.length)return'';
+  return`<div class="card" style="margin-bottom:1rem"><div class="card-title" style="margin-bottom:.6rem">My Leave Balances</div>
+  <div style="display:flex;flex-wrap:wrap;gap:10px">${opts.map(t=>{const bal=leaveBalanceFor(user,t.id);return`<div onclick="openLeaveHistory(${user.id},${t.id})" style="padding:8px 14px;border:1px solid var(--border);border-radius:8px;min-width:110px;cursor:pointer" title="View history"><div style="font-size:11px;color:var(--txt3)">${esc(t.code)}</div><div style="font-weight:700;font-size:16px">${bal.balance}</div><div style="font-size:10px;color:var(--txt3)">days</div></div>`;}).join('')}</div></div>`;
+}
+function leaveBalanceHintText(t,requestedDays){
+  const bal=leaveBalanceFor(user,t.id);
+  let msg='Available balance: '+bal.balance+' day'+(bal.balance===1?'':'s')+(t.paid?'':' (unpaid type)');
+  if(t.paid&&requestedDays>0&&requestedDays>bal.balance){
+    const paidPart=Math.max(0,bal.balance),unpaidPart=+(requestedDays-paidPart).toFixed(3);
+    msg+=' — this request exceeds your balance: '+paidPart+' paid + '+unpaidPart+' unpaid.';
+  }
+  return {text:msg,exceeds:t.paid&&requestedDays>0&&requestedDays>bal.balance};
+}
+// Counts working days (calendar days minus the employee's scheduled rest days) in an
+// inclusive date range. Falls back to counting every calendar day if the employee has no
+// shift assigned, since there's no schedule to check rest days against.
+function countLeaveWorkingDays(startStr,endStr){
+  if(!startStr||!endStr||endStr<startStr)return 0;
+  const shifts=COMPANY.shifts||[];
+  let count=0,cursor=new Date(startStr+'T00:00:00Z');
+  const last=new Date(endStr+'T00:00:00Z');
+  while(cursor<=last){
+    const ds=cursor.toISOString().slice(0,10);
+    const isRest=(window.TimekeepingCore&&user.shiftId)?TimekeepingCore.isRestDay(user,ds,shifts):false;
+    if(!isRest)count++;
+    cursor.setUTCDate(cursor.getUTCDate()+1);
+  }
+  return count;
+}
+function calendarDaySpan(startStr,endStr){
+  if(!startStr||!endStr||endStr<startStr)return 0;
+  return Math.round((new Date(endStr+'T00:00:00Z')-new Date(startStr+'T00:00:00Z'))/86400000)+1;
+}
+// Recomputes the requested day count from the Day Type + date range, keeps window._leaveDays
+// in sync for submitLeave(), and refreshes the live "Total requested / Available balance" box.
+// Half Day always locks the end date to match the start date (a half-day request is always a
+// single day).
+function updateLeaveComputation(){
+  const dayTypeEl=document.getElementById('ldaytype'),lsEl=document.getElementById('ls'),leEl=document.getElementById('le2');
+  const box=document.getElementById('leave-calc-box'),sel=document.getElementById('lt');
+  if(!lsEl||!leEl)return;
+  const dayType=dayTypeEl?dayTypeEl.value:'whole';
+  if(dayType!=='whole'){leEl.value=lsEl.value;leEl.disabled=true;}else{leEl.disabled=false;}
+  const start=lsEl.value,end=leEl.value||start;
+  let days;
+  if(dayType!=='whole')days=0.5;
+  else days=countLeaveWorkingDays(start,end);
+  window._leaveDays=days;
+  if(!box)return;
+  let html='<strong>Total requested: '+days+' day'+(days===1?'':'s')+'</strong>';
+  if(dayType==='whole'){
+    const calSpan=calendarDaySpan(start,end),restExcluded=calSpan-days;
+    html+=' <span style="font-size:11px;color:var(--txt3)">('+calSpan+' calendar day'+(calSpan===1?'':'s')+(restExcluded>0?', '+restExcluded+' rest day'+(restExcluded===1?'':'s')+' excluded':'')+')</span>';
+  }
+  const t=sel&&(COMPANY.leaveTypes||[]).find(x=>x.name===sel.value);
+  if(t){
+    const {text,exceeds}=leaveBalanceHintText(t,days);
+    html+='<div style="margin-top:4px;font-size:11px;color:'+(exceeds?'var(--amber-txt)':'var(--txt3)')+'">'+esc(text)+'</div>';
+  }
+  box.innerHTML=html;
+}
+function leaveDaysCell(l){
+  let out=String(l.days);
+  if(l.halfDayLabel)out+=' <span style="font-size:10px;color:var(--txt3)">('+esc(l.halfDayLabel)+')</span>';
+  if(l.unpaidDays>0)out+=' <span class="badge b-pending" style="font-size:9px" title="'+l.paidDays+' paid + '+l.unpaidDays+' unpaid">'+(l.paidDays>0?'partial unpaid':'unpaid')+'</span>';
+  return out;
+}
 function pgLeave(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const tabs=isA?['Pending Approval','All Requests','File Leave']:['My Leaves','File Leave'];
   let body='';
   if(isA&&tab===0){
     const pend=LEAVES.filter(l=>l.status==='pending');
     body=`<table><thead><tr><th>Employee</th><th>Type</th><th>Period</th><th>Days</th><th>Reason</th><th>Actions</th></tr></thead>
-    <tbody>${pend.length?pend.map(l=>{const emp=USERS.find(u=>u.id===l.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${l.type}</td><td class="mono" style="font-size:12px">${l.s}${l.e!==l.s?' – '+l.e:''}</td><td style="text-align:center">${l.days}</td><td>${l.reason}</td><td><div style="display:flex;gap:5px"><button class="btn btn-sm btn-success" onclick="actLeave(${l.id},true)">Approve</button><button class="btn btn-sm btn-danger" onclick="actLeave(${l.id},false)">Reject</button></div></td></tr>`;}).join(''):'<tr><td colspan="6" class="empty-state">No pending requests 🎉</td></tr>'}</tbody></table>`;
+    <tbody>${pend.length?pend.map(l=>{const emp=USERS.find(u=>u.id===l.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${l.type}</td><td class="mono" style="font-size:12px">${l.s}${l.e!==l.s?' – '+l.e:''}</td><td style="text-align:center">${leaveDaysCell(l)}</td><td>${l.reason}</td><td><div style="display:flex;gap:5px"><button class="btn btn-sm btn-success" onclick="actLeave(${l.id},true)">Approve</button><button class="btn btn-sm btn-danger" onclick="actLeave(${l.id},false)">Reject</button></div></td></tr>`;}).join(''):'<tr><td colspan="6" class="empty-state">No pending requests 🎉</td></tr>'}</tbody></table>`;
   }else if(isA&&tab===1){
     body=`<table><thead><tr><th>Employee</th><th>Type</th><th>Period</th><th>Days</th><th>Filed</th><th>Status</th></tr></thead>
-    <tbody>${LEAVES.map(l=>{const emp=USERS.find(u=>u.id===l.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${l.type}</td><td class="mono" style="font-size:12px">${l.s}${l.e!==l.s?' – '+l.e:''}</td><td style="text-align:center">${l.days}</td><td style="color:var(--txt3)">${l.filed}</td><td><span class="badge b-${l.status}">${l.status}</span></td></tr>`;}).join('')}</tbody></table>`;
+    <tbody>${LEAVES.map(l=>{const emp=USERS.find(u=>u.id===l.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${l.type}</td><td class="mono" style="font-size:12px">${l.s}${l.e!==l.s?' – '+l.e:''}</td><td style="text-align:center">${leaveDaysCell(l)}</td><td style="color:var(--txt3)">${l.filed}</td><td><span class="badge b-${l.status}">${l.status}</span></td></tr>`;}).join('')}</tbody></table>`;
   }else if(!isA&&tab===0){
     const mine=LEAVES.filter(l=>l.eid===user.id);
-    body=`<table><thead><tr><th>Type</th><th>Start</th><th>End</th><th>Days</th><th>Reason</th><th>Status</th></tr></thead>
-    <tbody>${mine.length?mine.map(l=>`<tr><td>${l.type}</td><td>${l.s}</td><td>${l.e}</td><td style="text-align:center">${l.days}</td><td>${l.reason}</td><td><span class="badge b-${l.status}">${l.status}</span></td></tr>`).join(''):'<tr><td colspan="6" class="empty-state">No leave requests yet</td></tr>'}</tbody></table>`;
+    body=myLeaveBalanceSummary()+`<div class="card"><table><thead><tr><th>Type</th><th>Start</th><th>End</th><th>Days</th><th>Reason</th><th>Status</th></tr></thead>
+    <tbody>${mine.length?mine.map(l=>`<tr><td>${l.type}</td><td>${l.s}</td><td>${l.e}</td><td style="text-align:center">${leaveDaysCell(l)}</td><td>${l.reason}</td><td><span class="badge b-${l.status}">${l.status}</span></td></tr>`).join(''):'<tr><td colspan="6" class="empty-state">No leave requests yet</td></tr>'}</tbody></table></div>`;
+    return`<div class="page-header"><div class="page-title">Leave Management</div></div>
+    <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
+    ${body}`;
   }else{
-    body=`<div class="form-row"><div class="field"><label>Leave Type</label><select id="lt"><option>Sick Leave</option><option>Vacation Leave</option><option>Emergency Leave</option><option>Maternity Leave</option><option>Paternity Leave</option><option>Solo Parent Leave</option><option>Bereavement Leave</option></select></div><div class="field"><label>Number of Days</label><input type="number" id="ldays" value="1" min="1"/></div></div>
-    <div class="form-row"><div class="field"><label>Start Date</label><input type="date" id="ls" value="${today()}"/></div><div class="field"><label>End Date</label><input type="date" id="le2" value="${today()}"/></div></div>
-    <div class="field"><label>Reason / Remarks</label><textarea id="lr" rows="3" placeholder="Briefly describe your leave..."></textarea></div>
-    <div style="margin-top:4px"><button class="btn btn-primary" onclick="submitLeave()">Submit Request</button></div>`;
+    const opts=myLeaveTypeOptions();
+    if(opts.length){
+      const initDays=countLeaveWorkingDays(today(),today());
+      const initHint=leaveBalanceHintText(opts[0],initDays);
+      body=`<div class="form-row">
+      <div class="field"><label>Leave Type</label><select id="lt" onchange="updateLeaveComputation()">${opts.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Day Type</label><select id="ldaytype" onchange="updateLeaveComputation()">
+        <option value="whole">Whole Day(s)</option>
+        <option value="half_am">Half Day — Morning</option>
+        <option value="half_pm">Half Day — Afternoon</option>
+      </select></div>
+      </div>
+      <div class="form-row"><div class="field"><label>Start Date</label><input type="date" id="ls" value="${today()}" onchange="updateLeaveComputation()"/></div><div class="field"><label>End Date</label><input type="date" id="le2" value="${today()}" onchange="updateLeaveComputation()"/></div></div>
+      <div id="leave-calc-box" style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;margin-bottom:.875rem">
+        <strong>Total requested: ${initDays} day${initDays===1?'':'s'}</strong>
+        <div style="margin-top:4px;font-size:11px;color:${initHint.exceeds?'var(--amber-txt)':'var(--txt3)'}">${esc(initHint.text)}</div>
+      </div>
+      <div class="field"><label>Reason / Remarks</label><textarea id="lr" rows="3" placeholder="Briefly describe your leave..."></textarea></div>
+      <div style="margin-top:4px"><button class="btn btn-primary" onclick="submitLeave()">Submit Request</button></div>`;
+    }else{
+      body=`<div class="empty-state">No leave types are currently assigned to you. Contact HR if you believe this is incorrect.</div>`;
+    }
   }
   return`<div class="page-header"><div class="page-title">Leave Management</div></div>
   <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
   <div class="card">${body}</div>`;
 }
-function actLeave(id,ok){const l=LEAVES.find(x=>x.id===id);if(l){l.status=ok?'approved':'rejected';queueSync('Leave_Requests');}render();}
+function actLeave(id,ok){
+  const l=LEAVES.find(x=>x.id===id);
+  if(!l)return;
+  l.status=ok?'approved':'rejected';
+  if(ok){
+    const emp=USERS.find(u=>u.id===l.eid),t=(COMPANY.leaveTypes||[]).find(x=>x.name===l.type);
+    const deductDays=l.paidDays!==undefined?l.paidDays:l.days; /* older records predate the paid/unpaid split — deduct the full amount as before */
+    if(emp&&t&&deductDays>0){
+      if(!emp.leaveBalances)emp.leaveBalances={};
+      const bucket=emp.leaveBalances[t.id]||{balance:0,adjustments:[]};
+      bucket.adjustments=bucket.adjustments||[];
+      bucket.adjustments.unshift({id:Date.now(),date:today(),from:bucket.balance,to:+(bucket.balance-deductDays).toFixed(3),reason:'Leave approved: '+l.s+(l.e!==l.s?' – '+l.e:'')+(l.unpaidDays?' ('+l.unpaidDays+' filed as unpaid)':''),by:user.name});
+      bucket.balance=+(bucket.balance-deductDays).toFixed(3);
+      emp.leaveBalances[t.id]=bucket;
+    }
+  }
+  queueSync('Leave_Requests');
+  render();
+}
 function submitLeave(){
-  const type=document.getElementById('lt').value,s=document.getElementById('ls').value,e=document.getElementById('le2').value,days=parseInt(document.getElementById('ldays').value)||1,reason=document.getElementById('lr').value.trim();
+  const type=document.getElementById('lt').value,dayType=document.getElementById('ldaytype').value,s=document.getElementById('ls').value,e=document.getElementById('le2').value,reason=document.getElementById('lr').value.trim();
+  updateLeaveComputation(); /* ensure window._leaveDays reflects the current form state before reading it */
+  const days=window._leaveDays||0;
   if(!reason){alert('Please provide a reason.');return;}
-  LEAVES.push({id:nLeave++,eid:user.id,type,s,e,reason,status:'pending',filed:today(),days});
-  queueSync('Leave_Requests');alert('Leave request submitted!');goTab(0);
+  if(days<=0){alert(dayType==='whole'?'The selected date range has no working days (all rest days). Adjust the dates or file this as a different request.':'Number of days must be greater than 0.');return;}
+  const halfLabel=dayType==='half_am'?'Half Day — Morning':dayType==='half_pm'?'Half Day — Afternoon':'';
+  const t=(COMPANY.leaveTypes||[]).find(x=>x.name===type);
+  let paidDays=days,unpaidDays=0;
+  if(t){
+    const bal=leaveBalanceFor(user,t.id);
+    if(t.paid){
+      paidDays=Math.max(0,Math.min(days,bal.balance));
+      unpaidDays=+(days-paidDays).toFixed(3);
+      if(unpaidDays>0&&!confirm('You have '+bal.balance+' day(s) of '+t.name+' available. This request for '+days+' day(s) will be filed as '+paidDays+' paid + '+unpaidDays+' UNPAID (exceeds your balance). Continue?'))return;
+    }else{
+      paidDays=0;unpaidDays=days;
+      if(days>bal.balance&&!confirm('You only have '+bal.balance+' day(s) of '+t.name+' available, but requested '+days+'. File anyway? HR will need to review the shortfall.'))return;
+    }
+  }
+  LEAVES.push({id:nLeave++,eid:user.id,type,s,e,reason,status:'pending',filed:today(),days,paidDays,unpaidDays,dayType,halfDayLabel:halfLabel});
+  queueSync('Leave_Requests');alert('Leave request submitted!'+(unpaidDays>0?' ('+unpaidDays+' day(s) will be unpaid.)':''));goTab(0);
 }
 
 function pgMyProfile(){
@@ -5210,7 +5542,7 @@ function pgPayroll(){
           ${!isLocked?`<button class="btn btn-sm" title="Edit period" onclick="modal={type:'editPayPeriod',period:JSON.parse(JSON.stringify(PAY_PERIODS.find(x=>x.id===${p.id})))};render()">✎ Edit</button>`:''}
           ${p.status==='open'?`<button class="btn btn-sm btn-amber" onclick="lockPayPeriod(${p.id})">🔒 Lock</button>`:''}
           ${p.status==='locked'?`<button class="btn btn-sm" onclick="unlockPayPeriod(${p.id})">🔓 Unlock</button>`:''}
-          ${p.status==='closed'&&(user.role==='admin'||isPlatformAdmin||canAccess('payroll_approve'))?`<button class="btn btn-sm btn-amber" title="Void the linked payroll while preserving its audit history, then reopen this period" onclick="reopenClosedPayPeriod(${p.id})">↩ Void & Reopen</button>`:''}
+          ${p.status==='closed'&&(isAdminUser(user)||isPlatformAdmin||canAccess('payroll_approve'))?`<button class="btn btn-sm btn-amber" title="Void the linked payroll while preserving its audit history, then reopen this period" onclick="reopenClosedPayPeriod(${p.id})">↩ Void & Reopen</button>`:''}
           ${!isLocked?`<button class="btn btn-sm btn-danger" title="Delete period" onclick="deletePayPeriod(${p.id})">🗑 Delete</button>`:''}
         </div></td>
       </tr>`;}).join('')}</tbody></table>`
@@ -6982,7 +7314,7 @@ function pgMySlips(){
 function openSlip(rid){const run=PAYROLLS.find(r=>r.id===rid);const item=run.items.find(i=>i.eid===user.id);modal={type:'slip',run,item};render();}
 
 function pgLoans(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const myLoans=isA?LOANS:LOANS.filter(l=>l.eid===user.id);
   return`<div class="page-header"><div><div class="page-title">Loans</div><div class="page-sub">${isA?'All employee loans':'My active loans'}</div></div>
   ${isA?`<button class="btn btn-primary" onclick="modal={type:'addLoan'};render()">${ico('loan',14)} Add Loan</button>`:''}</div>
@@ -7055,7 +7387,7 @@ function advCand(id){
 function rejectCand(id){const c=CANDIDATES.find(x=>x.id===id);c.stage='rejected';render();}
 
 function pgPerformance(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const records=isA?PERF:PERF.filter(p=>p.eid===user.id);
   return`<div class="page-header"><div class="page-title">Performance Management</div></div>
   <div class="card">
@@ -7873,8 +8205,47 @@ function renderModal(){
         <div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:3px">${Object.entries(al.perms).filter(([,v])=>v).map(([k])=>`<span style="font-size:10px;background:var(--bg);padding:1px 6px;border-radius:4px;color:var(--txt3)">${k}</span>`).join('')}</div></div>
       </label>`).join('')}
     </div>
+    ${(modal.origRole==='admin'&&(isAdminUser(user)||isPlatformAdmin))?`<div class="section-header" style="margin-top:14px">Account Type</div>
+    <div style="font-size:12px;color:var(--txt3);margin:2px 0 8px">This account started as a system/service admin (not a regular employee record). Super Admin has full access either way — this only controls whether it's also treated as one of your own employees.</div>
+    <div style="display:grid;gap:8px">
+      <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1.5px solid ${(e.role||'employee')==='employee'?'var(--accent)':'var(--border)'};border-radius:9px;cursor:pointer;background:${(e.role||'employee')==='employee'?'var(--accent-bg)':'var(--surface)'}">
+        <input type="radio" name="admtype" style="width:auto;margin-top:2px;accent-color:var(--accent)" ${(e.role||'employee')==='employee'?'checked':''} onchange="modal.emp.role='employee';render()"/>
+        <div><div style="font-weight:600;font-size:13px">Staff admin — SaaS mode</div><div style="font-size:12px;color:var(--txt3)">Counts as one of your employees. Appears in the Employee list, Org Chart, headcount, and payroll.</div></div>
+      </label>
+      <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1.5px solid ${e.role==='admin'?'var(--accent)':'var(--border)'};border-radius:9px;cursor:pointer;background:${e.role==='admin'?'var(--accent-bg)':'var(--surface)'}">
+        <input type="radio" name="admtype" style="width:auto;margin-top:2px;accent-color:var(--accent)" ${e.role==='admin'?'checked':''} onchange="modal.emp.role='admin';render()"/>
+        <div><div style="font-weight:600;font-size:13px">Outsourced / service admin — full outsource mode</div><div style="font-size:12px;color:var(--txt3)">A provider account managing HR/payroll on the company's behalf. Hidden from the Employee list, Org Chart, headcount, and payroll — not one of the company's own staff.</div></div>
+      </label>
+    </div>`:''}
     <div style="margin-top:14px;display:flex;gap:8px;border-top:1px solid var(--border);padding-top:12px">
       <button class="btn btn-primary" onclick="saveAccessEdit()">Save Changes</button>
+      <button class="btn" onclick="closeM()">Cancel</button>
+    </div>`;
+  }else if(modal.type==='addAdmin'){
+    const d=modal.data;
+    inner=`<div class="modal-title">+ Add Administrator <button class="close-x" onclick="closeM()">×</button></div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">Creates a Super Admin account with full system access — separate from the regular "Add Employee" flow, which is for rank-and-file staff.</div>
+    <div class="form-row">
+      <div class="field"><label>Full Name <span style="color:var(--red)">*</span></label>
+        <input class="finput" value="${esc(d.name)}" placeholder="e.g. Maria Santos" oninput="modal.data.name=this.value"/></div>
+      <div class="field"><label>Email <span style="color:var(--red)">*</span></label>
+        <input class="finput" type="email" value="${esc(d.email)}" placeholder="e.g. admin@company.com" oninput="modal.data.email=this.value"/></div>
+    </div>
+    <div class="field" style="margin-bottom:14px"><label>Password <span style="color:var(--red)">*</span></label>
+      <input class="finput" value="${esc(d.pass)}" placeholder="Login password" oninput="modal.data.pass=this.value"/></div>
+    <div class="section-header">Account Type</div>
+    <div style="display:grid;gap:8px;margin-top:6px">
+      <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1.5px solid ${d.role==='employee'?'var(--accent)':'var(--border)'};border-radius:9px;cursor:pointer;background:${d.role==='employee'?'var(--accent-bg)':'var(--surface)'}">
+        <input type="radio" name="newadmtype" style="width:auto;margin-top:2px;accent-color:var(--accent)" ${d.role==='employee'?'checked':''} onchange="modal.data.role='employee';render()"/>
+        <div><div style="font-weight:600;font-size:13px">Staff admin — SaaS mode</div><div style="font-size:12px;color:var(--txt3)">This admin is also one of your own employees. Will appear in the Employee list, Org Chart, headcount, and payroll.</div></div>
+      </label>
+      <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1.5px solid ${d.role==='admin'?'var(--accent)':'var(--border)'};border-radius:9px;cursor:pointer;background:${d.role==='admin'?'var(--accent-bg)':'var(--surface)'}">
+        <input type="radio" name="newadmtype" style="width:auto;margin-top:2px;accent-color:var(--accent)" ${d.role==='admin'?'checked':''} onchange="modal.data.role='admin';render()"/>
+        <div><div style="font-weight:600;font-size:13px">Outsourced / service admin — full outsource mode</div><div style="font-size:12px;color:var(--txt3)">A provider account managing HR/payroll on the company's behalf. Hidden from the Employee list, Org Chart, headcount, and payroll.</div></div>
+      </label>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:8px;border-top:1px solid var(--border);padding-top:12px">
+      <button class="btn btn-primary" onclick="saveAddAdmin()">✓ Create Administrator</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
   }else if(modal.type==='addLoan'){
@@ -8190,7 +8561,7 @@ function renderModal(){
       <button onclick="modal={type:'changeOwnPassword',oldPass:'',newPass:'',newPass2:''};render()" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);cursor:pointer;font-size:13px;color:var(--txt);text-align:left;width:100%" onmouseover="this.style.background='var(--accent-bg)'" onmouseout="this.style.background='var(--bg)'">
         🔑 <span><div style="font-weight:500">Change Password</div><div style="font-size:11px;color:var(--txt3)">Update your login password</div></span>
       </button>
-      ${(user.role==='admin'||isPlatformAdmin)?`<button onclick="closeM();goView('company')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);cursor:pointer;font-size:13px;color:var(--txt);text-align:left;width:100%" onmouseover="this.style.background='var(--accent-bg)'" onmouseout="this.style.background='var(--bg)'">
+      ${(isAdminUser(user)||isPlatformAdmin)?`<button onclick="closeM();goView('company')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);cursor:pointer;font-size:13px;color:var(--txt);text-align:left;width:100%" onmouseover="this.style.background='var(--accent-bg)'" onmouseout="this.style.background='var(--bg)'">
         ${ico('settings',16)} <span><div style="font-weight:500">Company Settings</div><div style="font-size:11px;color:var(--txt3)">Manage system-wide configuration</div></span>
       </button>
       <button onclick="closeM();goView('accesssetup')" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);cursor:pointer;font-size:13px;color:var(--txt);text-align:left;width:100%" onmouseover="this.style.background='var(--accent-bg)'" onmouseout="this.style.background='var(--bg)'">
@@ -8238,17 +8609,150 @@ function renderModal(){
       ">✓ Update Password</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
+  }else if(modal.type==='holidayEditor'){
+    const d=modal.draft;
+    const typeOptions=[['regular','Regular Holiday (200% if worked)'],['special-non-working','Special Non-Working Holiday (130% if worked)'],['special-working','Special Working Holiday (no premium — normal work day)'],['double','Double Holiday (300% if worked)']];
+    inner=`<div class="modal-title">${modal.isNew?'Add':'Edit'} Holiday
+      <button class="close-x" onclick="closeM()">×</button>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Date</label><input type="date" class="finput" value="${esc(d.date)}" onchange="modal.draft.date=this.value"/></div>
+      <div class="field"><label>Holiday Name</label><input class="finput" value="${esc(d.name)}" oninput="modal.draft.name=this.value" placeholder="e.g. Independence Day"/></div>
+    </div>
+    <div class="field" style="margin-top:.75rem"><label>Type</label><select class="finput" onchange="modal.draft.type=this.value;render()">
+      ${typeOptions.map(([v,l])=>`<option value="${v}" ${d.type===v?'selected':''}>${l}</option>`).join('')}
+    </select></div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn btn-primary" onclick="saveHolidayEditor()">Save Holiday</button>
+      <button class="btn" onclick="closeM()">Cancel</button>
+    </div>`;
+  }else if(modal.type==='shiftEditor'){
+    const d=modal.draft;
+    const dayLabels={mon:'Monday',tue:'Tuesday',wed:'Wednesday',thu:'Thursday',fri:'Friday',sat:'Saturday',sun:'Sunday'};
+    const dayKeys=['mon','tue','wed','thu','fri','sat','sun'];
+    inner=`<div class="modal-title">${modal.isNew?'Add':'Edit'} Shift
+      <button class="close-x" onclick="closeM()">×</button>
+    </div>
+    <div class="form-row" style="margin-bottom:.875rem">
+      <div class="field"><label>Shift Name</label><input class="finput" value="${esc(d.name)}" oninput="modal.draft.name=this.value"/></div>
+      <div class="field"><label>Grace Period (minutes)</label><input type="number" min="0" class="finput" value="${d.graceMinutes}" oninput="modal.draft.graceMinutes=this.value"/></div>
+    </div>
+    <p style="font-size:12px;color:var(--txt3);margin-bottom:.5rem">Set the start/end and break times per day, or mark a day as a rest day. Use "Apply to all" on any day to quickly copy its times to every other non-rest day.</p>
+    <div style="overflow-x:auto"><table><thead><tr><th>Day</th><th>Rest Day</th><th>Start</th><th>End</th><th>Break Start</th><th>Break End</th><th></th></tr></thead>
+    <tbody>${dayKeys.map(k=>{
+      const day=d.schedule[k];
+      return`<tr>
+        <td style="font-weight:600;font-size:13px">${dayLabels[k]}</td>
+        <td><input type="checkbox" ${day.restDay?'checked':''} onchange="modal.draft.schedule['${k}'].restDay=this.checked;render()"/></td>
+        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${esc(day.start||'')}" onchange="modal.draft.schedule['${k}'].start=this.value"/></td>
+        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${esc(day.end||'')}" onchange="modal.draft.schedule['${k}'].end=this.value"/></td>
+        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${esc(day.breakStart||'')}" onchange="modal.draft.schedule['${k}'].breakStart=this.value"/></td>
+        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${esc(day.breakEnd||'')}" onchange="modal.draft.schedule['${k}'].breakEnd=this.value"/></td>
+        <td>${day.restDay?'':`<button class="btn btn-sm" onclick="shiftEditorApplyToAll('${k}')" title="Copy this day's times to every other non-rest day">Apply to all</button>`}</td>
+      </tr>`;}).join('')}</tbody></table>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn btn-primary" onclick="saveShiftEditor()">Save Shift</button>
+      <button class="btn" onclick="closeM()">Cancel</button>
+    </div>`;
+  }else if(modal.type==='leaveTypeEditor'){
+    const d=modal.draft;
+    const genderOptions=[['','Any gender'],['female','Female only'],['male','Male only']];
+    inner=`<div class="modal-title">${modal.isNew?'Add':'Edit'} Leave Type
+      <button class="close-x" onclick="closeM()">×</button>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Leave Type Name</label><input class="finput" value="${esc(d.name)}" oninput="modal.draft.name=this.value" placeholder="e.g. Vacation Leave"/></div>
+      <div class="field"><label>Short Code</label><input class="finput" style="text-transform:uppercase" value="${esc(d.code)}" oninput="modal.draft.code=this.value" placeholder="e.g. VL" maxlength="6"/></div>
+    </div>
+    <div class="form-row" style="margin-top:.75rem">
+      <div class="field"><label>Annual Entitlement (days)</label><input type="number" min="0" step="0.5" class="finput" value="${d.annualDays}" oninput="modal.draft.annualDays=this.value"/></div>
+      <div class="field"><label>Accrual</label><select class="finput" onchange="modal.draft.accrualMethod=this.value">
+        <option value="upfront" ${d.accrualMethod==='upfront'?'selected':''}>Full amount at year start</option>
+        <option value="monthly" ${d.accrualMethod==='monthly'?'selected':''}>Accrues monthly (1/12 per month)</option>
+      </select></div>
+    </div>
+    <div class="field" style="margin-top:.75rem"><label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" style="width:auto" ${d.paid?'checked':''} onchange="modal.draft.paid=this.checked"/> Paid leave
+    </label></div>
+    <div class="field" style="margin-top:.5rem"><label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" style="width:auto" ${d.carryOver?'checked':''} onchange="modal.draft.carryOver=this.checked;render()"/> Allow carry-over to next year
+    </label></div>
+    ${d.carryOver?`<div class="field" style="margin-top:.5rem;margin-left:26px;max-width:220px"><label>Max carry-over (days)</label><input type="number" min="0" step="0.5" class="finput" value="${d.maxCarryOverDays}" oninput="modal.draft.maxCarryOverDays=this.value"/></div>`:''}
+    <div class="section-header" style="margin-top:1rem">Grant Timing</div>
+    <div class="field" style="margin-top:.5rem"><label>Entitlement clock starts from</label><select class="finput" onchange="modal.draft.eligibilityBasis=this.value;render()">
+      <option value="hire" ${(d.eligibilityBasis||'hire')==='hire'?'selected':''}>Date hired — available from day 1</option>
+      <option value="regularization" ${d.eligibilityBasis==='regularization'?'selected':''}>Date of regularization — not available while probationary</option>
+    </select></div>
+    ${d.accrualMethod==='upfront'?`<div class="field" style="margin-top:.5rem"><label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" style="width:auto" ${d.prorateFirstGrant?'checked':''} onchange="modal.draft.prorateFirstGrant=this.checked"/> Prorate the first grant by months remaining in the year
+    </label><div style="font-size:11px;color:var(--txt3);margin-top:2px;margin-left:26px">Unchecked = full ${d.annualDays||0} days regardless of when eligibility starts. Checked = e.g. eligible in July gets 6/12 of the annual amount for that first partial year, then the full amount every year after.</div></div>`
+      :`<div style="font-size:11px;color:var(--txt3);margin-top:6px">Monthly accrual already prorates naturally — it only starts ticking once eligible.</div>`}
+    <div class="section-header" style="margin-top:1rem">Eligibility</div>
+    <div class="form-row" style="margin-top:.5rem">
+      <div class="field"><label>Gender restriction</label><select class="finput" onchange="modal.draft.genderRestriction=this.value">
+        ${genderOptions.map(([v,l])=>`<option value="${v}" ${d.genderRestriction===v?'selected':''}>${l}</option>`).join('')}
+      </select></div>
+      <div class="field"><label>Minimum tenure (months)</label><input type="number" min="0" class="finput" value="${d.minTenureMonths}" oninput="modal.draft.minTenureMonths=this.value"/></div>
+    </div>
+    <div class="field" style="margin-top:.5rem"><label>Employment types (leave blank for all)</label>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">
+        ${LOOKUPS.employmentTypes.map(t=>`<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" style="width:auto" ${(d.employeeTypes||[]).includes(t.code)?'checked':''} onchange="if(this.checked){if(!modal.draft.employeeTypes.includes('${t.code}'))modal.draft.employeeTypes.push('${t.code}');}else{modal.draft.employeeTypes=modal.draft.employeeTypes.filter(c=>c!=='${t.code}');}"/> ${esc(t.code)}
+        </label>`).join('')}
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--txt3);margin-top:6px">Individual employees can still be assigned or excluded from an employee's Leave tab, overriding these defaults.</div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn btn-primary" onclick="saveLeaveTypeEditor()">Save Leave Type</button>
+      <button class="btn" onclick="closeM()">Cancel</button>
+    </div>`;
+  }else if(modal.type==='setLeaveBalance'){
+    inner=`<div class="modal-title">Set Leave Balance — ${esc(modal.typeName)}
+      <button class="close-x" onclick="closeM()">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:10px">Current balance: <strong style="color:var(--txt)">${modal.current}</strong> days</div>
+    <div class="field"><label>New Balance (days)</label><input type="number" step="0.001" class="finput" value="${modal.data.balance}" oninput="modal.data.balance=this.value"/><div style="font-size:10px;color:var(--txt3);margin-top:2px">Up to 3 decimal places.</div></div>
+    <div class="field" style="margin-top:.75rem"><label>Reason</label><input class="finput" value="${esc(modal.data.reason)}" oninput="modal.data.reason=this.value" placeholder="e.g. Annual grant for 2026, Migration balance, Correction"/></div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn btn-primary" onclick="saveSetLeaveBalance()">Save Balance</button>
+      <button class="btn" onclick="closeM()">Cancel</button>
+    </div>`;
+  }else if(modal.type==='leaveHistory'){
+    const emp=USERS.find(u=>u.id===modal.empId);
+    const bal=emp&&emp.leaveBalances&&emp.leaveBalances[modal.typeId]?emp.leaveBalances[modal.typeId]:{balance:0,adjustments:[],yearlyClosingBalances:{}};
+    const closingYears=Object.keys(bal.yearlyClosingBalances||{}).sort((a,b)=>b-a);
+    inner=`<div class="modal-title">Leave History — ${esc(modal.typeName)}
+      <button class="close-x" onclick="closeM()">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">${esc(emp?.name||'')} · Current balance: <strong style="color:var(--txt)">${bal.balance}</strong> days</div>
+    ${closingYears.length?`<div class="section-header">Year-end Closing Balances</div>
+    <table style="margin-bottom:14px"><thead><tr><th>Policy Year</th><th>Balance at year-end</th></tr></thead><tbody>
+      ${closingYears.map(y=>`<tr><td>${y}</td><td class="mono">${bal.yearlyClosingBalances[y]}</td></tr>`).join('')}
+    </tbody></table>`:''}
+    <div class="section-header">Adjustment History</div>
+    <div style="max-height:320px;overflow-y:auto;margin-top:6px">
+    <table><thead><tr><th>Date</th><th>Change</th><th>Reason</th><th>By</th></tr></thead><tbody>
+      ${(bal.adjustments||[]).length?(bal.adjustments||[]).map(a=>`<tr><td class="mono" style="font-size:11px">${esc(a.date)}</td><td class="mono" style="font-size:11px">${a.from} → ${a.to}</td><td style="font-size:12px">${esc(a.reason||'—')}</td><td style="font-size:11px;color:var(--txt3)">${esc(a.by||'—')}</td></tr>`).join(''):'<tr><td colspan="4" class="empty-state">No adjustments recorded yet.</td></tr>'}
+    </tbody></table>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn" onclick="closeM()">Close</button>
+    </div>`;
   }else if(modal.type==='notifications'){
     const pending=LEAVES.filter(l=>l.status==='pending');
     const crPending=CHANGE_REQUESTS.filter(r=>r.status==='pending');
-    const isA=user.role==='admin'||isPlatformAdmin;
+    const myFlagged=myFlaggedAttendance();
+    const isA=isAdminUser(user)||isPlatformAdmin;
+    const hasAny=(isA&&(pending.length||crPending.length))||myFlagged.length;
     inner=`<div class="modal-title">🔔 Notifications
       <button class="close-x" onclick="closeM()">×</button>
     </div>
     <div style="display:grid;gap:6px;max-height:400px;overflow-y:auto">
+      ${myFlagged.length?myFlagged.map(a=>`<div onclick="closeM();goView('attendance')" style="display:flex;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--amber);background:var(--amber-bg);cursor:pointer" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'"><span style="font-size:20px;flex-shrink:0">⏱️</span><div><div style="font-weight:600;font-size:13px">Attendance needs confirmation — ${esc(a.date)}</div><div style="font-size:12px;color:var(--amber-txt)">A punch on this day was outside your scheduled shift window. Please review and confirm or correct it.</div></div></div>`).join(''):''}
       ${isA&&pending.length?pending.map(l=>{const emp=USERS.find(u=>u.id===l.eid);return`<div onclick="closeM();goView('leave')" style="display:flex;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--amber);background:var(--amber-bg);cursor:pointer" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'"><span style="font-size:20px;flex-shrink:0">📋</span><div><div style="font-weight:600;font-size:13px">${esc(emp?.name||'Unknown')} — Leave Request</div><div style="font-size:12px;color:var(--amber-txt)">${esc(l.type)} · ${esc(l.from)} to ${esc(l.to)}</div></div></div>`;}).join(''):''}
       ${isA&&crPending.length?crPending.map(r=>{const emp=USERS.find(u=>u.id===r.eid);return`<div onclick="closeM();goView('profilechanges')" style="display:flex;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg);cursor:pointer" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'"><span style="font-size:20px;flex-shrink:0">✏️</span><div><div style="font-weight:600;font-size:13px">${esc(emp?.name||'Unknown')} — Profile Change</div><div style="font-size:12px;color:var(--txt3)">Awaiting your approval</div></div></div>`;}).join(''):''}
-      ${(!isA||(pending.length===0&&crPending.length===0))?`<div style="padding:2rem;text-align:center;color:var(--txt3)"><div style="font-size:32px;margin-bottom:8px">🎉</div><div style="font-weight:600">All caught up!</div><div style="font-size:12px;margin-top:4px">No pending actions.</div></div>`:''}
+      ${!hasAny?`<div style="padding:2rem;text-align:center;color:var(--txt3)"><div style="font-size:32px;margin-bottom:8px">🎉</div><div style="font-weight:600">All caught up!</div><div style="font-size:12px;margin-top:4px">No pending actions.</div></div>`:''}
     </div>`;
   }else if(modal.type==='bulkAdj'){
     const adjTypes=['Retro Pay','Missed Allowance','Missed Deduction','OT Correction','Tax Adjustment','Incentive','Overpayment Recovery','Other'];
@@ -9627,15 +10131,66 @@ function submitProfileChange(){
   alert(`${changes.length} change${changes.length!==1?'s':''} submitted for admin approval.`);
   closeM();
 }
+// Backfills the minimal fields employee-facing screens (Employee list, Org Chart, payroll
+// group matching) assume exist, when an admin-only account is switched to count as staff.
+// Every check is guarded so it's a no-op for accounts that already have a full profile
+// (e.g. a Maria-style admin who was seeded with complete HR data from day one).
+function ensureEmployeeShape(u){
+  if(!u.eid){
+    const nums=USERS.map(x=>parseInt((x.eid||'').replace(/\D/g,''),10)||0);
+    u.eid='EMP-'+String(Math.max(0,...nums)+1).padStart(3,'0');
+  }
+  if(!u.dept)u.dept='Administration';
+  if(!u.pos)u.pos='Administrator';
+  if(!u.status)u.status='active';
+  if(!u.type)u.type='regular';
+  if(!u.hired)u.hired=new Date().toISOString().slice(0,10);
+  if(!Array.isArray(u.taxYearRecords))u.taxYearRecords=[];
+  if(!Array.isArray(u.movements))u.movements=[];
+  if(u.includeInPayroll===undefined)u.includeInPayroll='N'; /* opt-in later via Compensation tab */
+  if(u.includeInTimekeeping===undefined)u.includeInTimekeeping='N';
+}
 function saveAccessEdit(){
   const e=modal.emp;
   const target=USERS.find(u=>u.id===e.id);
-  if(target){target.accessLevelId=e.accessLevelId;target.active=e.active;}
+  if(target){
+    target.accessLevelId=e.accessLevelId;target.active=e.active;
+    // Changing role (staff <-> outsourced admin) is only ever exposed via the Account Type
+    // toggle, which is itself admin-only-gated in the modal — this mirrors that restriction
+    // at the point of writing state, in case modal.emp.role was reached some other way.
+    if(e.role&&e.role!==target.role&&(isAdminUser(user)||isPlatformAdmin))target.role=e.role;
+    if(target.role==='employee')ensureEmployeeShape(target);
+  }
   alert(`Access level updated for ${e.name}.`);closeM();
+}
+function openAddAdmin(){
+  if(!(isAdminUser(user)||isPlatformAdmin)){toast('Only administrators can add new administrator accounts.','warning');return;}
+  modal={type:'addAdmin',data:{name:'',email:'',pass:'',role:'admin'}};render();
+}
+function saveAddAdmin(){
+  if(!(isAdminUser(user)||isPlatformAdmin)){toast('Only administrators can add new administrator accounts.','warning');return;}
+  const d=modal.data;
+  if(!d.name?.trim()||!d.email?.trim()||!d.pass?.trim()){alert('Name, email, and password are required.');return;}
+  if(USERS.some(u=>(u.email||'').toLowerCase()===d.email.trim().toLowerCase())){alert('A user with that email already exists.');return;}
+  const newId=Math.max(0,...USERS.map(u=>u.id))+1;
+  const newAdmin={id:newId,name:d.name.trim(),email:d.email.trim(),pass:d.pass,role:d.role,accessLevelId:1,active:true};
+  if(newAdmin.role==='employee')ensureEmployeeShape(newAdmin);
+  USERS.push(newAdmin);
+  queueSync('Employees');
+  alert(`✅ ${newAdmin.name} added as ${d.role==='employee'?'a staff':'an outsourced service'} administrator.\nLogin: ${newAdmin.email} / ${newAdmin.pass}`);
+  closeM();
 }
 
 function pgZKSetup(){
-  const serverUrl=location.origin;
+  const serverUrl=window.apiHost||location.origin;
+  const defaultAddress=serverUrl.replace(/^https?:\/\//,'');
+  const defaultPort=serverUrl.startsWith('https')?'443':'80';
+  const defaultHttps=serverUrl.startsWith('https');
+  const ov=ZK.connectionOverride||{};
+  const hasOverride=!!ov.address;
+  const effAddress=hasOverride?ov.address:defaultAddress;
+  const effPort=hasOverride?(ov.port||defaultPort):defaultPort;
+  const effHttps=hasOverride?!!ov.https:defaultHttps;
   const tabs=['Connection','User Mapping','Pull & Import','Real-time','Device Tools'];
   const online=ZK.devices.filter(d=>d.lastSeen&&(Date.now()-new Date(d.lastSeen).getTime())<5*60*1000);
   let body='';
@@ -9644,14 +10199,58 @@ function pgZKSetup(){
   if(tab===0){body=`
     <div class="card" style="margin-bottom:1rem">
       <div class="card-title" style="margin-bottom:.875rem">Configure on the device</div>
-      <p style="font-size:13px;color:var(--txt2);margin-bottom:.75rem">This device supports ADMS — it pushes attendance to us, so no local bridge software is needed. On the device: <strong>Menu → Comm → Cloud Server Setting</strong>, then set:</p>
-      <div style="display:grid;grid-template-columns:auto 1fr;gap:6px 14px;font-size:13px;margin-bottom:10px">
-        <div style="color:var(--txt3)">Server Address</div><div class="mono" style="font-weight:600">${esc(serverUrl.replace(/^https?:\/\//,''))}</div>
-        <div style="color:var(--txt3)">Server Port</div><div class="mono" style="font-weight:600">${serverUrl.startsWith('https')?'443':'80'}</div>
-        <div style="color:var(--txt3)">Enable Domain Name</div><div>${serverUrl.startsWith('https')?'Yes':'No'}</div>
-        <div style="color:var(--txt3)">Enable ADMS / Cloud Server</div><div>Yes</div>
+      <p style="font-size:13px;color:var(--txt2);margin-bottom:.75rem">This device supports ADMS — it pushes attendance to us, so no local bridge software is needed.</p>
+      ${hasOverride?`<div style="font-size:12px;color:var(--green);margin-bottom:8px">✓ Showing your saved working settings (not the auto-detected default).</div>`
+        :`<div style="font-size:12px;color:var(--txt3);margin-bottom:8px">Showing the auto-detected default. If your device only accepts a numeric IP, find your actual working address/port (see note below) and save it here.</div>`}
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:8px 14px;font-size:13px;margin-bottom:10px;align-items:center;max-width:420px">
+        <div style="color:var(--txt3)">Address / IP</div><input id="zk-conn-address" class="finput mono" style="font-size:12px" value="${esc(effAddress)}"/>
+        <div style="color:var(--txt3)">Port</div><input id="zk-conn-port" class="finput mono" style="font-size:12px" value="${esc(effPort)}"/>
+        <div style="color:var(--txt3)">HTTPS</div><select id="zk-conn-https" class="finput" style="font-size:12px">
+          <option value="0" ${!effHttps?'selected':''}>No</option>
+          <option value="1" ${effHttps?'selected':''}>Yes</option>
+        </select>
       </div>
-      <button class="btn btn-sm" onclick="zkRefreshStatus()" ${ZK.loading?'disabled':''}>${ZK.loading?'Checking…':'↻ Refresh status'}</button>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">
+        <button class="btn btn-sm btn-primary" onclick="zkSaveConnectionOverride()">💾 Save as working settings</button>
+        ${hasOverride?`<button class="btn btn-sm" onclick="zkResetConnectionOverride()">↺ Reset to auto-detected default</button>`:''}
+        <button class="btn btn-sm" onclick="zkRefreshStatus()" ${ZK.loading?'disabled':''}>${ZK.loading?'Checking…':'↻ Refresh status'}</button>
+      </div>
+      <p style="font-size:12px;color:var(--txt3);margin-bottom:10px">The values above are the same regardless of which menu your device uses — enter them into whichever variant appears on your device:</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:4px">
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px">Standard (domain-capable devices)</div>
+          <ol style="font-size:12px;color:var(--txt2);margin:0;padding-left:16px;line-height:1.7">
+            <li><strong>Menu → Comm → Cloud Server Setting</strong></li>
+            <li>Server Address = Address/IP above</li>
+            <li>Server Port = Port above</li>
+            <li>Enable Domain Name = HTTPS above</li>
+            <li>Enable ADMS / Cloud Server = Yes</li>
+          </ol>
+        </div>
+        <div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px">
+          <div style="font-size:12px;font-weight:700;margin-bottom:6px">Proxy Server (numeric-IP-only devices, e.g. ZLM60_TFT)</div>
+          <ol style="font-size:12px;color:var(--txt2);margin:0;padding-left:16px;line-height:1.7">
+            <li><strong>Menu → Comm → Cloud Server Setting</strong></li>
+            <li>Enable Proxy Server = Yes</li>
+            <li><strong>Proxy Server IP</strong> = Address/IP above — this field only accepts a plain number like <span class="mono">66.33.22.221</span>, never a hostname/domain (see below if you only have a hostname)</li>
+            <li>Proxy Server Port = Port above (the number after the colon in a hostname:port address, e.g. the <span class="mono">42235</span> in <span class="mono">sakura.proxy.rlwy.net:42235</span>)</li>
+            <li>HTTPS = HTTPS above (usually "No" for a raw TCP proxy)</li>
+          </ol>
+          <div style="margin-top:8px;padding-top:8px;border-top:1px dashed var(--border);font-size:12px;color:var(--txt2)">
+            <strong>Turning a proxy hostname into a numeric IP:</strong> on any computer, open Command Prompt (Windows) or Terminal (Mac), then run <span class="mono">ping yourproxyhostname</span> (the hostname only, without the port). The number in brackets in the reply — e.g. <span class="mono">Pinging sakura.proxy.rlwy.net [66.33.22.221]</span> — is what goes into Proxy Server IP.
+          </div>
+        </div>
+      </div>
+      <p style="font-size:12px;color:var(--txt3);margin-top:10px">Note: if your hosting provider only gives you a hostname (like Railway's "TCP Proxy" under Networking settings), resolve it to a numeric IP as shown above, then save that IP and port here so this screen shows the right thing next time.</p>
+    </div>
+    <div class="card" style="margin-bottom:1rem">
+      <div class="card-title" style="margin-bottom:.5rem">Shift matching window</div>
+      <p style="font-size:13px;color:var(--txt2);margin-bottom:.75rem">For employees with an assigned shift, a punch is matched to that shift's day if it falls within this window before/after the shift's start and end times (this also correctly handles overnight shifts that cross midnight). Punches outside this window are still recorded, but flagged as pending so the employee and their approver can confirm them. Employees without an assigned shift aren't affected — their punches use the device's raw date as before.</p>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+        <label style="font-size:13px;color:var(--txt2)">Before shift start<br/><input id="zk-buffer-before" type="number" min="0" step="15" class="finput mono" style="font-size:12px;width:100px;margin-top:4px" value="${ZK.punchBuffer.beforeMinutes}"/> minutes</label>
+        <label style="font-size:13px;color:var(--txt2)">After shift end<br/><input id="zk-buffer-after" type="number" min="0" step="15" class="finput mono" style="font-size:12px;width:100px;margin-top:4px" value="${ZK.punchBuffer.afterMinutes}"/> minutes</label>
+      </div>
+      <button class="btn btn-sm btn-primary" onclick="zkSavePunchBuffer()">💾 Save shift matching window</button>
     </div>
     <div class="card">
       <div class="card-title" style="margin-bottom:.875rem">Devices</div>
@@ -9669,7 +10268,13 @@ function pgZKSetup(){
   `;}
 
   /* ── Tab 1: User Mapping ── */
-  else if(tab===1){body=`
+  else if(tab===1){
+    const mappableUsers=zkMappableUsers();
+    const empUseCount={};
+    Object.values(ZK.userMapping).forEach(empId=>{if(empId)empUseCount[empId]=(empUseCount[empId]||0)+1;});
+    const mappedEmpIds=new Set(Object.values(ZK.userMapping).filter(Boolean));
+    const unmappedEmployees=USERS.filter(u=>u.role==='employee'&&u.active!==false&&!mappedEmpIds.has(u.id));
+    body=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.875rem">
       <div style="font-size:13px;color:var(--txt2)">Map each ZKTeco user ID to an employee. This is a one-time setup.</div>
       <div style="display:flex;gap:6px">
@@ -9677,20 +10282,26 @@ function pgZKSetup(){
         <button class="btn btn-sm btn-primary" onclick="zkSaveMapping()">Save mapping</button>
       </div>
     </div>
-    ${ZK.deviceUsers.length?`<table><thead><tr><th>Device User ID</th><th>Device Name</th><th>Card No.</th><th>Map to Employee</th><th>Current Match</th></tr></thead>
-    <tbody>${ZK.deviceUsers.map(du=>{
+    ${mappableUsers.length?`<table><thead><tr><th>Device User ID</th><th>Device Name</th><th>Card No.</th><th>Map to Employee</th><th>Current Match</th></tr></thead>
+    <tbody>${mappableUsers.map(du=>{
       const mapped=ZK.userMapping[du.userId]?USERS.find(u=>u.id===ZK.userMapping[du.userId]):null;
+      const isDuplicate=mapped&&empUseCount[mapped.id]>1;
       return`<tr>
         <td class="mono" style="font-size:12px">${du.userId}</td>
-        <td>${du.name||'—'}</td>
+        <td>${du.name||(du.fromPunchesOnly?'<span style="color:var(--txt3);font-style:italic">seen in punches only</span>':'—')}</td>
         <td class="mono" style="font-size:11px">${du.cardNo||'—'}</td>
         <td><select id="zkmap-${du.userId}" class="finput" style="font-size:12px">
           <option value="">— Unmapped —</option>
           ${USERS.filter(u=>u.role==='employee').map(e=>`<option value="${e.id}" ${ZK.userMapping[du.userId]===e.id?'selected':''}>${e.name} (${e.eid})</option>`).join('')}
         </select></td>
-        <td>${mapped?`<span class="badge b-approved">${mapped.name}</span>`:`<span class="badge b-absent">Unmapped</span>`}</td>
+        <td>${mapped?`<span class="badge b-approved">${mapped.name}</span>`:`<span class="badge b-absent">Unmapped</span>`}${isDuplicate?` <span class="badge b-late" title="This employee is also mapped to another device user ID — their punches from all mapped IDs will be merged into one attendance record.">⚠ Already mapped elsewhere</span>`:''}</td>
       </tr>`;}).join('')}</tbody></table>`
-    :`<div class="empty-state"><div class="ei">👆</div>No device users seen yet. Users appear here automatically as they're enrolled on the device (or edited), or click "Refresh device users".</div>`}
+    :`<div class="empty-state"><div class="ei">👆</div>No device users seen yet. Users appear here automatically as they're enrolled on the device or as punches come in, or click "Refresh device users".</div>`}
+    <div class="card" style="margin-top:1rem">
+      <div class="card-title" style="margin-bottom:.5rem">Employees without a mapped biometric (${unmappedEmployees.length})</div>
+      ${unmappedEmployees.length?`<div style="display:flex;flex-wrap:wrap;gap:6px">${unmappedEmployees.map(e=>`<span class="badge b-absent">${e.name} (${e.eid})</span>`).join('')}</div>`
+        :`<div style="font-size:13px;color:var(--txt2)">Every active employee has a mapped biometric ID. 🎉</div>`}
+    </div>
   `;}
 
   /* ── Tab 2: Pull & Import ── */
@@ -9715,26 +10326,27 @@ function pgZKSetup(){
       <button class="btn" onclick="ZK.pulledRecords=[];ZK.importPreview=[];render()">Clear</button>
       ${unmappedCount?`<span style="font-size:12px;color:var(--amber);align-self:center">⚠ ${unmappedCount} unmapped — go to User Mapping tab</span>`:''}
     </div>
-    <div style="overflow-x:auto"><table style="min-width:600px"><thead><tr><th>Device User ID</th><th>Employee</th><th>Date</th><th>First Punch</th><th>Last Punch</th><th>Punches</th><th>Status</th></tr></thead>
+    <div style="overflow-x:auto"><table style="min-width:640px"><thead><tr><th>Device User ID</th><th>Employee</th><th>Date</th><th>Time In</th><th>Time Out</th><th>Punches</th><th>Source</th><th>Status</th></tr></thead>
     <tbody>${(() => {
       // Group by userId+date
       const grp={};
       ZK.importPreview.forEach(r=>{
         const k=r.userId+'_'+r.date;
-        if(!grp[k])grp[k]={...r,times:[]};
-        if(r.time)grp[k].times.push(r.time);
+        if(!grp[k])grp[k]={...r,entries:[]};
+        if(r.time)grp[k].entries.push({time:r.time,kind:zkPunchKind(r.statusCode)});
       });
       return Object.values(grp).map(g=>{
-        g.times.sort();
-        const tin=g.times[0]||'—';const tout=g.times.length>1?g.times[g.times.length-1]:'—';
+        const{tin,tout}=zkPickInOut(g.entries);
+        const tagged=g.entries.some(e=>e.kind);
         const statusBadge=g.duplicate?'<span class="badge b-absent">duplicate</span>':!g.mapped?'<span class="badge b-pending">unmapped</span>':'<span class="badge b-approved">ready</span>';
         return`<tr>
           <td class="mono" style="font-size:12px">${g.userId}</td>
           <td>${g.mapped?`<div class="emp-cell"><div class="avatar sm">${ini(g.empName)}</div>${g.empName}</div>`:`<span style="color:var(--red);font-size:12px">Unmapped</span>`}</td>
           <td>${g.date||'—'}</td>
-          <td class="mono" style="font-size:12px">${tin}</td>
-          <td class="mono" style="font-size:12px">${tout}</td>
-          <td style="text-align:center">${g.times.length}</td>
+          <td class="mono" style="font-size:12px">${tin||'—'}</td>
+          <td class="mono" style="font-size:12px">${tout||'—'}</td>
+          <td style="text-align:center">${g.entries.length}</td>
+          <td style="font-size:11px;color:var(--txt3)" title="${tagged?'Using the device\'s own in/out toggle':'No in/out tag from the device — using earliest/latest punch instead'}">${tagged?'Device tag':'Earliest/latest'}</td>
           <td>${statusBadge}</td>
         </tr>`;
       }).join('');
@@ -9759,11 +10371,34 @@ function pgZKSetup(){
   `;}
 
   /* ── Tab 4: Device Tools ── */
-  else if(tab===4){body=`
-    <div class="card">
-      <div class="card-title" style="margin-bottom:.75rem">Remote device commands</div>
-      <p style="font-size:13px;color:var(--txt2)">Remote restart, clock sync, and clear-log aren't available yet in ADMS push mode — the server would need a command queue that the device polls for, which isn't built yet. For now these need physical access to the device's own menu.</p>
+  else if(tab===4){
+    const statusBadge=s=>({pending:'b-pending',sent:'b-processing',done:'b-approved',failed:'b-absent'}[s]||'b-pending');
+    body=`
+    <div class="card" style="margin-bottom:1rem">
+      <div class="card-title" style="margin-bottom:.5rem">About remote commands</div>
+      <p style="font-size:13px;color:var(--txt2)">Commands are queued here and run the next time the device checks in with the server (usually within a minute). Clock sync isn't included — there's no single ADMS command that reliably works across all ZKTeco firmware, so please set the date/time directly on the device's own menu instead.</p>
     </div>
+    ${ZK.devices.length?ZK.devices.map(d=>`
+      <div class="card" style="margin-bottom:1rem">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.75rem;flex-wrap:wrap;gap:8px">
+          <div class="card-title mono" style="margin-bottom:0">${esc(d.serial)}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn btn-sm" onclick="zkSendCommand('${esc(d.serial)}','reboot')">🔄 Restart device</button>
+            <button class="btn btn-sm" onclick="zkSendCommand('${esc(d.serial)}','resync')">📡 Resync attendance log</button>
+            <button class="btn btn-sm" style="color:var(--red)" onclick="zkSendCommand('${esc(d.serial)}','clearlog','⚠ This permanently deletes the attendance log stored on the device itself. Any punches the server hasn\\'t received yet will be lost. Continue?')">🗑️ Clear attendance log</button>
+          </div>
+        </div>
+        ${(d.commands||[]).length?`<table><thead><tr><th>Command</th><th>Status</th><th>Queued</th><th>Completed</th><th>Result</th></tr></thead>
+        <tbody>${d.commands.map(c=>`<tr>
+          <td>${esc(c.label||c.command)}</td>
+          <td><span class="badge ${statusBadge(c.status)}">${esc(c.status)}</span></td>
+          <td style="font-size:12px">${c.queuedAt?new Date(c.queuedAt).toLocaleString():'—'}</td>
+          <td style="font-size:12px">${c.completedAt?new Date(c.completedAt).toLocaleString():'—'}</td>
+          <td style="font-size:12px">${c.returnCode!=null?(c.returnCode==='0'?'Success':'Return code '+esc(c.returnCode)):'—'}</td>
+        </tr>`).join('')}</tbody></table>`
+        :`<div style="font-size:13px;color:var(--txt2)">No commands sent yet.</div>`}
+      </div>
+    `).join(''):`<div class="empty-state"><div class="ei">📡</div>No device has checked in yet. Once it appears under Connection, you can send it commands here.</div>`}
   `;}
 
   return`<div class="page-header"><div><div class="page-title">ZKTeco Biometric Device</div>
@@ -10134,7 +10769,10 @@ function pgAccessSetup(){
         <div class="card-title">🔑 User Credentials &amp; Access</div>
         <div style="font-size:12px;color:var(--txt3);margin-top:2px">View logins, reset passwords, and replicate access (God Admin only).</div>
       </div>
-      <input class="finput" id="cred-search" style="max-width:200px;font-size:12px" placeholder="Search..." oninput="filterCreds(this.value)"/>
+      <div style="display:flex;gap:8px;align-items:center">
+        ${(isAdminUser(user)||isPlatformAdmin)?'<button class="btn btn-sm btn-primary" onclick="openAddAdmin()">+ Add Administrator</button>':''}
+        <input class="finput" id="cred-search" style="max-width:200px;font-size:12px" placeholder="Search..." oninput="filterCreds(this.value)"/>
+      </div>
     </div>
     <div style="overflow-x:auto">
       <table style="font-size:12px;min-width:680px">
@@ -10161,7 +10799,7 @@ function renderCredRows(filter){
       <td><span class="badge" style="background:${c}22;color:${c};font-size:10px">${al.name}</span></td>
       <td><code style="font-size:11px;background:var(--surface2);padding:2px 7px;border-radius:4px;border:1px solid var(--border)">${esc(u.pass||'—')}</code></td>
       <td><div style="display:flex;gap:4px;flex-wrap:wrap">
-        <button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'accessEdit',emp:USERS.find(x=>x.id===${u.id})};render()">🛡 Level</button>
+        <button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'accessEdit',emp:USERS.find(x=>x.id===${u.id}),origRole:'${u.role}'};render()">🛡 Level</button>
         ${(isPlatformAdmin||canAccess('emp_reset_password'))?`<button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'resetPassword',emp:USERS.find(x=>x.id===${u.id}),newPass:''};render()">🔑 Reset</button>`:''}
         ${u.id!==user.id?(isPlatformAdmin?`<button class="btn btn-sm" style="font-size:11px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${u.id})">Log in as user</button>`:''):'<span style="font-size:11px;color:var(--txt3)">← You</span>'}
       </div></td>
@@ -10260,7 +10898,7 @@ function togglePerm(alId,key,val){
 
 /* ========== PROFILE CHANGE REQUESTS ========== */
 function pgProfileChanges(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const mine=CHANGE_REQUESTS.filter(r=>r.eid===user.id);
   const pending=CHANGE_REQUESTS.filter(r=>r.status==='pending');
   const tabs=isA?['Pending Approval','All Requests']:['My Requests'];
@@ -10503,7 +11141,7 @@ function pgWebBundy(){
 }
 
 function pgBundyAdmin(){
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const tabs=isA?['Today\'s Status','All Logs','Office Zones']:['My Logs'];
   const todayAll=BUNDY_LOGS.filter(b=>b.date===today());
   let body='';
@@ -10728,12 +11366,13 @@ function buildSyncPayload(){
     b.selfie?'YES':'NO',b.datetime||''
   ]);
   const zones=OFFICE_ZONES.map(z=>[z.id,z.name,z.lat,z.lng,z.radius,z.address||'']);
-  const shifts=(COMPANY.shifts||[]).map(s=>[
-    s.id,s.name,s.start,s.end,s.breakMinutes||0,s.graceMinutes||0,s.active!==false?'TRUE':'FALSE',new Date().toISOString()
-  ]);
+  const shifts=(COMPANY.shifts||[]).map(s=>{
+    const norm=TimekeepingCore.normalizeShift(s);
+    return[s.id,s.name,JSON.stringify(norm.schedule),s.graceMinutes||0,s.active!==false?'TRUE':'FALSE',new Date().toISOString()];
+  });
   const employeeShifts=USERS.filter(u=>u.role==='employee').map(u=>{
     const s=(COMPANY.shifts||[]).find(x=>x.id===u.shiftId);
-    return[u.eid,u.name||'',u.shiftId||'',s?.name||'',s?.start||'',s?.end||'',new Date().toISOString()];
+    return[u.eid,u.name||'',u.shiftId||'',s?.name||'',new Date().toISOString()];
   });
   const scheduleAdjustments=USERS.flatMap(u=>(u.scheduleAdjustments||[]).map(a=>[
     a.id,u.eid,u.name||'',a.from,a.to,a.start,a.end,a.status||'',a.approvedBy||'',a.approvedAt||''
@@ -11524,7 +12163,7 @@ function pgEmpDetail(){
   ensureAnnualizedTaxConfig();
   const e=USERS.find(u=>u.id===detailEmpId);
   if(!e)return`<div class="page-header"><div class="page-title">Employee not found</div></div><button class="btn" onclick="goView('employees')">← Back</button>`;
-  const isA=user.role==='admin';
+  const isA=isAdminUser(user);
   const ms=e.rate*22;
   const months=COMPANY.salaryMultiplier||13;
   const computedPA=+(e.rate*22*months).toFixed(2);
@@ -11532,7 +12171,7 @@ function pgEmpDetail(){
   const age=e.bday?Math.floor((new Date()-new Date(e.bday))/(365.25*24*3600*1000)):0;
   const al=ACCESS_LEVELS.find(a=>a.id===e.accessLevelId)||ACCESS_LEVELS[4];
   const alColors={purple:'#7c3aed',blue:'#2563eb',green:'#059669',amber:'#d97706',gray:'#6b7280'};
-  const tabs=['Personal','Employment','Compensation','Recurring Allowances','Gov\'t & Bank','Emergency','Offboarding','Movements','Tax & YTD'];
+  const tabs=['Personal','Employment','Compensation','Recurring Allowances','Gov\'t & Bank','Emergency','Offboarding','Movements','Tax & YTD','Leave'];
 
   /* ── helper: render a field as view or edit ── */
   const d=detailDraft;
@@ -12199,6 +12838,31 @@ function pgEmpDetail(){
     ${hasPrevious?`<div class="form-row"><div class="field"><label>Previous Employer Registered Address</label><input id="tax-prev-address" class="finput" value="${esc(record.previousEmployerAddress||'')}"/></div><div class="field"><label>Previous Employer ZIP Code</label><input id="tax-prev-zip" class="finput" value="${esc(record.previousEmployerZip||'')}" maxlength="4"/></div></div>`:`<input id="tax-prev-address" type="hidden" value=""/><input id="tax-prev-zip" type="hidden" value=""/>`}
     ${isA?`<div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn btn-primary" onclick="saveEmployeeTaxYearRecord(${e.id},${taxYear})">Save Tax Record</button></div>`:''}`;
   }
+  /* ── Tab 9: Leave ── */
+  else if(detailTab===9){
+    const leaveTypes=(COMPANY.leaveTypes||[]);
+    const overrides=e.leaveOverrides||{};
+    const balances=e.leaveBalances||{};
+    tabBody=`<div class="card-hd" style="padding:0;margin-bottom:12px"><div><div class="card-title">Leave Balances</div><div class="card-sub">Eligibility follows Company Settings &gt; Leave Policy unless manually overridden below. Balances are set manually or via annual accrual.</div></div></div>
+    <div style="overflow-x:auto"><table><thead><tr><th>Leave Type</th><th>Eligibility</th><th>Balance</th><th>History</th>${isA?'<th>Actions</th>':''}</tr></thead><tbody>
+    ${leaveTypes.length?leaveTypes.map(t=>{
+      const overridden=overrides[t.id]!==undefined;
+      const eligible=leaveTypeEligible(e,t);
+      const bal=balances[t.id]||{balance:0,adjustments:[]};
+      return`<tr>
+        <td style="font-weight:700">${esc(t.name)} <span class="badge" style="font-size:10px">${esc(t.code)}</span>${t.active?'':' <span class="badge b-rejected" style="font-size:10px">inactive</span>'}</td>
+        <td><span class="badge ${eligible?'b-approved':'b-rejected'}">${eligible?'Assigned':'Not assigned'}</span>${overridden?' <span style="font-size:10px;color:var(--txt3)">(manual)</span>':''}</td>
+        <td class="mono" style="font-weight:700">${bal.balance}${t.paid?'':' (unpaid)'}</td>
+        <td><button class="btn btn-sm" onclick="openLeaveHistory(${e.id},${t.id})">View</button></td>
+        ${isA?`<td><div class="action-row">
+          <button class="btn btn-sm" onclick="openSetLeaveBalance(${e.id},${t.id})">Set Balance</button>
+          <button class="btn btn-sm" onclick="toggleLeaveAssignment(${e.id},${t.id})">${eligible?'Unassign':'Assign'}</button>
+          ${overridden?`<button class="btn btn-sm" onclick="resetLeaveAssignment(${e.id},${t.id})" title="Remove manual override, use policy default">Reset</button>`:''}
+        </div></td>`:''}
+      </tr>`;
+    }).join(''):`<tr><td colspan="${isA?5:4}" class="empty-state">No leave types configured. Set them up in Company Settings &gt; Leave Policy.</td></tr>`}
+    </tbody></table></div>`;
+  }
   return`
   <style>
     .detail-sidebar{width:240px;flex-shrink:0}
@@ -12248,7 +12912,7 @@ function pgEmpDetail(){
         <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
           <div style="font-size:11px;font-weight:600;color:var(--txt3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">Access Level</div>
           <span class="badge" style="background:${alColors[al.color]||'#6b7280'}22;color:${alColors[al.color]||'#6b7280'}">${al.name}</span>
-          ${isA?`<button class="btn btn-sm" style="margin-top:8px;width:100%;font-size:11px" onclick="modal={type:'accessEdit',emp:USERS.find(u=>u.id===${e.id})};render()">Change level</button>`:''}
+          ${isA?`<button class="btn btn-sm" style="margin-top:8px;width:100%;font-size:11px" onclick="modal={type:'accessEdit',emp:USERS.find(u=>u.id===${e.id}),origRole:'${e.role}'};render()">Change level</button>`:''}
         </div>
       </div>
     </div>
@@ -12258,9 +12922,9 @@ function pgEmpDetail(){
       <!-- Tab bar + Edit/Save controls -->
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0;border-bottom:1px solid var(--border)">
         <div style="display:flex;gap:0;flex-wrap:wrap;min-width:0">
-          ${tabs.map((t,i)=>`<div class="tab${detailTab===i?' active':''}" onclick="detailTab=${i};detailEdit=false;detailDraft={};render()" style="white-space:nowrap">${t}</div>`).join('')}
+          ${tabs.map((t,i)=>`<div class="tab${detailTab===i?' active':''}" onclick="detailTab=${i};render()" style="white-space:nowrap">${t}</div>`).join('')}
         </div>
-        ${isA&&detailTab!==3&&detailTab!==7&&detailTab!==8?`<div style="display:flex;gap:6px;padding-bottom:8px;flex-shrink:0;margin-left:12px">
+        ${isA&&detailTab!==3&&detailTab!==7&&detailTab!==8&&detailTab!==9?`<div style="display:flex;gap:6px;padding-bottom:8px;flex-shrink:0;margin-left:12px">
           ${detailEdit
             ?`<button class="btn btn-sm btn-primary" onclick="saveEmpEdit()">✓ Save</button>
               <button class="btn btn-sm" onclick="detailEdit=false;detailDraft={};render()">Cancel</button>`
@@ -12692,8 +13356,15 @@ function editStatItem(idx){
 
 function render(){
   if(COMPANY.darkMode){document.documentElement.setAttribute('data-dark','');}else{document.documentElement.removeAttribute('data-dark');}
+  try{
+    localStorage.setItem('sr_dark_mode',COMPANY.darkMode?'1':'0');
+    localStorage.setItem('sr_company_brand',JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
+  }catch(e){}
   const root=document.getElementById('root');
-  if(!user){root.innerHTML=renderLogin();applyWallpaperPreview();return;}
+  if(!user){
+    if(sessionRestoring){root.innerHTML=renderLoading();return;}
+    root.innerHTML=renderLogin();applyWallpaperPreview();return;
+  }
   /* Platform admin portal (not inside a client) */
   if(isPlatformAdmin&&!activeClientId){
     root.innerHTML=`<div style="min-height:100vh;background:var(--surface2)">${pgPlatformAdmin()}</div>${renderModal()}`;
@@ -12779,7 +13450,7 @@ function render(){
       <!-- Bell: pending leave/approval notifications -->
       <div class="notif-btn" style="position:relative" onclick="modal={type:'notifications'};render()" title="Notifications">
         ${ico('bell',16)}
-        ${(()=>{const cnt=(user.role==='admin'||isPlatformAdmin)?(LEAVES.filter(l=>l.status==='pending').length+CHANGE_REQUESTS.filter(r=>r.status==='pending').length):0;return cnt>0?`<span style="position:absolute;top:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center">${cnt}</span>`:'';})()}
+        ${(()=>{const cnt=((isAdminUser(user)||isPlatformAdmin)?(LEAVES.filter(l=>l.status==='pending').length+CHANGE_REQUESTS.filter(r=>r.status==='pending').length):0)+myFlaggedAttendance().length;return cnt>0?`<span style="position:absolute;top:-3px;right:-3px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#fff;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center">${cnt}</span>`:'';})()}
       </div>
       <!-- Settings: go to Company Settings -->
       <div class="notif-btn" onclick="goView('company')" title="Company Settings">${ico('settings',16)}</div>
@@ -12934,7 +13605,7 @@ function doGlobalSearch(v) {
 var fabOpen = false;
 function renderFAB() {
   if (!user || (isPlatformAdmin && !activeClientId)) return '';
-  var isA = user.role === 'admin' || isPlatformAdmin;
+  var isA = isAdminUser(user) || isPlatformAdmin;
   var acts = [];
   if (isA || canAccess('emp_add'))       acts.push({l:'Add Employee',  ic:'👤', v:'employees', t:1});
   if (isA || canAccess('payroll'))       acts.push({l:'Process Payroll',ic:'💰', v:'payroll'});
@@ -12992,7 +13663,7 @@ document.addEventListener('keydown', function(e) {
   if ((e.ctrlKey || e.metaKey) && e.key === 'q') {
     e.preventDefault(); fabOpen = !fabOpen; render();
   }
-  if ((e.ctrlKey || e.metaKey) && e.key === 'n' && view === 'employees' && (user && (user.role === 'admin' || isPlatformAdmin))) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'n' && view === 'employees' && (user && (isAdminUser(user) || isPlatformAdmin))) {
     e.preventDefault(); tab = 1; render();
   }
 });
