@@ -74,7 +74,7 @@
 
   window.openResolutionForm=function(category,linkedType,linkedId) {
     window._resolutionForm={category:category||'Attendance',linkedType:linkedType||'',linkedId:linkedId||null};
-    view='resolution';tab=user.role==='admin'?0:1;render();
+    view='resolution';tab=isAdminUser(user)?0:1;render();
   };
 
   window.submitResolutionCase=function() {
@@ -183,7 +183,7 @@
   };
 
   window.pgResolution=function() {
-    var isAdmin=user.role==='admin'||isPlatformAdmin;
+    var isAdmin=isAdminUser(user)||isPlatformAdmin;
     var tabs=isAdmin?['Resolution Queue','All Cases','File a Case']:['My Cases','File a Case'];
     var records=isAdmin?RESOLUTION_CASES:RESOLUTION_CASES.filter(function(c){return c.employeeId===user.id;});
     var showForm=(isAdmin&&tab===2)||(!isAdmin&&tab===1)||!!window._resolutionForm;
@@ -379,7 +379,7 @@
     g.progress=value;g.checkIn=today();g.status=value<50?'at_risk':value>=100?'completed':'on_track';toast('Check-in saved.','success');render();
   };
   window.pgPerformance=pgPerformance=function(){
-    var isAdmin=user.role==='admin'||isPlatformAdmin;var tabs=['Review Results','Goals & Check-ins','Calibration'];var records=isAdmin?PERF:PERF.filter(function(p){return p.eid===user.id;});
+    var isAdmin=isAdminUser(user)||isPlatformAdmin;var tabs=['Review Results','Goals & Check-ins','Calibration'];var records=isAdmin?PERF:PERF.filter(function(p){return p.eid===user.id;});
     var body='';
     if(tab===0){
       body=records.map(function(p){var emp=USERS.find(function(e){return e.id===p.eid;})||{};var avg=Math.round(p.kpis.reduce(function(s,k){return s+k.s;},0)/p.kpis.length);return '<div style="border:1px solid var(--border);border-radius:10px;padding:1rem;margin-bottom:10px"><div style="display:flex;justify-content:space-between;margin-bottom:12px"><div><div style="font-weight:700">'+esc(emp.name)+'</div><div class="card-sub">'+esc(p.period)+' · '+esc(emp.pos||'')+'</div></div><div style="font-size:25px;font-weight:800;color:'+(avg>=85?'var(--green)':'var(--accent)')+'">'+avg+'%</div></div>'+
@@ -471,7 +471,7 @@
   }
 
   window.openShiftEditor=function(shiftId){
-    if(!(user.role==='admin'||isPlatformAdmin))return;
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
     var existing=shiftId?SHIFT_DEFINITIONS.find(function(s){return s.id===shiftId;}):null;
     var draft=existing?JSON.parse(JSON.stringify(TimekeepingCore.normalizeShift(existing))):{
       id:null,name:'',graceMinutes:5,active:true,schedule:defaultShiftSchedule()
@@ -491,7 +491,7 @@
   };
 
   window.saveShiftEditor=function(){
-    if(!(user.role==='admin'||isPlatformAdmin))return;
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
     var d=modal.draft;
     if(!d.name||!d.name.trim()){toast('Shift name is required.','warning');return;}
     for(var i=0;i<SHIFT_DAY_KEYS.length;i++){
@@ -514,13 +514,13 @@
   };
 
   window.toggleShift=function(id){
-    if(!(user.role==='admin'||isPlatformAdmin))return;
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
     var s=SHIFT_DEFINITIONS.find(function(x){return x.id===id;});if(!s)return;
     s.active=!s.active;saveShiftConfig();render();
   };
 
   window.deleteShift=function(id){
-    if(!(user.role==='admin'||isPlatformAdmin))return;
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
     var assigned=USERS.filter(function(e){return e.shiftId===id;}).length;
     if(assigned){toast('Reassign '+assigned+' employee(s) before deleting this shift.','warning');return;}
     var index=SHIFT_DEFINITIONS.findIndex(function(s){return s.id===id;});if(index<0)return;
@@ -529,7 +529,7 @@
   };
 
   window.assignEmployeeShift=function(employeeId,shiftId){
-    if(!(user.role==='admin'||isPlatformAdmin))return;
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
     var employee=USERS.find(function(e){return e.id===employeeId;}),shift=SHIFT_DEFINITIONS.find(function(s){return s.id===shiftId;});
     if(!employee||!shift)return;
     employee.shiftId=shiftId;queueSync('Employees','Employee_Shifts');toast(shift.name+' assigned to '+employee.name+'.','success');render();
@@ -560,14 +560,14 @@
   }
 
   window.openHolidayEditor=function(holidayId){
-    if(!(user.role==='admin'||isPlatformAdmin))return;
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
     var existing=holidayId?HOLIDAYS.find(function(h){return h.id===holidayId;}):null;
     modal={type:'holidayEditor',draft:existing?Object.assign({},existing):{id:null,date:'',name:'',type:'regular'},isNew:!existing};
     render();
   };
 
   window.saveHolidayEditor=function(){
-    if(!(user.role==='admin'||isPlatformAdmin))return;
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
     var d=modal.draft;
     if(!d.date){toast('Please pick a date.','warning');return;}
     if(!d.name||!d.name.trim()){toast('Holiday name is required.','warning');return;}
@@ -587,7 +587,7 @@
   };
 
   window.deleteHoliday=function(id){
-    if(!(user.role==='admin'||isPlatformAdmin))return;
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
     var index=HOLIDAYS.findIndex(function(h){return h.id===id;});if(index<0)return;
     if(!confirm('Delete this holiday?'))return;
     HOLIDAYS.splice(index,1);saveHolidayConfig();render();
@@ -625,7 +625,7 @@
   }
 
   window.toggleAttendanceForm=function(key){
-    if(!(user.role==='admin'||isPlatformAdmin)){toast('Only administrators can change form visibility.','warning');return;}
+    if(!(isAdminUser(user)||isPlatformAdmin)){toast('Only administrators can change form visibility.','warning');return;}
     var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===key;});
     if(!form)return;
     form.visible=!form.visible;
@@ -635,7 +635,7 @@
   };
 
   window.setAttendanceFormVisibility=function(visible){
-    if(!(user.role==='admin'||isPlatformAdmin)){toast('Only administrators can change form visibility.','warning');return;}
+    if(!(isAdminUser(user)||isPlatformAdmin)){toast('Only administrators can change form visibility.','warning');return;}
     ATTENDANCE_FORM_CONFIG.forEach(function(f){f.visible=!!visible;});
     saveAttendanceFormConfig();
     toast(visible?'All attendance forms are visible.':'All attendance forms are hidden.','success');
@@ -805,7 +805,7 @@
 
   var baseAttendance=window.pgAttendance;
   window.pgAttendance=pgAttendance=function(){
-    var admin=user.role==='admin'||isPlatformAdmin;
+    var admin=isAdminUser(user)||isPlatformAdmin;
     if(!admin&&tab===1)return renderEmployeeAttendanceForms();
     var html=baseAttendance();
     if(!admin)html=html.replace('File Attendance','Attendance Forms');
@@ -824,7 +824,7 @@
   var baseEmpDetail=window.pgEmpDetail;
   window.pgEmpDetail=pgEmpDetail=function(){
     var html=baseEmpDetail(),employee=USERS.find(function(e){return e.id===detailEmpId;});
-    return html+((employee&&(user.role==='admin'||isPlatformAdmin))?renderEmployeeShiftCard(employee):'');
+    return html+((employee&&(isAdminUser(user)||isPlatformAdmin))?renderEmployeeShiftCard(employee):'');
   };
 
   var baseCompanySettings=window.pgCompanySettings;
@@ -834,7 +834,7 @@
     return '<div class="settings-tabbar" role="tablist" aria-label="Company Settings sections">'+items.map(function(item){return '<button class="settings-tab'+(active===item.key?' active':'')+'" role="tab" aria-selected="'+(active===item.key?'true':'false')+'" onclick="showCompanySettingsTab(\''+item.key+'\')">'+item.label+'</button>';}).join('')+'</div>';
   }
   window.pgCompanySettings=pgCompanySettings=function(){
-    var admin=user.role==='admin'||isPlatformAdmin;
+    var admin=isAdminUser(user)||isPlatformAdmin;
     if(!admin)return baseCompanySettings();
     var active=window._companySettingsTab||'general',tabs=companySettingsTabs(active);
     if(active==='general'){
