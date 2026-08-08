@@ -807,6 +807,10 @@
     if(m<1){m=12;y--;}
     return y+'-'+(m<10?'0':'')+m;
   }
+  function fiscalYearStartYM(fiscalYearLabel){
+    var m=leaveFiscalYearStartMonth();
+    return fiscalYearLabel+'-'+(m<10?'0':'')+m;
+  }
 
   // Grants leave balances per policy.
   //
@@ -847,7 +851,21 @@
     if(t.accrualMethod==='monthly'){
       if(bucket.lastAccrualMonth===yearMonth)return false;
       var isFirst=!bucket.firstGrantDate;
-      var referenceYM=isFirst?prevYearMonth(startDate.slice(0,7)):bucket.lastAccrualMonth;
+      // Catch-up is capped to the current policy year — same "don't reconstruct prior years"
+      // rule as the upfront branch below. A first grant whose eligibility started in an earlier
+      // fiscal year (a long-tenured employee's very first sweep) only catches up from the start
+      // of THIS fiscal year, not every month since they became eligible; likewise, a stale
+      // lastAccrualMonth left over from a previous fiscal year (employee hasn't logged in since)
+      // doesn't get carried across the year boundary. Set Balance is the tool for a real
+      // historical balance.
+      var currentFYStartYM=fiscalYearStartYM(fiscalYear);
+      var referenceYM;
+      if(isFirst){
+        var startYM=startDate.slice(0,7);
+        referenceYM=leaveFiscalYear(startDate)===fiscalYear?prevYearMonth(startYM):prevYearMonth(currentFYStartYM);
+      }else{
+        referenceYM=leaveFiscalYear(bucket.lastAccrualMonth+'-01')===fiscalYear?bucket.lastAccrualMonth:prevYearMonth(currentFYStartYM);
+      }
       var monthsToCredit=monthIndex(yearMonth)-monthIndex(referenceYM);
       if(monthsToCredit<1)return false;
       var grantAmount=+(t.annualDays/12*monthsToCredit).toFixed(3);
