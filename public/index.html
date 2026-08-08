@@ -2030,7 +2030,23 @@ const fmtN=v=>parseFloat(v).toLocaleString('en-PH',{minimumFractionDigits:2,maxi
 const today=()=>new Date().toISOString().split('T')[0];
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const diffDays=(d1,d2)=>{const a=new Date(d1),b=new Date(d2);return Math.round((b-a)/(1000*60*60*24));};
-const yearsService=d=>{if(!d)return '— yrs';const diff=diffDays(d,today());return isNaN(diff)?'— yrs':(diff/365).toFixed(1)+' yrs';};
+// Calendar-accurate tenure (years/months/days), not a rough diff-in-days/365 approximation —
+// varying month lengths and leap years make that drift noticeably wrong over a long tenure.
+const yearsService=d=>{
+  if(!d)return '—';
+  const start=new Date(d+'T00:00:00'),end=new Date(today()+'T00:00:00');
+  if(isNaN(start)||isNaN(end)||start>end)return '—';
+  let years=end.getFullYear()-start.getFullYear();
+  let months=end.getMonth()-start.getMonth();
+  let days=end.getDate()-start.getDate();
+  if(days<0){months--;days+=new Date(end.getFullYear(),end.getMonth(),0).getDate();}
+  if(months<0){years--;months+=12;}
+  const parts=[];
+  if(years)parts.push(years+(years===1?' yr':' yrs'));
+  if(months)parts.push(months+(months===1?' mo':' mos'));
+  if(days||!parts.length)parts.push(days+(days===1?' day':' days'));
+  return parts.join(', ');
+};
 const pendingLeaves=()=>LEAVES.filter(l=>l.status==='pending').length;
 
 /* ========== AUTH ========== */
