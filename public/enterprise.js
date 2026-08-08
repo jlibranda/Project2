@@ -866,17 +866,20 @@
       // doesn't get carried across the year boundary. Set Balance is the tool for a real
       // historical balance.
       var currentFYStartYM=fiscalYearStartYM(fiscalYear);
-      var referenceYM;
+      var referenceYM,startedThisFY=leaveFiscalYear(startDate)===fiscalYear;
       if(isFirst){
         var startYM=startDate.slice(0,7);
-        referenceYM=leaveFiscalYear(startDate)===fiscalYear?prevYearMonth(startYM):prevYearMonth(currentFYStartYM);
+        referenceYM=startedThisFY?prevYearMonth(startYM):prevYearMonth(currentFYStartYM);
       }else{
         referenceYM=leaveFiscalYear(bucket.lastAccrualMonth+'-01')===fiscalYear?bucket.lastAccrualMonth:prevYearMonth(currentFYStartYM);
       }
       // The month eligibility actually started in only counts as half a month if that start
       // date falls on the 16th or later — applied once, on a first grant only, regardless of
-      // how many total months are being caught up in this single call.
-      var discount=isFirst?halfMonthDiscount(startDate):0;
+      // how many total months are being caught up in this single call. Only meaningful when the
+      // reference point IS that start date (started within this fiscal year); when it's been
+      // clamped to the fiscal year boundary instead (a long-tenured employee's first sweep), the
+      // discount has nothing real to attach to and must not apply.
+      var discount=(isFirst&&startedThisFY)?halfMonthDiscount(startDate):0;
       var monthsToCredit=monthIndex(yearMonth)-monthIndex(referenceYM)-discount;
       if(monthsToCredit<=0)return false;
       var grantAmount=+(t.annualDays/12*monthsToCredit).toFixed(3);
