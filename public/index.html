@@ -3628,16 +3628,16 @@ function pgEmployees(){
     const alColors={purple:'#7c3aed',blue:'#2563eb',green:'#059669',amber:'#d97706',gray:'#6b7280'};
     const dupes=dupeMap.get(e.id)||[];
     return`<tr${dupes.length?' style="background:var(--amber-bg)"':''}>
-    <td class="mono" style="font-size:11px;color:var(--txt3)">${e.eid}${dupes.some(d=>d.field==='eid')?'<span title="Duplicate Employee ID" style="margin-left:4px;color:var(--amber);font-size:10px">⚠</span>':''}</td>
-    <td><div class="emp-cell"><div class="avatar" style="${e.active===false?'opacity:.4':''}">${ini(e.name)}</div><div>
-      <div style="font-weight:500;${e.active===false?'color:var(--txt3);text-decoration:line-through':''}">${e.name}</div>
-      <div style="font-size:11px;color:var(--txt3)">${e.email}</div>
+    <td class="mono" style="font-size:11px;color:var(--txt3)">${esc(e.eid||'—')}${dupes.some(d=>d.field==='eid')?'<span title="Duplicate Employee ID" style="margin-left:4px;color:var(--amber);font-size:10px">⚠</span>':''}</td>
+    <td><div class="emp-cell"><div class="avatar" style="${e.active===false?'opacity:.4':''}">${ini(e.name||'?')}</div><div>
+      <div style="font-weight:500;${e.active===false?'color:var(--txt3);text-decoration:line-through':''}">${esc(e.name||'Unnamed Employee')}</div>
+      <div style="font-size:11px;color:var(--txt3)">${esc(e.email||'—')}</div>
       ${dupes.length?`<div style="font-size:10px;color:var(--amber);margin-top:2px">⚠ ${dupes.map(d=>`${d.label} conflict`).join(' · ')}</div>`:''}
     </div></div></td>
-    <td style="font-size:12px">${e.pos}</td>
+    <td style="font-size:12px">${esc(e.pos||'—')}</td>
     <td><div style="font-size:12px;font-weight:500">${e.bu||'—'}</div><div style="font-size:11px;color:var(--txt3)">${e.dept||''}${e.team?' › '+e.team:''}</div></td>
     <td><span class="badge" style="background:#f1f5f9;color:#475569">${e.bandLevel||'—'}</span></td>
-    <td><span class="badge b-${e.type}">${e.type}</span></td>
+    <td><span class="badge b-${e.type||'unknown'}">${esc(e.type||'—')}</span></td>
     <td style="font-size:12px">${esc(e.entityName||'—')}</td>
     <td><span class="badge" style="background:${alColors[al.color]||'#6b7280'}22;color:${alColors[al.color]||'#6b7280'};font-size:10px">${al.name}</span></td>
     <td><label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px">
@@ -8159,7 +8159,7 @@ function renderModal(){
   if(modal.type==='emp201'){
     const e=modal.emp,t201=modal.t201||0;
     const ms=e.rate*22;
-    const age=e.bday?Math.floor((new Date()-new Date(e.bday))/(365.25*24*3600*1000)):0;
+    const age=e.bday?Math.floor((new Date()-new Date(e.bday))/(365.25*24*3600*1000)):null;
     const tabLabels=['Personal','Employment','Compensation','Gov\'t IDs','Emergency','Offboarding'];
     const tabBtns=tabLabels.map((l,i)=>`<div class="tab${t201===i?' active':''}" onclick="modal.t201=${i};render()" style="font-size:12px">${l}</div>`).join('');
     const row=(l,v,mono=false)=>`<div class="info-row"><span class="info-label">${l}</span><span ${mono?'class="mono" style="font-size:12px"':'style="font-size:13px"'}>${v||'—'}</span></div>`;
@@ -8167,7 +8167,7 @@ function renderModal(){
     if(t201===0){tabBody=`
       <div class="form-row">
         <div>${row('Employee ID',e.eid,true)}${row('Legal First Name',e.firstName)}${row('Middle Name',e.middleName)}${row('Legal Last Name',e.lastName)}${row('Suffix',e.suffix)}</div>
-        <div>${row('Date of Birth',e.bday)}${row('Age',age+' years')}${row('Gender',e.gender)}${row('Marital Status',e.maritalStatus)}${row('Spouse Name',e.spouseName)}${row('Religion',e.religion)}</div>
+        <div>${row('Date of Birth',e.bday)}${row('Age',age!==null?age+' years':'—')}${row('Gender',e.gender)}${row('Marital Status',e.maritalStatus)}${row('Spouse Name',e.spouseName)}${row('Religion',e.religion)}</div>
       </div>
       <div class="divider"></div>
       <div class="form-row">
@@ -8239,9 +8239,9 @@ function renderModal(){
       ${e.status==='active'?`<div style="margin-top:1rem;padding:12px;background:var(--green-bg);border-radius:8px;font-size:13px;color:var(--green-txt)">Employee is currently <strong>active</strong>. Offboarding fields will be filled upon separation.</div>`:''}`;}
     inner=`<div class="modal-title">
       <div style="display:flex;align-items:center;gap:10px">
-        <div class="avatar lg">${ini(e.name)}</div>
-        <div><div style="font-size:16px;font-weight:700">${e.name}</div><div style="font-size:12px;color:var(--txt3)">${e.eid} · ${e.pos} · ${e.dept}</div>
-        <div style="margin-top:4px"><span class="badge b-${e.status}">${e.status}</span> <span class="badge b-${e.type}">${e.type}</span></div></div>
+        <div class="avatar lg">${ini(e.name||'?')}</div>
+        <div><div style="font-size:16px;font-weight:700">${esc(e.name||'Unnamed Employee')}</div><div style="font-size:12px;color:var(--txt3)">${esc(e.eid||'—')} · ${esc(e.pos||'—')} · ${esc(e.dept||'—')}</div>
+        <div style="margin-top:4px"><span class="badge b-${e.status||'unknown'}">${esc(e.status||'—')}</span> <span class="badge b-${e.type||'unknown'}">${esc(e.type||'—')}</span></div></div>
       </div>
       <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
@@ -12542,7 +12542,7 @@ function pgEmpDetail(){
   const months=COMPANY.salaryMultiplier||13;
   const computedPA=+(e.rate*22*months).toFixed(2);
   const computedPM=+(e.rate*22).toFixed(2);
-  const age=e.bday?Math.floor((new Date()-new Date(e.bday))/(365.25*24*3600*1000)):0;
+  const age=e.bday?Math.floor((new Date()-new Date(e.bday))/(365.25*24*3600*1000)):null;
   const al=ACCESS_LEVELS.find(a=>a.id===e.accessLevelId)||ACCESS_LEVELS[4];
   const alColors={purple:'#7c3aed',blue:'#2563eb',green:'#059669',amber:'#d97706',gray:'#6b7280'};
   const tabs=['Personal','Employment','Compensation','Recurring Allowances','Gov\'t & Bank','Emergency','Offboarding','Movements','Tax & YTD','Leave'];
@@ -12595,7 +12595,7 @@ function pgEmpDetail(){
         ${etext('lastName','Legal Last Name')}
         ${fv('personal','suffix')?etext('suffix','Suffix'):''}
         ${fv('personal','bday')?etext('bday','Date of Birth','date'):''}
-        ${fv('personal','bday')?vrow('Age',age+' years'):''}
+        ${fv('personal','bday')?vrow('Age',age!==null?age+' years':'—'):''}
         ${fv('personal','gender')?esel('gender','Gender',['Female','Male','Non-binary','Prefer not to say']):''}
       </div>
       <div>
@@ -13252,8 +13252,8 @@ function pgEmpDetail(){
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:1.25rem;font-size:13px;color:var(--txt3)">
     <span style="cursor:pointer;color:var(--accent)" onclick="goView('employees')">← Employees</span>
     <span>/</span>
-    <span style="color:var(--txt)">${esc(e.name)}</span>
-    <span style="color:var(--txt3);font-size:12px">${esc(e.eid)}</span>
+    <span style="color:var(--txt)">${esc(e.name||'Unnamed Employee')}</span>
+    <span style="color:var(--txt3);font-size:12px">${esc(e.eid||'—')}</span>
   </div>
 
   <div class="detail-layout" style="display:flex;gap:1.25rem;align-items:flex-start">
@@ -13266,14 +13266,14 @@ function pgEmpDetail(){
           ?`<input id="ef-firstName" class="finput" value="${esc(val('firstName')||'')}" style="text-align:center;font-weight:700;font-size:15px;margin-bottom:4px" oninput="detailDraft.firstName=this.value;render()"/>
             <input id="ef-lastName" class="finput" value="${esc(val('lastName')||'')}" style="text-align:center;font-size:13px" oninput="detailDraft.lastName=this.value;render()"/>`
           :`<div style="font-weight:700;font-size:16px;letter-spacing:-.2px">${esc(e.name)}</div>`}
-        <div style="font-size:12px;color:var(--txt3);margin-top:4px">${esc(e.pos)}</div>
+        <div style="font-size:12px;color:var(--txt3);margin-top:4px">${esc(e.pos||'—')}</div>
         <div style="margin:10px 0;display:flex;flex-wrap:wrap;gap:4px;justify-content:center">
           ${e.projectedAttrition?`<span class="badge" style="background:var(--amber-bg);color:var(--amber-txt)">📅 Projected Attrition</span>`:
-            `<span class="badge b-${e.status}">${e.status}</span>`}
-          <span class="badge b-${e.type}">${e.type}</span>
+            `<span class="badge b-${e.status||'unknown'}">${esc(e.status||'—')}</span>`}
+          <span class="badge b-${e.type||'unknown'}">${esc(e.type||'—')}</span>
         </div>
         ${e.projectedAttrition?`<div style="font-size:11px;color:var(--amber-txt);background:var(--amber-bg);padding:5px 8px;border-radius:6px;margin-bottom:6px;text-align:center">Effective: ${e.effectiveTermDate}</div>`:''}
-        <div class="info-row" style="text-align:left"><span class="info-label">EID</span><span class="mono" style="font-size:11px">${esc(e.eid)}</span></div>
+        <div class="info-row" style="text-align:left"><span class="info-label">EID</span><span class="mono" style="font-size:11px">${esc(e.eid||'—')}</span></div>
         <div class="info-row" style="text-align:left"><span class="info-label">Dept</span><span style="font-size:12px">${esc(e.dept||'—')}</span></div>
         <div class="info-row" style="text-align:left"><span class="info-label">Hired</span><span style="font-size:12px">${esc(e.hired||'—')}</span></div>
         <div class="info-row" style="text-align:left"><span class="info-label">Service</span><span style="font-size:12px">${yearsService(e.hired)}</span></div>
