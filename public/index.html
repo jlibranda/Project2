@@ -1040,6 +1040,11 @@ function checkOffboarding(){
        (regular/probationary/etc) are independent dimensions; a probationary employee is still
        actively employed, so status should read 'active' regardless of type. */
     if(u.status==='probationary'&&u.active!==false)u.status='active';
+    /* Uppercase-on-save (see saveEmp) only normalizes new/edited records going forward — apply
+       it here too so employees added before that existed (or via Bulk Upload, which has its
+       own import path) get the same ALL CAPS treatment on their next login/impersonation. */
+    UPPERCASE_ON_SAVE_FIELDS.forEach(k=>{if(u[k])u[k]=String(u[k]).toUpperCase();});
+    if(u.firstName||u.lastName)u.name=[u.firstName,u.lastName].filter(Boolean).join(' ').trim();
     /* Auto-convert probationary → regular when probation end date is reached */
     if(u.type==='probationary'&&u.probEndDate&&u.probEndDate<=tod){
       u.type='regular';u.status='active';converted++;
@@ -3590,7 +3595,7 @@ function pgEmployees(){
   }
   return`<div class="page-header" style="margin-bottom:1rem;align-items:center"><div><div class="page-title">Employees</div><div class="page-sub" style="margin-top:2px">${allEmps.length} total · ${emps.length} shown</div></div>
   <div style="display:flex;gap:8px">
-    <button class="btn btn-primary" onclick="modal={type:'addEmp'};render()">${ico('people',14)} Add Employee</button>
+    <button class="btn btn-primary" onclick="modal={type:'addEmp',ae:{hired:today(),pass:'emp123',entityName:'TiltPay PH Inc.'}};render()">${ico('people',14)} Add Employee</button>
   </div></div>
   <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
   <div style="margin-bottom:1rem">
@@ -4615,6 +4620,7 @@ function confirmBulkUpload(validatedRows){
   const allCustom=Object.values(FIELD_CONFIG).flatMap(tc=>tc.custom);
   toImport.forEach(({row,formatted})=>{
     const r={...row,...formatted};
+    UPPERCASE_ON_SAVE_FIELDS.forEach(k=>{if(r[k])r[k]=String(r[k]).toUpperCase();}); /* same convention as the Add Employee wizard */
     const eid=r.eid?.trim()||genEID();
     if(USERS.find(u=>u.eid===eid||u.email===r.email?.trim()))return;
     const newId=Math.max(...USERS.map(u=>u.id))+1;
@@ -8329,8 +8335,8 @@ function renderModal(){
     <div class="form-row"><div class="field"><label>Discipline</label><select id="ne-disc" onchange="setAeField('discipline',this.value)"><option value="">— Select —</option>${LOOKUPS.disciplines.map(d=>`<option value="${d.name}" ${ae.discipline===d.name?'selected':''}>${d.name}</option>`).join('')}</select></div><div class="field"><label>Pod</label><select id="ne-pod" onchange="setAeField('pod',this.value)"><option value="">— None —</option>${LOOKUPS.pods.map(p=>`<option value="${p.name}" ${ae.pod===p.name?'selected':''}>${p.name}</option>`).join('')}</select></div></div>
     <div class="field"><label>Position *</label><input id="ne-pos" value="${ae.pos||''}" style="${reqBorderStyle(ae.pos)}" oninput="setAeField('pos',this.value);reqBorderLive(this,this.value)"/></div>
     <div class="form-row"><div class="field"><label>Band Level</label><select id="ne-band" onchange="setAeField('bandLevel',this.value)"><option value="">—</option>${LOOKUPS.bandLevels.map(l=>`<option value="${l.code}" ${ae.bandLevel===l.code?'selected':''}>${l.label}</option>`).join('')}</select></div></div>
-    <div class="form-row">${fieldVisible('employment','nonMass')?`<div class="field"><label>Non-Mass / Mass</label><select id="ne-nm" onchange="setAeField('nonMass',this.value)"><option value="" ${!ae.nonMass?'selected':''}>— Select —</option><option ${ae.nonMass==='Non-Mass'?'selected':''}>Non-Mass</option><option ${ae.nonMass==='Mass'?'selected':''}>Mass</option></select></div>`:''}<div class="field"><label>Employment Type</label><select id="ne-type" onchange="setAeField('type',this.value);autoSetProbationEndDate();render()"><option value="" ${!ae.type?'selected':''}>— Select —</option>${LOOKUPS.employmentTypes.map(t=>`<option value="${t.code}" ${ae.type===t.code?'selected':''}>${t.label}</option>`).join('')}</select></div></div>
-    <div class="form-row"><div class="field"><label>Start Date *</label><input type="date" id="ne-start" value="${ae.hired||today()}" style="${reqBorderStyle(ae.hired||today())}" oninput="setAeField('hired',this.value);reqBorderLive(this,this.value)"/></div><div class="field"><label>Probation End Date</label><input type="date" id="ne-prob" value="${ae.probEndDate||''}" oninput="setAeField('probEndDate',this.value)"/></div></div>
+    <div class="form-row">${fieldVisible('employment','nonMass')?`<div class="field"><label>Non-Mass / Mass</label><select id="ne-nm" onchange="setAeField('nonMass',this.value)"><option value="" ${!ae.nonMass?'selected':''}>— Select —</option><option ${ae.nonMass==='Non-Mass'?'selected':''}>Non-Mass</option><option ${ae.nonMass==='Mass'?'selected':''}>Mass</option></select></div>`:''}<div class="field"><label>Employment Type *</label><select id="ne-type" style="${reqBorderStyle(ae.type)}" onchange="setAeField('type',this.value);reqBorderLive(this,this.value);autoSetProbationEndDate();render()"><option value="" ${!ae.type?'selected':''}>— Select —</option>${LOOKUPS.employmentTypes.map(t=>`<option value="${t.code}" ${ae.type===t.code?'selected':''}>${t.label}</option>`).join('')}</select></div></div>
+    <div class="form-row"><div class="field"><label>Start Date</label><input type="date" id="ne-start" value="${ae.hired||today()}" oninput="setAeField('hired',this.value)"/></div><div class="field"><label>Probation End Date</label><input type="date" id="ne-prob" value="${ae.probEndDate||''}" oninput="setAeField('probEndDate',this.value)"/></div></div>
     <div class="form-row"><div class="field"><label>Cost Center</label><select id="ne-cc" onchange="setAeField('costCenter',this.value)"><option value="">— Select —</option>${LOOKUPS.costCenters.map(c=>`<option value="${c.code}" ${ae.costCenter===c.code?'selected':''}>${c.label}</option>`).join('')}</select></div></div>
     <div class="form-row"><div class="field"><label>Rehireable</label><select id="ne-reh" onchange="setAeField('rehireable',this.value)"><option value="Y" ${ae.rehireable==='Y'?'selected':''}>Yes</option><option value="N" ${ae.rehireable==='N'?'selected':''}>No</option><option value="" ${!ae.rehireable?'selected':''}>TBD</option></select></div>${fieldVisible('employment','loanEligibility')?`<div class="field"><label>Loan Eligibility</label><select id="ne-loan" onchange="setAeField('loanEligibility',this.value)"><option value="" ${!ae.loanEligibility?'selected':''}>— Select —</option><option value="Y" ${ae.loanEligibility==='Y'?'selected':''}>Yes</option><option value="N" ${ae.loanEligibility==='N'?'selected':''}>No</option></select></div>`:''}</div>
     <div class="form-row"><div class="field"><label>Manager</label><select id="ne-mgr" onchange="setAeField('managerId',this.value)"><option value="">— None —</option>${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.eid}" ${ae.managerId===u.eid?'selected':''}>${u.eid} — ${u.name}</option>`).join('')}</select></div><div class="field"><label>Functional Head</label><input id="ne-fh" value="${ae.functionalHead||''}" oninput="setAeField('functionalHead',this.value)"/></div></div>`
@@ -10405,11 +10411,17 @@ function saveEmp(){
   if(ae.rdo)ae.rdo=normalizeRdoCode(ae.rdo);
   if(ae.stockOptions!=='Y')ae.stockOptionsCount=0;
   if(!ae.maritalStatus||ae.maritalStatus==='Single')ae.spouseName='';
-  /* Required field checks */
+  if(!ae.hired)ae.hired=today(); /* always has a sensible default shown in the field; never worth blocking on */
+  /* Required field checks — every field the UI marks with * or shows a red border for must
+     actually block the save, not just look required. (Contact/Type previously had the visual
+     red-border treatment but no corresponding check here, so a row missing them could still be
+     saved despite looking incomplete.) */
   if(!ae.firstName||!ae.lastName){alert('First and last name are required (Personal tab).');modal.addTab=0;render();return;}
+  if(!ae.contact){alert('Primary Contact is required (Personal tab).');modal.addTab=0;render();return;}
   if(!ae.email){alert('Company email is required (Personal tab).');modal.addTab=0;render();return;}
   if(!ae.pass){alert('Login password is required (Personal tab).');modal.addTab=0;render();return;}
   if(!ae.pos){alert('Position is required (Employment tab).');modal.addTab=1;render();return;}
+  if(!ae.type){alert('Employment Type is required (Employment tab).');modal.addTab=1;render();return;}
   if(!ae.salaryPM){alert('Monthly rate is required (Compensation tab).');modal.addTab=2;render();return;}
 
   /* EID — from input field or auto-generate */
