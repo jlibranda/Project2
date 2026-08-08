@@ -213,7 +213,7 @@
       body = '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'+
         '<div><div class="card-title">Attendance approval queue</div><div class="card-sub">Routed through each employee\'s configured approval layers (Company Settings &gt; Approval Layers). Only approved records are included in payroll.</div></div>'+
         '<button class="btn btn-sm btn-success" onclick="approveAllAttendance()" '+(!pending.length?'disabled':'')+'>Approve all I can ('+pending.length+')</button></div>'+
-        '<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>In / Out</th><th>Work status</th><th>OT</th><th>ND</th><th>Filed by</th><th>Awaiting</th><th>Actions</th></tr></thead><tbody>'+
+        '<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>In / Out</th><th>Work status</th><th>OT</th><th>ND</th><th>Filed by</th><th>Reason</th><th>Awaiting</th><th>Actions</th></tr></thead><tbody>'+
         (pending.length ? pending.map(function (a) {
           var emp = USERS.find(function (u) { return u.id === a.eid; });
           var chain = (emp && typeof getApprovalChain === 'function') ? getApprovalChain(emp.eid) : [];
@@ -224,12 +224,13 @@
             '<td class="mono">'+a.date+'</td><td class="mono">'+(a.tin || '—')+' – '+(a.tout || '—')+'</td>'+
             '<td><span class="badge b-'+a.status+'">'+esc(a.status)+'</span></td><td>'+(a.ot || '—')+'</td><td>'+(a.nd || '—')+'</td>'+
             '<td style="font-size:11px;color:var(--txt3)">'+esc(a.filedBy || 'Employee')+'</td>'+
+            '<td style="font-size:11px;color:var(--txt3);max-width:220px">'+esc(a.notes || '—')+'</td>'+
             '<td style="font-size:11px">'+awaiting+(chain.length?' <span style="color:var(--txt3)">('+currentLayer+'/'+chain.length+')</span>':'')+'</td>'+
             '<td><div class="action-row"><button class="btn btn-sm btn-success" onclick="actAttendance('+a.id+',\'approved\')">Approve</button>'+
             '<button class="btn btn-sm btn-danger" onclick="actAttendance('+a.id+',\'rejected\')">Reject</button>'+
             (isAdminView ? '<button class="btn btn-sm" onclick="forceApproveAttendance('+a.id+')" title="Skip remaining approval layers">Force Approve</button>' : '')+
             '</div></td></tr>';
-        }).join('') : '<tr><td colspan="9" class="empty-state">No pending attendance records.</td></tr>')+
+        }).join('') : '<tr><td colspan="10" class="empty-state">No pending attendance records.</td></tr>')+
         '</tbody></table></div>';
     } else if ((!isA && tab === 0) || (isA && tab === 1)) {
       var mine = attendanceRecords().filter(function (a) { return a.eid === user.id; }).slice().reverse();
