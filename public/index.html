@@ -2030,7 +2030,7 @@ const fmtN=v=>parseFloat(v).toLocaleString('en-PH',{minimumFractionDigits:2,maxi
 const today=()=>new Date().toISOString().split('T')[0];
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const diffDays=(d1,d2)=>{const a=new Date(d1),b=new Date(d2);return Math.round((b-a)/(1000*60*60*24));};
-const yearsService=d=>{const diff=diffDays(d,today());return (diff/365).toFixed(1);};
+const yearsService=d=>{if(!d)return '— yrs';const diff=diffDays(d,today());return isNaN(diff)?'— yrs':(diff/365).toFixed(1)+' yrs';};
 const pendingLeaves=()=>LEAVES.filter(l=>l.status==='pending').length;
 
 /* ========== AUTH ========== */
@@ -2589,6 +2589,7 @@ function impersonateUser(id){
   isPlatformAdmin=false;
   user=target;
   view='dashboard';tab=0;modal=null;
+  checkOffboarding();
   render();
 }
 
@@ -5165,7 +5166,7 @@ function pgMyProfile(){
         <div style="font-size:13px;color:var(--txt3);margin-top:2px">${emp.pos}</div>
         <div style="margin-top:8px"><span class="badge b-${emp.status}">${emp.status}</span> <span class="badge b-${emp.type}">${emp.type}</span></div>
         <div class="divider"></div>
-        <div style="font-size:12px;color:var(--txt3)">Service: <strong style="color:var(--txt)">${yearsService(emp.hired)} years</strong></div>
+        <div style="font-size:12px;color:var(--txt3)">Service: <strong style="color:var(--txt)">${yearsService(emp.hired)}</strong></div>
         <div style="font-size:12px;color:var(--txt3);margin-top:4px">Hired: <strong style="color:var(--txt)">${emp.hired}</strong></div>
       </div>
       <div class="card">
@@ -8127,7 +8128,7 @@ function renderModal(){
       tabBody=`
       <div class="form-row">
         <div>${row('Entity Name',e.entityName)}${row('Business Unit',e.bu)}${row('Department',e.dept)}${row('Team',e.team)}${row('Subteam',e.subteam)}${row('Discipline',e.discipline)}${row('Pod',e.pod)}</div>
-        <div>${row('Position',e.pos)}${row('Band Level',bandLabel)}${row('Non-Mass / Mass',e.nonMass)}${row('Cost Center',ccLabel)}${row('Employment Type',empTypeLabel)}${row('Start Date',e.hired)}${row('Probation End Date',e.probEndDate)}${row('Service',yearsService(e.hired)+' years')}${row('Rehireable',e.rehireable)}</div>
+        <div>${row('Position',e.pos)}${row('Band Level',bandLabel)}${row('Non-Mass / Mass',e.nonMass)}${row('Cost Center',ccLabel)}${row('Employment Type',empTypeLabel)}${row('Start Date',e.hired)}${row('Probation End Date',e.probEndDate)}${row('Service',yearsService(e.hired))}${row('Rehireable',e.rehireable)}</div>
       </div>
       <div class="divider"></div>
       <div class="form-row">
@@ -13154,7 +13155,7 @@ function pgEmpDetail(){
         <div class="info-row" style="text-align:left"><span class="info-label">EID</span><span class="mono" style="font-size:11px">${esc(e.eid)}</span></div>
         <div class="info-row" style="text-align:left"><span class="info-label">Dept</span><span style="font-size:12px">${esc(e.dept||'—')}</span></div>
         <div class="info-row" style="text-align:left"><span class="info-label">Hired</span><span style="font-size:12px">${esc(e.hired||'—')}</span></div>
-        <div class="info-row" style="text-align:left"><span class="info-label">Service</span><span style="font-size:12px">${yearsService(e.hired)} yrs</span></div>
+        <div class="info-row" style="text-align:left"><span class="info-label">Service</span><span style="font-size:12px">${yearsService(e.hired)}</span></div>
         ${isA?`<div class="info-row" style="text-align:left;align-items:center">
           <span class="info-label">Active</span>
           <label style="cursor:pointer;display:flex;align-items:center;gap:5px">
