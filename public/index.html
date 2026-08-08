@@ -8479,6 +8479,49 @@ function renderModal(){
       <button class="btn btn-primary" onclick="saveShiftEditor()">Save Shift</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
+  }else if(modal.type==='leaveTypeEditor'){
+    const d=modal.draft;
+    const genderOptions=[['','Any gender'],['female','Female only'],['male','Male only']];
+    inner=`<div class="modal-title">${modal.isNew?'Add':'Edit'} Leave Type
+      <button class="close-x" onclick="closeM()">×</button>
+    </div>
+    <div class="form-row">
+      <div class="field"><label>Leave Type Name</label><input class="finput" value="${esc(d.name)}" oninput="modal.draft.name=this.value" placeholder="e.g. Vacation Leave"/></div>
+      <div class="field"><label>Short Code</label><input class="finput" style="text-transform:uppercase" value="${esc(d.code)}" oninput="modal.draft.code=this.value" placeholder="e.g. VL" maxlength="6"/></div>
+    </div>
+    <div class="form-row" style="margin-top:.75rem">
+      <div class="field"><label>Annual Entitlement (days)</label><input type="number" min="0" step="0.5" class="finput" value="${d.annualDays}" oninput="modal.draft.annualDays=this.value"/></div>
+      <div class="field"><label>Accrual</label><select class="finput" onchange="modal.draft.accrualMethod=this.value">
+        <option value="upfront" ${d.accrualMethod==='upfront'?'selected':''}>Full amount at year start</option>
+        <option value="monthly" ${d.accrualMethod==='monthly'?'selected':''}>Accrues monthly (1/12 per month)</option>
+      </select></div>
+    </div>
+    <div class="field" style="margin-top:.75rem"><label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" style="width:auto" ${d.paid?'checked':''} onchange="modal.draft.paid=this.checked"/> Paid leave
+    </label></div>
+    <div class="field" style="margin-top:.5rem"><label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" style="width:auto" ${d.carryOver?'checked':''} onchange="modal.draft.carryOver=this.checked;render()"/> Allow carry-over to next year
+    </label></div>
+    ${d.carryOver?`<div class="field" style="margin-top:.5rem;margin-left:26px;max-width:220px"><label>Max carry-over (days)</label><input type="number" min="0" step="0.5" class="finput" value="${d.maxCarryOverDays}" oninput="modal.draft.maxCarryOverDays=this.value"/></div>`:''}
+    <div class="section-header" style="margin-top:1rem">Eligibility</div>
+    <div class="form-row" style="margin-top:.5rem">
+      <div class="field"><label>Gender restriction</label><select class="finput" onchange="modal.draft.genderRestriction=this.value">
+        ${genderOptions.map(([v,l])=>`<option value="${v}" ${d.genderRestriction===v?'selected':''}>${l}</option>`).join('')}
+      </select></div>
+      <div class="field"><label>Minimum tenure (months)</label><input type="number" min="0" class="finput" value="${d.minTenureMonths}" oninput="modal.draft.minTenureMonths=this.value"/></div>
+    </div>
+    <div class="field" style="margin-top:.5rem"><label>Employment types (leave blank for all)</label>
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:4px">
+        ${LOOKUPS.employmentTypes.map(t=>`<label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
+          <input type="checkbox" style="width:auto" ${(d.employeeTypes||[]).includes(t.code)?'checked':''} onchange="if(this.checked){if(!modal.draft.employeeTypes.includes('${t.code}'))modal.draft.employeeTypes.push('${t.code}');}else{modal.draft.employeeTypes=modal.draft.employeeTypes.filter(c=>c!=='${t.code}');}"/> ${esc(t.code)}
+        </label>`).join('')}
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--txt3);margin-top:6px">Individual employees can still be assigned or excluded from an employee's Leave tab, overriding these defaults.</div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn btn-primary" onclick="saveLeaveTypeEditor()">Save Leave Type</button>
+      <button class="btn" onclick="closeM()">Cancel</button>
+    </div>`;
   }else if(modal.type==='notifications'){
     const pending=LEAVES.filter(l=>l.status==='pending');
     const crPending=CHANGE_REQUESTS.filter(r=>r.status==='pending');
