@@ -2070,7 +2070,16 @@ async function askClaude(q){
 const ini=n=>n.split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase();
 const fmt=v=>'₱'+parseFloat(v).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtN=v=>parseFloat(v).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2});
-const today=()=>new Date().toISOString().split('T')[0];
+// toISOString() reports the UTC date, not the browser's local date — for a positive UTC
+// offset (Philippines is UTC+8), that means every date-based check here (probation/regularization
+// conversion, leave accrual, attendance, holidays, payroll periods — 70+ call sites) would
+// silently lag a full calendar day behind during the user's local 12am-8am window, since the
+// UTC date hasn't rolled over to match yet. Using the local date components instead so "today"
+// actually matches the date on the user's own clock.
+const today=()=>{
+  const d=new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+};
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const diffDays=(d1,d2)=>{const a=new Date(d1),b=new Date(d2);return Math.round((b-a)/(1000*60*60*24));};
 // Calendar-accurate tenure (years/months/days), not a rough diff-in-days/365 approximation —
