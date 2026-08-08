@@ -8029,7 +8029,7 @@ function renderModal(){
         <div style="margin-top:5px;display:flex;flex-wrap:wrap;gap:3px">${Object.entries(al.perms).filter(([,v])=>v).map(([k])=>`<span style="font-size:10px;background:var(--bg);padding:1px 6px;border-radius:4px;color:var(--txt3)">${k}</span>`).join('')}</div></div>
       </label>`).join('')}
     </div>
-    ${modal.origRole==='admin'?`<div class="section-header" style="margin-top:14px">Account Type</div>
+    ${(modal.origRole==='admin'&&(isAdminUser(user)||isPlatformAdmin))?`<div class="section-header" style="margin-top:14px">Account Type</div>
     <div style="font-size:12px;color:var(--txt3);margin:2px 0 8px">This account started as a system/service admin (not a regular employee record). Super Admin has full access either way — this only controls whether it's also treated as one of your own employees.</div>
     <div style="display:grid;gap:8px">
       <label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1.5px solid ${(e.role||'employee')==='employee'?'var(--accent)':'var(--border)'};border-radius:9px;cursor:pointer;background:${(e.role||'employee')==='employee'?'var(--accent-bg)':'var(--surface)'}">
@@ -9894,15 +9894,21 @@ function saveAccessEdit(){
   const e=modal.emp;
   const target=USERS.find(u=>u.id===e.id);
   if(target){
-    target.accessLevelId=e.accessLevelId;target.active=e.active;target.role=e.role||target.role;
+    target.accessLevelId=e.accessLevelId;target.active=e.active;
+    // Changing role (staff <-> outsourced admin) is only ever exposed via the Account Type
+    // toggle, which is itself admin-only-gated in the modal — this mirrors that restriction
+    // at the point of writing state, in case modal.emp.role was reached some other way.
+    if(e.role&&e.role!==target.role&&(isAdminUser(user)||isPlatformAdmin))target.role=e.role;
     if(target.role==='employee')ensureEmployeeShape(target);
   }
   alert(`Access level updated for ${e.name}.`);closeM();
 }
 function openAddAdmin(){
+  if(!(isAdminUser(user)||isPlatformAdmin)){toast('Only administrators can add new administrator accounts.','warning');return;}
   modal={type:'addAdmin',data:{name:'',email:'',pass:'',role:'admin'}};render();
 }
 function saveAddAdmin(){
+  if(!(isAdminUser(user)||isPlatformAdmin)){toast('Only administrators can add new administrator accounts.','warning');return;}
   const d=modal.data;
   if(!d.name?.trim()||!d.email?.trim()||!d.pass?.trim()){alert('Name, email, and password are required.');return;}
   if(USERS.some(u=>(u.email||'').toLowerCase()===d.email.trim().toLowerCase())){alert('A user with that email already exists.');return;}
@@ -10504,7 +10510,7 @@ function pgAccessSetup(){
         <div style="font-size:12px;color:var(--txt3);margin-top:2px">View logins, reset passwords, and replicate access (God Admin only).</div>
       </div>
       <div style="display:flex;gap:8px;align-items:center">
-        <button class="btn btn-sm btn-primary" onclick="openAddAdmin()">+ Add Administrator</button>
+        ${(isAdminUser(user)||isPlatformAdmin)?'<button class="btn btn-sm btn-primary" onclick="openAddAdmin()">+ Add Administrator</button>':''}
         <input class="finput" id="cred-search" style="max-width:200px;font-size:12px" placeholder="Search..." oninput="filterCreds(this.value)"/>
       </div>
     </div>
