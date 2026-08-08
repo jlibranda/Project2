@@ -4816,19 +4816,59 @@ function leaveBalanceHintText(t,requestedDays){
   }
   return {text:msg,exceeds:t.paid&&requestedDays>0&&requestedDays>bal.balance};
 }
-function updateLeaveBalanceHint(){
-  const sel=document.getElementById('lt'),hint=document.getElementById('lt-balance-hint'),daysEl=document.getElementById('ldays');
-  if(!sel||!hint)return;
-  const t=(COMPANY.leaveTypes||[]).find(x=>x.name===sel.value);
-  if(!t){hint.textContent='';return;}
-  const requested=parseFloat(daysEl&&daysEl.value)||0;
-  const {text,exceeds}=leaveBalanceHintText(t,requested);
-  hint.textContent=text;
-  hint.style.color=exceeds?'var(--amber-txt)':'var(--txt3)';
+// Counts working days (calendar days minus the employee's scheduled rest days) in an
+// inclusive date range. Falls back to counting every calendar day if the employee has no
+// shift assigned, since there's no schedule to check rest days against.
+function countLeaveWorkingDays(startStr,endStr){
+  if(!startStr||!endStr||endStr<startStr)return 0;
+  const shifts=COMPANY.shifts||[];
+  let count=0,cursor=new Date(startStr+'T00:00:00Z');
+  const last=new Date(endStr+'T00:00:00Z');
+  while(cursor<=last){
+    const ds=cursor.toISOString().slice(0,10);
+    const isRest=(window.TimekeepingCore&&user.shiftId)?TimekeepingCore.isRestDay(user,ds,shifts):false;
+    if(!isRest)count++;
+    cursor.setUTCDate(cursor.getUTCDate()+1);
+  }
+  return count;
+}
+function calendarDaySpan(startStr,endStr){
+  if(!startStr||!endStr||endStr<startStr)return 0;
+  return Math.round((new Date(endStr+'T00:00:00Z')-new Date(startStr+'T00:00:00Z'))/86400000)+1;
+}
+// Recomputes the requested day count from the Day Type + date range, keeps window._leaveDays
+// in sync for submitLeave(), and refreshes the live "Total requested / Available balance" box.
+// Half Day always locks the end date to match the start date (a half-day request is always a
+// single day).
+function updateLeaveComputation(){
+  const dayTypeEl=document.getElementById('ldaytype'),lsEl=document.getElementById('ls'),leEl=document.getElementById('le2');
+  const box=document.getElementById('leave-calc-box'),sel=document.getElementById('lt');
+  if(!lsEl||!leEl)return;
+  const dayType=dayTypeEl?dayTypeEl.value:'whole';
+  if(dayType!=='whole'){leEl.value=lsEl.value;leEl.disabled=true;}else{leEl.disabled=false;}
+  const start=lsEl.value,end=leEl.value||start;
+  let days;
+  if(dayType!=='whole')days=0.5;
+  else days=countLeaveWorkingDays(start,end);
+  window._leaveDays=days;
+  if(!box)return;
+  let html='<strong>Total requested: '+days+' day'+(days===1?'':'s')+'</strong>';
+  if(dayType==='whole'){
+    const calSpan=calendarDaySpan(start,end),restExcluded=calSpan-days;
+    html+=' <span style="font-size:11px;color:var(--txt3)">('+calSpan+' calendar day'+(calSpan===1?'':'s')+(restExcluded>0?', '+restExcluded+' rest day'+(restExcluded===1?'':'s')+' excluded':'')+')</span>';
+  }
+  const t=sel&&(COMPANY.leaveTypes||[]).find(x=>x.name===sel.value);
+  if(t){
+    const {text,exceeds}=leaveBalanceHintText(t,days);
+    html+='<div style="margin-top:4px;font-size:11px;color:'+(exceeds?'var(--amber-txt)':'var(--txt3)')+'">'+esc(text)+'</div>';
+  }
+  box.innerHTML=html;
 }
 function leaveDaysCell(l){
-  if(l.unpaidDays>0)return l.days+' <span class="badge b-pending" style="font-size:9px" title="'+l.paidDays+' paid + '+l.unpaidDays+' unpaid">'+(l.paidDays>0?'partial unpaid':'unpaid')+'</span>';
-  return String(l.days);
+  let out=String(l.days);
+  if(l.halfDayLabel)out+=' <span style="font-size:10px;color:var(--txt3)">('+esc(l.halfDayLabel)+')</span>';
+  if(l.unpaidDays>0)out+=' <span class="badge b-pending" style="font-size:9px" title="'+l.paidDays+' paid + '+l.unpaidDays+' unpaid">'+(l.paidDays>0?'partial unpaid':'unpaid')+'</span>';
+  return out;
 }
 function pgLeave(){
   const isA=isAdminUser(user);
@@ -4851,9 +4891,21 @@ function pgLeave(){
   }else{
     const opts=myLeaveTypeOptions();
     if(opts.length){
-      const initial=leaveBalanceHintText(opts[0],1);
-      body=`<div class="form-row"><div class="field"><label>Leave Type</label><select id="lt" onchange="updateLeaveBalanceHint()">${opts.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('')}</select><div id="lt-balance-hint" style="font-size:11px;color:${initial.exceeds?'var(--amber-txt)':'var(--txt3)'};margin-top:4px">${esc(initial.text)}</div></div><div class="field"><label>Number of Days</label><input type="number" id="ldays" value="1" min="0.5" step="0.5" oninput="updateLeaveBalanceHint()"/><div style="font-size:10px;color:var(--txt3);margin-top:2px">Whole or half days only (e.g. 1, 1.5, 2).</div></div></div>
-      <div class="form-row"><div class="field"><label>Start Date</label><input type="date" id="ls" value="${today()}"/></div><div class="field"><label>End Date</label><input type="date" id="le2" value="${today()}"/></div></div>
+      const initDays=countLeaveWorkingDays(today(),today());
+      const initHint=leaveBalanceHintText(opts[0],initDays);
+      body=`<div class="form-row">
+      <div class="field"><label>Leave Type</label><select id="lt" onchange="updateLeaveComputation()">${opts.map(t=>`<option value="${esc(t.name)}">${esc(t.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Day Type</label><select id="ldaytype" onchange="updateLeaveComputation()">
+        <option value="whole">Whole Day(s)</option>
+        <option value="half_am">Half Day — Morning</option>
+        <option value="half_pm">Half Day — Afternoon</option>
+      </select></div>
+      </div>
+      <div class="form-row"><div class="field"><label>Start Date</label><input type="date" id="ls" value="${today()}" onchange="updateLeaveComputation()"/></div><div class="field"><label>End Date</label><input type="date" id="le2" value="${today()}" onchange="updateLeaveComputation()"/></div></div>
+      <div id="leave-calc-box" style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;margin-bottom:.875rem">
+        <strong>Total requested: ${initDays} day${initDays===1?'':'s'}</strong>
+        <div style="margin-top:4px;font-size:11px;color:${initHint.exceeds?'var(--amber-txt)':'var(--txt3)'}">${esc(initHint.text)}</div>
+      </div>
       <div class="field"><label>Reason / Remarks</label><textarea id="lr" rows="3" placeholder="Briefly describe your leave..."></textarea></div>
       <div style="margin-top:4px"><button class="btn btn-primary" onclick="submitLeave()">Submit Request</button></div>`;
     }else{
@@ -4884,10 +4936,12 @@ function actLeave(id,ok){
   render();
 }
 function submitLeave(){
-  const type=document.getElementById('lt').value,s=document.getElementById('ls').value,e=document.getElementById('le2').value,days=parseFloat(document.getElementById('ldays').value)||0,reason=document.getElementById('lr').value.trim();
+  const type=document.getElementById('lt').value,dayType=document.getElementById('ldaytype').value,s=document.getElementById('ls').value,e=document.getElementById('le2').value,reason=document.getElementById('lr').value.trim();
+  updateLeaveComputation(); /* ensure window._leaveDays reflects the current form state before reading it */
+  const days=window._leaveDays||0;
   if(!reason){alert('Please provide a reason.');return;}
-  if(days<=0){alert('Number of days must be greater than 0.');return;}
-  if(Math.abs(days*2-Math.round(days*2))>0.001){alert('Only whole or half days are allowed (e.g. 1, 1.5, 2).');return;}
+  if(days<=0){alert(dayType==='whole'?'The selected date range has no working days (all rest days). Adjust the dates or file this as a different request.':'Number of days must be greater than 0.');return;}
+  const halfLabel=dayType==='half_am'?'Half Day — Morning':dayType==='half_pm'?'Half Day — Afternoon':'';
   const t=(COMPANY.leaveTypes||[]).find(x=>x.name===type);
   let paidDays=days,unpaidDays=0;
   if(t){
@@ -4901,7 +4955,7 @@ function submitLeave(){
       if(days>bal.balance&&!confirm('You only have '+bal.balance+' day(s) of '+t.name+' available, but requested '+days+'. File anyway? HR will need to review the shortfall.'))return;
     }
   }
-  LEAVES.push({id:nLeave++,eid:user.id,type,s,e,reason,status:'pending',filed:today(),days,paidDays,unpaidDays});
+  LEAVES.push({id:nLeave++,eid:user.id,type,s,e,reason,status:'pending',filed:today(),days,paidDays,unpaidDays,dayType,halfDayLabel:halfLabel});
   queueSync('Leave_Requests');alert('Leave request submitted!'+(unpaidDays>0?' ('+unpaidDays+' day(s) will be unpaid.)':''));goTab(0);
 }
 
