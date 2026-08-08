@@ -698,7 +698,9 @@
     var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===key&&f.visible;});
     if(!form){toast('This attendance form is not currently available.','warning');return;}
     if(key==='time_correction')window._correctionRows=[{date:today(),punchType:'time_in',correctedTime:''}];
-    window._attendanceFormKey=key;tab=1;render();
+    window._attendanceFormKey=key;
+    tab=(isAdminUser(user)||isPlatformAdmin)?3:1; /* "Attendance Forms" sits at index 3 in the admin tab layout, index 1 otherwise */
+    render();
   };
 
   window.addCorrectionRow=function(){
@@ -754,8 +756,9 @@
       (visible.length?'<div class="attendance-catalog">'+visible.map(function(f){
         return '<button class="attendance-form-card" onclick="openAttendanceForm(\''+f.key+'\')"><span class="attendance-form-mark">'+f.short+'</span><span><strong>'+esc(f.label)+'</strong><small>'+esc(f.description)+'</small></span><span class="attendance-form-arrow">›</span></button>';
       }).join('')+'</div>':'<div class="empty-state"><div style="font-weight:700;margin-bottom:5px">No attendance forms are currently available.</div>Please contact HR if you need an attendance correction or special request.</div>');
+    var myRecordsTab=(isAdminUser(user)||isPlatformAdmin)?1:0; /* admin tab layout puts "My Records" at index 1, not 0 */
     return '<div class="page-header"><div><div class="page-title">Attendance</div><div class="page-sub">Employee attendance records and approval-controlled requests</div></div></div>'+
-      '<div class="tabs"><div class="tab" onclick="window._attendanceFormKey=null;goTab(0)">My Records</div><div class="tab active">Attendance Forms</div></div><div class="card">'+body+'</div>';
+      '<div class="tabs"><div class="tab" onclick="window._attendanceFormKey=null;goTab('+myRecordsTab+')">My Records</div><div class="tab active">Attendance Forms</div></div><div class="card">'+body+'</div>';
   }
 
   window.submitAttendanceFormRequest=function(){
@@ -774,7 +777,7 @@
         RESOLUTION_CASES.push({id:correctionId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(correctionId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+row.date,description:'Request date: '+row.date+'\nPunch: '+(row.punchType==='time_out'?'Time Out':'Time In')+'\nCorrect time: '+row.correctedTime+'\nDetails: '+reason,priority:'normal',status:'open',linkedType:correctionLinked?'attendance':'',linkedId:correctionLinked?correctionLinked.id:null,attendanceRequestType:'time_correction',requestDate:row.date,requestEndDate:row.date,punchType:row.punchType,correctedTime:row.correctedTime,batchId:batchId,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:correctionDue.toISOString().slice(0,10),resolution:''});
       });
       window._correctionRows=null;window._attendanceFormKey=null;
-      toast(corrections.length+' time correction request(s) submitted for approval.','success');tab=0;render();return;
+      toast(corrections.length+' time correction request(s) submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
     }
     if(!date){toast('Request date is required.','warning');return;}
     var tin=value('att-form-in'),tout=value('att-form-out');
@@ -800,13 +803,19 @@
       RESOLUTION_CASES.push({id:id,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(id).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:details.join('\n'),priority:(form.key==='overtime'||form.key==='rest_day_holiday')?'high':'normal',status:'open',linkedType:linked?'attendance':'',linkedId:linked?linked.id:null,attendanceRequestType:form.key,requestDate:date,requestEndDate:value('att-form-end')||date,requestedStart:tin,requestedEnd:tout,requestedMinutes:Number(value('att-form-minutes')||0),punchType:value('att-form-punch'),correctedTime:value('att-form-time'),eligibleHours:eligibility?eligibility.hours:null,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:due.toISOString().slice(0,10),resolution:''});
     window._attendanceFormKey=null;
     toast(form.label+' submitted for approval.','success');
-    tab=0;render();
+    tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();
   };
 
   var baseAttendance=window.pgAttendance;
   window.pgAttendance=pgAttendance=function(){
     var admin=isAdminUser(user)||isPlatformAdmin;
+    var isStaff=!!(user&&user.role==='employee');
     if(!admin&&tab===1)return renderEmployeeAttendanceForms();
+    // A staff-admin (SaaS mode: role:'employee' + Super Admin access) is also filing their OWN
+    // attendance, so their "File Attendance" tab (index 3 in the admin tab layout) should be the
+    // same self-service catalog regular employees use — not the manual entry-on-behalf-of-others
+    // form, which stays reserved for outsourced/service admins (role:'admin', not staff).
+    if(admin&&isStaff&&tab===3)return renderEmployeeAttendanceForms();
     var html=baseAttendance();
     if(!admin)html=html.replace('File Attendance','Attendance Forms');
     return html;
