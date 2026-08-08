@@ -43,7 +43,13 @@
     replaceArray(LOANS,saved.loans);replaceArray(PAYROLLS,saved.payrolls);if(saved.payrollDraft)PAYROLL_DRAFT=saved.payrollDraft;
     replaceArray(CANDIDATES,saved.candidates);replaceArray(PERF,saved.performance);replaceArray(ONBOARD,saved.onboarding);
     replaceArray(ACCESS_LEVELS,saved.accessLevels);replaceArray(CHANGE_REQUESTS,saved.changeRequests);
-    replaceArray(BUNDY_LOGS,saved.bundyLogs);replaceArray(OFFICE_ZONES,saved.officeZones);if(saved.company)COMPANY=saved.company;
+    replaceArray(BUNDY_LOGS,saved.bundyLogs);replaceArray(OFFICE_ZONES,saved.officeZones);
+    // Merge instead of replacing outright: a feature module (enterprise.js) may have already
+    // seeded a default onto COMPANY (e.g. leaveTypes) before this ever ran, on a save that
+    // predates that feature and therefore has no key for it at all. Object.assign only copies
+    // keys saved.company actually has, so an unsaved default like that survives hydration
+    // instead of silently disappearing the moment a user logs in.
+    if(saved.company)Object.assign(COMPANY,saved.company);
     if(saved.employeeNumberConfig)EMP_NUM_CONFIG=saved.employeeNumberConfig;if(saved.statutoryConfig)STATUTORY_CONFIG=saved.statutoryConfig;
     if(saved.approvalConfig)APPROVAL_CONFIG=saved.approvalConfig;if(saved.fieldConfig)FIELD_CONFIG=saved.fieldConfig;
     replaceArray(INCOME_TYPES,saved.incomeTypes);if(saved.attendanceAdjustments)ATTENDANCE_ADJ=saved.attendanceAdjustments;

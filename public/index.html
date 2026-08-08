@@ -1214,6 +1214,45 @@ function saveEmployeeTaxYearRecord(empId,year){
   queueSync('Employees');toast('Tax year record saved.','success');render();
 }
 function setEmployeeHasPreviousEmployer(empId,year,checked){const emp=USERS.find(e=>e.id===empId),record=employeeTaxRecord(emp,year,true);record.hasPreviousEmployer=!!checked;if(!checked){['previousEmployerName','previousEmployerTin','previousEmployerAddress','previousEmployerZip','previousEmploymentFrom','previousEmploymentTo','previousEmployerNonTaxableBenefits','previousEmployerTaxableBenefits','previousEmployerDeMinimis','previousEmployerTaxable','previousEmployerTaxWithheld'].forEach(k=>record[k]=typeof record[k]==='number'?0:'');}render();}
+
+/* ---- Leave balances (Employee 201 > Leave tab) ---- */
+function openSetLeaveBalance(empId,typeId){
+  if(!isAdminUser(user))return;
+  const emp=USERS.find(u=>u.id===empId),t=(COMPANY.leaveTypes||[]).find(x=>x.id===typeId);
+  if(!emp||!t)return;
+  const bal=(emp.leaveBalances&&emp.leaveBalances[typeId])||{balance:0,adjustments:[]};
+  modal={type:'setLeaveBalance',empId,typeId,typeName:t.name,current:bal.balance,data:{balance:bal.balance,reason:''}};
+  render();
+}
+function saveSetLeaveBalance(){
+  if(!isAdminUser(user))return;
+  const emp=USERS.find(u=>u.id===modal.empId);if(!emp)return;
+  const newBalance=parseFloat(modal.data.balance);
+  if(isNaN(newBalance)){alert('Enter a valid number of days.');return;}
+  if(!modal.data.reason||!modal.data.reason.trim()){alert('A reason is required (e.g. "Annual grant", "Migration balance", "Correction").');return;}
+  if(!emp.leaveBalances)emp.leaveBalances={};
+  const bucket=emp.leaveBalances[modal.typeId]||{balance:0,adjustments:[]};
+  bucket.adjustments=bucket.adjustments||[];
+  bucket.adjustments.unshift({id:Date.now(),date:today(),from:bucket.balance,to:newBalance,reason:modal.data.reason.trim(),by:user.name});
+  bucket.balance=+newBalance.toFixed(2);
+  emp.leaveBalances[modal.typeId]=bucket;
+  queueSync('Employees');closeM();toast('Leave balance updated for '+emp.name+'.','success');
+}
+function toggleLeaveAssignment(empId,typeId){
+  if(!isAdminUser(user))return;
+  const emp=USERS.find(u=>u.id===empId),t=(COMPANY.leaveTypes||[]).find(x=>x.id===typeId);
+  if(!emp||!t)return;
+  if(!emp.leaveOverrides)emp.leaveOverrides={};
+  const currentlyEligible=leaveTypeEligible(emp,t);
+  emp.leaveOverrides[typeId]=!currentlyEligible;
+  queueSync('Employees');toast((currentlyEligible?'Unassigned ':'Assigned ')+t.name+(currentlyEligible?' from ':' to ')+emp.name+'.','success');render();
+}
+function resetLeaveAssignment(empId,typeId){
+  if(!isAdminUser(user))return;
+  const emp=USERS.find(u=>u.id===empId);if(!emp||!emp.leaveOverrides)return;
+  delete emp.leaveOverrides[typeId];
+  queueSync('Employees');toast('Reset to policy default.','success');render();
+}
 function isPayrollAdjustmentReady(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.isReady(record):!!record&&['ready','approved','pending'].includes(record.status);}
 function canDeletePayrollAdjustment(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.canDelete(record):!!record&&record.status!=='applied'&&!record.payrollRunId;}
 function setPayrollPreviewFilter(kind,value){
@@ -8522,6 +8561,17 @@ function renderModal(){
       <button class="btn btn-primary" onclick="saveLeaveTypeEditor()">Save Leave Type</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
+  }else if(modal.type==='setLeaveBalance'){
+    inner=`<div class="modal-title">Set Leave Balance — ${esc(modal.typeName)}
+      <button class="close-x" onclick="closeM()">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:10px">Current balance: <strong style="color:var(--txt)">${modal.current}</strong> days</div>
+    <div class="field"><label>New Balance (days)</label><input type="number" step="0.5" class="finput" value="${modal.data.balance}" oninput="modal.data.balance=this.value"/></div>
+    <div class="field" style="margin-top:.75rem"><label>Reason</label><input class="finput" value="${esc(modal.data.reason)}" oninput="modal.data.reason=this.value" placeholder="e.g. Annual grant for 2026, Migration balance, Correction"/></div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn btn-primary" onclick="saveSetLeaveBalance()">Save Balance</button>
+      <button class="btn" onclick="closeM()">Cancel</button>
+    </div>`;
   }else if(modal.type==='notifications'){
     const pending=LEAVES.filter(l=>l.status==='pending');
     const crPending=CHANGE_REQUESTS.filter(r=>r.status==='pending');
@@ -11954,7 +12004,7 @@ function pgEmpDetail(){
   const age=e.bday?Math.floor((new Date()-new Date(e.bday))/(365.25*24*3600*1000)):0;
   const al=ACCESS_LEVELS.find(a=>a.id===e.accessLevelId)||ACCESS_LEVELS[4];
   const alColors={purple:'#7c3aed',blue:'#2563eb',green:'#059669',amber:'#d97706',gray:'#6b7280'};
-  const tabs=['Personal','Employment','Compensation','Recurring Allowances','Gov\'t & Bank','Emergency','Offboarding','Movements','Tax & YTD'];
+  const tabs=['Personal','Employment','Compensation','Recurring Allowances','Gov\'t & Bank','Emergency','Offboarding','Movements','Tax & YTD','Leave'];
 
   /* ── helper: render a field as view or edit ── */
   const d=detailDraft;
@@ -12621,6 +12671,30 @@ function pgEmpDetail(){
     ${hasPrevious?`<div class="form-row"><div class="field"><label>Previous Employer Registered Address</label><input id="tax-prev-address" class="finput" value="${esc(record.previousEmployerAddress||'')}"/></div><div class="field"><label>Previous Employer ZIP Code</label><input id="tax-prev-zip" class="finput" value="${esc(record.previousEmployerZip||'')}" maxlength="4"/></div></div>`:`<input id="tax-prev-address" type="hidden" value=""/><input id="tax-prev-zip" type="hidden" value=""/>`}
     ${isA?`<div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn btn-primary" onclick="saveEmployeeTaxYearRecord(${e.id},${taxYear})">Save Tax Record</button></div>`:''}`;
   }
+  /* ── Tab 9: Leave ── */
+  else if(detailTab===9){
+    const leaveTypes=(COMPANY.leaveTypes||[]);
+    const overrides=e.leaveOverrides||{};
+    const balances=e.leaveBalances||{};
+    tabBody=`<div class="card-hd" style="padding:0;margin-bottom:12px"><div><div class="card-title">Leave Balances</div><div class="card-sub">Eligibility follows Company Settings &gt; Leave Policy unless manually overridden below. Balances are set manually or via annual accrual.</div></div></div>
+    <div style="overflow-x:auto"><table><thead><tr><th>Leave Type</th><th>Eligibility</th><th>Balance</th>${isA?'<th>Actions</th>':''}</tr></thead><tbody>
+    ${leaveTypes.length?leaveTypes.map(t=>{
+      const overridden=overrides[t.id]!==undefined;
+      const eligible=leaveTypeEligible(e,t);
+      const bal=balances[t.id]||{balance:0,adjustments:[]};
+      return`<tr>
+        <td style="font-weight:700">${esc(t.name)} <span class="badge" style="font-size:10px">${esc(t.code)}</span>${t.active?'':' <span class="badge b-rejected" style="font-size:10px">inactive</span>'}</td>
+        <td><span class="badge ${eligible?'b-approved':'b-rejected'}">${eligible?'Assigned':'Not assigned'}</span>${overridden?' <span style="font-size:10px;color:var(--txt3)">(manual)</span>':''}</td>
+        <td class="mono" style="font-weight:700">${bal.balance}${t.paid?'':' (unpaid)'}</td>
+        ${isA?`<td><div class="action-row">
+          <button class="btn btn-sm" onclick="openSetLeaveBalance(${e.id},${t.id})">Set Balance</button>
+          <button class="btn btn-sm" onclick="toggleLeaveAssignment(${e.id},${t.id})">${eligible?'Unassign':'Assign'}</button>
+          ${overridden?`<button class="btn btn-sm" onclick="resetLeaveAssignment(${e.id},${t.id})" title="Remove manual override, use policy default">Reset</button>`:''}
+        </div></td>`:''}
+      </tr>`;
+    }).join(''):`<tr><td colspan="${isA?4:3}" class="empty-state">No leave types configured. Set them up in Company Settings &gt; Leave Policy.</td></tr>`}
+    </tbody></table></div>`;
+  }
   return`
   <style>
     .detail-sidebar{width:240px;flex-shrink:0}
@@ -12682,7 +12756,7 @@ function pgEmpDetail(){
         <div style="display:flex;gap:0;flex-wrap:wrap;min-width:0">
           ${tabs.map((t,i)=>`<div class="tab${detailTab===i?' active':''}" onclick="detailTab=${i};render()" style="white-space:nowrap">${t}</div>`).join('')}
         </div>
-        ${isA&&detailTab!==3&&detailTab!==7&&detailTab!==8?`<div style="display:flex;gap:6px;padding-bottom:8px;flex-shrink:0;margin-left:12px">
+        ${isA&&detailTab!==3&&detailTab!==7&&detailTab!==8&&detailTab!==9?`<div style="display:flex;gap:6px;padding-bottom:8px;flex-shrink:0;margin-left:12px">
           ${detailEdit
             ?`<button class="btn btn-sm btn-primary" onclick="saveEmpEdit()">✓ Save</button>
               <button class="btn btn-sm" onclick="detailEdit=false;detailDraft={};render()">Cancel</button>`

@@ -442,6 +442,7 @@
     {id:2,name:'Early Shift',graceMinutes:5,active:true,schedule:(function(){var s=defaultShiftSchedule();SHIFT_DAY_KEYS.forEach(function(k){if(!s[k].restDay){s[k].start='06:00';s[k].end='15:00';}});return s;})()},
     {id:3,name:'Night Shift',graceMinutes:5,active:true,schedule:(function(){var s=defaultShiftSchedule();SHIFT_DAY_KEYS.forEach(function(k){if(!s[k].restDay){s[k].start='22:00';s[k].end='06:00';s[k].breakStart='02:00';s[k].breakEnd='03:00';}});return s;})()}
   ]);
+  COMPANY.shifts=SHIFT_DEFINITIONS; /* keep readable from other files even before the first explicit save */
   var nextShiftId=SHIFT_DEFINITIONS.reduce(function(max,s){return Math.max(max,s.id||0);},0)+1;
   USERS.filter(function(e){return e.role==='employee';}).forEach(function(e){if(!e.shiftId)e.shiftId=1;});
 
@@ -552,6 +553,7 @@
     'double':'Double Holiday'
   };
   var HOLIDAYS=(COMPANY.holidays&&COMPANY.holidays.length?COMPANY.holidays:[]);
+  COMPANY.holidays=HOLIDAYS; /* keep readable from other files even before the first explicit save */
   var nextHolidayId=HOLIDAYS.reduce(function(max,h){return Math.max(max,h.id||0);},0)+1;
 
   function saveHolidayConfig(){
@@ -618,6 +620,7 @@
     {id:6,name:'Solo Parent Leave',code:'SPL',paid:true,annualDays:7,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:12,employeeTypes:[],active:true},
     {id:7,name:'Bereavement Leave',code:'BL',paid:true,annualDays:3,accrualMethod:'upfront',carryOver:false,maxCarryOverDays:0,genderRestriction:'',minTenureMonths:0,employeeTypes:[],active:true}
   ]);
+  COMPANY.leaveTypes=LEAVE_TYPES; /* keep readable from other files even before the first explicit save */
   var nextLeaveTypeId=LEAVE_TYPES.reduce(function(max,t){return Math.max(max,t.id||0);},0)+1;
 
   function saveLeaveTypeConfig(){
@@ -698,8 +701,45 @@
     return parts.length?parts.join(' · '):'All employees';
   }
 
+  // Grants leave balances per policy: 'upfront' types get the full annualDays once per
+  // calendar year (plus any carried-over balance, capped at maxCarryOverDays); 'monthly'
+  // types get annualDays/12 once per calendar month. Guarded by lastAccrualYear/
+  // lastAccrualMonth per employee+type so re-running this doesn't double-credit.
+  window.runLeaveAccrual=function(){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var now=new Date(),year=now.getFullYear(),yearMonth=year+'-'+String(now.getMonth()+1).padStart(2,'0');
+    var eligibleEmps=USERS.filter(function(e){return e.role==='employee'&&e.active!==false;});
+    var credited=0;
+    eligibleEmps.forEach(function(emp){
+      LEAVE_TYPES.filter(function(t){return t.active;}).forEach(function(t){
+        if(!leaveTypeEligible(emp,t))return;
+        if(!emp.leaveBalances)emp.leaveBalances={};
+        var bucket=emp.leaveBalances[t.id]||{balance:0,adjustments:[]};
+        bucket.adjustments=bucket.adjustments||[];
+        if(t.accrualMethod==='monthly'){
+          if(bucket.lastAccrualMonth===yearMonth)return;
+          var grant=+(t.annualDays/12).toFixed(2);
+          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:today(),from:bucket.balance||0,to:+((bucket.balance||0)+grant).toFixed(2),reason:'Monthly accrual '+yearMonth,by:user.name});
+          bucket.balance=+((bucket.balance||0)+grant).toFixed(2);
+          bucket.lastAccrualMonth=yearMonth;
+        }else{
+          if(bucket.lastAccrualYear===year)return;
+          var carry=t.carryOver?Math.min(bucket.balance||0,t.maxCarryOverDays||0):0;
+          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:today(),from:bucket.balance||0,to:+(carry+t.annualDays).toFixed(2),reason:'Annual accrual '+year+(carry?' (+'+carry+' carried over)':''),by:user.name});
+          bucket.balance=+(carry+t.annualDays).toFixed(2);
+          bucket.lastAccrualYear=year;
+        }
+        emp.leaveBalances[t.id]=bucket;
+        credited++;
+      });
+    });
+    queueSync('Employees');
+    toast('Leave accrual applied: '+credited+' balance(s) updated.','success');
+    render();
+  };
+
   function renderLeavePolicyManager(){
-    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Leave Policy</div><div class="card-sub">Define leave types, entitlement, accrual, and eligibility — used for balance tracking and the File Leave form</div></div><button class="btn btn-primary btn-sm" onclick="openLeaveTypeEditor()">+ Add Leave Type</button></div>'+
+    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Leave Policy</div><div class="card-sub">Define leave types, entitlement, accrual, and eligibility — used for balance tracking and the File Leave form</div></div><div class="action-row"><button class="btn btn-sm" onclick="if(confirm(\'Grant leave accrual to every eligible active employee? Upfront types are credited once per year, monthly types once per month — already-credited employees for this period are skipped.\'))runLeaveAccrual()">Run Leave Accrual</button><button class="btn btn-primary btn-sm" onclick="openLeaveTypeEditor()">+ Add Leave Type</button></div></div>'+
       '<div style="overflow-x:auto"><table><thead><tr><th>Type</th><th>Paid</th><th>Annual Days</th><th>Accrual</th><th>Carry-over</th><th>Eligibility</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
       (LEAVE_TYPES.length?LEAVE_TYPES.map(function(t){
         return '<tr><td style="font-weight:700">'+esc(t.name)+' <span class="badge" style="font-size:10px">'+esc(t.code)+'</span></td>'+
