@@ -151,6 +151,7 @@
         if(!match){sessionRestoring=false;render();return;} // identity no longer resolvable — fall back to the login screen
         user=match;view='dashboard';
         if(typeof checkOffboarding==='function')checkOffboarding();
+        if(typeof window.autoRunLeaveAccrual==='function')window.autoRunLeaveAccrual();
       }
       tab=0;modal=null;
       sessionRestoring=false;

@@ -1251,13 +1251,132 @@ function toggleLeaveAssignment(empId,typeId){
   if(!emp.leaveOverrides)emp.leaveOverrides={};
   const currentlyEligible=leaveTypeEligible(emp,t);
   emp.leaveOverrides[typeId]=!currentlyEligible;
-  queueSync('Employees');toast((currentlyEligible?'Unassigned ':'Assigned ')+t.name+(currentlyEligible?' from ':' to ')+emp.name+'.','success');render();
+  if(!currentlyEligible&&window.grantLeaveIfDue)window.grantLeaveIfDue(emp,t,today()); /* newly assigned — grant the starting balance right away */
+  queueSync('Employees');toast((currentlyEligible?'Unassigned ':'Assigned ')+t.name+(currentlyEligible?' from ':' to ')+emp.name+(currentlyEligible?'.':' and granted starting balance.'),'success');render();
 }
 function resetLeaveAssignment(empId,typeId){
   if(!isAdminUser(user))return;
   const emp=USERS.find(u=>u.id===empId);if(!emp||!emp.leaveOverrides)return;
   delete emp.leaveOverrides[typeId];
   queueSync('Employees');toast('Reset to policy default.','success');render();
+}
+
+/* ---- Bulk Leave Balance Import (mid-year migration for a new client) ---- */
+function openBulkLeaveBalance(){
+  if(!isAdminUser(user))return;
+  modal={type:'bulkLeaveBalance',rows:[{eid:'',code:'',balance:'',reason:'Migration balance'}]};
+  render();
+}
+function downloadLeaveBalanceTemplate(){
+  const emps=USERS.filter(u=>u.role==='employee'&&u.active!==false);
+  const types=COMPANY.leaveTypes||[];
+  const templateRows=[
+    ['LEAVE BALANCE BULK IMPORT — SproutRipple PH','','',''],
+    ['Fill in EID, Leave Type Code, Balance, and Reason. One row per employee per leave type.','','',''],
+    ['Only active employees are applied — inactive/terminated rows are skipped.','','',''],
+    [],
+    ['EID *','Leave Type Code *','Balance *','Reason / Notes *']
+  ];
+  emps.slice(0,3).forEach((e,i)=>{
+    const t=types[i%types.length]||{code:'VL'};
+    templateRows.push([e.eid,t.code,10,'Sample: migration balance']);
+  });
+  const typeRows=[['Leave Type Code','Name','Paid']].concat(types.map(t=>[t.code,t.name,t.paid?'Yes':'No']));
+  const empRows=[['EID','Name','Status']].concat(emps.map(e=>[e.eid,e.name,e.active!==false?'Active':'Inactive']));
+  try{
+    const data=buildXLSX([
+      {name:'Template',rows:templateRows,colWidths:[14,18,12,40]},
+      {name:'Leave Types',rows:typeRows,colWidths:[18,28,10]},
+      {name:'Employees',rows:empRows,colWidths:[14,26,12]}
+    ]);
+    const blob=new Blob([data],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download='leave_balance_import_template.xlsx';a.click();
+    URL.revokeObjectURL(url);
+    toast('Template downloaded — see Leave Types & Employees sheets for valid codes','info');
+  }catch(ex){toast('Download failed: '+ex.message,'warning');console.error(ex);}
+}
+function handleLeaveBalanceExcel(evt){
+  const file=evt.target.files[0];if(!file)return;
+  const input=evt.target;input.disabled=true;
+  toast('Loading Excel reader and checking the file…','info');
+  loadXLSXLib(function(){input.disabled=false;parseLeaveBalanceExcel(file,input);},function(){input.disabled=false;input.value='';});
+}
+function parseLeaveBalanceExcel(file,input){
+  const reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      const wb=XLSX.read(e.target.result,{type:'array'});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+      if(!raw.length){toast('Empty file','warning');return;}
+      const hdrIdx=raw.findIndex(r=>{
+        const cells=r.map(v=>String(v||'').toLowerCase().replace(/\s*\*\s*$/,'').trim());
+        return cells.some(v=>v==='eid')&&cells.some(v=>v.includes('leave type'))&&cells.some(v=>v==='balance');
+      });
+      if(hdrIdx<0){toast('Header row not found — make sure your file has columns: EID, Leave Type Code, Balance','warning');return;}
+      const hdr=raw[hdrIdx].map(h=>String(h).toLowerCase().trim());
+      const col=(...kws)=>hdr.findIndex(h=>kws.some(k=>h.includes(k)));
+      const eidCol=col('eid'),codeCol=col('leave type','code'),balCol=col('balance'),reasonCol=col('reason','notes','remarks');
+      if(eidCol<0||codeCol<0||balCol<0){toast('Required columns not found (EID, Leave Type Code, Balance)','warning');return;}
+      const rows=[];
+      raw.slice(hdrIdx+1).forEach(r=>{
+        if(!r.some(c=>String(c).trim()))return;
+        const first=String(r[0]||'').trim();
+        if(/^EXAMPLE/i.test(first))return;
+        rows.push({
+          eid:String(r[eidCol]||'').trim(),
+          code:String(r[codeCol]||'').trim().toUpperCase(),
+          balance:String(r[balCol]||'').trim(),
+          reason:reasonCol>=0?String(r[reasonCol]||'').trim()||'Migration balance':'Migration balance'
+        });
+      });
+      if(!rows.length){toast('No data rows found','warning');return;}
+      modal.rows=rows;input.value='';render();
+      toast(rows.length+' row(s) loaded — review before applying','info');
+    }catch(ex){
+      toast('Upload failed: '+ex.message,'warning');console.error('[leave-balance-upload] Failed to parse file',ex);input.value='';
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+function addBulkLeaveRow(){
+  if(!modal||modal.type!=='bulkLeaveBalance')return;
+  modal.rows.push({eid:'',code:'',balance:'',reason:'Migration balance'});render();
+}
+function removeBulkLeaveRow(i){
+  if(!modal||modal.type!=='bulkLeaveBalance')return;
+  modal.rows.splice(i,1);if(!modal.rows.length)modal.rows.push({eid:'',code:'',balance:'',reason:'Migration balance'});render();
+}
+function applyBulkLeaveBalances(){
+  if(!modal||modal.type!=='bulkLeaveBalance')return;
+  let applied=0;const errors=[];
+  modal.rows.forEach((r,i)=>{
+    const rowLabel='Row '+(i+1);
+    if(!r.eid&&!r.code&&!r.balance)return; /* blank row, skip silently */
+    const emp=USERS.find(u=>u.eid===r.eid&&u.role==='employee');
+    if(!emp){errors.push(rowLabel+': employee EID "'+r.eid+'" not found');return;}
+    if(emp.active===false){errors.push(rowLabel+': '+emp.name+' is inactive — skipped');return;}
+    const t=(COMPANY.leaveTypes||[]).find(x=>x.code===r.code);
+    if(!t){errors.push(rowLabel+': leave type code "'+r.code+'" not found');return;}
+    const balance=parseFloat(r.balance);
+    if(isNaN(balance)){errors.push(rowLabel+': invalid balance "'+r.balance+'"');return;}
+    if(!emp.leaveBalances)emp.leaveBalances={};
+    const bucket=emp.leaveBalances[t.id]||{balance:0,adjustments:[]};
+    bucket.adjustments=bucket.adjustments||[];
+    bucket.adjustments.unshift({id:Date.now()+Math.random(),date:today(),from:bucket.balance,to:+balance.toFixed(3),reason:(r.reason||'Migration balance').trim(),by:user.name});
+    bucket.balance=+balance.toFixed(3);
+    emp.leaveBalances[t.id]=bucket;
+    if(!emp.leaveOverrides)emp.leaveOverrides={};
+    if(emp.leaveOverrides[t.id]===undefined)emp.leaveOverrides[t.id]=true; /* imported balance implies they're assigned */
+    applied++;
+  });
+  if(applied>0)queueSync('Employees');
+  closeM();
+  let msg=applied+' balance(s) applied.';
+  if(errors.length)msg+=' '+errors.length+' row(s) skipped.';
+  toast(msg,errors.length?'warning':'success');
+  if(errors.length)setTimeout(()=>alert('Skipped rows:\n\n'+errors.join('\n')),400);
 }
 function isPayrollAdjustmentReady(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.isReady(record):!!record&&['ready','approved','pending'].includes(record.status);}
 function canDeletePayrollAdjustment(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.canDelete(record):!!record&&record.status!=='applied'&&!record.payrollRunId;}
@@ -1913,7 +2032,7 @@ async function doLogin(){
     errEl.textContent='Your account has been disabled. Please contact HR.';
     errEl.style.display='block';return;
   }
-  if(u){user=u;view='dashboard';checkOffboarding();render();return;}
+  if(u){user=u;view='dashboard';checkOffboarding();if(window.autoRunLeaveAccrual)window.autoRunLeaveAccrual();render();return;}
 
   /* ── Company employee direct login — search all client employee lists ── */
   for(const c of PLATFORM_CLIENTS){
@@ -1937,7 +2056,7 @@ async function doLogin(){
       LEAVES.length=0; LOANS.length=0; ATT.length=0; PAYROLLS.length=0;
       user=emp;
       view='dashboard';tab=0;modal=null;
-      checkOffboarding();render();return;
+      checkOffboarding();if(window.autoRunLeaveAccrual)window.autoRunLeaveAccrual();render();return;
     }
   }
 
@@ -8766,6 +8885,57 @@ function renderModal(){
     <div style="display:flex;gap:8px;margin-top:1rem">
       <button class="btn" onclick="closeM()">Close</button>
     </div>`;
+  }else if(modal.type==='bulkLeaveBalance'){
+    const rows=modal.rows||[];
+    const types=COMPANY.leaveTypes||[];
+    const readyCount=rows.filter(r=>r.eid&&r.code&&r.balance!==''&&!isNaN(parseFloat(r.balance))).length;
+    inner=`<div class="modal-title" style="position:sticky;top:0;z-index:2;background:var(--surface)">
+      <span>📋 Bulk Leave Balance Import</span>
+      <span style="font-size:11px;color:var(--txt3);font-weight:400;margin-left:8px">${rows.length} row${rows.length!==1?'s':''} · ${readyCount} ready</span>
+      <button class="close-x" onclick="closeM()">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">For migrating a client mid-year with existing leave balances. Only active employees are applied; matching EID + Leave Type Code sets the balance and logs it in that employee's history.</div>
+    <div style="background:var(--accent-bg);border:1px solid var(--accent);border-radius:10px;padding:10px 14px;margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-sm" onclick="downloadLeaveBalanceTemplate()">⬇ Download Template</button>
+      <label class="btn btn-sm" style="cursor:pointer">📂 Upload Excel
+        <input type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleLeaveBalanceExcel(event)"/>
+      </label>
+      <span style="font-size:11px;color:var(--accent-txt)">Or fill in rows manually below.</span>
+    </div>
+    <div style="overflow-x:auto;margin-bottom:12px">
+    <table style="min-width:640px;font-size:12px;border-collapse:separate;border-spacing:0 4px">
+      <thead><tr style="background:var(--bg)">
+        <th style="width:20px;padding:4px 8px">#</th>
+        <th style="padding:4px 8px;text-align:left">EID <span style="color:var(--red)">*</span></th>
+        <th style="padding:4px 8px;text-align:left">Leave Type Code <span style="color:var(--red)">*</span></th>
+        <th style="padding:4px 8px;text-align:left">Balance <span style="color:var(--red)">*</span></th>
+        <th style="padding:4px 8px;text-align:left">Reason</th>
+        <th></th>
+      </tr></thead>
+      <tbody>
+      ${rows.map((r,i)=>{
+        const emp=USERS.find(u=>u.eid===r.eid&&u.role==='employee');
+        const empOk=!!emp,empActive=emp&&emp.active!==false;
+        const t=types.find(x=>x.code===r.code);
+        return`<tr style="background:var(--surface2)">
+          <td style="text-align:center;color:var(--txt3)">${i+1}</td>
+          <td><input class="finput" style="font-size:12px;${r.eid&&!empOk?'border-color:var(--red)':r.eid&&!empActive?'border-color:var(--amber)':''}" value="${esc(r.eid)}" placeholder="EID" oninput="modal.rows[${i}].eid=this.value.trim()"/>${r.eid&&!empOk?'<div style="font-size:10px;color:var(--red)">Not found</div>':r.eid&&!empActive?'<div style="font-size:10px;color:var(--amber-txt)">Inactive — will be skipped</div>':''}</td>
+          <td><input class="finput" style="font-size:12px;text-transform:uppercase;${r.code&&!t?'border-color:var(--red)':''}" value="${esc(r.code)}" placeholder="e.g. VL" oninput="modal.rows[${i}].code=this.value.trim().toUpperCase()"/>${r.code&&!t?'<div style="font-size:10px;color:var(--red)">Unknown code</div>':''}</td>
+          <td><input type="number" step="0.001" class="finput" style="font-size:12px" value="${esc(r.balance)}" placeholder="0" oninput="modal.rows[${i}].balance=this.value"/></td>
+          <td><input class="finput" style="font-size:12px" value="${esc(r.reason)}" placeholder="Migration balance" oninput="modal.rows[${i}].reason=this.value"/></td>
+          <td><button class="btn btn-sm btn-danger" onclick="removeBulkLeaveRow(${i})" title="Remove row">✕</button></td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap">
+      <button class="btn btn-sm" onclick="addBulkLeaveRow()">+ Add Row</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeM()">Cancel</button>
+        <button class="btn btn-primary" onclick="applyBulkLeaveBalances()" ${readyCount?'':'disabled'}>Apply ${readyCount} Balance${readyCount!==1?'s':''}</button>
+      </div>
+    </div>`;
   }else if(modal.type==='notifications'){
     const pending=LEAVES.filter(l=>l.status==='pending');
     const crPending=CHANGE_REQUESTS.filter(r=>r.status==='pending');
@@ -10029,7 +10199,7 @@ function renderModal(){
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
   }
-  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeM()"><div class="modal-box" style="${modal&&(modal.type==='itBulk'||modal.type==='bulkAdj')?'width:1000px;max-width:98vw':''}">${inner}</div></div>`;
+  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeM()"><div class="modal-box" style="${modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance')?'width:1000px;max-width:98vw':''}">${inner}</div></div>`;
   setTimeout(updatePayGroupPreview,0);
   return html;
 }

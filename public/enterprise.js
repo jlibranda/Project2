@@ -696,14 +696,29 @@
   window.assignLeaveTypeToAll=function(typeId){
     if(!(isAdminUser(user)||isPlatformAdmin))return;
     var t=LEAVE_TYPES.find(function(x){return x.id===typeId;});if(!t)return;
-    if(!confirm('Assign "'+t.name+'" to every active employee? Inactive employees are skipped.'))return;
-    var count=0;
+    if(!confirm('Assign "'+t.name+'" to every active employee, granting their starting balance immediately? Inactive employees are skipped.'))return;
+    var tod=today(),count=0;
     USERS.filter(function(e){return e.role==='employee'&&e.active!==false;}).forEach(function(e){
       if(!e.leaveOverrides)e.leaveOverrides={};
-      e.leaveOverrides[typeId]=true;count++;
+      e.leaveOverrides[typeId]=true;
+      grantLeaveIfDue(e,t,tod);
+      count++;
     });
     queueSync('Employees');
-    toast('Assigned '+t.name+' to '+count+' active employee(s).','success');render();
+    toast('Assigned '+t.name+' to '+count+' active employee(s) and granted starting balances.','success');render();
+  };
+
+  window.unassignLeaveTypeFromAll=function(typeId){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var t=LEAVE_TYPES.find(function(x){return x.id===typeId;});if(!t)return;
+    if(!confirm('Unassign "'+t.name+'" from every employee? This does not touch their existing balance, just their eligibility.'))return;
+    var count=0;
+    USERS.filter(function(e){return e.role==='employee';}).forEach(function(e){
+      if(!e.leaveOverrides)e.leaveOverrides={};
+      e.leaveOverrides[typeId]=false;count++;
+    });
+    queueSync('Employees');
+    toast('Unassigned '+t.name+' from '+count+' employee(s).','success');render();
   };
 
   window.openLeaveTypeEditor=function(typeId){
@@ -804,56 +819,84 @@
   // maxCarryOverDays — the rest is forfeited), guarded by lastAccrualYear. Right before that
   // reset, the outgoing balance is snapshotted into bucket.yearlyClosingBalances so a forfeited
   // or carried-over prior year's balance stays visible (Leave tab > History) even after reset.
+  // Core grant check for one employee + one leave type, as of `tod`. Returns true if a
+  // balance change was made (first grant, a monthly tick, or an annual renewal), false if
+  // nothing was due (not eligible, not yet started, or already credited for this period).
+  // Shared by runLeaveAccrual (bulk/manual), assignment actions (grant immediately instead of
+  // waiting for the next manual run), and the automatic per-login sweep.
+  function grantLeaveIfDue(emp,t,tod){
+    if(!t.active||!leaveTypeEligible(emp,t))return false;
+    var startDate=leaveEligibilityStartDate(emp,t);
+    if(!startDate||startDate>tod)return false; /* not yet regularized / not yet hired */
+    var fiscalYear=leaveFiscalYear(tod),yearMonth=tod.slice(0,7);
+    if(!emp.leaveBalances)emp.leaveBalances={};
+    var bucket=emp.leaveBalances[t.id]||{balance:0,adjustments:[]};
+    bucket.adjustments=bucket.adjustments||[];
+    bucket.yearlyClosingBalances=bucket.yearlyClosingBalances||{};
+    var actor=(user&&user.name)||'System';
+    if(t.accrualMethod==='monthly'){
+      if(bucket.lastAccrualMonth===yearMonth)return false;
+      var isFirst=!bucket.firstGrantDate;
+      var monthlyGrant=+(t.annualDays/12).toFixed(3);
+      bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+((bucket.balance||0)+monthlyGrant).toFixed(3),
+        reason:(isFirst?'Initial monthly accrual ':'Monthly accrual ')+yearMonth,by:actor});
+      bucket.balance=+((bucket.balance||0)+monthlyGrant).toFixed(3);
+      bucket.lastAccrualMonth=yearMonth;
+      if(isFirst)bucket.firstGrantDate=tod;
+    }else if(!bucket.firstGrantDate){
+      var startedThisYear=leaveFiscalYear(startDate)===fiscalYear;
+      var initialGrant=(t.prorateFirstGrant&&startedThisYear)?+(t.annualDays*leaveFiscalMonthsRemaining(startDate)/12).toFixed(3):t.annualDays;
+      bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:initialGrant,
+        reason:'Initial grant ('+(t.eligibilityBasis==='regularization'?'regularization':'hire')+' '+startDate+')'+(t.prorateFirstGrant&&startedThisYear?' — prorated':''),by:actor});
+      bucket.balance=initialGrant;
+      bucket.firstGrantDate=tod;
+      bucket.lastAccrualYear=fiscalYear;
+    }else{
+      if(bucket.lastAccrualYear===fiscalYear)return false;
+      var carry=t.carryOver?Math.min(bucket.balance||0,t.maxCarryOverDays||0):0;
+      var forfeited=Math.max(0,(bucket.balance||0)-carry);
+      bucket.yearlyClosingBalances[bucket.lastAccrualYear]=bucket.balance||0;
+      bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+(carry+t.annualDays).toFixed(3),
+        reason:'Annual accrual '+fiscalYear+(carry?' (+'+carry+' carried over)':'')+(forfeited?' ('+forfeited+' forfeited)':''),by:actor});
+      bucket.balance=+(carry+t.annualDays).toFixed(3);
+      bucket.lastAccrualYear=fiscalYear;
+    }
+    emp.leaveBalances[t.id]=bucket;
+    return true;
+  }
+
+  window.grantLeaveIfDue=grantLeaveIfDue; /* used by assignment actions in index.html so a newly-assigned type grants its balance immediately */
+
+  // Sweeps every active employee x active leave type and grants whatever's due, silently (no
+  // toast/render/queueSync of its own — callers decide whether and how to surface it). Used by
+  // both the manual "Run Leave Accrual" button and the automatic per-login sweep.
+  function sweepLeaveAccrual(employees){
+    var tod=today(),credited=0;
+    (employees||USERS.filter(function(e){return e.role==='employee'&&e.active!==false;})).forEach(function(emp){
+      LEAVE_TYPES.forEach(function(t){if(grantLeaveIfDue(emp,t,tod))credited++;});
+    });
+    return credited;
+  }
+
   window.runLeaveAccrual=function(){
     if(!(isAdminUser(user)||isPlatformAdmin))return;
-    var tod=today(),fiscalYear=leaveFiscalYear(tod),yearMonth=tod.slice(0,7);
-    var eligibleEmps=USERS.filter(function(e){return e.role==='employee'&&e.active!==false;});
-    var credited=0;
-    eligibleEmps.forEach(function(emp){
-      LEAVE_TYPES.filter(function(t){return t.active;}).forEach(function(t){
-        if(!leaveTypeEligible(emp,t))return;
-        var startDate=leaveEligibilityStartDate(emp,t);
-        if(!startDate||startDate>tod)return; /* not yet regularized / not yet hired */
-        if(!emp.leaveBalances)emp.leaveBalances={};
-        var bucket=emp.leaveBalances[t.id]||{balance:0,adjustments:[]};
-        bucket.adjustments=bucket.adjustments||[];
-        bucket.yearlyClosingBalances=bucket.yearlyClosingBalances||{};
-        if(t.accrualMethod==='monthly'){
-          if(bucket.lastAccrualMonth===yearMonth)return;
-          var isFirst=!bucket.firstGrantDate;
-          var monthlyGrant=+(t.annualDays/12).toFixed(3);
-          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+((bucket.balance||0)+monthlyGrant).toFixed(3),
-            reason:(isFirst?'Initial monthly accrual ':'Monthly accrual ')+yearMonth,by:user.name});
-          bucket.balance=+((bucket.balance||0)+monthlyGrant).toFixed(3);
-          bucket.lastAccrualMonth=yearMonth;
-          if(isFirst)bucket.firstGrantDate=tod;
-          credited++;
-        }else if(!bucket.firstGrantDate){
-          var startedThisYear=leaveFiscalYear(startDate)===fiscalYear;
-          var initialGrant=(t.prorateFirstGrant&&startedThisYear)?+(t.annualDays*leaveFiscalMonthsRemaining(startDate)/12).toFixed(3):t.annualDays;
-          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:initialGrant,
-            reason:'Initial grant ('+(t.eligibilityBasis==='regularization'?'regularization':'hire')+' '+startDate+')'+(t.prorateFirstGrant&&startedThisYear?' — prorated':''),by:user.name});
-          bucket.balance=initialGrant;
-          bucket.firstGrantDate=tod;
-          bucket.lastAccrualYear=fiscalYear;
-          credited++;
-        }else{
-          if(bucket.lastAccrualYear===fiscalYear)return;
-          var carry=t.carryOver?Math.min(bucket.balance||0,t.maxCarryOverDays||0):0;
-          var forfeited=Math.max(0,(bucket.balance||0)-carry);
-          bucket.yearlyClosingBalances[bucket.lastAccrualYear]=bucket.balance||0;
-          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+(carry+t.annualDays).toFixed(3),
-            reason:'Annual accrual '+fiscalYear+(carry?' (+'+carry+' carried over)':'')+(forfeited?' ('+forfeited+' forfeited)':''),by:user.name});
-          bucket.balance=+(carry+t.annualDays).toFixed(3);
-          bucket.lastAccrualYear=fiscalYear;
-          credited++;
-        }
-        emp.leaveBalances[t.id]=bucket;
-      });
-    });
+    var credited=sweepLeaveAccrual();
     queueSync('Employees');
     toast('Leave accrual applied: '+credited+' balance(s) updated.','success');
     render();
+  };
+
+  // Runs automatically on every login (see checkOffboarding's caller in index.html) instead of
+  // requiring an admin to remember to click "Run Leave Accrual" — answers "is there a trigger
+  // once regularized": yes, the very next time anyone logs in. A plain employee only sweeps
+  // their own record (self-service, no special permission needed); an admin sweeps every active
+  // employee, so the whole company stays current as long as an admin logs in periodically.
+  // Silent by design — no toast, since this fires unconditionally on every login.
+  window.autoRunLeaveAccrual=function(){
+    if(!user)return;
+    var scope=(isAdminUser(user)||isPlatformAdmin)?undefined:[user];
+    var credited=sweepLeaveAccrual(scope);
+    if(credited>0)queueSync('Employees');
   };
 
   var LEAVE_MONTH_NAMES=['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -875,7 +918,7 @@
   }
   function renderLeavePolicyManager(){
     return renderLeaveFiscalYearCard()+
-      '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Leave Policy</div><div class="card-sub">Define leave types, entitlement, accrual, and eligibility — used for balance tracking and the File Leave form</div></div><div class="action-row"><button class="btn btn-sm" onclick="if(confirm(\'Grant leave accrual to every eligible active employee? Upfront types are credited once per policy year, monthly types once per month — already-credited employees for this period are skipped.\'))runLeaveAccrual()">Run Leave Accrual</button><button class="btn btn-primary btn-sm" onclick="openLeaveTypeEditor()">+ Add Leave Type</button></div></div>'+
+      '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Leave Policy</div><div class="card-sub">Define leave types, entitlement, accrual, and eligibility — used for balance tracking and the File Leave form. Accrual also runs automatically whenever anyone logs in, so this button is only needed to force an immediate update.</div></div><div class="action-row"><button class="btn btn-sm" onclick="openBulkLeaveBalance()">📋 Bulk Import Balances</button><button class="btn btn-sm" onclick="if(confirm(\'Grant leave accrual to every eligible active employee right now? Upfront types are credited once per policy year, monthly types once per month — already-credited employees for this period are skipped.\'))runLeaveAccrual()">Run Leave Accrual</button><button class="btn btn-primary btn-sm" onclick="openLeaveTypeEditor()">+ Add Leave Type</button></div></div>'+
       '<div style="overflow-x:auto"><table><thead><tr><th>Type</th><th>Paid</th><th>Annual Days</th><th>Accrual</th><th>Carry-over</th><th>Eligibility</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
       (LEAVE_TYPES.length?LEAVE_TYPES.map(function(t){
         return '<tr><td style="font-weight:700">'+esc(t.name)+' <span class="badge" style="font-size:10px">'+esc(t.code)+'</span></td>'+
@@ -884,7 +927,7 @@
           '<td style="font-size:12px">'+(t.carryOver?'Up to '+t.maxCarryOverDays+' days':'No carry-over')+'</td>'+
           '<td style="font-size:11px;color:'+(t.requiresAssignment?'var(--amber-txt)':'var(--txt3)')+'">'+esc(describeLeaveEligibility(t))+'</td>'+
           '<td><span class="badge '+(t.active?'b-approved':'b-rejected')+'">'+(t.active?'Active':'Inactive')+'</span></td>'+
-          '<td><div class="action-row"><button class="btn btn-sm" onclick="openLeaveTypeEditor('+t.id+')">Edit</button>'+(t.requiresAssignment?'<button class="btn btn-sm btn-primary" onclick="assignLeaveTypeToAll('+t.id+')">Assign to All</button>':'')+'<button class="btn btn-sm" onclick="toggleLeaveType('+t.id+')">'+(t.active?'Deactivate':'Activate')+'</button><button class="btn btn-sm btn-danger" onclick="deleteLeaveType('+t.id+')">Delete</button></div></td></tr>';
+          '<td><div class="action-row"><button class="btn btn-sm" onclick="openLeaveTypeEditor('+t.id+')">Edit</button>'+(t.requiresAssignment?'<button class="btn btn-sm btn-primary" onclick="assignLeaveTypeToAll('+t.id+')">Assign to All</button>':'')+'<button class="btn btn-sm" onclick="unassignLeaveTypeFromAll('+t.id+')">Unassign from All</button><button class="btn btn-sm" onclick="toggleLeaveType('+t.id+')">'+(t.active?'Deactivate':'Activate')+'</button><button class="btn btn-sm btn-danger" onclick="deleteLeaveType('+t.id+')">Delete</button></div></td></tr>';
       }).join(''):'<tr><td colspan="8" style="text-align:center;color:var(--txt3);padding:2rem">No leave types configured yet.</td></tr>')+
       '</tbody></table></div></div>';
   }
