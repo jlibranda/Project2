@@ -670,10 +670,16 @@
   }
 
   // Default (policy-based) eligibility for a leave type — gender, regularization status,
-  // minimum tenure, and employment type all have to match. An explicit per-employee override
-  // (Stage 2, stored on employee.leaveOverrides[typeId]) always takes precedence when present.
+  // minimum tenure, and employment type all have to match. A newly-created type
+  // (requiresAssignment:true) never gets policy-based eligibility at all — it only becomes
+  // available once an admin explicitly assigns it (per-employee, or via "Assign to All"),
+  // so adding a new leave type doesn't silently hand it to the whole company. The original
+  // seed types predate this flag and keep working exactly as before. An explicit
+  // per-employee override (Stage 2, employee.leaveOverrides[typeId]) always takes precedence
+  // over both when present.
   function leaveTypePolicyEligible(employee,leaveType){
     if(!employee||!leaveType)return false;
+    if(leaveType.requiresAssignment)return false;
     if(leaveType.genderRestriction&&employee.gender&&employee.gender.toLowerCase()!==leaveType.genderRestriction)return false;
     if(!leaveEligibilityStartDate(employee,leaveType))return false; /* covers the regularization gate */
     if(tenureMonths(employee)<(leaveType.minTenureMonths||0))return false;
@@ -681,9 +687,23 @@
     return true;
   }
   window.leaveTypeEligible=function(employee,leaveType){
-    var override=employee&&employee.leaveOverrides&&employee.leaveOverrides[leaveType.id];
+    if(!employee||employee.active===false)return false; /* inactive employees are never covered, override or not */
+    var override=employee.leaveOverrides&&employee.leaveOverrides[leaveType.id];
     if(override!==undefined)return !!override;
     return leaveTypePolicyEligible(employee,leaveType);
+  };
+
+  window.assignLeaveTypeToAll=function(typeId){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var t=LEAVE_TYPES.find(function(x){return x.id===typeId;});if(!t)return;
+    if(!confirm('Assign "'+t.name+'" to every active employee? Inactive employees are skipped.'))return;
+    var count=0;
+    USERS.filter(function(e){return e.role==='employee'&&e.active!==false;}).forEach(function(e){
+      if(!e.leaveOverrides)e.leaveOverrides={};
+      e.leaveOverrides[typeId]=true;count++;
+    });
+    queueSync('Employees');
+    toast('Assigned '+t.name+' to '+count+' active employee(s).','success');render();
   };
 
   window.openLeaveTypeEditor=function(typeId){
@@ -708,6 +728,8 @@
       prorateFirstGrant:d.accrualMethod!=='monthly'&&!!d.prorateFirstGrant,
       carryOver:!!d.carryOver,maxCarryOverDays:d.carryOver?(Number(d.maxCarryOverDays)||0):0,genderRestriction:d.genderRestriction||'',
       minTenureMonths:Number(d.minTenureMonths)||0,employeeTypes:(d.employeeTypes||[]).slice(),active:d.active!==false};
+    if(modal.isNew)payload.requiresAssignment=true; /* new types are opt-in only — never touched again on later edits */
+    else if(d.id){var prior=LEAVE_TYPES.find(function(t){return t.id===d.id;});if(prior)payload.requiresAssignment=!!prior.requiresAssignment;}
     if(d.id){
       Object.assign(LEAVE_TYPES.find(function(t){return t.id===d.id;}),payload);
     }else{
@@ -732,6 +754,7 @@
   };
 
   function describeLeaveEligibility(t){
+    if(t.requiresAssignment)return'Not assigned to anyone yet — needs "Assign to All" or per-employee assignment';
     var parts=[LEAVE_BASIS_LABELS[t.eligibilityBasis||'hire']];
     if(t.accrualMethod==='upfront'&&t.prorateFirstGrant)parts.push('prorated first grant');
     if(t.genderRestriction)parts.push(LEAVE_GENDER_LABELS[t.genderRestriction]);
@@ -859,9 +882,9 @@
           '<td>'+(t.paid?'Paid':'Unpaid')+'</td><td style="text-align:center">'+t.annualDays+'</td>'+
           '<td style="font-size:12px">'+LEAVE_ACCRUAL_LABELS[t.accrualMethod]+'</td>'+
           '<td style="font-size:12px">'+(t.carryOver?'Up to '+t.maxCarryOverDays+' days':'No carry-over')+'</td>'+
-          '<td style="font-size:11px;color:var(--txt3)">'+esc(describeLeaveEligibility(t))+'</td>'+
+          '<td style="font-size:11px;color:'+(t.requiresAssignment?'var(--amber-txt)':'var(--txt3)')+'">'+esc(describeLeaveEligibility(t))+'</td>'+
           '<td><span class="badge '+(t.active?'b-approved':'b-rejected')+'">'+(t.active?'Active':'Inactive')+'</span></td>'+
-          '<td><div class="action-row"><button class="btn btn-sm" onclick="openLeaveTypeEditor('+t.id+')">Edit</button><button class="btn btn-sm" onclick="toggleLeaveType('+t.id+')">'+(t.active?'Deactivate':'Activate')+'</button><button class="btn btn-sm btn-danger" onclick="deleteLeaveType('+t.id+')">Delete</button></div></td></tr>';
+          '<td><div class="action-row"><button class="btn btn-sm" onclick="openLeaveTypeEditor('+t.id+')">Edit</button>'+(t.requiresAssignment?'<button class="btn btn-sm btn-primary" onclick="assignLeaveTypeToAll('+t.id+')">Assign to All</button>':'')+'<button class="btn btn-sm" onclick="toggleLeaveType('+t.id+')">'+(t.active?'Deactivate':'Activate')+'</button><button class="btn btn-sm btn-danger" onclick="deleteLeaveType('+t.id+')">Delete</button></div></td></tr>';
       }).join(''):'<tr><td colspan="8" style="text-align:center;color:var(--txt3);padding:2rem">No leave types configured yet.</td></tr>')+
       '</tbody></table></div></div>';
   }
