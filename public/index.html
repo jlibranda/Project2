@@ -3072,7 +3072,12 @@ function onSearchPaste(event){
 function setEmpSearch(val){empSearch=val;render();refocusSearch('emp-search-input');}
 
 function pgEmployees(){
-  const allEmps=USERS.filter(u=>u.role==='employee');
+  // A record with role never set at all (not deliberately 'admin' for a hidden service
+  // account, just missing) is treated as an employee too — otherwise a broken/incomplete
+  // record like that becomes invisible here (unreachable for editing or deletion) while still
+  // being directly viewable via its 201 page, exactly the trap that made one impossible to
+  // clean up from this list.
+  const allEmps=USERS.filter(u=>u.role==='employee'||!u.role);
   const emps=filterEmps(allEmps,empSearch);
   const tabs=['All Employees','Org Chart','Bulk Upload','Bulk Update'];
   if(tab===1){
@@ -3656,7 +3661,7 @@ function pgEmployees(){
 function deleteEmp(id){
   const e=USERS.find(u=>u.id===id);
   if(!e)return;
-  if(!confirm(`Delete ${e.name} (${e.eid})? This cannot be undone.`))return;
+  if(!confirm(`Delete ${e.name||'this employee'} (${e.eid||'no EID'})? This cannot be undone.`))return;
   const idx=USERS.indexOf(e);USERS.splice(idx,1);
   queueSync('Employees');render();
 }
