@@ -1251,6 +1251,19 @@
     if(Array.isArray(saved.aiHistory))AI_HISTORY=saved.aiHistory;
     SHIFT_DEFINITIONS=(COMPANY.shifts&&COMPANY.shifts.length)?COMPANY.shifts:SHIFT_DEFINITIONS;
     nextShiftId=SHIFT_DEFINITIONS.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
+    // LEAVE_TYPES is seeded once, synchronously, at page load — before hydrate() ever runs,
+    // since that only resolves after an async /state fetch. hydrate() reassigns
+    // COMPANY.leaveTypes to the saved data, but without this, the enterprise.js-local
+    // LEAVE_TYPES variable everything else here actually reads from (the policy manager,
+    // grantLeaveIfDue, etc.) stays pointed at the stale pre-hydration array — on a fresh page
+    // load that's just the hardcoded defaults, so every saved Leave Policy customization
+    // appeared to silently reset back to them on every login/refresh. Same re-sync SHIFT_DEFINITIONS
+    // already gets above.
+    LEAVE_TYPES=(COMPANY.leaveTypes&&COMPANY.leaveTypes.length)?COMPANY.leaveTypes:LEAVE_TYPES;
+    nextLeaveTypeId=LEAVE_TYPES.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
+    // Same stale-reference gap as LEAVE_TYPES above, same fix.
+    HOLIDAYS=(COMPANY.holidays&&COMPANY.holidays.length)?COMPANY.holidays:HOLIDAYS;
+    nextHolidayId=HOLIDAYS.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
     if(COMPANY.attendanceForms){ATTENDANCE_FORM_CONFIG.forEach(function(form){var item=COMPANY.attendanceForms.find(function(savedForm){return savedForm.key===form.key;});if(item)form.visible=item.visible!==false;});}
   };
 
