@@ -13939,7 +13939,12 @@ function doGlobalSearch(v) {
   if (!v.trim()) { box.style.display = 'none'; return; }
   var q = v.toLowerCase();
   var emps = USERS.filter(function(u) {
-    return ((u.name||'')+(u.eid||'')+(u.pos||'')+(u.dept||'')+(u.email||'')).toLowerCase().indexOf(q) >= 0;
+    // Same "is this really an employee" test as the Employees list — role==='admin' is a
+    // deliberately hidden service/outsourced admin account (not part of the company's own
+    // staff), so it shouldn't be discoverable here either. A record with role missing/broken
+    // (never properly tagged) still counts as an employee, same as the Employees list.
+    var isEmp = u.role==='employee' || !u.role || u.role==='undefined' || u.role==='null';
+    return isEmp && ((u.name||'')+(u.eid||'')+(u.pos||'')+(u.dept||'')+(u.email||'')).toLowerCase().indexOf(q) >= 0;
   }).slice(0, 6);
   var MODS = [
     {l:'Dashboard',v:'dashboard',ic:'🏠'},{l:'Employees',v:'employees',ic:'👥'},
