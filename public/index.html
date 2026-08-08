@@ -1260,6 +1260,21 @@ function resetLeaveAssignment(empId,typeId){
   delete emp.leaveOverrides[typeId];
   queueSync('Employees');toast('Reset to policy default.','success');render();
 }
+// Wipes an employee's balance AND every accrual-tracking field (firstGrantDate,
+// lastAccrualMonth/Year, yearlyClosingBalances) for one leave type — not just the balance
+// number. "Set Balance" alone leaves those tracking fields in place, so a manually-zeroed
+// balance still looks "already granted" to grantLeaveIfDue and Run Leave Accrual keeps
+// no-op'ing on it. This is for clean re-testing (or genuinely undoing a bad grant), not routine
+// use — Set Balance is still the right tool for an ordinary balance correction.
+function resetLeaveBalanceHistory(empId,typeId){
+  if(!isAdminUser(user))return;
+  const emp=USERS.find(u=>u.id===empId),t=(COMPANY.leaveTypes||[]).find(x=>x.id===typeId);
+  if(!emp||!t)return;
+  if(!emp.leaveBalances||!emp.leaveBalances[typeId])return;
+  if(!confirm('Clear ALL balance and accrual history for '+t.name+' on '+emp.name+'? This cannot be undone — the next accrual run will treat them as newly eligible again.'))return;
+  delete emp.leaveBalances[typeId];
+  queueSync('Employees');toast('Balance and history cleared for '+t.name+'.','success');render();
+}
 
 /* ---- Bulk Leave Balance Import (mid-year migration for a new client) ---- */
 function openBulkLeaveBalance(){
@@ -13055,6 +13070,7 @@ function pgEmpDetail(){
           <button class="btn btn-sm" onclick="openSetLeaveBalance(${e.id},${t.id})">Set Balance</button>
           <button class="btn btn-sm" onclick="toggleLeaveAssignment(${e.id},${t.id})">${eligible?'Unassign':'Assign'}</button>
           ${overridden?`<button class="btn btn-sm" onclick="resetLeaveAssignment(${e.id},${t.id})" title="Remove manual override, use policy default">Reset</button>`:''}
+          ${balances[t.id]?`<button class="btn btn-sm btn-danger" onclick="resetLeaveBalanceHistory(${e.id},${t.id})" title="Wipe balance and accrual history so the next accrual run starts fresh">Clear History</button>`:''}
         </div></td>`:''}
       </tr>`;
     }).join(''):`<tr><td colspan="${isA?5:4}" class="empty-state">No leave types configured. Set them up in Company Settings &gt; Leave Policy.</td></tr>`}
