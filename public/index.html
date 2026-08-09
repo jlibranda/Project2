@@ -2211,6 +2211,10 @@ const today=()=>{
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 };
 const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+// Small red count bubble for anything needing action (pending approvals, unread counts, etc.) —
+// one shared shape so these read consistently wherever they appear, instead of each call site
+// inventing its own "(N)" text suffix. Returns '' when there's nothing to flag.
+const redBubble=n=>n>0?`<span style="display:inline-flex;align-items:center;justify-content:center;min-width:17px;height:17px;padding:0 5px;border-radius:999px;background:var(--red);color:#fff;font-size:10px;font-weight:700;margin-left:6px;vertical-align:middle">${n}</span>`:'';
 const diffDays=(d1,d2)=>{const a=new Date(d1),b=new Date(d2);return Math.round((b-a)/(1000*60*60*24));};
 // Calendar-accurate tenure (years/months/days), not a rough diff-in-days/365 approximation —
 // varying month lengths and leap years make that drift noticeably wrong over a long tenure.
@@ -9287,6 +9291,29 @@ function renderModal(){
     <div class="field"><label>Notes</label><input type="text" value="${esc(d.notes)}" placeholder="Reason for the correction" oninput="modal.draft.notes=this.value"/></div>
     <div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">This change is saved to the record's edit history — who edited it, when, and what changed.</div>
     <div style="display:flex;gap:8px"><button class="btn" onclick="closeM()">Cancel</button><button class="btn btn-primary" onclick="saveEditAttRow()">Save Changes</button></div>`;
+  }else if(modal.type==='attReportDetail'){
+    const emp=modal.emp,s=modal.summary,badgeClass=st=>({Present:'b-present',Late:'b-late',Absent:'b-absent','On Leave':'b-leave','Rest Day':'b-info','No Record':'b-info'})[st]||'b-info';
+    const approvalClass=a=>({Approved:'b-approved',Pending:'b-pending',Rejected:'b-rejected'})[a]||'';
+    inner=`<div class="modal-title">Detailed Attendance
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
+    </div>
+    <div style="margin-bottom:12px">
+      <div style="font-weight:700;font-size:15px">${esc(emp.name||'')} <span style="font-weight:400;color:var(--txt3);font-size:12px">(${esc(emp.eid||'—')})</span></div>
+      <div style="font-size:12px;color:var(--txt3)">${esc(emp.dept||'—')} · ${esc(emp.pos||'—')} · ${modal.range.from} to ${modal.range.to}${modal.range.label?' ('+esc(modal.range.label)+')':''}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:14px">
+      ${[['Days Present',s.presentDays],['Days Absent',s.absentDays],['Late (min)',s.lateMinutes],['Undertime (min)',s.undertimeMinutes],['OT (hrs)',s.otHours],['ND (hrs)',s.ndHours],['Rest Day/Holiday (hrs)',s.restDayHolidayHours],['Hours Worked',s.hoursWorked]]
+        .map(([label,val])=>`<div style="padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:8px"><div style="font-size:10px;color:var(--txt3)">${label}</div><div style="font-weight:700;font-size:15px">${val}</div></div>`).join('')}
+    </div>
+    <div style="max-height:360px;overflow-y:auto">
+    <table><thead><tr><th>Date</th><th>Day</th><th>Shift</th><th>Time In</th><th>Time Out</th><th>Status</th><th>Approval</th><th>OT</th><th>ND</th><th>Notes</th></tr></thead><tbody>
+      ${modal.days.map(d=>`<tr><td class="mono" style="font-size:12px">${d.date}</td><td style="font-size:12px">${d.dow}</td><td style="font-size:11px;color:var(--txt3)">${esc(d.shift)}</td><td class="mono">${d.tin}</td><td class="mono">${d.tout}</td><td><span class="badge ${badgeClass(d.status)}">${esc(d.status)}</span></td><td>${d.approval?`<span class="badge ${approvalClass(d.approval)}">${esc(d.approval)}</span>`:'—'}</td><td style="text-align:center;color:${d.ot>0?'var(--accent)':'var(--txt3)'}">${d.ot||'—'}</td><td style="text-align:center;color:${d.nd>0?'var(--purple)':'var(--txt3)'}">${d.nd||'—'}</td><td style="font-size:11px;color:var(--txt3)">${esc(d.notes||'—')}</td></tr>`).join('')}
+    </tbody></table>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn" onclick="closeM()">Close</button>
+      <button class="btn btn-primary" onclick="downloadAttendanceReport()">⬇ Download Excel</button>
+    </div>`;
   }else if(modal.type==='attHistory'){
     const emp=USERS.find(u=>u.id===modal.eid);
     const edits=modal.rec.edits||[];
@@ -14422,8 +14449,8 @@ render = function() {
 <script src="/bir-2316-pdf.js?v=20260804-official-form-overlay"></script>
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
-<script src="/compliance.js?v=20260809-attendance-report-borders"></script>
-<script src="/enterprise.js?v=20260809-staffadmin-tabs-fix"></script>
+<script src="/compliance.js?v=20260809-report-detail-modal"></script>
+<script src="/enterprise.js?v=20260809-pending-count-bubble"></script>
 <script src="/payroll-governance.js?v=20260804-annualized-tax"></script>
 <script src="/persistence.js?v=20260804-impersonation-audit"></script>
 </body>
