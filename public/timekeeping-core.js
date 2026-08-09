@@ -63,11 +63,36 @@
     return primary;
   }
 
-  function upsert(records, employeeId, date, patch, nextId) {
+  // Fields worth calling out in the edit trail — the ones that change what a record actually
+  // means (time worked, pay-affecting hours, status), not bookkeeping fields like source/notes.
+  var AUDITED_FIELDS = ['tin', 'tout', 'status', 'ot', 'nd', 'undertimeMinutes', 'restDayHolidayHours'];
+
+  function diffForAudit(record, patch) {
+    var changes = {};
+    AUDITED_FIELDS.forEach(function (key) {
+      if (typeof patch[key] !== 'undefined' && patch[key] !== record[key]) {
+        changes[key] = { from: record[key], to: patch[key] };
+      }
+    });
+    return changes;
+  }
+
+  // editedBy is optional — omit it for system-driven writes (ZKTeco import's own record of
+  // origin already covers those) and pass it for anything a person did through the UI, so
+  // corrections to an existing record leave a "who changed what, from what, to what" trail.
+  function upsert(records, employeeId, date, patch, nextId, editedBy) {
     var record = consolidate(records, employeeId, date);
+    var isNew = !record;
     if (!record) {
       record = { id: nextId(), eid: employeeId, date: date, tin: '', tout: '', status: 'present', ot: 0, nd: 0, notes: '' };
       records.push(record);
+    }
+    if (!isNew && editedBy) {
+      var changes = diffForAudit(record, patch);
+      if (Object.keys(changes).length) {
+        record.edits = record.edits || [];
+        record.edits.unshift({ at: new Date().toISOString(), by: editedBy, changes: changes });
+      }
     }
     Object.keys(patch || {}).forEach(function (key) {
       if (typeof patch[key] !== 'undefined') record[key] = patch[key];
