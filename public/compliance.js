@@ -333,7 +333,23 @@
   }
   var ATT_REPORT_DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   var ATT_REPORT_STATUS_LABEL = { present:'Present', late:'Late', absent:'Absent', leave:'On Leave' };
-  var ATT_REPORT_HOLIDAY_LABEL = { DH_8:'Double Holiday', RH_8:'Regular Holiday', RH_RD_8:'Regular Holiday (Rest Day)', SH_8:'Special Holiday', SH_RD_8:'Special Holiday (Rest Day)', RDH_GENERIC:'Rest Day' };
+  // Every rest-day/holiday premium code TimekeepingCore.classifyHolidayPremium() can actually
+  // produce (see its PH DOLE combinations), each broken into its own Summary column — rather
+  // than one lumped "Rest Day/Holiday Hours" figure — so nothing worked on a holiday or rest day
+  // is hidden inside a single number. Order matches roughly increasing premium rate.
+  var ATT_REPORT_HOLIDAY_CODES = ['RDH_GENERIC','SH_8','SH_RD_8','RH_8','RH_RD_8','DH_8'];
+  var ATT_REPORT_HOLIDAY_LABEL = { RDH_GENERIC:'Rest Day', SH_8:'Special Holiday', SH_RD_8:'Special Holiday+RD', RH_8:'Regular Holiday', RH_RD_8:'Regular Holiday+RD', DH_8:'Double Holiday' };
+  // Mirrors TimekeepingCore.periodSummary()'s own per-record late/undertime formula exactly, so
+  // a per-day figure here always sums to that function's authoritative period total in Summary —
+  // periodSummary computes this internally but only returns the aggregate, not the per-day split.
+  function dailyLateUndertime(emp, rec, shifts) {
+    var sched = TimekeepingCore.scheduleForDate(emp, rec.date, shifts);
+    var actualIn = hhmmToMinutesLocal(rec.tin), actualOut = hhmmToMinutesLocal(rec.tout);
+    var shiftIn = sched && hhmmToMinutesLocal(sched.start), shiftOut = sched && hhmmToMinutesLocal(sched.end);
+    var late = actualIn != null && shiftIn != null ? Math.max(0, actualIn - shiftIn - Number(sched.graceMinutes||0)) : 0;
+    var undertime = actualOut != null && shiftOut != null ? Math.max(0, shiftOut - actualOut) : 0;
+    return { late: rec.lateMinutes != null ? rec.lateMinutes : late, undertime: Math.max(Number(rec.undertimeMinutes||0), undertime) };
+  }
   window.downloadAttendanceReport = function () {
     if (!(isAdminUser(user) || isPlatformAdmin || canAccess('att_edit'))) return;
     var range = attReportRange();
@@ -348,14 +364,18 @@
     if (!emps.length) { toast('No employees match this filter.', 'warning'); return; }
 
     var shifts = COMPANY.shifts || [], holidays = COMPANY.holidays || [];
+    var summaryHeaderRow = ['EID','Employee Name','Department','Position','Days Present','Days Absent','Late (min)','Undertime (min)','OT Hours','ND Hours']
+      .concat(ATT_REPORT_HOLIDAY_CODES.map(function (c) { return ATT_REPORT_HOLIDAY_LABEL[c]+' (hrs)'; }))
+      .concat(['Hours Worked','Needs Review']);
     var summaryRows = [
       ['ATTENDANCE REPORT — SproutRipple PH'],
       ['Period: '+range.from+' to '+range.to+(range.label?' ('+range.label+')':'')],
       ['Generated: '+today()+' by '+(user&&user.name||'')],
       [],
-      ['EID','Employee Name','Department','Position','Days Present','Days Absent','Late (min)','Undertime (min)','OT Hours','ND Hours','Rest Day / Holiday Hours','Hours Worked','Needs Review']
+      summaryHeaderRow
     ];
     var detailedRows = [];
+    var detailBlocks = []; // {headerRow, totalsRow} per employee, 0-based row indices into detailedRows
 
     emps.forEach(function (emp) {
       var summary = TimekeepingCore.periodSummary(ATT, emp, range.from, range.to, shifts, holidays);
@@ -369,21 +389,18 @@
         if (b <= a) b += 24*60;
         hoursWorked += (b-a)/60;
       });
-      var holidayBreakdown = Object.keys(summary.restDayHolidayHoursByCode||{}).map(function (code) {
-        return (ATT_REPORT_HOLIDAY_LABEL[code]||code)+': '+summary.restDayHolidayHoursByCode[code]+'h';
-      }).join(', ');
+      var byCode = summary.restDayHolidayHoursByCode || {};
 
-      summaryRows.push([
-        emp.eid||'', emp.name||'', emp.dept||'', emp.pos||'',
-        summary.presentDays, summary.absentDays, summary.lateMinutes, summary.undertimeMinutes,
-        summary.otHours, summary.ndHours, holidayBreakdown||(summary.restDayHolidayHours||0),
-        +hoursWorked.toFixed(2), needsReview?'Yes — pending approval in range':'No'
-      ]);
+      summaryRows.push([emp.eid||'', emp.name||'', emp.dept||'', emp.pos||'', summary.presentDays, summary.absentDays, summary.lateMinutes, summary.undertimeMinutes, summary.otHours, summary.ndHours]
+        .concat(ATT_REPORT_HOLIDAY_CODES.map(function (c) { return byCode[c] || 0; }))
+        .concat([+hoursWorked.toFixed(2), needsReview?'Yes — pending approval in range':'No']));
 
       detailedRows.push(['Employee:', emp.name||'', 'EID:', emp.eid||'']);
       detailedRows.push(['Department:', emp.dept||'—', 'Position:', emp.pos||'—']);
       detailedRows.push(['Period:', range.from+' to '+range.to, 'Days Present:', summary.presentDays, 'Days Absent:', summary.absentDays]);
-      detailedRows.push(['Date','Day','Shift','Time In','Time Out','Status','Approval','OT (hrs)','ND (hrs)','Notes']);
+      var detailHeaderRowIdx = detailedRows.length;
+      detailedRows.push(['Date','Day','Shift','Time In','Time Out','Status','Approval','Late (min)','Undertime (min)','OT (hrs)','ND (hrs)','Rest Day/Holiday (hrs)','Notes']);
+      var totOt=0, totNd=0, totRdh=0;
       leaveDateRange(range.from, range.to).forEach(function (date) {
         var rec = byDate[date];
         var dow = ATT_REPORT_DOW[new Date(date+'T00:00:00Z').getUTCDay()];
@@ -391,19 +408,32 @@
         var isRest = TimekeepingCore.isRestDay(emp, date, shifts);
         var shiftLabel = isRest ? 'Rest Day' : (sched ? (sched.start+' – '+sched.end) : 'No shift assigned');
         if (!rec) {
-          detailedRows.push([date, dow, shiftLabel, '—', '—', isRest?'Rest Day':'No Record', '—', 0, 0, '']);
+          detailedRows.push([date, dow, shiftLabel, '—', '—', isRest?'Rest Day':'No Record', '—', 0, 0, 0, 0, 0, '']);
           return;
         }
-        detailedRows.push([date, dow, shiftLabel, rec.tin||'—', rec.tout||'—', ATT_REPORT_STATUS_LABEL[rec.status]||rec.status||'—', approvalBadgeText(rec.approvalStatus), rec.ot||0, rec.nd||0, rec.notes||'']);
+        var lu = dailyLateUndertime(emp, rec, shifts);
+        totOt += Number(rec.ot||0); totNd += Number(rec.nd||0); totRdh += Number(rec.restDayHolidayHours||0);
+        detailedRows.push([date, dow, shiftLabel, rec.tin||'—', rec.tout||'—', ATT_REPORT_STATUS_LABEL[rec.status]||rec.status||'—', approvalBadgeText(rec.approvalStatus), lu.late, lu.undertime, rec.ot||0, rec.nd||0, rec.restDayHolidayHours||0, rec.notes||'']);
       });
-      detailedRows.push(['','','','','','','Totals for period:', summary.otHours, summary.ndHours, +hoursWorked.toFixed(2)+' hrs worked']);
+      var totalsRowIdx = detailedRows.length;
+      detailedRows.push(['','','','','','','Totals for period:', summary.lateMinutes, summary.undertimeMinutes, +totOt.toFixed(2), +totNd.toFixed(2), +totRdh.toFixed(2), +hoursWorked.toFixed(2)+' hrs worked']);
       detailedRows.push([]);
+      detailBlocks.push({ headerRow: detailHeaderRowIdx, totalsRow: totalsRowIdx });
+    });
+
+    var detailHeaderRows = new Set(), detailBorderRows = new Set(), detailTitleRows = new Set();
+    detailBlocks.forEach(function (block) {
+      detailTitleRows.add(block.headerRow-3).add(block.headerRow-2).add(block.headerRow-1);
+      detailHeaderRows.add(block.headerRow);
+      for (var r = block.headerRow; r <= block.totalsRow; r++) detailBorderRows.add(r);
     });
 
     try {
       var data = buildXLSX([
-        { name:'Summary', rows:summaryRows, colWidths:[14,26,16,18,10,10,10,10,10,10,20,12,24], textColIndices:new Set([0]) },
-        { name:'Detailed', rows:detailedRows, colWidths:[14,7,20,10,10,12,14,10,10,30], textColIndices:new Set([0]) }
+        { name:'Summary', rows:summaryRows, colWidths:[14,26,16,18,11,11,10,12,9,9,13,15,17,15,15,15,12,26],
+          textColIndices:new Set([0]), titleRows:new Set([0,1,2]), headerRows:new Set([4]), borderRows:(function(){var s=new Set();for(var r=4;r<summaryRows.length;r++)s.add(r);return s;})(), freezeRow:5 },
+        { name:'Detailed', rows:detailedRows, colWidths:[14,7,20,10,10,12,14,10,13,9,9,17,30],
+          textColIndices:new Set([0]), titleRows:detailTitleRows, headerRows:detailHeaderRows, borderRows:detailBorderRows }
       ]);
       var blob = new Blob([data], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
       var url = URL.createObjectURL(blob);
