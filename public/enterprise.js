@@ -1148,9 +1148,17 @@
       (visible.length?'<div class="attendance-catalog">'+visible.map(function(f){
         return '<button class="attendance-form-card" onclick="openAttendanceForm(\''+f.key+'\')"><span class="attendance-form-mark">'+f.short+'</span><span><strong>'+esc(f.label)+'</strong><small>'+esc(f.description)+'</small></span><span class="attendance-form-arrow">›</span></button>';
       }).join('')+'</div>':'<div class="empty-state"><div style="font-weight:700;margin-bottom:5px">No attendance forms are currently available.</div>Please contact HR if you need an attendance correction or special request.</div>')+myAttendanceFormRequests();
-    var myRecordsTab=(isAdminUser(user)||isPlatformAdmin)?1:0; /* admin tab layout puts "My Records" at index 1, not 0 */
+    // A staff-admin still needs every other Attendance tab reachable from here (Pending Approval,
+    // All Employees, Attendance Report) — this used to render its own hardcoded 2-tab bar
+    // ("My Records" / "Attendance Forms"), which silently dropped every other tab for a
+    // staff-admin the moment they landed on their own self-service catalog. Mirror the same
+    // full tab layout pgAttendance() itself uses so switching tabs from here works exactly like
+    // switching from anywhere else in Attendance.
+    var admin=isAdminUser(user)||isPlatformAdmin;
+    var tabs=admin?['Pending Approval','My Records','All Employees','Attendance Forms','Attendance Report']:['My Records','Attendance Forms'];
+    var activeIdx=admin?3:1;
     return '<div class="page-header"><div><div class="page-title">Attendance</div><div class="page-sub">Employee attendance records and approval-controlled requests</div></div></div>'+
-      '<div class="tabs"><div class="tab" onclick="window._attendanceFormKey=null;goTab('+myRecordsTab+')">My Records</div><div class="tab active">Attendance Forms</div></div><div class="card">'+body+'</div>';
+      '<div class="tabs">'+tabs.map(function(t,i){return '<div class="tab'+(i===activeIdx?' active':'')+'" onclick="window._attendanceFormKey=null;goTab('+i+')">'+t+'</div>';}).join('')+'</div><div class="card">'+body+'</div>';
   }
 
   window.submitAttendanceFormRequest=function(){
