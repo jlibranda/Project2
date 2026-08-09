@@ -290,6 +290,16 @@
     attReportFilter()[key] = value;
     render();
   };
+  // Bound to onblur, not onchange: a native date input fires 'change' as soon as day/month/year
+  // all look plausible, then AGAIN each time a later year digit refines it — while the user is
+  // still mid-keystroke on the year. Reacting to that (rebuilding the tab's HTML, which destroys
+  // and recreates this exact <input>) mid-edit corrupts whatever partial year they were typing —
+  // it looked like typing "stopped after the first digit." Committing only once focus actually
+  // leaves the field sidesteps this entirely; the user is done editing by then either way.
+  window.setAttReportDateFilter = function (key, value) {
+    attReportFilter()[key] = value;
+    render();
+  };
   // Same multi-value search as the Employee list (tokenizeSearch/filterEmps, index.html) — typing
   // narrows live, and pasting a column of names/EIDs straight from Excel (newline/tab/comma
   // separated) works the same way it does there, so this doesn't need its own bespoke picker.
@@ -340,8 +350,8 @@
       '</select></div>'+
       (usingCustom ?
         '<div class="form-row">'+
-          '<div class="field"><label>From</label><input type="date" value="'+(f.from||'')+'" onchange="setAttReportFilter(\'from\', this.value)"/></div>'+
-          '<div class="field"><label>To</label><input type="date" value="'+(f.to||'')+'" onchange="setAttReportFilter(\'to\', this.value)"/></div>'+
+          '<div class="field"><label>From</label><input id="att-report-date-from" type="date" value="'+(f.from||'')+'" onblur="setAttReportDateFilter(\'from\', this.value)"/></div>'+
+          '<div class="field"><label>To</label><input id="att-report-date-to" type="date" value="'+(f.to||'')+'" onblur="setAttReportDateFilter(\'to\', this.value)"/></div>'+
         '</div>'
         : '')+
       '<div class="field"><label>Employee(s)</label>'+
@@ -361,7 +371,7 @@
       (range.from && range.to ?
         '<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--txt3);margin-bottom:12px">Report range: <strong style="color:var(--txt)">'+range.from+' to '+range.to+'</strong>'+(range.label?' ('+esc(range.label)+')':'')+'</div>'
         : '<div style="padding:9px 12px;background:var(--amber-bg);border-radius:8px;font-size:12px;color:var(--amber-txt);margin-bottom:12px">Select a pay period or a custom date range.</div>')+
-      (range.from && range.to && matched.length ? renderAttReportMatchList(matched, range) : '')+
+      (range.from && range.to && searchVal.trim() && matched.length ? renderAttReportMatchList(matched, range) : '')+
       '<button class="btn btn-primary" onclick="downloadAttendanceReport()">⬇ Download Attendance Report (Excel)</button>';
   }
   // Lets an admin inspect an employee's daily breakdown right in the app — the same numbers as
