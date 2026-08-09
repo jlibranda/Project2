@@ -1277,12 +1277,17 @@
   }
   var SCHED_ADJ_DOW=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   function renderScheduleAdjTable(rows){
-    return '<div style="overflow-x:auto"><table><thead><tr><th>Day</th><th>Date</th><th>Shift Start</th><th>Break Start</th><th>Break End</th><th>Shift End</th><th>Rest Day</th><th>No Break</th><th></th></tr></thead><tbody>'+
+    return '<div style="overflow-x:auto"><table><thead><tr><th>Day</th><th>Date</th><th>Holiday</th><th>Shift Start</th><th>Break Start</th><th>Break End</th><th>Shift End</th><th>Rest Day</th><th>No Break</th><th></th></tr></thead><tbody>'+
       rows.map(function(r){
         var timeDisabled=r.isRestDay?'disabled':'';
         var breakDisabled=(r.isRestDay||r.noBreak)?'disabled':'';
+        // Holiday is informational only — unlike Rest Day, it never locks the time fields, since
+        // plenty of employees are still scheduled to work on a holiday (just at a different
+        // statutory premium rate); this just flags it so whoever's adjusting the schedule sees it.
+        var holidayBadge=r.holiday?'<span class="badge b-info" title="'+esc(HOLIDAY_TYPE_LABELS[r.holiday.type]||r.holiday.type)+'">🎉 '+esc(r.holiday.name)+'</span>':'—';
         return '<tr'+(r.isRestDay?' style="opacity:.65"':'')+'>'+
           '<td>'+r.dow+'</td><td class="mono">'+r.date+'</td>'+
+          '<td style="font-size:11px">'+holidayBadge+'</td>'+
           '<td><input type="time" '+timeDisabled+' value="'+(r.isRestDay?'':(r.start||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'start\',this.value)"></td>'+
           '<td><input type="time" '+breakDisabled+' value="'+((r.isRestDay||r.noBreak)?'':(r.breakStart||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'breakStart\',this.value)"></td>'+
           '<td><input type="time" '+breakDisabled+' value="'+((r.isRestDay||r.noBreak)?'':(r.breakEnd||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'breakEnd\',this.value)"></td>'+
@@ -1312,12 +1317,16 @@
     window._scheduleAdjRows=requestDates(from,to).map(function(date){
       var existing=existingByDate[date];
       var isRest=existing?existing.isRestDay:TimekeepingCore.isRestDay(user,date,SHIFT_DEFINITIONS);
+      // Holiday match is always freshly looked up (never carried over like Rest Day) — it's
+      // informational only, not a per-date override the user could have deliberately made.
+      var holiday=HOLIDAYS.find(function(h){return h.date===date;})||null;
       return {date:date,dow:SCHED_ADJ_DOW[new Date(date+'T00:00:00Z').getUTCDay()],
         start:isRest?'':masterStart,end:isRest?'':masterEnd,
         breakStart:isRest?'':masterBreakStart,breakEnd:isRest?'':masterBreakEnd,
-        isRestDay:isRest,noBreak:!masterBreakStart&&!masterBreakEnd};
+        isRestDay:isRest,noBreak:!masterBreakStart&&!masterBreakEnd,holiday:holiday};
     });
-    toast('Schedule generated from the Shift Start/Break/Shift End fields above.','success');
+    var holidayCount=window._scheduleAdjRows.filter(function(r){return r.holiday;}).length;
+    toast('Schedule generated from the Shift Start/Break/Shift End fields above.'+(holidayCount?' '+holidayCount+' holiday(s) flagged in this range.':''),'success');
     render();
   };
   window.scheduleAdjUpdateRow=function(date,key,val){
@@ -1424,7 +1433,8 @@
       if(badRow){toast('Enter a Shift Start and Shift End for '+badRow.date+', or mark it a rest day.','warning');return;}
       var fromDate=schedRows[0].date,toDate=schedRows[schedRows.length-1].date;
       var schedSummary=schedRows.map(function(r){
-        return r.isRestDay?(r.date+' ('+r.dow+'): Rest day'):(r.date+' ('+r.dow+'): '+r.start+' – '+r.end+(r.breakStart&&r.breakEnd?' · break '+r.breakStart+'–'+r.breakEnd:' · no break'));
+        var holidayTag=r.holiday?' [Holiday: '+r.holiday.name+']':'';
+        return (r.isRestDay?(r.date+' ('+r.dow+'): Rest day'):(r.date+' ('+r.dow+'): '+r.start+' – '+r.end+(r.breakStart&&r.breakEnd?' · break '+r.breakStart+'–'+r.breakEnd:' · no break')))+holidayTag;
       }).join('\n');
       var schedId=nextCaseId++,schedDue=new Date();schedDue.setDate(schedDue.getDate()+4);
       RESOLUTION_CASES.push({id:schedId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(schedId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+fromDate+(toDate!==fromDate?' to '+toDate:''),description:'Assigned shift: '+assignedShiftText(user.shiftId)+'\nEffectivity: '+fromDate+' to '+toDate+'\n'+schedSummary+'\nDetails: '+reason,priority:'normal',status:'open',linkedType:'',linkedId:null,attendanceRequestType:form.key,requestDate:fromDate,requestEndDate:toDate,scheduleDays:schedRows,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:schedDue.toISOString().slice(0,10),resolution:''});
