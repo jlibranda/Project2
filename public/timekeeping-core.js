@@ -145,14 +145,31 @@
     return Object.assign({}, shift, { schedule: schedule });
   }
 
-  function scheduleForDate(employee, date, shifts) {
-    var assigned = (shifts || []).find(function (item) { return employee && item.id === employee.shiftId; });
+  // A schedule adjustment covering this date, if any — newer adjustments carry a per-day
+  // override list (days[], one entry per date in the request, each independently a work day
+  // or a rest day); older ones are a single flat start/end applied across their whole date
+  // range. Both shapes coexist in saved data, so every reader has to handle both.
+  function scheduleAdjustmentForDate(employee, date) {
     var approved = (employee && employee.scheduleAdjustments || []).filter(function (adjustment) {
       return adjustment.status === 'approved' && adjustment.from <= date && adjustment.to >= date;
     });
-    if (approved.length) {
-      var latest = approved[approved.length - 1];
-      return { start: latest.start, end: latest.end, graceMinutes: Number(assigned && assigned.graceMinutes || 0), source: 'schedule-adjustment' };
+    if (!approved.length) return null;
+    var latest = approved[approved.length - 1];
+    var dayOverride = latest.days && latest.days.find(function (d) { return d.date === date; });
+    return { adjustment: latest, day: dayOverride || null };
+  }
+
+  function scheduleForDate(employee, date, shifts) {
+    var assigned = (shifts || []).find(function (item) { return employee && item.id === employee.shiftId; });
+    var found = scheduleAdjustmentForDate(employee, date);
+    if (found) {
+      if (found.day) {
+        if (found.day.isRestDay) return null;
+        return { start: found.day.start, end: found.day.end, breakStart: found.day.breakStart || '', breakEnd: found.day.breakEnd || '', graceMinutes: Number(assigned && assigned.graceMinutes || 0), source: 'schedule-adjustment' };
+      }
+      if (found.adjustment.start && found.adjustment.end) {
+        return { start: found.adjustment.start, end: found.adjustment.end, graceMinutes: Number(assigned && assigned.graceMinutes || 0), source: 'schedule-adjustment' };
+      }
     }
     if (!assigned) return null;
     var normalized = normalizeShift(assigned);
@@ -163,10 +180,14 @@
   }
 
   // True only when this weekday is explicitly marked as a rest day on the employee's
-  // assigned shift — unlike scheduleForDate()'s null return, this never conflates "no
-  // shift assigned at all" with "designated rest day" (matters for holiday-pay math, where
-  // those two cases lead to different pay rules).
+  // assigned shift, OR a per-day schedule adjustment explicitly makes it one — unlike
+  // scheduleForDate()'s null return, this never conflates "no shift assigned at all" with
+  // "designated rest day" (matters for holiday-pay math, where those two cases lead to
+  // different pay rules). An approved per-day adjustment overrides the assigned shift in
+  // both directions: it can turn a normal rest day into a work day, or vice versa.
   function isRestDay(employee, date, shifts) {
+    var found = scheduleAdjustmentForDate(employee, date);
+    if (found && found.day) return !!found.day.isRestDay;
     var assigned = (shifts || []).find(function (item) { return employee && item.id === employee.shiftId; });
     if (!assigned) return false;
     var normalized = normalizeShift(assigned);
