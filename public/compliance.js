@@ -234,20 +234,24 @@
         '</tbody></table></div>';
     } else if ((!isA && tab === 0) || (isA && tab === 1)) {
       var mine = attendanceRecords().filter(function (a) { return a.eid === user.id; }).slice().reverse();
-      body = '<div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Time In</th><th>Time Out</th><th>Work status</th><th>Approval</th><th>OT</th><th>ND</th><th>Notes</th></tr></thead><tbody>'+
+      body = '<div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Time In</th><th>Time Out</th><th>Work status</th><th>Approval</th><th>OT</th><th>ND</th><th>Notes</th><th></th></tr></thead><tbody>'+
         (mine.length ? mine.map(function (a) {
           return '<tr><td class="mono">'+a.date+'</td><td class="mono">'+(a.tin || '—')+'</td><td class="mono">'+(a.tout || '—')+'</td>'+
             '<td><span class="badge b-'+a.status+'">'+esc(a.status)+'</span></td><td>'+approvalBadge(a.approvalStatus)+'</td>'+
-            '<td>'+(a.ot || '—')+'</td><td>'+(a.nd || '—')+'</td><td style="color:var(--txt3)">'+esc(a.notes || '—')+'</td></tr>';
-        }).join('') : '<tr><td colspan="8" class="empty-state">No attendance records.</td></tr>')+'</tbody></table></div>';
+            '<td>'+(a.ot || '—')+'</td><td>'+(a.nd || '—')+'</td><td style="color:var(--txt3)">'+esc(a.notes || '—')+'</td>'+
+            '<td style="white-space:nowrap">'+((a.edits && a.edits.length) ? '<button class="btn btn-sm" onclick="openAttHistory('+a.eid+',\''+a.date+'\')" title="View edit history">🕘 '+a.edits.length+'</button>' : '')+'</td></tr>';
+        }).join('') : '<tr><td colspan="9" class="empty-state">No attendance records.</td></tr>')+'</tbody></table></div>';
     } else if (isA && tab === 2) {
-      body = '<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th>Work status</th><th>Approval</th><th>OT</th><th>ND</th><th>Reviewed by</th></tr></thead><tbody>'+
+      body = '<div style="display:flex;justify-content:flex-end;margin-bottom:10px"><button class="btn btn-sm" onclick="openBulkAttendance()">📂 Bulk Import Time Logs</button></div>'+
+        '<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th>Work status</th><th>Approval</th><th>OT</th><th>ND</th><th>Reviewed by</th><th>Actions</th></tr></thead><tbody>'+
         attendanceRecords().slice().reverse().map(function (a) {
           var emp = USERS.find(function (u) { return u.id === a.eid; });
           return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(emp ? emp.name : '?')+'</div>'+esc(emp ? emp.name : '?')+'</div></td>'+
             '<td class="mono">'+a.date+'</td><td class="mono">'+(a.tin || '—')+'</td><td class="mono">'+(a.tout || '—')+'</td>'+
             '<td><span class="badge b-'+a.status+'">'+esc(a.status)+'</span></td><td>'+approvalBadge(a.approvalStatus)+'</td>'+
-            '<td>'+(a.ot || '—')+'</td><td>'+(a.nd || '—')+'</td><td style="font-size:11px;color:var(--txt3)">'+esc(a.reviewedBy || '—')+'</td></tr>';
+            '<td>'+(a.ot || '—')+'</td><td>'+(a.nd || '—')+'</td><td style="font-size:11px;color:var(--txt3)">'+esc(a.reviewedBy || '—')+'</td>'+
+            '<td style="white-space:nowrap"><button class="btn btn-sm" onclick="openEditAttRow('+a.eid+',\''+a.date+'\')" title="Edit this record">✎ Edit</button>'+
+            ((a.edits && a.edits.length) ? '<button class="btn btn-sm" style="margin-left:4px" onclick="openAttHistory('+a.eid+',\''+a.date+'\')" title="View edit history">🕘 '+a.edits.length+'</button>' : '')+'</td></tr>';
         }).join('')+'</tbody></table></div>';
     } else {
       body = (isA ? '<div class="field"><label>Employee</label><select id="ae">'+USERS.filter(function (u) { return u.role === 'employee'; }).map(function (u) {
