@@ -110,7 +110,7 @@
     }
     if(decision==='resolved'&&c.attendanceRequestType==='rest_day_holiday'){
       var rdhEmployee=USERS.find(function(u){return u.id===c.employeeId;});
-      var rdhApprovalCheck=rdhEligibility(rdhEmployee,c.requestDate,c.rdhType);
+      var rdhApprovalCheck=rdhEligibility(rdhEmployee,c.requestDate,c.rdhType,c.requestedStart,c.requestedEnd);
       if(!rdhApprovalCheck.ok){toast('No longer eligible: '+rdhApprovalCheck.html.replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim(),'warning',7000);return;}
     }
     if(decision==='resolved'&&c.attendanceRequestType==='undertime'&&!actualLogForDate(c.employeeId,c.requestDate)){
@@ -180,7 +180,7 @@
         // time — the pre-check above already re-ran rdhEligibility and blocked approval if it's
         // no longer eligible, so this is guaranteed ok here.
         var rdhEmp=USERS.find(function(u){return u.id===c.employeeId;});
-        var rdhResult=rdhEligibility(rdhEmp,c.requestDate,c.rdhType);
+        var rdhResult=rdhEligibility(rdhEmp,c.requestDate,c.rdhType,c.requestedStart,c.requestedEnd);
         var rdhLogActual=actualLogForDate(c.employeeId,c.requestDate);
         c.eligibleHours=rdhResult.hours;
         c.actualTimeIn=rdhLogActual&&rdhLogActual.tin||'';
@@ -1107,13 +1107,20 @@
       '<strong>No completed actual log found for this date.</strong><br>Estimated eligible hours: <strong>0.00</strong>. HR will recalculate when a completed actual log is available.';
   };
 
-  // Rest Day/Holiday Overtime is fully log-driven — the employee only picks the date and
-  // whether they're claiming a Rest Day or a Holiday; the system checks that classification
-  // against the actual schedule/holiday calendar and the employee's own completed time log,
-  // and only the portion beyond 8 hours worked is ever eligible (the base 8 hours on a rest day
-  // or holiday isn't this form's concern — see the description on the form itself). Shared
-  // between the live preview and the submit-time block so they can never disagree.
-  function rdhEligibility(employee,date,type){
+  var RDH_BREAK_MINUTES=60,RDH_REGULAR_MINUTES=480; // 1-hour unpaid break, 8 regular hours
+  function minutesToTimeStr(mins){
+    mins=((Math.round(mins)%1440)+1440)%1440;
+    var h=Math.floor(mins/60),m=mins%60;
+    return (h<10?'0':'')+h+':'+(m<10?'0':'')+m;
+  }
+  // Rest Day/Holiday Overtime: the employee still types the OT interval they're claiming
+  // (like Overtime does), but this validates it against the classification (Rest Day/Holiday),
+  // the actual completed time log for that date, and a fixed 1-hour break — only the portion of
+  // the requested interval that falls after 8 worked hours + the break, AND actually overlaps the
+  // real logged Time In/Out, is ever eligible. Passing reqStart/reqEnd as null (before the
+  // employee has typed anything) returns eligibility info without evaluating a specific claim.
+  // Shared between the live preview and the submit/approval-time checks so they can never disagree.
+  function rdhEligibility(employee,date,type,reqStart,reqEnd){
     if(!date)return {ok:false,html:'Select a request date.'};
     if(!type)return {ok:false,html:'Select whether this is a <strong>Holiday</strong> or <strong>Rest Day</strong> claim.'};
     var isRest=TimekeepingCore.isRestDay(employee,date,SHIFT_DEFINITIONS);
@@ -1128,21 +1135,44 @@
     if(!log){
       return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ No completed attendance log found for this date yet.</strong><br>File this request once your Time In and Time Out for that day are recorded.'};
     }
-    var start=minutesFromTime(log.tin),end=minutesFromTime(log.tout);
-    if(start===null||end===null)return {ok:false,html:'Could not read the logged Time In/Time Out for this date.'};
-    if(end<=start)end+=1440;
-    var workedHours=Math.round((end-start)/60*100)/100;
-    var otHours=Math.max(0,Math.round((workedHours-8)*100)/100);
-    var label=type==='holiday'?(HOLIDAY_TYPE_LABELS[holiday.type]||'Holiday')+' — '+esc(holiday.name):'Rest Day';
-    if(otHours<=0){
-      return {ok:false,html:'<strong>'+label+'</strong> confirmed for this date, but the logged hours ('+workedHours.toFixed(2)+') don\'t exceed 8 — there\'s no overtime to claim on this form.'};
+    var tinM=minutesFromTime(log.tin),toutM=minutesFromTime(log.tout);
+    // tinM===toutM (not just null) is the actual signature of an in-progress punch that never
+    // got a real Time Out recorded — treating that as a same-time-next-day overnight shift is
+    // exactly the bug that produced a bogus "24 hrs worked" claim from a Time-In-only log.
+    if(tinM===null||toutM===null||tinM===toutM){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ Your attendance log for this date isn\'t complete yet.</strong><br>Make sure both a valid Time In and Time Out are recorded before filing this claim.'};
     }
-    return {ok:true,hours:otHours,html:'<strong style="color:var(--green)">✓ '+label+'</strong><br>Logged: '+esc(log.tin)+' – '+esc(log.tout)+' ('+workedHours.toFixed(2)+' hrs worked)<br>Eligible Rest Day/Holiday overtime: <strong>'+otHours.toFixed(2)+' hrs</strong> ('+workedHours.toFixed(2)+' − 8 regular hours).'};
+    if(toutM<=tinM)toutM+=1440;
+    var rawMinutes=toutM-tinM;
+    var workedMinutes=Math.max(0,rawMinutes-RDH_BREAK_MINUTES);
+    var otWindowStart=tinM+RDH_REGULAR_MINUTES+RDH_BREAK_MINUTES; // 8 worked hrs + 1-hr break, elapsed from Time In
+    var label=type==='holiday'?(HOLIDAY_TYPE_LABELS[holiday.type]||'Holiday')+' — '+esc(holiday.name):'Rest Day';
+    var logSummary='Logged: '+esc(log.tin)+' – '+esc(log.tout)+' ('+(workedMinutes/60).toFixed(2)+' hrs worked, net of a 1-hr break)';
+    if(workedMinutes<=RDH_REGULAR_MINUTES){
+      return {ok:false,html:'<strong>'+label+'</strong> confirmed for this date, but '+logSummary.toLowerCase()+" don't exceed 8 — there's no overtime to claim on this form."};
+    }
+    if(!reqStart||!reqEnd){
+      var maxOt=Math.round((workedMinutes-RDH_REGULAR_MINUTES)/60*100)/100;
+      return {ok:false,html:'<strong style="color:var(--green)">✓ '+label+'</strong><br>'+logSummary+'<br>Enter your OT Start and End Time — it must start on or after <strong>'+minutesToTimeStr(otWindowStart)+'</strong> (8 hrs + 1-hr break from your Time In). Up to <strong>'+maxOt.toFixed(2)+' hrs</strong> available to claim.'};
+    }
+    var reqStartM=minutesFromTime(reqStart),reqEndM=minutesFromTime(reqEnd);
+    if(reqStartM===null||reqEndM===null)return {ok:false,html:'Enter both a valid Requested Start Time and End Time.'};
+    if(reqEndM<=reqStartM)reqEndM+=1440;
+    if(reqStartM<otWindowStart){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ Your OT Start Time must be on or after '+minutesToTimeStr(otWindowStart)+'.</strong><br>That\'s 8 regular hours plus a 1-hour break from your actual Time In ('+esc(log.tin)+').'};
+    }
+    var overlapStart=Math.max(reqStartM,otWindowStart),overlapEnd=Math.min(reqEndM,toutM);
+    var otMinutes=Math.max(0,overlapEnd-overlapStart);
+    var otHours=Math.round(otMinutes/60*100)/100;
+    if(otHours<=0){
+      return {ok:false,html:'The requested interval doesn\'t overlap with logged overtime hours (after '+minutesToTimeStr(otWindowStart)+', up to your actual Time Out '+esc(log.tout)+').'};
+    }
+    return {ok:true,hours:otHours,html:'<strong style="color:var(--green)">✓ '+label+'</strong><br>'+logSummary+'<br>Eligible Rest Day/Holiday overtime: <strong>'+otHours.toFixed(2)+' hrs</strong> (capped by your actual Time Out).'};
   }
   window.previewRdhEligibility=function(){
     var box=document.getElementById('att-rdh-info');if(!box)return;
     var value=function(id){return ((document.getElementById(id)||{}).value||'').trim();};
-    var check=rdhEligibility(user,value('att-form-date'),value('att-form-rdh-type'));
+    var check=rdhEligibility(user,value('att-form-date'),value('att-form-rdh-type'),value('att-form-in')||null,value('att-form-out')||null);
     box.innerHTML=check.html;
     box.style.borderColor=check.ok?'var(--green)':'var(--amber)';
   };
@@ -1195,6 +1225,7 @@
       :'';
     var rdhFields=(form.kind==='rdh_ot')?
       '<div class="field"><label>Type</label><select id="att-form-rdh-type" onchange="previewRdhEligibility()"><option value="">Select…</option><option value="rest_day">Rest Day</option><option value="holiday">Holiday</option></select></div>'+
+      '<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" oninput="previewRdhEligibility()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" oninput="previewRdhEligibility()"></div></div>'+
       '<div id="att-rdh-info" style="padding:10px 12px;background:var(--bg);border:1.5px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px">Select a Type above to check eligibility for this date.</div>'
       :'';
     var minuteFields=(form.kind==='minutes')?'<div class="field"><label>Undertime Minutes</label><input type="number" id="att-form-minutes" min="1" max="480" step="1" value="30"></div>':'';
@@ -1373,15 +1404,17 @@
     }
     if(form.kind==='rdh_ot'){
       var rdhType=value('att-form-rdh-type');
-      var rdhCheck=rdhEligibility(user,date,rdhType);
+      var rdhReqStart=value('att-form-in'),rdhReqEnd=value('att-form-out');
+      if(!rdhReqStart||!rdhReqEnd){toast('Enter both a Requested Start Time and End Time.','warning');return;}
+      var rdhCheck=rdhEligibility(user,date,rdhType,rdhReqStart,rdhReqEnd);
       if(!rdhCheck.ok){toast(rdhCheck.html.replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim(),'warning',7000);return;}
       var rdhLog=actualLogForDate(user.id,date);
       var rdhHoliday=HOLIDAYS.find(function(h){return h.date===date;});
-      var rdhDetails=['Request date: '+date,'Type: '+(rdhType==='holiday'?'Holiday':'Rest Day')];
+      var rdhDetails=['Request date: '+date,'Type: '+(rdhType==='holiday'?'Holiday':'Rest Day'),'Requested OT: '+rdhReqStart+' – '+rdhReqEnd];
       if(rdhType==='holiday'&&rdhHoliday)rdhDetails.push('Holiday: '+rdhHoliday.name+' ('+(HOLIDAY_TYPE_LABELS[rdhHoliday.type]||rdhHoliday.type)+')');
-      rdhDetails.push('Actual log: '+rdhLog.tin+' – '+rdhLog.tout,'Eligible Rest Day/Holiday overtime hours: '+rdhCheck.hours.toFixed(2),'Details: '+reason);
+      rdhDetails.push('Actual log: '+rdhLog.tin+' – '+rdhLog.tout,'Eligible Rest Day/Holiday overtime hours (net of 1-hr break): '+rdhCheck.hours.toFixed(2),'Details: '+reason);
       var rdhId=nextCaseId++,rdhDue=new Date();rdhDue.setDate(rdhDue.getDate()+2);
-      RESOLUTION_CASES.push({id:rdhId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(rdhId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:rdhDetails.join('\n'),priority:'high',status:'open',linkedType:'attendance',linkedId:rdhLog.id,attendanceRequestType:form.key,requestDate:date,requestEndDate:date,requestedStart:rdhLog.tin,requestedEnd:rdhLog.tout,rdhType:rdhType,eligibleHours:rdhCheck.hours,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:rdhDue.toISOString().slice(0,10),resolution:''});
+      RESOLUTION_CASES.push({id:rdhId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(rdhId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:rdhDetails.join('\n'),priority:'high',status:'open',linkedType:'attendance',linkedId:rdhLog.id,attendanceRequestType:form.key,requestDate:date,requestEndDate:date,requestedStart:rdhReqStart,requestedEnd:rdhReqEnd,rdhType:rdhType,eligibleHours:rdhCheck.hours,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:rdhDue.toISOString().slice(0,10),resolution:''});
       window._attendanceFormKey=null;
       toast('Rest Day/Holiday overtime submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
     }
