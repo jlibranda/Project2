@@ -1271,33 +1271,45 @@
     var rows=window._scheduleAdjRows||[];
     return '<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;margin-bottom:12px">Current assigned shift: <strong>'+esc(assignedShiftText(user.shiftId))+'</strong></div>'+
       '<div class="form-row"><div class="field"><label>Effectivity From</label><input type="date" id="satt-from" value="'+esc(attFieldVal('satt-from',window._scheduleAdjFrom||today()))+'" oninput="attFormSync(\'satt-from\')"></div><div class="field"><label>Effectivity To</label><input type="date" id="satt-to" value="'+esc(attFieldVal('satt-to',window._scheduleAdjTo||today()))+'" oninput="attFormSync(\'satt-to\')"></div></div>'+
-      '<div class="form-row"><div class="field"><label>Shift Start</label><input type="time" id="satt-shift-start" value="'+esc(attFieldVal('satt-shift-start',assigned?assigned.start:'08:00'))+'" oninput="attFormSync(\'satt-shift-start\')"></div><div class="field"><label>Break Start</label><input type="time" id="satt-break-start" value="'+esc(attFieldVal('satt-break-start',''))+'" oninput="attFormSync(\'satt-break-start\')"></div><div class="field"><label>Break End</label><input type="time" id="satt-break-end" value="'+esc(attFieldVal('satt-break-end',''))+'" oninput="attFormSync(\'satt-break-end\')"></div><div class="field"><label>Shift End</label><input type="time" id="satt-shift-end" value="'+esc(attFieldVal('satt-shift-end',assigned?assigned.end:'17:00'))+'" oninput="attFormSync(\'satt-shift-end\')"></div></div>'+
+      '<div class="form-row"><div class="field"><label>Shift Start</label><input type="time" id="satt-shift-start" value="'+esc(attFieldVal('satt-shift-start',assigned?assigned.start:'08:00'))+'" oninput="attFormSync(\'satt-shift-start\')" onchange="scheduleAdjAutoBreak()"></div><div class="field"><label>Break Start</label><input type="time" id="satt-break-start" value="'+esc(attFieldVal('satt-break-start',''))+'" oninput="attFormSync(\'satt-break-start\')"></div><div class="field"><label>Break End</label><input type="time" id="satt-break-end" value="'+esc(attFieldVal('satt-break-end',''))+'" oninput="attFormSync(\'satt-break-end\')"></div><div class="field"><label>Shift End</label><input type="time" id="satt-shift-end" value="'+esc(attFieldVal('satt-shift-end',assigned?assigned.end:'17:00'))+'" oninput="attFormSync(\'satt-shift-end\')"></div></div>'+
       '<div style="margin-bottom:14px"><button type="button" class="btn btn-sm btn-primary" onclick="scheduleAdjGenerateDates()">Generate Dates</button></div>'+
       (rows.length?renderScheduleAdjTable(rows):'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--txt3);margin-bottom:12px">Set an effectivity range above and click Generate Dates to build the day-by-day schedule.</div>');
   }
   var SCHED_ADJ_DOW=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
   function renderScheduleAdjTable(rows){
-    return '<div style="overflow-x:auto"><table><thead><tr><th>Day</th><th>Date</th><th>Holiday</th><th>Shift Start</th><th>Break Start</th><th>Break End</th><th>Shift End</th><th>Rest Day</th><th>No Break</th><th></th></tr></thead><tbody>'+
+    return '<div style="overflow-x:auto"><table><thead><tr><th>Day</th><th>Date</th><th>Holiday</th><th>Shift Start</th><th>Break Start</th><th>Break End</th><th>Shift End</th><th>Rest Day</th><th></th></tr></thead><tbody>'+
       rows.map(function(r){
         var timeDisabled=r.isRestDay?'disabled':'';
-        var breakDisabled=(r.isRestDay||r.noBreak)?'disabled':'';
-        // Holiday is informational only — unlike Rest Day, it never locks the time fields, since
-        // plenty of employees are still scheduled to work on a holiday (just at a different
-        // statutory premium rate); this just flags it so whoever's adjusting the schedule sees it.
-        var holidayBadge=r.holiday?'<span class="badge b-info" title="'+esc(HOLIDAY_TYPE_LABELS[r.holiday.type]||r.holiday.type)+'">🎉 '+esc(r.holiday.name)+'</span>':'—';
+        // No separate "No Break" toggle — an empty Break Start/End on a working day IS "no
+        // break" (one way to say it instead of two that could disagree with each other).
+        var holidayBadge=r.holiday?'<span class="badge b-info" title="'+esc(HOLIDAY_TYPE_LABELS[r.holiday.type]||r.holiday.type)+'">'+esc(r.holiday.name)+'</span>':'—';
         return '<tr'+(r.isRestDay?' style="opacity:.65"':'')+'>'+
           '<td>'+r.dow+'</td><td class="mono">'+r.date+'</td>'+
           '<td style="font-size:11px">'+holidayBadge+'</td>'+
           '<td><input type="time" '+timeDisabled+' value="'+(r.isRestDay?'':(r.start||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'start\',this.value)"></td>'+
-          '<td><input type="time" '+breakDisabled+' value="'+((r.isRestDay||r.noBreak)?'':(r.breakStart||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'breakStart\',this.value)"></td>'+
-          '<td><input type="time" '+breakDisabled+' value="'+((r.isRestDay||r.noBreak)?'':(r.breakEnd||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'breakEnd\',this.value)"></td>'+
+          '<td><input type="time" '+timeDisabled+' value="'+(r.isRestDay?'':(r.breakStart||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'breakStart\',this.value)"></td>'+
+          '<td><input type="time" '+timeDisabled+' value="'+(r.isRestDay?'':(r.breakEnd||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'breakEnd\',this.value)"></td>'+
           '<td><input type="time" '+timeDisabled+' value="'+(r.isRestDay?'':(r.end||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'end\',this.value)"></td>'+
           '<td style="text-align:center"><input type="checkbox" style="width:auto;accent-color:var(--accent)" '+(r.isRestDay?'checked':'')+' onchange="scheduleAdjToggleRestDay(\''+r.date+'\')" title="No expected work hours this date"></td>'+
-          '<td style="text-align:center"><input type="checkbox" style="width:auto;accent-color:var(--accent)" '+(r.noBreak?'checked':'')+' '+timeDisabled+' onchange="scheduleAdjToggleNoBreak(\''+r.date+'\')" title="No break this date"></td>'+
           '<td style="white-space:nowrap"><button type="button" class="btn btn-sm" onclick="scheduleAdjCopyRow(\''+r.date+'\')" title="Copy this schedule to every other non-rest-day row">⧉</button> <button type="button" class="btn btn-sm btn-danger" onclick="scheduleAdjDeleteRow(\''+r.date+'\')" title="Remove this date from the request">🗑</button></td>'+
         '</tr>';
       }).join('')+'</tbody></table></div>';
   }
+  // Auto-suggests Break Start/End as 3 hours after Shift Start (a 1-hour break) the moment Shift
+  // Start is entered — still fully editable, and only fills in while both break fields are still
+  // blank, so it never overwrites a break time the admin already typed themselves.
+  window.scheduleAdjAutoBreak=function(){
+    var startEl=document.getElementById('satt-shift-start'),breakStartEl=document.getElementById('satt-break-start'),breakEndEl=document.getElementById('satt-break-end');
+    if(!startEl||!breakStartEl||!breakEndEl)return;
+    if(!breakStartEl.value&&!breakEndEl.value){
+      var startM=minutesFromTime(startEl.value);
+      if(startM!=null){
+        breakStartEl.value=minutesToTimeStr(startM+180);
+        breakEndEl.value=minutesToTimeStr(startM+240);
+        attFormSync('satt-break-start');attFormSync('satt-break-end');
+      }
+    }
+  };
   window.scheduleAdjGenerateDates=function(){
     var value=function(id){return ((document.getElementById(id)||{}).value||'').trim();};
     var from=value('satt-from'),to=value('satt-to');
@@ -1316,14 +1328,18 @@
     // flag, since that's a deliberate per-date override the user made, not part of the template.
     window._scheduleAdjRows=requestDates(from,to).map(function(date){
       var existing=existingByDate[date];
-      var isRest=existing?existing.isRestDay:TimekeepingCore.isRestDay(user,date,SHIFT_DEFINITIONS);
+      // A date locks like a Rest Day if it's explicitly one on the assigned shift's weekly
+      // pattern, OR if there's simply no shift configured for that date at all — either way
+      // there's no real schedule to plot, which most often shows up as a holiday landing on a
+      // day the employee isn't otherwise scheduled to begin with.
+      var isRest=existing?existing.isRestDay:(TimekeepingCore.isRestDay(user,date,SHIFT_DEFINITIONS)||!TimekeepingCore.scheduleForDate(user,date,SHIFT_DEFINITIONS));
       // Holiday match is always freshly looked up (never carried over like Rest Day) — it's
       // informational only, not a per-date override the user could have deliberately made.
       var holiday=HOLIDAYS.find(function(h){return h.date===date;})||null;
       return {date:date,dow:SCHED_ADJ_DOW[new Date(date+'T00:00:00Z').getUTCDay()],
         start:isRest?'':masterStart,end:isRest?'':masterEnd,
         breakStart:isRest?'':masterBreakStart,breakEnd:isRest?'':masterBreakEnd,
-        isRestDay:isRest,noBreak:!masterBreakStart&&!masterBreakEnd,holiday:holiday};
+        isRestDay:isRest,holiday:holiday};
     });
     var holidayCount=window._scheduleAdjRows.filter(function(r){return r.holiday;}).length;
     toast('Schedule generated from the Shift Start/Break/Shift End fields above.'+(holidayCount?' '+holidayCount+' holiday(s) flagged in this range.':''),'success');
@@ -1338,18 +1354,13 @@
     if(row)row.isRestDay=!row.isRestDay;
     render();
   };
-  window.scheduleAdjToggleNoBreak=function(date){
-    var row=(window._scheduleAdjRows||[]).find(function(r){return r.date===date;});
-    if(row)row.noBreak=!row.noBreak;
-    render();
-  };
   window.scheduleAdjCopyRow=function(date){
     var rows=window._scheduleAdjRows||[];
     var source=rows.find(function(r){return r.date===date;});
     if(!source)return;
     rows.forEach(function(r){
       if(r.date===date||r.isRestDay)return;
-      r.start=source.start;r.end=source.end;r.breakStart=source.breakStart;r.breakEnd=source.breakEnd;r.noBreak=source.noBreak;
+      r.start=source.start;r.end=source.end;r.breakStart=source.breakStart;r.breakEnd=source.breakEnd;
     });
     toast('Copied to every other non-rest-day row.','success');
     render();
