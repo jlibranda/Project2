@@ -149,7 +149,7 @@
         var scheduleEmployee=USERS.find(function(e){return e.id===c.employeeId;});
         if(scheduleEmployee){
           if(!scheduleEmployee.scheduleAdjustments)scheduleEmployee.scheduleAdjustments=[];
-          scheduleEmployee.scheduleAdjustments.push({id:c.id,from:c.requestDate,to:c.requestEndDate,start:c.requestedStart,end:c.requestedEnd,status:'approved',approvedBy:user.name,approvedAt:c.resolvedAt});
+          scheduleEmployee.scheduleAdjustments.push({id:c.id,from:c.requestDate,to:c.requestEndDate,days:c.scheduleDays||null,status:'approved',approvedBy:user.name,approvedAt:c.resolvedAt});
           queueSync('Employees','Schedule_Adjustments');
         }
       }else if(c.attendanceRequestType==='undertime'){
@@ -1073,6 +1073,7 @@
     var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===key&&f.visible;});
     if(!form){toast('This attendance form is not currently available.','warning');return;}
     if(key==='time_correction')window._correctionRows=[{date:today(),punchType:'time_in',correctedTime:''}];
+    if(key==='schedule_adjustment'){window._scheduleAdjRows=null;window._scheduleAdjFrom=null;window._scheduleAdjTo=null;}
     window._attendanceFormKey=key;
     tab=(isAdminUser(user)||isPlatformAdmin)?3:1; /* "Attendance Forms" sits at index 3 in the admin tab layout, index 1 otherwise */
     render();
@@ -1110,15 +1111,97 @@
     var punchFields=(form.kind==='punch')?correctionRowsFields():'';
     var intervalFields=(form.kind==='interval')?'<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" oninput="previewEligibleHours()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" oninput="previewEligibleHours()"></div></div><div id="att-eligible-preview" style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px"><strong>Enter a start and end time.</strong><br>Eligible hours will be limited to the employee’s actual Time In and Time Out.</div>':'';
     var minuteFields=(form.kind==='minutes')?'<div class="field"><label>Undertime Minutes</label><input type="number" id="att-form-minutes" min="1" max="480" step="1" value="30"></div>':'';
-    var rangeFields=(form.kind==='range'||form.kind==='ob'||form.kind==='wfh'||form.kind==='schedule')?'<div class="form-row"><div class="field"><label>End Date</label><input type="date" id="att-form-end" value="'+today()+'"></div><div class="field"><label>'+(form.kind==='schedule'?'Adjustment Type':'Work Location')+'</label>'+(form.kind==='schedule'?'<select id="att-form-location"><option>Temporary shift change</option><option>Flexible schedule</option><option>Compressed schedule</option><option>Swap schedule</option></select>':'<input id="att-form-location" placeholder="Client site, home, or field location">')+'</div></div>':'';
+    var rangeFields=(form.kind==='range'||form.kind==='ob'||form.kind==='wfh')?'<div class="form-row"><div class="field"><label>End Date</label><input type="date" id="att-form-end" value="'+today()+'"></div><div class="field"><label>Work Location</label><input id="att-form-location" placeholder="Client site, home, or field location"></div></div>':'';
     var obFields=(form.kind==='ob')?'<div class="form-row"><div class="field"><label>OB Time In</label><input type="time" id="att-form-in"></div><div class="field"><label>OB Time Out</label><input type="time" id="att-form-out"></div></div><div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">Once approved, these OB times will create or update a Present attendance record for every covered date.</div>':'';
     var wfhNotice=(form.kind==='wfh')?'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;margin-bottom:12px"><strong>Bundy is still required.</strong> You must have completed actual Time In and Time Out logs for every covered WFH date before HR can approve this request.</div>':'';
-    var assigned=SHIFT_DEFINITIONS.find(function(s){return s.id===user.shiftId;});
-    var scheduleFields=(form.kind==='schedule')?'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;margin-bottom:12px">Current assigned shift: <strong>'+esc(assignedShiftText(user.shiftId))+'</strong></div><div class="form-row"><div class="field"><label>Requested Shift Start</label><input type="time" id="att-form-in" value="'+(assigned?assigned.start:'08:00')+'"></div><div class="field"><label>Requested Shift End</label><input type="time" id="att-form-out" value="'+(assigned?assigned.end:'17:00')+'"></div></div>':'';
-    var header=form.kind==='punch'?'<div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div>':'<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+today()+'" '+(form.kind==='interval'?'oninput="previewEligibleHours()"':'')+'></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>';
+    var scheduleFields=(form.kind==='schedule')?renderScheduleAdjBuilder():'';
+    var header=(form.kind==='punch'||form.kind==='schedule')?'<div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div>':'<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+today()+'" '+(form.kind==='interval'?'oninput="previewEligibleHours()"':'')+'></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>';
     return header+rangeFields+punchFields+intervalFields+obFields+wfhNotice+scheduleFields+minuteFields+
       '<div class="field"><label>Reason and supporting details</label><textarea id="att-form-reason" rows="4" placeholder="Explain the request and include the expected correction or approval."></textarea></div>';
   }
+
+  // Schedule Adjustment: an "Effectivity Date" range plus a master Shift Start/Break Start/
+  // Break End/Shift End, used to generate one editable row per calendar date via Generate
+  // Dates. Each row can be independently retimed, marked a rest day (locking its time inputs),
+  // marked no-break, copied to every other non-rest-day row ("fill down" — the fast path for a
+  // schedule that repeats Mon-Fri), or dropped entirely. Regenerating after edits preserves any
+  // date already in the table and only adds/removes what the new range actually changed.
+  function renderScheduleAdjBuilder(){
+    var assigned=SHIFT_DEFINITIONS.find(function(s){return s.id===user.shiftId;});
+    var rows=window._scheduleAdjRows||[];
+    return '<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;margin-bottom:12px">Current assigned shift: <strong>'+esc(assignedShiftText(user.shiftId))+'</strong></div>'+
+      '<div class="form-row"><div class="field"><label>Effectivity From</label><input type="date" id="satt-from" value="'+(window._scheduleAdjFrom||today())+'"></div><div class="field"><label>Effectivity To</label><input type="date" id="satt-to" value="'+(window._scheduleAdjTo||today())+'"></div></div>'+
+      '<div class="form-row"><div class="field"><label>Shift Start</label><input type="time" id="satt-shift-start" value="'+(assigned?assigned.start:'08:00')+'"></div><div class="field"><label>Break Start</label><input type="time" id="satt-break-start" value=""></div><div class="field"><label>Break End</label><input type="time" id="satt-break-end" value=""></div><div class="field"><label>Shift End</label><input type="time" id="satt-shift-end" value="'+(assigned?assigned.end:'17:00')+'"></div></div>'+
+      '<div style="margin-bottom:14px"><button type="button" class="btn btn-sm btn-primary" onclick="scheduleAdjGenerateDates()">Generate Dates</button></div>'+
+      (rows.length?renderScheduleAdjTable(rows):'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--txt3);margin-bottom:12px">Set an effectivity range above and click Generate Dates to build the day-by-day schedule.</div>');
+  }
+  var SCHED_ADJ_DOW=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  function renderScheduleAdjTable(rows){
+    return '<div style="overflow-x:auto"><table><thead><tr><th>Day</th><th>Date</th><th>Shift Start</th><th>Break Start</th><th>Break End</th><th>Shift End</th><th>Rest Day</th><th>No Break</th><th></th></tr></thead><tbody>'+
+      rows.map(function(r){
+        var timeDisabled=r.isRestDay?'disabled':'';
+        var breakDisabled=(r.isRestDay||r.noBreak)?'disabled':'';
+        return '<tr'+(r.isRestDay?' style="opacity:.65"':'')+'>'+
+          '<td>'+r.dow+'</td><td class="mono">'+r.date+'</td>'+
+          '<td><input type="time" '+timeDisabled+' value="'+(r.isRestDay?'':(r.start||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'start\',this.value)"></td>'+
+          '<td><input type="time" '+breakDisabled+' value="'+((r.isRestDay||r.noBreak)?'':(r.breakStart||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'breakStart\',this.value)"></td>'+
+          '<td><input type="time" '+breakDisabled+' value="'+((r.isRestDay||r.noBreak)?'':(r.breakEnd||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'breakEnd\',this.value)"></td>'+
+          '<td><input type="time" '+timeDisabled+' value="'+(r.isRestDay?'':(r.end||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'end\',this.value)"></td>'+
+          '<td style="text-align:center"><input type="checkbox" '+(r.isRestDay?'checked':'')+' onchange="scheduleAdjToggleRestDay(\''+r.date+'\')" title="No expected work hours this date"></td>'+
+          '<td style="text-align:center"><input type="checkbox" '+(r.noBreak?'checked':'')+' '+timeDisabled+' onchange="scheduleAdjToggleNoBreak(\''+r.date+'\')" title="No break this date"></td>'+
+          '<td style="white-space:nowrap"><button type="button" class="btn btn-sm" onclick="scheduleAdjCopyRow(\''+r.date+'\')" title="Copy this schedule to every other non-rest-day row">⧉</button> <button type="button" class="btn btn-sm btn-danger" onclick="scheduleAdjDeleteRow(\''+r.date+'\')" title="Remove this date from the request">🗑</button></td>'+
+        '</tr>';
+      }).join('')+'</tbody></table></div>';
+  }
+  window.scheduleAdjGenerateDates=function(){
+    var value=function(id){return ((document.getElementById(id)||{}).value||'').trim();};
+    var from=value('satt-from'),to=value('satt-to');
+    if(!from||!to){toast('Set both an effectivity From and To date.','warning');return;}
+    if(to<from){toast('Effectivity To must be on or after From.','warning');return;}
+    if(requestDates(from,to).length>62){toast('Keep the effectivity range to 62 days or fewer.','warning');return;}
+    window._scheduleAdjFrom=from;window._scheduleAdjTo=to;
+    var masterStart=value('satt-shift-start'),masterBreakStart=value('satt-break-start'),masterBreakEnd=value('satt-break-end'),masterEnd=value('satt-shift-end');
+    var existingByDate={};
+    (window._scheduleAdjRows||[]).forEach(function(r){existingByDate[r.date]=r;});
+    window._scheduleAdjRows=requestDates(from,to).map(function(date){
+      if(existingByDate[date])return existingByDate[date];
+      var isRest=TimekeepingCore.isRestDay(user,date,SHIFT_DEFINITIONS);
+      return {date:date,dow:SCHED_ADJ_DOW[new Date(date+'T00:00:00Z').getUTCDay()],
+        start:isRest?'':masterStart,end:isRest?'':masterEnd,
+        breakStart:isRest?'':masterBreakStart,breakEnd:isRest?'':masterBreakEnd,
+        isRestDay:isRest,noBreak:!masterBreakStart&&!masterBreakEnd};
+    });
+    render();
+  };
+  window.scheduleAdjUpdateRow=function(date,key,val){
+    var row=(window._scheduleAdjRows||[]).find(function(r){return r.date===date;});
+    if(row)row[key]=val;
+  };
+  window.scheduleAdjToggleRestDay=function(date){
+    var row=(window._scheduleAdjRows||[]).find(function(r){return r.date===date;});
+    if(row)row.isRestDay=!row.isRestDay;
+    render();
+  };
+  window.scheduleAdjToggleNoBreak=function(date){
+    var row=(window._scheduleAdjRows||[]).find(function(r){return r.date===date;});
+    if(row)row.noBreak=!row.noBreak;
+    render();
+  };
+  window.scheduleAdjCopyRow=function(date){
+    var rows=window._scheduleAdjRows||[];
+    var source=rows.find(function(r){return r.date===date;});
+    if(!source)return;
+    rows.forEach(function(r){
+      if(r.date===date||r.isRestDay)return;
+      r.start=source.start;r.end=source.end;r.breakStart=source.breakStart;r.breakEnd=source.breakEnd;r.noBreak=source.noBreak;
+    });
+    toast('Copied to every other non-rest-day row.','success');
+    render();
+  };
+  window.scheduleAdjDeleteRow=function(date){
+    window._scheduleAdjRows=(window._scheduleAdjRows||[]).filter(function(r){return r.date!==date;});
+    render();
+  };
 
   // Employees have no default access to the Resolution Center (no permission key gates it,
   // so canAccess('resolution') is always false for a non-admin) — this is the only place they
@@ -1180,11 +1263,24 @@
       window._correctionRows=null;window._attendanceFormKey=null;
       toast(corrections.length+' time correction request(s) submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
     }
+    if(form.kind==='schedule'){
+      var schedRows=window._scheduleAdjRows||[];
+      if(!schedRows.length){toast('Generate at least one date before submitting.','warning');return;}
+      var badRow=schedRows.find(function(r){return !r.isRestDay&&(!r.start||!r.end);});
+      if(badRow){toast('Enter a Shift Start and Shift End for '+badRow.date+', or mark it a rest day.','warning');return;}
+      var fromDate=schedRows[0].date,toDate=schedRows[schedRows.length-1].date;
+      var schedSummary=schedRows.map(function(r){
+        return r.isRestDay?(r.date+' ('+r.dow+'): Rest day'):(r.date+' ('+r.dow+'): '+r.start+' – '+r.end+(r.breakStart&&r.breakEnd?' · break '+r.breakStart+'–'+r.breakEnd:' · no break'));
+      }).join('\n');
+      var schedId=nextCaseId++,schedDue=new Date();schedDue.setDate(schedDue.getDate()+4);
+      RESOLUTION_CASES.push({id:schedId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(schedId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+fromDate+(toDate!==fromDate?' to '+toDate:''),description:'Assigned shift: '+assignedShiftText(user.shiftId)+'\nEffectivity: '+fromDate+' to '+toDate+'\n'+schedSummary+'\nDetails: '+reason,priority:'normal',status:'open',linkedType:'',linkedId:null,attendanceRequestType:form.key,requestDate:fromDate,requestEndDate:toDate,scheduleDays:schedRows,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:schedDue.toISOString().slice(0,10),resolution:''});
+      window._scheduleAdjRows=null;window._scheduleAdjFrom=null;window._scheduleAdjTo=null;window._attendanceFormKey=null;
+      toast('Schedule adjustment submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
+    }
     if(!date){toast('Request date is required.','warning');return;}
     var tin=value('att-form-in'),tout=value('att-form-out');
     if(form.kind==='interval'&&(!tin||!tout)){toast('Start time and end time are required.','warning');return;}
     if(form.kind==='ob'&&(!tin||!tout)){toast('OB Time In and Time Out are required.','warning');return;}
-    if(form.kind==='schedule'&&(!tin||!tout)){toast('Requested shift start and end are required.','warning');return;}
     if(form.kind==='minutes'&&Number(value('att-form-minutes'))<=0){toast('Enter valid undertime minutes.','warning');return;}
     if(value('att-form-end')&&value('att-form-end')<date){toast('End date cannot be earlier than the request date.','warning');return;}
     var linked=actualLogForDate(user.id,date)||attendanceRecord(user.id,date);
@@ -1194,7 +1290,6 @@
       if(tin)details.push((form.kind==='ob'?'OB Time In':'Requested start')+': '+tin);
       if(tout)details.push((form.kind==='ob'?'OB Time Out':'Requested end')+': '+tout);
       if(form.kind==='wfh')details.push('Attendance rule: Completed actual Time In and Time Out logs required for every covered date');
-      if(form.kind==='schedule')details.push('Assigned shift: '+assignedShiftText(user.shiftId),'Requested schedule: '+tin+' – '+tout);
       var eligibility=form.kind==='interval'?calculateEligibleHours(user.id,date,tin,tout):null;
       if(eligibility)details.push('Actual log at filing: '+(eligibility.log?(eligibility.log.tin+' – '+eligibility.log.tout):'No completed log'), 'Estimated eligible hours: '+eligibility.hours.toFixed(2));
       if(value('att-form-minutes'))details.push('Minutes: '+value('att-form-minutes'));
@@ -1228,7 +1323,10 @@
     return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Assigned Work Shift</div><div class="card-sub">Employee profile schedule used for attendance policy and schedule-adjustment requests</div></div><span class="badge '+(shift&&shift.active?'b-approved':'b-pending')+'">'+(shift&&shift.active?'Active shift':'Needs assignment')+'</span></div>'+
       '<div class="form-row"><div class="field"><label>Shift Assignment</label><select onchange="assignEmployeeShift('+employee.id+',parseInt(this.value,10))">'+SHIFT_DEFINITIONS.filter(function(s){return s.active||s.id===employee.shiftId;}).map(function(s){return '<option value="'+s.id+'" '+(s.id===employee.shiftId?'selected':'')+'>'+esc(s.name)+(s.active?'':' (inactive)')+'</option>';}).join('')+'</select></div>'+
       '<div style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;align-self:end;margin-bottom:10px">'+(shift?'<strong>'+esc(shift.name)+'</strong><br>'+esc(describeShiftPattern(shift))+' · '+shift.graceMinutes+'-minute grace':'No shift is assigned.')+'</div></div>'+
-      (adjustments.length?'<div class="section-header" style="margin-top:8px">Recent approved schedule adjustments</div>'+adjustments.map(function(a){return '<div class="info-row"><span>'+a.from+(a.to&&a.to!==a.from?' – '+a.to:'')+'</span><strong class="mono">'+a.start+' – '+a.end+'</strong></div>';}).join(''):'')+'</div>';
+      (adjustments.length?'<div class="section-header" style="margin-top:8px">Recent approved schedule adjustments</div>'+adjustments.map(function(a){
+        var summary=a.days?a.days.length+' day(s) individually scheduled':(a.start+' – '+a.end);
+        return '<div class="info-row"><span>'+a.from+(a.to&&a.to!==a.from?' – '+a.to:'')+'</span><strong class="mono">'+summary+'</strong></div>';
+      }).join(''):'')+'</div>';
   }
 
   var baseEmpDetail=window.pgEmpDetail;

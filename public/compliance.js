@@ -440,8 +440,11 @@
     var punches = [];
     BUNDY_LOGS.forEach(function (b) {
       if (!passFilter(b.eid, b.date)) return;
+      var hasCoords = b.lat != null && b.lng != null;
       punches.push({ eid:b.eid, empName:b.empName, date:b.date, time:b.time, type:b.type==='in'?'Clock In':'Clock Out',
-        source:'Web Bundy (GPS)', detail:(b.address||(b.lat+','+b.lng))+(b.withinZone===false?' ⚠ outside zone':''), approvalStatus:null });
+        source:'Web Bundy (GPS)',
+        location: b.address || (hasCoords ? b.lat+', '+b.lng : ''), lat:b.lat, lng:b.lng, withinZone:b.withinZone,
+        detail: (b.zoneResult && b.zoneResult.zone) ? b.zoneResult.zone.name : '', approvalStatus:null });
     });
     ATT.forEach(function (a) {
       if (!passFilter(a.eid, a.date)) return;
@@ -474,21 +477,28 @@
     var punches = isFiltered ? collectTimeLogPunches(matched, range) : [];
     var tbody;
     if (!isFiltered) {
-      tbody = '<tr><td colspan="8" class="empty-state">Search for an employee above to see their time logs.</td></tr>';
+      tbody = '<tr><td colspan="9" class="empty-state">Search for an employee above to see their time logs.</td></tr>';
     } else if (!matched.length) {
-      tbody = '<tr><td colspan="8" class="empty-state">No employees match this search.</td></tr>';
+      tbody = '<tr><td colspan="9" class="empty-state">No employees match this search.</td></tr>';
     } else {
       tbody = punches.map(function (p) {
         if (p.noLogs) {
           return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(p.empName||'?')+'</div>'+esc(p.empName||'?')+'</div></td>'+
-            '<td colspan="6" style="color:var(--txt3);font-style:italic">No logs recorded'+(range.from&&range.to?' in this range':'')+'.</td>'+
+            '<td colspan="7" style="color:var(--txt3);font-style:italic">No logs recorded'+(range.from&&range.to?' in this range':'')+'.</td>'+
             '<td></td></tr>';
         }
+        var hasCoords = p.lat != null && p.lng != null;
+        var locationCell = hasCoords
+          ? '<a href="https://www.google.com/maps?q='+p.lat+','+p.lng+'" target="_blank" rel="noopener" title="Open in Google Maps">'+esc(p.location||(p.lat+', '+p.lng))+'</a>'
+          : esc(p.location||'—');
+        var zoneBadge = p.withinZone===false ? ' <span class="badge b-absent" style="font-size:9px">⚠ Out</span>'
+          : p.withinZone===true ? ' <span class="badge b-approved" style="font-size:9px">✓ In zone</span>' : '';
         return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(p.empName||'?')+'</div>'+esc(p.empName||'?')+'</div></td>'+
           '<td class="mono">'+p.date+'</td><td class="mono">'+esc(p.time||'—')+'</td>'+
           '<td><span class="badge '+(p.type==='Clock In'?'b-present':'b-absent')+'">'+p.type+'</span></td>'+
           '<td style="font-size:11px;color:var(--txt3)">'+esc(p.source)+'</td>'+
-          '<td style="font-size:11px;color:var(--txt3);max-width:260px">'+esc(p.detail||'—')+'</td>'+
+          '<td style="font-size:11px;color:var(--txt3);max-width:200px">'+locationCell+zoneBadge+'</td>'+
+          '<td style="font-size:11px;color:var(--txt3);max-width:200px">'+esc(p.detail||'—')+'</td>'+
           '<td>'+(p.approvalStatus?approvalBadge(p.approvalStatus):'—')+'</td>'+
           '<td style="white-space:nowrap">'+(p.recEid?'<button class="btn btn-sm" onclick="openEditAttRow('+p.recEid+',\''+p.recDate+'\')" title="Edit this record">✎ Edit</button> ':'')+
           '<button class="btn btn-sm" onclick="openAttReportDetailModal(\''+ns+'\','+p.eid+')" title="This employee\'s full daily breakdown">👁 View</button>'+
@@ -499,7 +509,7 @@
       '<div class="card-sub" style="margin-bottom:14px">Every individual clock in/out event recorded — Web Bundy (GPS), biometric device imports, and manual entries alike. Search for an employee to see theirs. For the payroll-facing daily summary per employee, use Attendance Report instead.</div>'+
       renderAttReportFilterUI(ns, { showMatchList:false, rangeOptional:true })+
       '<div style="display:flex;justify-content:flex-end;margin:14px 0 10px"><button class="btn btn-sm" onclick="openBulkAttendance()">📂 Bulk Import Time Logs</button></div>'+
-      '<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>Time</th><th>Punch</th><th>Source</th><th>Details</th><th>Approval</th><th>Actions</th></tr></thead><tbody>'+tbody+'</tbody></table></div>';
+      '<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>Time</th><th>Punch</th><th>Source</th><th>Location</th><th>Details</th><th>Approval</th><th>Actions</th></tr></thead><tbody>'+tbody+'</tbody></table></div>';
   }
   // Lets an admin inspect an employee's daily breakdown right in the app — the same numbers as
   // the Excel Detailed sheet — without having to download and open a spreadsheet just to check
@@ -589,19 +599,20 @@
       ['Period: '+(range.from&&range.to?range.from+' to '+range.to:'All dates')],
       ['Generated: '+today()+' by '+(user&&user.name||'')],
       [],
-      ['Employee','EID','Date','Time','Punch','Source','Details','Approval']
+      ['Employee','EID','Date','Time','Punch','Source','Location','Details','Approval']
     ];
     punches.forEach(function (p) {
       var emp = USERS.find(function (u) { return u.id === p.eid; });
       if (p.noLogs) {
-        rows.push([p.empName||'', emp?emp.eid||'':'', '', '', '', '', 'No logs recorded'+(range.from&&range.to?' in this range':'')+'.', '']);
+        rows.push([p.empName||'', emp?emp.eid||'':'', '', '', '', '', '', 'No logs recorded'+(range.from&&range.to?' in this range':'')+'.', '']);
         return;
       }
-      rows.push([p.empName||'', emp?emp.eid||'':'', p.date||'', p.time||'', p.type||'', p.source||'', p.detail||'', p.approvalStatus?approvalBadgeText(p.approvalStatus):'—']);
+      var location = p.location ? p.location+(p.withinZone===false?' (outside zone)':p.withinZone===true?' (in zone)':'') : '—';
+      rows.push([p.empName||'', emp?emp.eid||'':'', p.date||'', p.time||'', p.type||'', p.source||'', location, p.detail||'', p.approvalStatus?approvalBadgeText(p.approvalStatus):'—']);
     });
     try {
       var data = buildXLSX([
-        { name:'Time Logs', rows:rows, colWidths:[26,14,14,10,12,20,34,14],
+        { name:'Time Logs', rows:rows, colWidths:[26,14,14,10,12,20,26,26,14],
           textColIndices:new Set([1]), titleRows:new Set([0,1,2]), headerRows:new Set([4]),
           borderRows:(function(){var s=new Set();for(var r=4;r<rows.length;r++)s.add(r);return s;})(), freezeRow:5 }
       ]);
