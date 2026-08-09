@@ -1155,7 +1155,7 @@
     // full tab layout pgAttendance() itself uses so switching tabs from here works exactly like
     // switching from anywhere else in Attendance.
     var admin=isAdminUser(user)||isPlatformAdmin;
-    var tabs=admin?['Pending Approval','My Records','All Employees','Attendance Forms','Attendance Report']:['My Records','Attendance Forms'];
+    var tabs=admin?['Pending Approval','My Records','Time Logs','Attendance Forms','Attendance Report']:['My Records','Attendance Forms'];
     var activeIdx=admin?3:1;
     var pendingCount=attendanceRecords().filter(function(a){return a.approvalStatus==='pending';}).length;
     return '<div class="page-header"><div><div class="page-title">Attendance</div><div class="page-sub">Employee attendance records and approval-controlled requests</div></div></div>'+
