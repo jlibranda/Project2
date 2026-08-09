@@ -10650,7 +10650,7 @@ function renderModal(){
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
   }
-  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeMConfirmed()"><div class="modal-box" style="${modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance'||modal.type==='bulkAttendance')?'width:1000px;max-width:98vw':''}">${inner}</div></div>`;
+  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeMConfirmed()"><div class="modal-box" style="${modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance'||modal.type==='bulkAttendance'||modal.type==='attReportDetail')?'width:1100px;max-width:98vw':''}">${inner}</div></div>`;
   setTimeout(updatePayGroupPreview,0);
   return html;
 }
@@ -14449,7 +14449,7 @@ render = function() {
 <script src="/bir-2316-pdf.js?v=20260804-official-form-overlay"></script>
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
-<script src="/compliance.js?v=20260809-report-detail-modal"></script>
+<script src="/compliance.js?v=20260809-date-blur-fix"></script>
 <script src="/enterprise.js?v=20260809-pending-count-bubble"></script>
 <script src="/payroll-governance.js?v=20260804-annualized-tax"></script>
 <script src="/persistence.js?v=20260804-impersonation-audit"></script>
