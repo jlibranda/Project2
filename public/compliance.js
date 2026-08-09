@@ -283,13 +283,38 @@
   // day-by-day breakdown per employee (time in/out, status, notes), for whoever needs to see the
   // underlying logs behind the totals.
   function attReportFilter() {
-    if (!window._attReportFilter) window._attReportFilter = { periodId: 'custom', from: today(), to: today(), empId: 'all' };
+    if (!window._attReportFilter) window._attReportFilter = { periodId: 'custom', from: today(), to: today(), empSearch: '' };
     return window._attReportFilter;
   }
   window.setAttReportFilter = function (key, value) {
     attReportFilter()[key] = value;
     render();
   };
+  // Same multi-value search as the Employee list (tokenizeSearch/filterEmps, index.html) — typing
+  // narrows live, and pasting a column of names/EIDs straight from Excel (newline/tab/comma
+  // separated) works the same way it does there, so this doesn't need its own bespoke picker.
+  window.setAttReportEmpSearch = function (val) {
+    attReportFilter().empSearch = val;
+    render();
+    refocusSearch('att-report-emp-search');
+  };
+  window.onAttReportSearchPaste = function (event) {
+    event.preventDefault();
+    var raw = (event.clipboardData || window.clipboardData).getData('text');
+    var el = event.target, s = el.selectionStart||0, e2 = el.selectionEnd||0;
+    var current = attReportFilter().empSearch||'';
+    setAttReportEmpSearch(current.slice(0,s)+raw+current.slice(e2));
+  };
+  window.removeAttReportSearchTerm = function (i) {
+    var terms = tokenizeSearch(attReportFilter().empSearch||'');
+    terms.splice(i,1);
+    setAttReportEmpSearch(terms.join('\n'));
+  };
+  function attReportMatchedEmps() {
+    var allEmps = USERS.filter(function (u) { return u.role === 'employee'; });
+    var q = (attReportFilter().empSearch||'').trim();
+    return (q ? filterEmps(allEmps, q) : allEmps).sort(function (a,b) { return (a.name||'').localeCompare(b.name||''); });
+  }
   function attReportRange() {
     var f = attReportFilter();
     if (f.periodId && f.periodId !== 'custom') {
@@ -301,25 +326,38 @@
   function renderAttendanceReportTab() {
     var f = attReportFilter();
     var periods = PAY_PERIODS.slice().sort(function (a,b) { return (b.from||'').localeCompare(a.from||''); });
-    var emps = USERS.filter(function (u) { return u.role === 'employee'; }).sort(function (a,b) { return (a.name||'').localeCompare(b.name||''); });
     var usingCustom = !f.periodId || f.periodId === 'custom';
     var range = attReportRange();
+    var allEmpsCount = USERS.filter(function (u) { return u.role === 'employee'; }).length;
+    var searchVal = f.empSearch||'';
+    var terms = tokenizeSearch(searchVal);
+    var matched = attReportMatchedEmps();
     return '<div class="card-title" style="margin-bottom:6px">Attendance Report</div>'+
       '<div class="card-sub" style="margin-bottom:14px">Export a payroll-ready attendance report for one pay period (or a custom date range) — a per-employee summary plus the full daily breakdown behind it.</div>'+
-      '<div class="form-row">'+
-        '<div class="field"><label>Pay Period</label><select onchange="setAttReportFilter(\'periodId\', this.value)">'+
-          '<option value="custom" '+(usingCustom?'selected':'')+'>Custom date range…</option>'+
-          periods.map(function (p) { return '<option value="'+p.id+'" '+(String(f.periodId)===String(p.id)?'selected':'')+'>'+esc(p.label)+'</option>'; }).join('')+
-        '</select></div>'+
-        (usingCustom ?
-          '<div class="field"><label>From</label><input type="date" value="'+(f.from||'')+'" onchange="setAttReportFilter(\'from\', this.value)"/></div>'+
-          '<div class="field"><label>To</label><input type="date" value="'+(f.to||'')+'" onchange="setAttReportFilter(\'to\', this.value)"/></div>'
-          : '')+
-      '</div>'+
-      '<div class="field"><label>Employee</label><select onchange="setAttReportFilter(\'empId\', this.value)">'+
-        '<option value="all" '+(f.empId==='all'?'selected':'')+'>All Employees</option>'+
-        emps.map(function (u) { return '<option value="'+u.id+'" '+(String(f.empId)===String(u.id)?'selected':'')+'>'+esc(u.name)+' ('+esc(u.eid||'—')+')</option>'; }).join('')+
+      '<div class="field"><label>Pay Period</label><select onchange="setAttReportFilter(\'periodId\', this.value)">'+
+        '<option value="custom" '+(usingCustom?'selected':'')+'>Custom date range…</option>'+
+        periods.map(function (p) { return '<option value="'+p.id+'" '+(String(f.periodId)===String(p.id)?'selected':'')+'>'+esc(p.label)+'</option>'; }).join('')+
       '</select></div>'+
+      (usingCustom ?
+        '<div class="form-row">'+
+          '<div class="field"><label>From</label><input type="date" value="'+(f.from||'')+'" onchange="setAttReportFilter(\'from\', this.value)"/></div>'+
+          '<div class="field"><label>To</label><input type="date" value="'+(f.to||'')+'" onchange="setAttReportFilter(\'to\', this.value)"/></div>'+
+        '</div>'
+        : '')+
+      '<div class="field"><label>Employee(s)</label>'+
+        '<div style="position:relative;display:flex;align-items:center">'+
+          '<input id="att-report-emp-search" class="finput" placeholder="Search by name, ID, dept, position… or paste multiple from Excel (one per line) — leave blank for all employees" '+
+          'value="'+esc(searchVal.replace(/[\n\r]+/g,' | ').replace(/\t+/g,' '))+'" oninput="setAttReportEmpSearch(this.value)" onpaste="onAttReportSearchPaste(event)"/>'+
+          (searchVal?'<button onclick="setAttReportEmpSearch(\'\')" style="position:absolute;right:10px;background:none;border:none;cursor:pointer;color:var(--txt3);font-size:18px;line-height:1" title="Clear search">×</button>':'')+
+        '</div>'+
+        (terms.length>1?
+          '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:7px;padding:7px 10px;background:var(--accent-bg);border-radius:8px">'+
+            '<span style="font-size:11px;font-weight:600;color:var(--accent-txt);margin-right:2px">Searching '+terms.length+' terms:</span>'+
+            terms.map(function (t,i) { return '<span style="display:inline-flex;align-items:center;gap:4px;background:var(--accent);color:#fff;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:500">'+esc(t)+
+              '<span onclick="removeAttReportSearchTerm('+i+')" style="cursor:pointer;opacity:.8;font-size:13px;line-height:1">×</span></span>'; }).join('')+
+          '</div>' : '')+
+        '<div style="font-size:11px;color:var(--txt3);margin-top:5px">'+(searchVal.trim()?matched.length+' of '+allEmpsCount+' employee(s) matched':'All '+allEmpsCount+' employees will be included')+'</div>'+
+      '</div>'+
       (range.from && range.to ?
         '<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--txt3);margin-bottom:12px">Report range: <strong style="color:var(--txt)">'+range.from+' to '+range.to+'</strong>'+(range.label?' ('+esc(range.label)+')':'')+'</div>'
         : '<div style="padding:9px 12px;background:var(--amber-bg);border-radius:8px;font-size:12px;color:var(--amber-txt);margin-bottom:12px">Select a pay period or a custom date range.</div>')+
@@ -355,13 +393,8 @@
     var range = attReportRange();
     if (!range.from || !range.to) { toast('Select a pay period or a custom date range.', 'warning'); return; }
     if (range.to < range.from) { toast('"To" date must be on or after "From" date.', 'warning'); return; }
-    var f = attReportFilter();
-    var emps = USERS.filter(function (u) {
-      if (u.role !== 'employee') return false;
-      if (f.empId && f.empId !== 'all' && String(u.id) !== String(f.empId)) return false;
-      return true;
-    }).sort(function (a,b) { return (a.name||'').localeCompare(b.name||''); });
-    if (!emps.length) { toast('No employees match this filter.', 'warning'); return; }
+    var emps = attReportMatchedEmps();
+    if (!emps.length) { toast('No employees match this search.', 'warning'); return; }
 
     var shifts = COMPANY.shifts || [], holidays = COMPANY.holidays || [];
     var summaryHeaderRow = ['EID','Employee Name','Department','Position','Days Present','Days Absent','Late (min)','Undertime (min)','OT Hours','ND Hours']
