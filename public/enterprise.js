@@ -1157,8 +1157,9 @@
     var admin=isAdminUser(user)||isPlatformAdmin;
     var tabs=admin?['Pending Approval','My Records','All Employees','Attendance Forms','Attendance Report']:['My Records','Attendance Forms'];
     var activeIdx=admin?3:1;
+    var pendingCount=attendanceRecords().filter(function(a){return a.approvalStatus==='pending';}).length;
     return '<div class="page-header"><div><div class="page-title">Attendance</div><div class="page-sub">Employee attendance records and approval-controlled requests</div></div></div>'+
-      '<div class="tabs">'+tabs.map(function(t,i){return '<div class="tab'+(i===activeIdx?' active':'')+'" onclick="window._attendanceFormKey=null;goTab('+i+')">'+t+'</div>';}).join('')+'</div><div class="card">'+body+'</div>';
+      '<div class="tabs">'+tabs.map(function(t,i){return '<div class="tab'+(i===activeIdx?' active':'')+'" onclick="window._attendanceFormKey=null;goTab('+i+')">'+t+(i===0&&admin?redBubble(pendingCount):'')+'</div>';}).join('')+'</div><div class="card">'+body+'</div>';
   }
 
   window.submitAttendanceFormRequest=function(){
