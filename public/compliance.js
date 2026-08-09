@@ -272,7 +272,7 @@
 
     var pendingCount = attendanceRecords().filter(function (a) { return a.approvalStatus === 'pending'; }).length;
     return '<div class="page-header"><div><div class="page-title">Attendance</div><div class="page-sub">Approval-controlled time records · '+pendingCount+' pending</div></div></div>'+
-      '<div class="tabs">'+tabs.map(function (t,i) { return '<div class="tab'+(tab===i?' active':'')+'" onclick="goTab('+i+')">'+t+(i===0&&isA&&pendingCount?' ('+pendingCount+')':'')+'</div>'; }).join('')+'</div>'+
+      '<div class="tabs">'+tabs.map(function (t,i) { return '<div class="tab'+(tab===i?' active':'')+'" onclick="goTab('+i+')">'+t+(i===0&&isA?redBubble(pendingCount):'')+'</div>'; }).join('')+'</div>'+
       '<div class="card">'+body+'</div>';
   };
 
@@ -361,8 +361,60 @@
       (range.from && range.to ?
         '<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--txt3);margin-bottom:12px">Report range: <strong style="color:var(--txt)">'+range.from+' to '+range.to+'</strong>'+(range.label?' ('+esc(range.label)+')':'')+'</div>'
         : '<div style="padding:9px 12px;background:var(--amber-bg);border-radius:8px;font-size:12px;color:var(--amber-txt);margin-bottom:12px">Select a pay period or a custom date range.</div>')+
+      (range.from && range.to && matched.length ? renderAttReportMatchList(matched, range) : '')+
       '<button class="btn btn-primary" onclick="downloadAttendanceReport()">⬇ Download Attendance Report (Excel)</button>';
   }
+  // Lets an admin inspect an employee's daily breakdown right in the app — the same numbers as
+  // the Excel Detailed sheet — without having to download and open a spreadsheet just to check
+  // one person's attendance.
+  function renderAttReportMatchList(matched, range) {
+    var shown = matched.slice(0, 50);
+    return '<div class="field"><label>Matched Employees'+(matched.length>shown.length?' (showing first 50 of '+matched.length+')':'')+'</label>'+
+      '<div style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">'+
+      '<table style="margin:0"><tbody>'+
+      shown.map(function (u) {
+        var hasPending = attendanceRecords().some(function (a) { return a.eid===u.id && a.date>=range.from && a.date<=range.to && a.approvalStatus==='pending'; });
+        return '<tr><td style="font-size:12px">'+esc(u.name)+' <span style="color:var(--txt3);font-size:11px">('+esc(u.eid||'—')+')</span>'+(hasPending?redBubble(1):'')+'</td>'+
+          '<td style="text-align:right;white-space:nowrap"><button class="btn btn-sm" onclick="openAttReportDetailModal('+u.id+')">👁 View Detailed</button></td></tr>';
+      }).join('')+
+      '</tbody></table></div></div>';
+  }
+  window.openAttReportDetailModal = function (empId) {
+    if (!(isAdminUser(user) || isPlatformAdmin || canAccess('att_edit'))) return;
+    var range = attReportRange();
+    if (!range.from || !range.to) return;
+    var emp = USERS.find(function (u) { return u.id === empId; });
+    if (!emp) return;
+    var shifts = COMPANY.shifts || [], holidays = COMPANY.holidays || [];
+    var summary = TimekeepingCore.periodSummary(ATT, emp, range.from, range.to, shifts, holidays);
+    var byDate = {};
+    summary.records.forEach(function (r) { byDate[r.date] = r; });
+    var hoursWorked = 0;
+    summary.records.forEach(function (r) {
+      var a = hhmmToMinutesLocal(r.tin), b = hhmmToMinutesLocal(r.tout);
+      if (a == null || b == null) return;
+      if (b <= a) b += 24*60;
+      hoursWorked += (b-a)/60;
+    });
+    var days = [];
+    leaveDateRange(range.from, range.to).forEach(function (date) {
+      var rec = byDate[date];
+      var dow = ATT_REPORT_DOW[new Date(date+'T00:00:00Z').getUTCDay()];
+      var sched = TimekeepingCore.scheduleForDate(emp, date, shifts);
+      var isRest = TimekeepingCore.isRestDay(emp, date, shifts);
+      var shiftLabel = isRest ? 'Rest Day' : (sched ? (sched.start+' – '+sched.end) : 'No shift assigned');
+      if (!rec) { days.push({ date:date, dow:dow, shift:shiftLabel, tin:'—', tout:'—', status:isRest?'Rest Day':'No Record', approval:'', late:0, undertime:0, ot:0, nd:0, rdh:0, notes:'' }); return; }
+      var lu = dailyLateUndertime(emp, rec, shifts);
+      days.push({ date:date, dow:dow, shift:shiftLabel, tin:rec.tin||'—', tout:rec.tout||'—',
+        status:ATT_REPORT_STATUS_LABEL[rec.status]||rec.status||'—', approval:approvalBadgeText(rec.approvalStatus),
+        late:lu.late, undertime:lu.undertime, ot:rec.ot||0, nd:rec.nd||0, rdh:rec.restDayHolidayHours||0, notes:rec.notes||'' });
+    });
+    modal = { type:'attReportDetail', emp:{ id:emp.id, name:emp.name, eid:emp.eid, dept:emp.dept, pos:emp.pos },
+      range:range, summary:{ presentDays:summary.presentDays, absentDays:summary.absentDays, lateMinutes:summary.lateMinutes,
+        undertimeMinutes:summary.undertimeMinutes, otHours:summary.otHours, ndHours:summary.ndHours,
+        restDayHolidayHours:summary.restDayHolidayHours, hoursWorked:+hoursWorked.toFixed(2) }, days:days };
+    render();
+  };
   function hhmmToMinutesLocal(v) {
     var parts = String(v || '').split(':');
     if (parts.length !== 2) return null;
