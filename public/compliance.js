@@ -277,13 +277,9 @@
   function attReportFilter(ns) {
     if (!window._attReportFilters) window._attReportFilters = {};
     if (!window._attReportFilters[ns]) {
-      // Time Logs is a browse/edit surface — it should show everything by default, like the old
-      // "All Employees" tab did, with date filtering as an optional narrowing tool. Attendance
-      // Report exists specifically to generate a report for A period, so defaulting it to today
-      // gives it a concrete (if trivial) starting range rather than an unbounded one.
-      window._attReportFilters[ns] = ns==='timeLogs'
-        ? { periodId:'custom', from:'', to:'', empSearch:'' }
-        : { periodId:'custom', from:today(), to:today(), empSearch:'' };
+      // Blank by default on both tabs — nothing renders until the user actually picks a range
+      // and/or searches for someone, rather than dumping today's (or everyone's) data unasked.
+      window._attReportFilters[ns] = { periodId:'custom', from:'', to:'', empSearch:'' };
     }
     return window._attReportFilters[ns];
   }
@@ -434,35 +430,54 @@
     var ns = 'timeLogs';
     var range = attReportRange(ns);
     var f = attReportFilter(ns);
-    var isFiltered = !!(f.empSearch && f.empSearch.trim());
+    var searchVal = (f.empSearch||'').trim();
+    var isFiltered = !!searchVal;
+    // Nothing renders until someone is actually searched for — this is a lookup tool, not a feed
+    // that dumps every employee's punches the moment the tab opens. Each matched employee gets a
+    // row per punch they actually have in range, PLUS an explicit "no logs recorded" row if they
+    // have none — so a searched-for employee never just silently vanishes from the results when
+    // their range happens to be empty; that reads as "search is broken," not "no data."
+    var matched = isFiltered ? attReportMatchedEmps(ns) : [];
     var matchedIds = {};
-    if (isFiltered) attReportMatchedEmps(ns).forEach(function (u) { matchedIds[u.id] = true; });
+    matched.forEach(function (u) { matchedIds[u.id] = true; });
     function passFilter(eid, date) {
       if (range.from && range.to && !(date>=range.from && date<=range.to)) return false;
-      if (isFiltered && !matchedIds[eid]) return false;
-      return true;
+      return matchedIds[eid];
     }
     var punches = [];
-    BUNDY_LOGS.forEach(function (b) {
-      if (!passFilter(b.eid, b.date)) return;
-      punches.push({ eid:b.eid, empName:b.empName, date:b.date, time:b.time, type:b.type==='in'?'Clock In':'Clock Out',
-        source:'Web Bundy (GPS)', detail:(b.address||(b.lat+','+b.lng))+(b.withinZone===false?' ⚠ outside zone':''), approvalStatus:null });
-    });
-    ATT.forEach(function (a) {
-      if (!passFilter(a.eid, a.date)) return;
-      var emp = USERS.find(function (u) { return u.id === a.eid; });
-      var source = ATT_SOURCE_LABEL[a.source] || (a.source ? a.source : 'Manual');
-      var detail = a.superseded ? 'Merged into another record for this day' : (a.notes||'');
-      if (a.tin) punches.push({ eid:a.eid, empName:emp?emp.name:'?', date:a.date, time:a.tin, type:'Clock In', source:source, detail:detail, approvalStatus:a.approvalStatus, recEid:a.eid, recDate:a.date, edits:a.edits });
-      if (a.tout) punches.push({ eid:a.eid, empName:emp?emp.name:'?', date:a.date, time:a.tout, type:'Clock Out', source:source, detail:detail, approvalStatus:a.approvalStatus, recEid:a.eid, recDate:a.date, edits:a.edits });
-    });
-    punches.sort(function (x,y) { return (y.date+(y.time||'')).localeCompare(x.date+(x.time||'')); });
-    return '<div class="card-title" style="margin-bottom:6px">Time Logs</div>'+
-      '<div class="card-sub" style="margin-bottom:14px">Every individual clock in/out event recorded — Web Bundy (GPS), biometric device imports, and manual entries alike. For the payroll-facing daily summary per employee, use Attendance Report instead.</div>'+
-      renderAttReportFilterUI(ns, { showMatchList:false, rangeOptional:true })+
-      '<div style="display:flex;justify-content:flex-end;margin:14px 0 10px"><button class="btn btn-sm" onclick="openBulkAttendance()">📂 Bulk Import Time Logs</button></div>'+
-      '<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>Time</th><th>Punch</th><th>Source</th><th>Details</th><th>Approval</th><th>Actions</th></tr></thead><tbody>'+
-      (punches.length ? punches.map(function (p) {
+    if (isFiltered) {
+      BUNDY_LOGS.forEach(function (b) {
+        if (!passFilter(b.eid, b.date)) return;
+        punches.push({ eid:b.eid, empName:b.empName, date:b.date, time:b.time, type:b.type==='in'?'Clock In':'Clock Out',
+          source:'Web Bundy (GPS)', detail:(b.address||(b.lat+','+b.lng))+(b.withinZone===false?' ⚠ outside zone':''), approvalStatus:null });
+      });
+      ATT.forEach(function (a) {
+        if (!passFilter(a.eid, a.date)) return;
+        var emp = USERS.find(function (u) { return u.id === a.eid; });
+        var source = ATT_SOURCE_LABEL[a.source] || (a.source ? a.source : 'Manual');
+        var detail = a.superseded ? 'Merged into another record for this day' : (a.notes||'');
+        if (a.tin) punches.push({ eid:a.eid, empName:emp?emp.name:'?', date:a.date, time:a.tin, type:'Clock In', source:source, detail:detail, approvalStatus:a.approvalStatus, recEid:a.eid, recDate:a.date, edits:a.edits });
+        if (a.tout) punches.push({ eid:a.eid, empName:emp?emp.name:'?', date:a.date, time:a.tout, type:'Clock Out', source:source, detail:detail, approvalStatus:a.approvalStatus, recEid:a.eid, recDate:a.date, edits:a.edits });
+      });
+      punches.sort(function (x,y) { return (y.date+(y.time||'')).localeCompare(x.date+(x.time||'')); });
+      var hasPunches = {};
+      punches.forEach(function (p) { hasPunches[p.eid] = true; });
+      matched.filter(function (u) { return !hasPunches[u.id]; })
+        .sort(function (a,b) { return (a.name||'').localeCompare(b.name||''); })
+        .forEach(function (u) { punches.push({ eid:u.id, empName:u.name, noLogs:true }); });
+    }
+    var tbody;
+    if (!isFiltered) {
+      tbody = '<tr><td colspan="8" class="empty-state">Search for an employee above to see their time logs.</td></tr>';
+    } else if (!matched.length) {
+      tbody = '<tr><td colspan="8" class="empty-state">No employees match this search.</td></tr>';
+    } else {
+      tbody = punches.map(function (p) {
+        if (p.noLogs) {
+          return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(p.empName||'?')+'</div>'+esc(p.empName||'?')+'</div></td>'+
+            '<td colspan="6" style="color:var(--txt3);font-style:italic">No logs recorded'+(range.from&&range.to?' in this range':'')+'.</td>'+
+            '<td></td></tr>';
+        }
         return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(p.empName||'?')+'</div>'+esc(p.empName||'?')+'</div></td>'+
           '<td class="mono">'+p.date+'</td><td class="mono">'+esc(p.time||'—')+'</td>'+
           '<td><span class="badge '+(p.type==='Clock In'?'b-present':'b-absent')+'">'+p.type+'</span></td>'+
@@ -472,8 +487,13 @@
           '<td style="white-space:nowrap">'+(p.recEid?'<button class="btn btn-sm" onclick="openEditAttRow('+p.recEid+',\''+p.recDate+'\')" title="Edit this record">✎ Edit</button> ':'')+
           '<button class="btn btn-sm" onclick="openAttReportDetailModal(\''+ns+'\','+p.eid+')" title="This employee\'s full daily breakdown">👁 View</button>'+
           ((p.edits && p.edits.length) ? ' <button class="btn btn-sm" onclick="openAttHistory('+p.recEid+',\''+p.recDate+'\')" title="View edit history">🕘 '+p.edits.length+'</button>' : '')+'</td></tr>';
-      }).join('') : '<tr><td colspan="8" class="empty-state">No time logs match this filter.</td></tr>')+
-      '</tbody></table></div>';
+      }).join('');
+    }
+    return '<div class="card-title" style="margin-bottom:6px">Time Logs</div>'+
+      '<div class="card-sub" style="margin-bottom:14px">Every individual clock in/out event recorded — Web Bundy (GPS), biometric device imports, and manual entries alike. Search for an employee to see theirs. For the payroll-facing daily summary per employee, use Attendance Report instead.</div>'+
+      renderAttReportFilterUI(ns, { showMatchList:false, rangeOptional:true })+
+      '<div style="display:flex;justify-content:flex-end;margin:14px 0 10px"><button class="btn btn-sm" onclick="openBulkAttendance()">📂 Bulk Import Time Logs</button></div>'+
+      '<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>Time</th><th>Punch</th><th>Source</th><th>Details</th><th>Approval</th><th>Actions</th></tr></thead><tbody>'+tbody+'</tbody></table></div>';
   }
   // Lets an admin inspect an employee's daily breakdown right in the app — the same numbers as
   // the Excel Detailed sheet — without having to download and open a spreadsheet just to check
