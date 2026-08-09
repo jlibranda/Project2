@@ -426,6 +426,39 @@
   // ones later merged into another record for the same day — see Time Logs' own "all logs"
   // fix) is split into its own Clock In row and Clock Out row so a tin/tout pair reads the same
   // way a single device punch would.
+  // Shared by the on-screen Time Logs table and its Excel export, so the two never drift apart:
+  // every individual punch for the given employees within range (or ever, if range is blank),
+  // plus a synthetic "no logs" placeholder for anyone in matchedEmps who has none, so a matched
+  // employee never just disappears from either view.
+  function collectTimeLogPunches(matchedEmps, range) {
+    var matchedIds = {};
+    matchedEmps.forEach(function (u) { matchedIds[u.id] = true; });
+    function passFilter(eid, date) {
+      if (range.from && range.to && !(date>=range.from && date<=range.to)) return false;
+      return matchedIds[eid];
+    }
+    var punches = [];
+    BUNDY_LOGS.forEach(function (b) {
+      if (!passFilter(b.eid, b.date)) return;
+      punches.push({ eid:b.eid, empName:b.empName, date:b.date, time:b.time, type:b.type==='in'?'Clock In':'Clock Out',
+        source:'Web Bundy (GPS)', detail:(b.address||(b.lat+','+b.lng))+(b.withinZone===false?' ⚠ outside zone':''), approvalStatus:null });
+    });
+    ATT.forEach(function (a) {
+      if (!passFilter(a.eid, a.date)) return;
+      var emp = USERS.find(function (u) { return u.id === a.eid; });
+      var source = ATT_SOURCE_LABEL[a.source] || (a.source ? a.source : 'Manual');
+      var detail = a.superseded ? 'Merged into another record for this day' : (a.notes||'');
+      if (a.tin) punches.push({ eid:a.eid, empName:emp?emp.name:'?', date:a.date, time:a.tin, type:'Clock In', source:source, detail:detail, approvalStatus:a.approvalStatus, recEid:a.eid, recDate:a.date, edits:a.edits });
+      if (a.tout) punches.push({ eid:a.eid, empName:emp?emp.name:'?', date:a.date, time:a.tout, type:'Clock Out', source:source, detail:detail, approvalStatus:a.approvalStatus, recEid:a.eid, recDate:a.date, edits:a.edits });
+    });
+    punches.sort(function (x,y) { return (y.date+(y.time||'')).localeCompare(x.date+(x.time||'')); });
+    var hasPunches = {};
+    punches.forEach(function (p) { hasPunches[p.eid] = true; });
+    matchedEmps.filter(function (u) { return !hasPunches[u.id]; })
+      .sort(function (a,b) { return (a.name||'').localeCompare(b.name||''); })
+      .forEach(function (u) { punches.push({ eid:u.id, empName:u.name, noLogs:true }); });
+    return punches;
+  }
   function renderTimeLogsTab() {
     var ns = 'timeLogs';
     var range = attReportRange(ns);
@@ -438,34 +471,7 @@
     // have none — so a searched-for employee never just silently vanishes from the results when
     // their range happens to be empty; that reads as "search is broken," not "no data."
     var matched = isFiltered ? attReportMatchedEmps(ns) : [];
-    var matchedIds = {};
-    matched.forEach(function (u) { matchedIds[u.id] = true; });
-    function passFilter(eid, date) {
-      if (range.from && range.to && !(date>=range.from && date<=range.to)) return false;
-      return matchedIds[eid];
-    }
-    var punches = [];
-    if (isFiltered) {
-      BUNDY_LOGS.forEach(function (b) {
-        if (!passFilter(b.eid, b.date)) return;
-        punches.push({ eid:b.eid, empName:b.empName, date:b.date, time:b.time, type:b.type==='in'?'Clock In':'Clock Out',
-          source:'Web Bundy (GPS)', detail:(b.address||(b.lat+','+b.lng))+(b.withinZone===false?' ⚠ outside zone':''), approvalStatus:null });
-      });
-      ATT.forEach(function (a) {
-        if (!passFilter(a.eid, a.date)) return;
-        var emp = USERS.find(function (u) { return u.id === a.eid; });
-        var source = ATT_SOURCE_LABEL[a.source] || (a.source ? a.source : 'Manual');
-        var detail = a.superseded ? 'Merged into another record for this day' : (a.notes||'');
-        if (a.tin) punches.push({ eid:a.eid, empName:emp?emp.name:'?', date:a.date, time:a.tin, type:'Clock In', source:source, detail:detail, approvalStatus:a.approvalStatus, recEid:a.eid, recDate:a.date, edits:a.edits });
-        if (a.tout) punches.push({ eid:a.eid, empName:emp?emp.name:'?', date:a.date, time:a.tout, type:'Clock Out', source:source, detail:detail, approvalStatus:a.approvalStatus, recEid:a.eid, recDate:a.date, edits:a.edits });
-      });
-      punches.sort(function (x,y) { return (y.date+(y.time||'')).localeCompare(x.date+(x.time||'')); });
-      var hasPunches = {};
-      punches.forEach(function (p) { hasPunches[p.eid] = true; });
-      matched.filter(function (u) { return !hasPunches[u.id]; })
-        .sort(function (a,b) { return (a.name||'').localeCompare(b.name||''); })
-        .forEach(function (u) { punches.push({ eid:u.id, empName:u.name, noLogs:true }); });
-    }
+    var punches = isFiltered ? collectTimeLogPunches(matched, range) : [];
     var tbody;
     if (!isFiltered) {
       tbody = '<tr><td colspan="8" class="empty-state">Search for an employee above to see their time logs.</td></tr>';
@@ -571,6 +577,44 @@
     var undertime = actualOut != null && shiftOut != null ? Math.max(0, shiftOut - actualOut) : 0;
     return { late: rec.lateMinutes != null ? rec.lateMinutes : late, undertime: Math.max(Number(rec.undertimeMinutes||0), undertime) };
   }
+  // Time Logs' download button shares the Attendance Report/Time Logs filter engine's UI (same
+  // renderAttReportFilterUI, same button), but the two tabs mean completely different things by
+  // "report": Attendance Report is the payroll-facing daily SUMMARY (periodSummary totals); Time
+  // Logs is the raw punch-by-punch list the on-screen table shows. Downloading from Time Logs has
+  // to produce the latter, not the former, or the file just doesn't match what the tab is showing.
+  function downloadTimeLogsReport(emps, range) {
+    var punches = collectTimeLogPunches(emps, range);
+    var rows = [
+      ['TIME LOGS — SproutRipple PH'],
+      ['Period: '+(range.from&&range.to?range.from+' to '+range.to:'All dates')],
+      ['Generated: '+today()+' by '+(user&&user.name||'')],
+      [],
+      ['Employee','EID','Date','Time','Punch','Source','Details','Approval']
+    ];
+    punches.forEach(function (p) {
+      var emp = USERS.find(function (u) { return u.id === p.eid; });
+      if (p.noLogs) {
+        rows.push([p.empName||'', emp?emp.eid||'':'', '', '', '', '', 'No logs recorded'+(range.from&&range.to?' in this range':'')+'.', '']);
+        return;
+      }
+      rows.push([p.empName||'', emp?emp.eid||'':'', p.date||'', p.time||'', p.type||'', p.source||'', p.detail||'', p.approvalStatus?approvalBadgeText(p.approvalStatus):'—']);
+    });
+    try {
+      var data = buildXLSX([
+        { name:'Time Logs', rows:rows, colWidths:[26,14,14,10,12,20,34,14],
+          textColIndices:new Set([1]), titleRows:new Set([0,1,2]), headerRows:new Set([4]),
+          borderRows:(function(){var s=new Set();for(var r=4;r<rows.length;r++)s.add(r);return s;})(), freezeRow:5 }
+      ]);
+      var blob = new Blob([data], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a'); a.href = url;
+      a.download = 'time_logs_'+(range.from&&range.to?range.from+'_to_'+range.to:'all_dates')+'.xlsx'; a.click();
+      URL.revokeObjectURL(url);
+      toast('Time logs downloaded.', 'success');
+    } catch (ex) {
+      toast('Download failed: '+ex.message, 'warning'); console.error('[time-logs]', ex);
+    }
+  }
   window.downloadAttendanceReport = function (ns) {
     ns = ns || 'attReport';
     if (!(isAdminUser(user) || isPlatformAdmin || canAccess('att_edit'))) return;
@@ -579,6 +623,7 @@
     if (range.to < range.from) { toast('"To" date must be on or after "From" date.', 'warning'); return; }
     var emps = attReportMatchedEmps(ns);
     if (!emps.length) { toast('No employees match this search.', 'warning'); return; }
+    if (ns === 'timeLogs') { downloadTimeLogsReport(emps, range); return; }
 
     var shifts = COMPANY.shifts || [], holidays = COMPANY.holidays || [];
     var summaryHeaderRow = ['EID','Employee Name','Department','Position','Days Present','Days Absent','Late (min)','Undertime (min)','OT Hours','ND Hours']
