@@ -452,7 +452,7 @@ let ATT=[
 ];
 function attendanceRecord(eid,date){return TimekeepingCore.canonicalRecord(ATT,eid,date);}
 function attendanceRecords(){return TimekeepingCore.canonicalRecords(ATT);}
-function upsertAttendance(eid,date,patch){return TimekeepingCore.upsert(ATT,eid,date,patch,function(){return nAtt++;});}
+function upsertAttendance(eid,date,patch){return TimekeepingCore.upsert(ATT,eid,date,patch,function(){return nAtt++;},user&&user.name);}
 function attendancePeriodSummary(emp,from,to){return TimekeepingCore.periodSummary(ATT,emp,from,to,typeof SHIFT_DEFINITIONS==='undefined'?[]:SHIFT_DEFINITIONS);}
 function myFlaggedAttendance(){
   if(!user)return[];
@@ -1454,6 +1454,116 @@ function applyBulkLeaveBalances(){
   if(applied>0)queueSync('Employees');
   closeM();
   let msg=applied+' balance(s) applied.';
+  if(errors.length)msg+=' '+errors.length+' row(s) skipped.';
+  toast(msg,errors.length?'warning':'success');
+  if(errors.length)setTimeout(()=>alert('Skipped rows:\n\n'+errors.join('\n')),400);
+}
+/* ---- Bulk Attendance / Time Log Import ---- */
+function openBulkAttendance(){
+  if(!isAdminUser(user))return;
+  modal={type:'bulkAttendance',rows:[{eid:'',date:today(),tin:'',tout:'',status:'present',ot:'',nd:'',notes:''}]};
+  render();
+}
+function downloadAttendanceTemplate(){
+  const emps=USERS.filter(u=>u.role==='employee'&&u.active!==false);
+  const templateRows=[
+    ['TIME LOG BULK IMPORT — SproutRipple PH','','','','','','',''],
+    ['Fill in EID, Date, Time In/Out, Status. One row per employee per date. 24-hour time (HH:MM).','','','','','','',''],
+    ['Matching EID + Date replaces that day\'s record and is logged to its edit history. Only active employees are applied.','','','','','','',''],
+    [],
+    ['EID *','Date * (YYYY-MM-DD)','Time In','Time Out','Status','OT Hours','ND Hours','Notes']
+  ];
+  emps.slice(0,3).forEach(e=>{templateRows.push([e.eid,today(),'08:00','17:00','present',0,0,'Sample row']);});
+  const empRows=[['EID','Name','Status']].concat(emps.map(e=>[e.eid,e.name,e.active!==false?'Active':'Inactive']));
+  try{
+    const data=buildXLSX([
+      {name:'Template',rows:templateRows,colWidths:[14,16,10,10,10,10,10,30]},
+      {name:'Employees',rows:empRows,colWidths:[14,26,12]}
+    ]);
+    const blob=new Blob([data],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download='time_log_import_template.xlsx';a.click();
+    URL.revokeObjectURL(url);
+    toast('Template downloaded — see Employees sheet for valid EIDs','info');
+  }catch(ex){toast('Download failed: '+ex.message,'warning');console.error(ex);}
+}
+function handleAttendanceExcel(evt){
+  const file=evt.target.files[0];if(!file)return;
+  const input=evt.target;input.disabled=true;
+  toast('Loading Excel reader and checking the file…','info');
+  loadXLSXLib(function(){input.disabled=false;parseAttendanceExcel(file,input);},function(){input.disabled=false;input.value='';});
+}
+function parseAttendanceExcel(file,input){
+  const reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      const wb=XLSX.read(e.target.result,{type:'array'});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+      if(!raw.length){toast('Empty file','warning');return;}
+      const hdrIdx=raw.findIndex(r=>{
+        const cells=r.map(v=>String(v||'').toLowerCase().replace(/\s*\*\s*$/,'').trim());
+        return cells.some(v=>v==='eid')&&cells.some(v=>v.includes('date'));
+      });
+      if(hdrIdx<0){toast('Header row not found — make sure your file has columns: EID, Date','warning');return;}
+      const hdr=raw[hdrIdx].map(h=>String(h).toLowerCase().trim());
+      const col=(...kws)=>hdr.findIndex(h=>kws.some(k=>h.includes(k)));
+      const eidCol=col('eid'),dateCol=col('date'),tinCol=col('time in','in'),toutCol=col('time out','out'),statusCol=col('status'),otCol=col('ot'),ndCol=col('nd'),notesCol=col('notes','remarks');
+      if(eidCol<0||dateCol<0){toast('Required columns not found (EID, Date)','warning');return;}
+      const toDateStr=v=>{
+        if(v instanceof Date)return v.toISOString().slice(0,10);
+        const s=String(v||'').trim();
+        return /^\d{4}-\d{2}-\d{2}$/.test(s)?s:s;
+      };
+      const rows=[];
+      raw.slice(hdrIdx+1).forEach(r=>{
+        if(!r.some(c=>String(c).trim()))return;
+        const first=String(r[0]||'').trim();
+        if(/^EXAMPLE/i.test(first))return;
+        rows.push({
+          eid:String(r[eidCol]||'').trim(),
+          date:toDateStr(r[dateCol]),
+          tin:tinCol>=0?String(r[tinCol]||'').trim():'',
+          tout:toutCol>=0?String(r[toutCol]||'').trim():'',
+          status:statusCol>=0&&['present','late','absent','leave'].includes(String(r[statusCol]||'').trim().toLowerCase())?String(r[statusCol]).trim().toLowerCase():'present',
+          ot:otCol>=0?String(r[otCol]||'').trim():'',
+          nd:ndCol>=0?String(r[ndCol]||'').trim():'',
+          notes:notesCol>=0?String(r[notesCol]||'').trim():''
+        });
+      });
+      if(!rows.length){toast('No data rows found','warning');return;}
+      modal.rows=rows;input.value='';render();
+      toast(rows.length+' row(s) loaded — review before applying','info');
+    }catch(ex){
+      toast('Upload failed: '+ex.message,'warning');console.error('[attendance-upload] Failed to parse file',ex);input.value='';
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+function addBulkAttRow(){
+  if(!modal||modal.type!=='bulkAttendance')return;
+  modal.rows.push({eid:'',date:today(),tin:'',tout:'',status:'present',ot:'',nd:'',notes:''});render();
+}
+function removeBulkAttRow(i){
+  if(!modal||modal.type!=='bulkAttendance')return;
+  modal.rows.splice(i,1);if(!modal.rows.length)modal.rows.push({eid:'',date:today(),tin:'',tout:'',status:'present',ot:'',nd:'',notes:''});render();
+}
+function applyBulkAttendance(){
+  if(!modal||modal.type!=='bulkAttendance')return;
+  let applied=0;const errors=[];
+  modal.rows.forEach((r,i)=>{
+    const rowLabel='Row '+(i+1);
+    if(!r.eid&&!r.date)return; /* blank row, skip silently */
+    const emp=USERS.find(u=>u.eid===r.eid&&u.role==='employee');
+    if(!emp){errors.push(rowLabel+': employee EID "'+r.eid+'" not found');return;}
+    if(emp.active===false){errors.push(rowLabel+': '+emp.name+' is inactive — skipped');return;}
+    if(!r.date||!/^\d{4}-\d{2}-\d{2}$/.test(r.date)){errors.push(rowLabel+': invalid date "'+r.date+'" (use YYYY-MM-DD)');return;}
+    upsertAttendance(emp.id,r.date,{tin:r.tin||'',tout:r.tout||'',status:r.status||'present',ot:parseFloat(r.ot)||0,nd:parseFloat(r.nd)||0,notes:r.notes||'',source:'bulk-import',approvalStatus:'approved',reviewedBy:user.name,reviewedAt:new Date().toISOString()});
+    applied++;
+  });
+  if(applied>0)queueSync('Attendance');
+  closeM();
+  let msg=applied+' time log(s) applied.';
   if(errors.length)msg+=' '+errors.length+' row(s) skipped.';
   toast(msg,errors.length?'warning':'success');
   if(errors.length)setTimeout(()=>alert('Skipped rows:\n\n'+errors.join('\n')),400);
@@ -5050,6 +5160,29 @@ function submitAtt(isA){
   upsertAttendance(eid,date,{tin:document.getElementById('atin').value,tout:document.getElementById('atout').value,status:document.getElementById('ast').value,ot:parseFloat(document.getElementById('aot').value)||0,nd:parseFloat(document.getElementById('and').value)||0,notes:document.getElementById('anotes').value,source:isA?'admin-entry':'employee-entry'});
   queueSync('Attendance');alert(existing?'Attendance updated. The employee now has one authoritative record for this date.':'Attendance filed!');goTab(0);
 }
+// Attendance-record editing is admin/att_edit-gated and modal-based (not tab navigation) so it
+// works the same regardless of which "File Attendance" tab a given admin sees — a staff-admin
+// (role:'employee' with elevated access) gets redirected off that tab to their own self-service
+// request catalog (see enterprise.js's pgAttendance wrapper), so a raw edit form living on that
+// tab would be unreachable for them.
+function canEditAttendance(){return isAdminUser(user)||isPlatformAdmin||canAccess('att_edit');}
+function openEditAttRow(eid,date){
+  if(!canEditAttendance())return;
+  const rec=attendanceRecord(eid,date)||{};
+  modal={type:'editAttRow',eid,date,draft:{tin:rec.tin||'',tout:rec.tout||'',status:rec.status||'present',ot:rec.ot||0,nd:rec.nd||0,notes:rec.notes||''}};
+  render();
+}
+function saveEditAttRow(){
+  if(!modal||modal.type!=='editAttRow'||!canEditAttendance())return;
+  const d=modal.draft;
+  upsertAttendance(modal.eid,modal.date,{tin:d.tin,tout:d.tout,status:d.status,ot:parseFloat(d.ot)||0,nd:parseFloat(d.nd)||0,notes:d.notes,approvalStatus:'approved',reviewedBy:user.name,reviewedAt:new Date().toISOString(),source:'admin-edit'});
+  queueSync('Attendance');closeM();toast('Attendance record updated.','success');
+}
+function openAttHistory(eid,date){
+  const rec=attendanceRecord(eid,date);if(!rec)return;
+  modal={type:'attHistory',eid,date,rec};
+  render();
+}
 
 function myLeaveTypeOptions(){
   return (COMPANY.leaveTypes||[]).filter(t=>t.active&&leaveTypeEligible(user,t));
@@ -5211,9 +5344,36 @@ function actLeave(id,ok){
       bucket.balance=+(bucket.balance-deductDays).toFixed(3);
       emp.leaveBalances[t.id]=bucket;
     }
+    if(emp)markAttendanceForApprovedLeave(l,emp);
   }
   queueSync('Leave_Requests');
   render();
+}
+// Every calendar date from s to e, inclusive — capped so a bad date range can't loop forever.
+function leaveDateRange(s,e){
+  const dates=[];let cursor=new Date((s||today())+'T00:00:00Z');const last=new Date((e||s||today())+'T00:00:00Z');
+  while(cursor<=last&&dates.length<366){dates.push(cursor.toISOString().slice(0,10));cursor.setUTCDate(cursor.getUTCDate()+1);}
+  return dates;
+}
+// Marks each day of an approved leave as "On Leave" in Attendance so the two modules agree.
+// If a real time log already exists for that date (employee actually punched in/out — a half-day
+// leave where they worked the other half, or a filing mistake), it's left untouched and flagged
+// instead of silently overwritten, since erasing a real punch would hide the conflict rather than
+// surface it for HR to review before payroll.
+function markAttendanceForApprovedLeave(l,emp){
+  leaveDateRange(l.s,l.e).forEach(date=>{
+    const existing=TimekeepingCore.consolidate(ATT,emp.id,date);
+    const hasRealLog=existing&&existing.tin&&existing.tout&&existing.status!=='leave';
+    if(hasRealLog){
+      const flag='⚠ Overlaps with approved leave ('+l.type+') — review before payroll.';
+      if(!(existing.notes||'').includes(flag))upsertAttendance(emp.id,date,{notes:(existing.notes?existing.notes+' · ':'')+flag});
+      return;
+    }
+    /* Already went through the leave approval flow — doesn't need a second attendance approval
+       cycle on top, and payroll's approvedAttendance() only counts approvalStatus:'approved'. */
+    upsertAttendance(emp.id,date,{status:'leave',tin:'',tout:'',notes:'Approved '+l.type+(l.halfDayLabel?' — '+l.halfDayLabel:''),source:'leave-approval',approvalStatus:'approved',reviewedBy:user.name,reviewedAt:new Date().toISOString()});
+  });
+  queueSync('Attendance');
 }
 function submitLeave(){
   const type=document.getElementById('lt').value,dayType=document.getElementById('ldaytype').value,s=document.getElementById('ls').value,e=document.getElementById('le2').value,reason=document.getElementById('lr').value.trim();
@@ -9080,6 +9240,92 @@ function renderModal(){
         <button class="btn btn-primary" onclick="applyBulkLeaveBalances()" ${readyCount?'':'disabled'}>Apply ${readyCount} Balance${readyCount!==1?'s':''}</button>
       </div>
     </div>`;
+  }else if(modal.type==='editAttRow'){
+    const emp=USERS.find(u=>u.id===modal.eid);
+    const d=modal.draft;
+    inner=`<div class="modal-title">Edit Attendance Record
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">${esc(emp?.name||'')} · ${esc(modal.date)}</div>
+    <div class="form-row"><div class="field"><label>Time In</label><input type="time" value="${esc(d.tin)}" oninput="modal.draft.tin=this.value"/></div><div class="field"><label>Time Out</label><input type="time" value="${esc(d.tout)}" oninput="modal.draft.tout=this.value"/></div></div>
+    <div class="field"><label>Status</label><select onchange="modal.draft.status=this.value">${['present','late','absent','leave'].map(s=>`<option value="${s}" ${d.status===s?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}</select></div>
+    <div class="form-row"><div class="field"><label>Overtime Hours</label><input type="number" step="0.01" value="${d.ot}" min="0" max="24" oninput="modal.draft.ot=this.value"/></div><div class="field"><label>Night Differential Hours</label><input type="number" step="0.01" value="${d.nd}" min="0" max="24" oninput="modal.draft.nd=this.value"/></div></div>
+    <div class="field"><label>Notes</label><input type="text" value="${esc(d.notes)}" placeholder="Reason for the correction" oninput="modal.draft.notes=this.value"/></div>
+    <div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">This change is saved to the record's edit history — who edited it, when, and what changed.</div>
+    <div style="display:flex;gap:8px"><button class="btn" onclick="closeM()">Cancel</button><button class="btn btn-primary" onclick="saveEditAttRow()">Save Changes</button></div>`;
+  }else if(modal.type==='attHistory'){
+    const emp=USERS.find(u=>u.id===modal.eid);
+    const edits=modal.rec.edits||[];
+    const fieldLabel={tin:'Time In',tout:'Time Out',status:'Status',ot:'OT Hours',nd:'ND Hours',undertimeMinutes:'Undertime (min)',restDayHolidayHours:'Rest Day/Holiday Hours'};
+    inner=`<div class="modal-title">Attendance Edit History
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">${esc(emp?.name||'')} · ${esc(modal.date)}</div>
+    <div style="max-height:360px;overflow-y:auto">
+    <table><thead><tr><th>When</th><th>By</th><th>Changes</th></tr></thead><tbody>
+      ${edits.length?edits.map(e=>`<tr><td style="font-size:11px;color:var(--txt3)">${new Date(e.at).toLocaleString('en-PH')}</td><td style="font-size:12px">${esc(e.by||'—')}</td><td style="font-size:12px">${Object.keys(e.changes||{}).map(k=>`<div><strong>${fieldLabel[k]||k}:</strong> ${esc(String(e.changes[k].from||'—'))} → ${esc(String(e.changes[k].to||'—'))}</div>`).join('')}</td></tr>`).join(''):'<tr><td colspan="3" class="empty-state">No edits recorded yet.</td></tr>'}
+    </tbody></table>
+    </div>
+    <div style="margin-top:1rem"><button class="btn" onclick="closeM()">Close</button></div>`;
+  }else if(modal.type==='bulkAttendance'){
+    const rows=modal.rows||[];
+    const readyCount=rows.filter(r=>r.eid&&r.date&&(r.tin||r.tout||r.status)).length;
+    inner=`<div class="modal-title" style="position:sticky;top:0;z-index:2;background:var(--surface)">
+      <span>📂 Bulk Import Time Logs</span>
+      <span style="font-size:11px;color:var(--txt3);font-weight:400;margin-left:8px">${rows.length} row${rows.length!==1?'s':''} · ${readyCount} ready</span>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">Import or correct time logs in bulk — matching EID + Date sets that day's authoritative record for the employee and logs the change to that record's edit history.</div>
+    <div style="background:var(--accent-bg);border:1px solid var(--accent);border-radius:10px;padding:10px 14px;margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-sm" onclick="downloadAttendanceTemplate()">⬇ Download Template</button>
+      <label class="btn btn-sm" style="cursor:pointer">📂 Upload Excel
+        <input type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="handleAttendanceExcel(event)"/>
+      </label>
+      <span style="font-size:11px;color:var(--accent-txt)">Or fill in rows manually below.</span>
+    </div>
+    <div style="overflow-x:auto;margin-bottom:12px">
+    <table style="min-width:900px;font-size:12px;border-collapse:separate;border-spacing:0 4px">
+      <thead><tr style="background:var(--bg)">
+        <th style="width:20px;padding:4px 8px">#</th>
+        <th style="padding:4px 8px;text-align:left">EID <span style="color:var(--red)">*</span></th>
+        <th style="padding:4px 8px;text-align:left">Date <span style="color:var(--red)">*</span></th>
+        <th style="padding:4px 8px;text-align:left">Time In</th>
+        <th style="padding:4px 8px;text-align:left">Time Out</th>
+        <th style="padding:4px 8px;text-align:left">Status</th>
+        <th style="padding:4px 8px;text-align:left">OT</th>
+        <th style="padding:4px 8px;text-align:left">ND</th>
+        <th style="padding:4px 8px;text-align:left">Notes</th>
+        <th></th>
+      </tr></thead>
+      <tbody>
+      ${rows.map((r,i)=>{
+        const emp=USERS.find(u=>u.eid===r.eid&&u.role==='employee');
+        const empOk=!!emp,empActive=emp&&emp.active!==false;
+        return`<tr style="background:var(--surface2)">
+          <td style="text-align:center;color:var(--txt3)">${i+1}</td>
+          <td><input class="finput" style="font-size:12px;width:90px;${r.eid&&!empOk?'border-color:var(--red)':r.eid&&!empActive?'border-color:var(--amber)':''}" value="${esc(r.eid)}" placeholder="EID" oninput="modal.rows[${i}].eid=this.value.trim()"/>${r.eid&&!empOk?'<div style="font-size:10px;color:var(--red)">Not found</div>':r.eid&&!empActive?'<div style="font-size:10px;color:var(--amber-txt)">Inactive</div>':''}</td>
+          <td><input type="date" class="finput" style="font-size:12px" value="${esc(r.date)}" oninput="modal.rows[${i}].date=this.value"/></td>
+          <td><input type="time" class="finput" style="font-size:12px" value="${esc(r.tin)}" oninput="modal.rows[${i}].tin=this.value"/></td>
+          <td><input type="time" class="finput" style="font-size:12px" value="${esc(r.tout)}" oninput="modal.rows[${i}].tout=this.value"/></td>
+          <td><select class="finput" style="font-size:12px" onchange="modal.rows[${i}].status=this.value">
+            ${['present','late','absent','leave'].map(s=>`<option value="${s}" ${r.status===s?'selected':''}>${s.charAt(0).toUpperCase()+s.slice(1)}</option>`).join('')}
+          </select></td>
+          <td><input type="number" step="0.01" class="finput" style="font-size:12px;width:60px" value="${esc(r.ot)}" oninput="modal.rows[${i}].ot=this.value"/></td>
+          <td><input type="number" step="0.01" class="finput" style="font-size:12px;width:60px" value="${esc(r.nd)}" oninput="modal.rows[${i}].nd=this.value"/></td>
+          <td><input class="finput" style="font-size:12px" value="${esc(r.notes)}" placeholder="Optional" oninput="modal.rows[${i}].notes=this.value"/></td>
+          <td><button class="btn btn-sm btn-danger" onclick="removeBulkAttRow(${i})" title="Remove row">✕</button></td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap">
+      <button class="btn btn-sm" onclick="addBulkAttRow()">+ Add Row</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeM()">Cancel</button>
+        <button class="btn btn-primary" onclick="applyBulkAttendance()" ${readyCount?'':'disabled'}>Apply ${readyCount} Record${readyCount!==1?'s':''}</button>
+      </div>
+    </div>`;
   }else if(modal.type==='notifications'){
     const pending=LEAVES.filter(l=>l.status==='pending');
     const crPending=CHANGE_REQUESTS.filter(r=>r.status==='pending');
@@ -10343,7 +10589,7 @@ function renderModal(){
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
   }
-  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeMConfirmed()"><div class="modal-box" style="${modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance')?'width:1000px;max-width:98vw':''}">${inner}</div></div>`;
+  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeMConfirmed()"><div class="modal-box" style="${modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance'||modal.type==='bulkAttendance')?'width:1000px;max-width:98vw':''}">${inner}</div></div>`;
   setTimeout(updatePayGroupPreview,0);
   return html;
 }
