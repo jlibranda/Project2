@@ -63,11 +63,36 @@
     return primary;
   }
 
-  function upsert(records, employeeId, date, patch, nextId) {
+  // Fields worth calling out in the edit trail — the ones that change what a record actually
+  // means (time worked, pay-affecting hours, status), not bookkeeping fields like source/notes.
+  var AUDITED_FIELDS = ['tin', 'tout', 'status', 'ot', 'nd', 'undertimeMinutes', 'restDayHolidayHours'];
+
+  function diffForAudit(record, patch) {
+    var changes = {};
+    AUDITED_FIELDS.forEach(function (key) {
+      if (typeof patch[key] !== 'undefined' && patch[key] !== record[key]) {
+        changes[key] = { from: record[key], to: patch[key] };
+      }
+    });
+    return changes;
+  }
+
+  // editedBy is optional — omit it for system-driven writes (ZKTeco import's own record of
+  // origin already covers those) and pass it for anything a person did through the UI, so
+  // corrections to an existing record leave a "who changed what, from what, to what" trail.
+  function upsert(records, employeeId, date, patch, nextId, editedBy) {
     var record = consolidate(records, employeeId, date);
+    var isNew = !record;
     if (!record) {
       record = { id: nextId(), eid: employeeId, date: date, tin: '', tout: '', status: 'present', ot: 0, nd: 0, notes: '' };
       records.push(record);
+    }
+    if (!isNew && editedBy) {
+      var changes = diffForAudit(record, patch);
+      if (Object.keys(changes).length) {
+        record.edits = record.edits || [];
+        record.edits.unshift({ at: new Date().toISOString(), by: editedBy, changes: changes });
+      }
     }
     Object.keys(patch || {}).forEach(function (key) {
       if (typeof patch[key] !== 'undefined') record[key] = patch[key];
@@ -104,16 +129,86 @@
     return Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : null;
   }
 
-  function scheduleForDate(employee, date, shifts) {
-    var assigned = (shifts || []).find(function (item) { return employee && item.id === employee.shiftId; });
+  var SHIFT_DAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+  // JS Date#getUTCDay() is 0=Sunday..6=Saturday; this maps that index straight to our keys.
+  var GETDAY_TO_KEY = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+  // Older shifts are a single flat {start,end,breakMinutes} applied every day. Normalizing
+  // to the newer per-day {schedule:{mon:{...},...,sun:{...}}} shape here means every other
+  // function only ever has to handle one shape.
+  function normalizeShift(shift) {
+    if (!shift) return null;
+    if (shift.schedule) return shift;
+    var day = { restDay: false, start: shift.start || '', end: shift.end || '', breakStart: '', breakEnd: '' };
+    var schedule = {};
+    SHIFT_DAY_KEYS.forEach(function (k) { schedule[k] = Object.assign({}, day); });
+    return Object.assign({}, shift, { schedule: schedule });
+  }
+
+  // A schedule adjustment covering this date, if any — newer adjustments carry a per-day
+  // override list (days[], one entry per date in the request, each independently a work day
+  // or a rest day); older ones are a single flat start/end applied across their whole date
+  // range. Both shapes coexist in saved data, so every reader has to handle both.
+  function scheduleAdjustmentForDate(employee, date) {
     var approved = (employee && employee.scheduleAdjustments || []).filter(function (adjustment) {
       return adjustment.status === 'approved' && adjustment.from <= date && adjustment.to >= date;
     });
-    if (approved.length) {
-      var latest = approved[approved.length - 1];
-      return { start: latest.start, end: latest.end, graceMinutes: Number(assigned && assigned.graceMinutes || 0), source: 'schedule-adjustment' };
+    if (!approved.length) return null;
+    var latest = approved[approved.length - 1];
+    var dayOverride = latest.days && latest.days.find(function (d) { return d.date === date; });
+    return { adjustment: latest, day: dayOverride || null };
+  }
+
+  function scheduleForDate(employee, date, shifts) {
+    var assigned = (shifts || []).find(function (item) { return employee && item.id === employee.shiftId; });
+    var found = scheduleAdjustmentForDate(employee, date);
+    if (found) {
+      if (found.day) {
+        if (found.day.isRestDay) return null;
+        return { start: found.day.start, end: found.day.end, breakStart: found.day.breakStart || '', breakEnd: found.day.breakEnd || '', graceMinutes: Number(assigned && assigned.graceMinutes || 0), source: 'schedule-adjustment' };
+      }
+      if (found.adjustment.start && found.adjustment.end) {
+        return { start: found.adjustment.start, end: found.adjustment.end, graceMinutes: Number(assigned && assigned.graceMinutes || 0), source: 'schedule-adjustment' };
+      }
     }
-    return assigned ? { start: assigned.start, end: assigned.end, graceMinutes: Number(assigned.graceMinutes || 0), source: 'assigned-shift' } : null;
+    if (!assigned) return null;
+    var normalized = normalizeShift(assigned);
+    var dayKey = GETDAY_TO_KEY[new Date(date + 'T00:00:00Z').getUTCDay()];
+    var day = normalized.schedule[dayKey];
+    if (!day || day.restDay || !day.start || !day.end) return null; // rest day / not configured — no shift expected
+    return { start: day.start, end: day.end, breakStart: day.breakStart || '', breakEnd: day.breakEnd || '', graceMinutes: Number(normalized.graceMinutes || 0), source: 'assigned-shift' };
+  }
+
+  // True only when this weekday is explicitly marked as a rest day on the employee's
+  // assigned shift, OR a per-day schedule adjustment explicitly makes it one — unlike
+  // scheduleForDate()'s null return, this never conflates "no shift assigned at all" with
+  // "designated rest day" (matters for holiday-pay math, where those two cases lead to
+  // different pay rules). An approved per-day adjustment overrides the assigned shift in
+  // both directions: it can turn a normal rest day into a work day, or vice versa.
+  function isRestDay(employee, date, shifts) {
+    var found = scheduleAdjustmentForDate(employee, date);
+    if (found && found.day) return !!found.day.isRestDay;
+    var assigned = (shifts || []).find(function (item) { return employee && item.id === employee.shiftId; });
+    if (!assigned) return false;
+    var normalized = normalizeShift(assigned);
+    var dayKey = GETDAY_TO_KEY[new Date(date + 'T00:00:00Z').getUTCDay()];
+    var day = normalized.schedule[dayKey];
+    return !!(day && day.restDay);
+  }
+
+  // Maps a holiday calendar entry + whether the date was the employee's rest day to the
+  // matching Overtime & Premium Rates code (see OT_RATES in index.html), so payroll can look
+  // up the admin-configured percentage instead of a single flat premium for all holiday work.
+  // Special Working Holidays intentionally return null — DOLE doesn't mandate extra pay for
+  // those, they're just a normal working day.
+  function classifyHolidayPremium(employee, date, shifts, holidays) {
+    var holiday = (holidays || []).find(function (h) { return h.date === date; });
+    if (!holiday || holiday.type === 'special-working') return null;
+    if (holiday.type === 'double') return 'DH_8';
+    var restDay = isRestDay(employee, date, shifts);
+    if (holiday.type === 'regular') return restDay ? 'RH_RD_8' : 'RH_8';
+    if (holiday.type === 'special-non-working') return restDay ? 'SH_RD_8' : 'SH_8';
+    return null;
   }
 
   function timeToMinutes(value) {
@@ -160,17 +255,24 @@
     return best ? best.day : null;
   }
 
-  function periodSummary(records, employee, from, to, shifts) {
+  function periodSummary(records, employee, from, to, shifts, holidays) {
     var rows = canonicalRecords(records).filter(function (record) {
       return record.eid === employee.id && record.date >= from && record.date <= to && record.approvalStatus !== 'rejected';
     });
-    var summary = { records: rows, presentDays: 0, lateMinutes: 0, undertimeMinutes: 0, absentDays: 0, otHours: 0, ndHours: 0, restDayHolidayHours: 0 };
+    var summary = { records: rows, presentDays: 0, lateMinutes: 0, undertimeMinutes: 0, absentDays: 0, otHours: 0, ndHours: 0, restDayHolidayHours: 0, restDayHolidayHoursByCode: {} };
     rows.forEach(function (record) {
       if (record.status === 'present' || record.status === 'late') summary.presentDays += 1;
       if (record.status === 'absent') summary.absentDays += 1;
       summary.otHours += Number(record.ot || 0);
       summary.ndHours += Number(record.nd || 0);
-      summary.restDayHolidayHours += Number(record.restDayHolidayHours || 0);
+      var rdhHours = Number(record.restDayHolidayHours || 0);
+      summary.restDayHolidayHours += rdhHours;
+      if (rdhHours) {
+        // A specific holiday-pay rate code when this date is a configured holiday, otherwise
+        // 'RDH_GENERIC' — plain (non-holiday) rest-day work, kept at the old flat rate.
+        var code = classifyHolidayPremium(employee, record.date, shifts, holidays) || 'RDH_GENERIC';
+        summary.restDayHolidayHoursByCode[code] = (summary.restDayHolidayHoursByCode[code] || 0) + rdhHours;
+      }
       var schedule = scheduleForDate(employee, record.date, shifts);
       var actualIn = minutes(record.tin);
       var actualOut = minutes(record.tout);
@@ -184,6 +286,9 @@
     Object.keys(summary).forEach(function (key) {
       if (key !== 'records' && typeof summary[key] === 'number') summary[key] = Math.round(summary[key] * 100) / 100;
     });
+    Object.keys(summary.restDayHolidayHoursByCode).forEach(function (code) {
+      summary.restDayHolidayHoursByCode[code] = Math.round(summary.restDayHolidayHoursByCode[code] * 100) / 100;
+    });
     return summary;
   }
 
@@ -196,7 +301,10 @@
     upsert: upsert,
     validateLinkedRecord: validateLinkedRecord,
     scheduleForDate: scheduleForDate,
+    normalizeShift: normalizeShift,
     resolveShiftDay: resolveShiftDay,
+    isRestDay: isRestDay,
+    classifyHolidayPremium: classifyHolidayPremium,
     periodSummary: periodSummary
   };
 });

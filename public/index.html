@@ -241,7 +241,7 @@ tr:hover td{background:var(--accent-bg) !important}
 </head>
 <body>
 <div id="root"></div>
-<script src="/timekeeping-core.js?v=20260809-edit-audit-trail"></script>
+<script src="/timekeeping-core.js?v=20260809-schedule-adj-perday"></script>
 <script src="/payroll-rule-engine.js?v=20260803-four-decimal-divisor-engine"></script>
 <script>
 /* ========== DATA ========== */
@@ -12096,9 +12096,11 @@ function buildSyncPayload(){
     const s=(COMPANY.shifts||[]).find(x=>x.id===u.shiftId);
     return[u.eid,u.name||'',u.shiftId||'',s?.name||'',new Date().toISOString()];
   });
-  const scheduleAdjustments=USERS.flatMap(u=>(u.scheduleAdjustments||[]).map(a=>[
-    a.id,u.eid,u.name||'',a.from,a.to,a.start,a.end,a.status||'',a.approvedBy||'',a.approvedAt||''
-  ]));
+  const scheduleAdjustments=USERS.flatMap(u=>(u.scheduleAdjustments||[]).flatMap(a=>
+    a.days&&a.days.length
+      ? a.days.map(d=>[a.id,u.eid,u.name||'',d.date,d.date,d.isRestDay?'REST DAY':(d.start||''),d.isRestDay?'':(d.end||''),a.status||'',a.approvedBy||'',a.approvedAt||''])
+      : [[a.id,u.eid,u.name||'',a.from,a.to,a.start||'',a.end||'',a.status||'',a.approvedBy||'',a.approvedAt||'']]
+  ));
   const attendanceFormConfig=(COMPANY.attendanceForms||[]).map(f=>[
     f.key,f.visible!==false?'TRUE':'FALSE',new Date().toISOString()
   ]);
@@ -14458,8 +14460,8 @@ render = function() {
 <script src="/bir-2316-pdf.js?v=20260804-official-form-overlay"></script>
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
-<script src="/compliance.js?v=20260809-timelogs-own-download"></script>
-<script src="/enterprise.js?v=20260809-timelogs-own-download"></script>
+<script src="/compliance.js?v=20260809-schedule-adj-perday"></script>
+<script src="/enterprise.js?v=20260809-schedule-adj-perday"></script>
 <script src="/payroll-governance.js?v=20260804-annualized-tax"></script>
 <script src="/persistence.js?v=20260804-impersonation-audit"></script>
 </body>
