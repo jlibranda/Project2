@@ -1175,11 +1175,32 @@
     var check=rdhEligibility(user,value('att-form-date'),value('att-form-rdh-type'),value('att-form-in')||null,value('att-form-out')||null);
     box.innerHTML=check.html;
     box.style.borderColor=check.ok?'var(--green)':'var(--amber)';
+    var btn=document.getElementById('att-submit-btn');
+    if(btn){btn.disabled=!check.ok;btn.title=check.ok?'':'Fix the eligibility warning above before submitting';}
   };
+
+  // The realtime ZK biometric poll (see index.html's zkPullAttendance, every 20s) calls render()
+  // unconditionally whenever no input/textarea/select currently has focus — which still leaves a
+  // real gap: a field the user already filled in but isn't actively focused on RIGHT NOW (e.g.
+  // they just tabbed away, or paused to think) gets silently reset to blank on the next
+  // background render, because none of these fields' values were ever stored anywhere except the
+  // DOM itself. Mirrors the same fix already applied to Add Employee/File Leave for the same bug
+  // class: every field syncs its value into this draft on each keystroke, and the HTML this form
+  // renders always reads its value FROM here — so a render triggered by anything other than this
+  // form's own actions reconstructs the exact same values instead of wiping them.
+  window.attFormSync=function(id){
+    var el=document.getElementById(id);
+    if(el)(window._attFormDraft=window._attFormDraft||{})[id]=el.value;
+  };
+  function attFieldVal(id,fallback){
+    var draft=window._attFormDraft;
+    return (draft&&draft[id]!=null)?draft[id]:fallback;
+  }
 
   window.openAttendanceForm=function(key){
     var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===key&&f.visible;});
     if(!form){toast('This attendance form is not currently available.','warning');return;}
+    window._attFormDraft={};
     if(key==='time_correction')window._correctionRows=[{date:today(),punchType:'time_in',correctedTime:''}];
     if(key==='schedule_adjustment'){window._scheduleAdjRows=null;window._scheduleAdjFrom=null;window._scheduleAdjTo=null;}
     window._attendanceFormKey=key;
@@ -1218,24 +1239,25 @@
   function attendanceFormFields(form){
     var todayDate=today();
     var punchFields=(form.kind==='punch')?correctionRowsFields():'';
-    var suggestedIn=(form.kind==='interval')?(function(){var s=TimekeepingCore.scheduleForDate(user,todayDate,SHIFT_DEFINITIONS);return s&&s.end?s.end:'';})():'';
+    var suggestedIn=attFieldVal('att-form-in',(form.kind==='interval')?(function(){var s=TimekeepingCore.scheduleForDate(user,todayDate,SHIFT_DEFINITIONS);return s&&s.end?s.end:'';})():'');
     var intervalFields=(form.kind==='interval')?
       '<div id="att-schedule-info" style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;margin-bottom:12px">'+scheduleInfoHtml(todayDate)+'</div>'+
-      '<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" value="'+esc(suggestedIn)+'" oninput="previewEligibleHours()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" oninput="previewEligibleHours()"></div></div><div id="att-eligible-preview" style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px"><strong>Enter a start and end time.</strong><br>Eligible hours will be limited to the employee’s actual Time In and Time Out.</div>'
+      '<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" value="'+esc(suggestedIn)+'" oninput="attFormSync(\'att-form-in\');previewEligibleHours()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" value="'+esc(attFieldVal('att-form-out',''))+'" oninput="attFormSync(\'att-form-out\');previewEligibleHours()"></div></div><div id="att-eligible-preview" style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px"><strong>Enter a start and end time.</strong><br>Eligible hours will be limited to the employee’s actual Time In and Time Out.</div>'
       :'';
+    var rdhTypeVal=attFieldVal('att-form-rdh-type','');
     var rdhFields=(form.kind==='rdh_ot')?
-      '<div class="field"><label>Type</label><select id="att-form-rdh-type" onchange="previewRdhEligibility()"><option value="">Select…</option><option value="rest_day">Rest Day</option><option value="holiday">Holiday</option></select></div>'+
-      '<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" oninput="previewRdhEligibility()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" oninput="previewRdhEligibility()"></div></div>'+
+      '<div class="field"><label>Type</label><select id="att-form-rdh-type" onchange="attFormSync(\'att-form-rdh-type\');previewRdhEligibility()"><option value="" '+(rdhTypeVal===''?'selected':'')+'>Select…</option><option value="rest_day" '+(rdhTypeVal==='rest_day'?'selected':'')+'>Rest Day</option><option value="holiday" '+(rdhTypeVal==='holiday'?'selected':'')+'>Holiday</option></select></div>'+
+      '<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" value="'+esc(attFieldVal('att-form-in',''))+'" oninput="attFormSync(\'att-form-in\');previewRdhEligibility()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" value="'+esc(attFieldVal('att-form-out',''))+'" oninput="attFormSync(\'att-form-out\');previewRdhEligibility()"></div></div>'+
       '<div id="att-rdh-info" style="padding:10px 12px;background:var(--bg);border:1.5px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px">Select a Type above to check eligibility for this date.</div>'
       :'';
-    var minuteFields=(form.kind==='minutes')?'<div class="field"><label>Undertime Minutes</label><input type="number" id="att-form-minutes" min="1" max="480" step="1" value="30"></div>':'';
-    var rangeFields=(form.kind==='range'||form.kind==='ob'||form.kind==='wfh')?'<div class="form-row"><div class="field"><label>End Date</label><input type="date" id="att-form-end" value="'+today()+'"></div><div class="field"><label>Work Location</label><input id="att-form-location" placeholder="Client site, home, or field location"></div></div>':'';
-    var obFields=(form.kind==='ob')?'<div class="form-row"><div class="field"><label>OB Time In</label><input type="time" id="att-form-in"></div><div class="field"><label>OB Time Out</label><input type="time" id="att-form-out"></div></div><div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">Once approved, these OB times will create or update a Present attendance record for every covered date.</div>':'';
+    var minuteFields=(form.kind==='minutes')?'<div class="field"><label>Undertime Minutes</label><input type="number" id="att-form-minutes" min="1" max="480" step="1" value="'+esc(attFieldVal('att-form-minutes','30'))+'" oninput="attFormSync(\'att-form-minutes\')"></div>':'';
+    var rangeFields=(form.kind==='range'||form.kind==='ob'||form.kind==='wfh')?'<div class="form-row"><div class="field"><label>End Date</label><input type="date" id="att-form-end" value="'+esc(attFieldVal('att-form-end',today()))+'" oninput="attFormSync(\'att-form-end\')"></div><div class="field"><label>Work Location</label><input id="att-form-location" value="'+esc(attFieldVal('att-form-location',''))+'" placeholder="Client site, home, or field location" oninput="attFormSync(\'att-form-location\')"></div></div>':'';
+    var obFields=(form.kind==='ob')?'<div class="form-row"><div class="field"><label>OB Time In</label><input type="time" id="att-form-in" value="'+esc(attFieldVal('att-form-in',''))+'" oninput="attFormSync(\'att-form-in\')"></div><div class="field"><label>OB Time Out</label><input type="time" id="att-form-out" value="'+esc(attFieldVal('att-form-out',''))+'" oninput="attFormSync(\'att-form-out\')"></div></div><div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">Once approved, these OB times will create or update a Present attendance record for every covered date.</div>':'';
     var wfhNotice=(form.kind==='wfh')?'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;margin-bottom:12px"><strong>Bundy is still required.</strong> You must have completed actual Time In and Time Out logs for every covered WFH date before HR can approve this request.</div>':'';
     var scheduleFields=(form.kind==='schedule')?renderScheduleAdjBuilder():'';
-    var header=(form.kind==='punch'||form.kind==='schedule')?'<div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div>':'<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+today()+'" '+(form.kind==='interval'?'oninput="previewEligibleHours()"':form.kind==='rdh_ot'?'oninput="previewRdhEligibility()"':'')+'></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>';
+    var header=(form.kind==='punch'||form.kind==='schedule')?'<div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div>':'<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+esc(attFieldVal('att-form-date',todayDate))+'" oninput="attFormSync(\'att-form-date\');'+(form.kind==='interval'?'previewEligibleHours()':form.kind==='rdh_ot'?'previewRdhEligibility()':'')+'"></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>';
     return header+rangeFields+punchFields+intervalFields+rdhFields+obFields+wfhNotice+scheduleFields+minuteFields+
-      '<div class="field"><label>Reason and supporting details</label><textarea id="att-form-reason" rows="4" placeholder="Explain the request and include the expected correction or approval."></textarea></div>';
+      '<div class="field"><label>Reason and supporting details</label><textarea id="att-form-reason" oninput="attFormSync(\'att-form-reason\')" rows="4" placeholder="Explain the request and include the expected correction or approval.">'+esc(attFieldVal('att-form-reason',''))+'</textarea></div>';
   }
 
   // Schedule Adjustment: an "Effectivity Date" range plus a master Shift Start/Break Start/
@@ -1248,8 +1270,8 @@
     var assigned=SHIFT_DEFINITIONS.find(function(s){return s.id===user.shiftId;});
     var rows=window._scheduleAdjRows||[];
     return '<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;margin-bottom:12px">Current assigned shift: <strong>'+esc(assignedShiftText(user.shiftId))+'</strong></div>'+
-      '<div class="form-row"><div class="field"><label>Effectivity From</label><input type="date" id="satt-from" value="'+(window._scheduleAdjFrom||today())+'"></div><div class="field"><label>Effectivity To</label><input type="date" id="satt-to" value="'+(window._scheduleAdjTo||today())+'"></div></div>'+
-      '<div class="form-row"><div class="field"><label>Shift Start</label><input type="time" id="satt-shift-start" value="'+(assigned?assigned.start:'08:00')+'"></div><div class="field"><label>Break Start</label><input type="time" id="satt-break-start" value=""></div><div class="field"><label>Break End</label><input type="time" id="satt-break-end" value=""></div><div class="field"><label>Shift End</label><input type="time" id="satt-shift-end" value="'+(assigned?assigned.end:'17:00')+'"></div></div>'+
+      '<div class="form-row"><div class="field"><label>Effectivity From</label><input type="date" id="satt-from" value="'+esc(attFieldVal('satt-from',window._scheduleAdjFrom||today()))+'" oninput="attFormSync(\'satt-from\')"></div><div class="field"><label>Effectivity To</label><input type="date" id="satt-to" value="'+esc(attFieldVal('satt-to',window._scheduleAdjTo||today()))+'" oninput="attFormSync(\'satt-to\')"></div></div>'+
+      '<div class="form-row"><div class="field"><label>Shift Start</label><input type="time" id="satt-shift-start" value="'+esc(attFieldVal('satt-shift-start',assigned?assigned.start:'08:00'))+'" oninput="attFormSync(\'satt-shift-start\')"></div><div class="field"><label>Break Start</label><input type="time" id="satt-break-start" value="'+esc(attFieldVal('satt-break-start',''))+'" oninput="attFormSync(\'satt-break-start\')"></div><div class="field"><label>Break End</label><input type="time" id="satt-break-end" value="'+esc(attFieldVal('satt-break-end',''))+'" oninput="attFormSync(\'satt-break-end\')"></div><div class="field"><label>Shift End</label><input type="time" id="satt-shift-end" value="'+esc(attFieldVal('satt-shift-end',assigned?assigned.end:'17:00'))+'" oninput="attFormSync(\'satt-shift-end\')"></div></div>'+
       '<div style="margin-bottom:14px"><button type="button" class="btn btn-sm btn-primary" onclick="scheduleAdjGenerateDates()">Generate Dates</button></div>'+
       (rows.length?renderScheduleAdjTable(rows):'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--txt3);margin-bottom:12px">Set an effectivity range above and click Generate Dates to build the day-by-day schedule.</div>');
   }
@@ -1348,11 +1370,18 @@
   function renderEmployeeAttendanceForms(){
     var selected=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===window._attendanceFormKey&&f.visible;});
     var visible=ATTENDANCE_FORM_CONFIG.filter(function(f){return f.visible;});
+    // Rest Day/Holiday Overtime's Submit starts (and stays) disabled until rdhEligibility says
+    // ok — the toast-on-click warning was too easy to miss/ignore; disabling the button is the
+    // clearer signal that the current Type/Date/times don't add up to a valid claim yet.
+    var rdhSubmitOk=true;
+    if(selected&&selected.kind==='rdh_ot'){
+      rdhSubmitOk=rdhEligibility(user,attFieldVal('att-form-date',today()),attFieldVal('att-form-rdh-type',''),attFieldVal('att-form-in',null),attFieldVal('att-form-out',null)).ok;
+    }
     var body=selected?
       '<div style="max-width:'+(selected.kind==='schedule'?'100%':'760px')+'"><button class="btn btn-sm" style="margin-bottom:14px" onclick="window._attendanceFormKey=null;render()">Back to forms</button>'+
       '<div class="section-header">'+esc(selected.label)+'</div><div class="card-sub" style="margin-bottom:14px">'+esc(selected.description)+'</div>'+
       attendanceFormFields(selected)+'<div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">Your request will be routed to HR Operations for review and will not affect payroll until approved.</div>'+
-      '<div class="action-row"><button class="btn btn-primary" onclick="submitAttendanceFormRequest()">Submit for approval</button><button class="btn" onclick="window._attendanceFormKey=null;render()">Cancel</button></div></div>':
+      '<div class="action-row"><button class="btn btn-primary" id="att-submit-btn" '+(!rdhSubmitOk?'disabled title="Fix the eligibility warning above before submitting"':'')+' onclick="submitAttendanceFormRequest()">Submit for approval</button><button class="btn" onclick="window._attendanceFormKey=null;render()">Cancel</button></div></div>':
       (visible.length?'<div class="attendance-catalog">'+visible.map(function(f){
         return '<button class="attendance-form-card" onclick="openAttendanceForm(\''+f.key+'\')"><span class="attendance-form-mark">'+f.short+'</span><span><strong>'+esc(f.label)+'</strong><small>'+esc(f.description)+'</small></span><span class="attendance-form-arrow">›</span></button>';
       }).join('')+'</div>':'<div class="empty-state"><div style="font-weight:700;margin-bottom:5px">No attendance forms are currently available.</div>Please contact HR if you need an attendance correction or special request.</div>')+myAttendanceFormRequests();
