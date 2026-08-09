@@ -1147,8 +1147,8 @@
           '<td><input type="time" '+breakDisabled+' value="'+((r.isRestDay||r.noBreak)?'':(r.breakStart||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'breakStart\',this.value)"></td>'+
           '<td><input type="time" '+breakDisabled+' value="'+((r.isRestDay||r.noBreak)?'':(r.breakEnd||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'breakEnd\',this.value)"></td>'+
           '<td><input type="time" '+timeDisabled+' value="'+(r.isRestDay?'':(r.end||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'end\',this.value)"></td>'+
-          '<td style="text-align:center"><input type="checkbox" '+(r.isRestDay?'checked':'')+' onchange="scheduleAdjToggleRestDay(\''+r.date+'\')" title="No expected work hours this date"></td>'+
-          '<td style="text-align:center"><input type="checkbox" '+(r.noBreak?'checked':'')+' '+timeDisabled+' onchange="scheduleAdjToggleNoBreak(\''+r.date+'\')" title="No break this date"></td>'+
+          '<td style="text-align:center"><input type="checkbox" style="width:auto;accent-color:var(--accent)" '+(r.isRestDay?'checked':'')+' onchange="scheduleAdjToggleRestDay(\''+r.date+'\')" title="No expected work hours this date"></td>'+
+          '<td style="text-align:center"><input type="checkbox" style="width:auto;accent-color:var(--accent)" '+(r.noBreak?'checked':'')+' '+timeDisabled+' onchange="scheduleAdjToggleNoBreak(\''+r.date+'\')" title="No break this date"></td>'+
           '<td style="white-space:nowrap"><button type="button" class="btn btn-sm" onclick="scheduleAdjCopyRow(\''+r.date+'\')" title="Copy this schedule to every other non-rest-day row">⧉</button> <button type="button" class="btn btn-sm btn-danger" onclick="scheduleAdjDeleteRow(\''+r.date+'\')" title="Remove this date from the request">🗑</button></td>'+
         '</tr>';
       }).join('')+'</tbody></table></div>';
