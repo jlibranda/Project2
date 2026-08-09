@@ -4859,6 +4859,15 @@ function _makeZIP(files){
   return out;
 }
 
+// Style indices (fixed across every sheet built by this function):
+//   0 default · 1 text-format (@) · 2 title (bold, no border) · 3 header (bold + fill + border)
+//   4 bordered normal · 5 bordered text-format — 4/5 give a data table actual grid lines instead
+// of relying on Excel's default gridlines, which don't print/export elsewhere.
+// Per-sheet, optional on top of the existing rows/dataValidation/colWidths/textColIndices:
+//   titleRows: Set of 0-based row indices to bold (report titles/metadata, no border)
+//   headerRows: Set of 0-based row indices to render as a bold, filled, bordered header
+//   borderRows: Set of 0-based row indices (typically the data table incl. its header) to border
+//   freezeRow: 0-based row count to freeze above (e.g. freeze through the header row)
 function buildXLSX(sheets){
   const xe=s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const sst=[],sstMap={};
@@ -4868,9 +4877,17 @@ function buildXLSX(sheets){
   sheets.forEach(sh=>(sh.rows||[]).forEach(row=>(row||[]).forEach(c=>{if(c!==null&&c!==undefined&&typeof c!=='number')addS(String(c));})));
 
   const shXMLs=sheets.map(sh=>{
-    const{rows=[],dataValidation=[],colWidths=[],textColIndices=new Set()}=sh;
+    const{rows=[],dataValidation=[],colWidths=[],textColIndices=new Set(),titleRows=new Set(),headerRows=new Set(),borderRows=new Set(),freezeRow=0}=sh;
+    function styleFor(ri,ci){
+      const isTxt=textColIndices.has(ci);
+      if(headerRows.has(ri))return 3;
+      if(titleRows.has(ri))return 2;
+      if(borderRows.has(ri))return isTxt?5:4;
+      return isTxt?1:0;
+    }
     let x=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">`;
-    /* Column definitions — style="1" applies text format to entire column */
+    if(freezeRow>0)x+=`<sheetViews><sheetView workbookViewId="0"><pane ySplit="${freezeRow}" topLeftCell="A${freezeRow+1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`;
+    /* Column definitions — style="1" applies text format to entire column (overridden per-cell below for header/border rows) */
     if(colWidths.length||textColIndices.size){
       const maxC=Math.max(colWidths.length,textColIndices.size?Math.max(...textColIndices)+1:0);
       x+='<cols>';
@@ -4887,10 +4904,11 @@ function buildXLSX(sheets){
       (row||[]).forEach((cell,ci)=>{
         const addr=_colLetter(ci)+(ri+1);
         const v=cell??'';
-        const isTxtCol=textColIndices.has(ci);
-        if(v===''){x+=isTxtCol?`<c r="${addr}" s="1"/>`:`<c r="${addr}"/>`;}
-        else if(typeof v==='number'&&!isNaN(v)&&!isTxtCol){x+=`<c r="${addr}"><v>${v}</v></c>`;}
-        else{x+=`<c r="${addr}" t="s"${isTxtCol?' s="1"':''}><v>${sstMap[String(v)]}</v></c>`;}
+        const s=styleFor(ri,ci);
+        const sAttr=s?` s="${s}"`:'';
+        if(v===''){x+=`<c r="${addr}"${sAttr}/>`;}
+        else if(typeof v==='number'&&!isNaN(v)&&s!==1&&s!==5){x+=`<c r="${addr}"${sAttr}><v>${v}</v></c>`;}
+        else{x+=`<c r="${addr}" t="s"${sAttr}><v>${sstMap[String(v)]}</v></c>`;}
       });
       x+='</row>';
     });
@@ -4914,8 +4932,21 @@ function buildXLSX(sheets){
   const ctXML=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${sheets.map((_,i)=>`<Override PartName="/xl/worksheets/sheet${i+1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}</Types>`;
   const relsXML=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`;
   const wbRelsXML=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_,i)=>`<Relationship Id="rId${i+2}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i+1}.xml"/>`).join('')}<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/></Relationships>`;
-  /* styles: index 0 = default, index 1 = text format (@) */
-  const stylesXML=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="49" formatCode="@"/></numFmts><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="49" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>`;
+  /* styles — see the style-index legend in the comment above this function */
+  const stylesXML=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">`+
+    `<numFmts count="1"><numFmt numFmtId="49" formatCode="@"/></numFmts>`+
+    `<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>`+
+    `<fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD9E2F3"/><bgColor indexed="64"/></patternFill></fill></fills>`+
+    `<borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color indexed="64"/></left><right style="thin"><color indexed="64"/></right><top style="thin"><color indexed="64"/></top><bottom style="thin"><color indexed="64"/></bottom><diagonal/></border></borders>`+
+    `<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>`+
+    `<cellXfs count="6">`+
+      `<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>`+
+      `<xf numFmtId="49" fontId="0" fillId="0" borderId="0" xfId="0"/>`+
+      `<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0"/>`+
+      `<xf numFmtId="0" fontId="1" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf>`+
+      `<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>`+
+      `<xf numFmtId="49" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>`+
+    `</cellXfs></styleSheet>`;
 
   const fileMap={'[Content_Types].xml':ctXML,'_rels/.rels':relsXML,'xl/workbook.xml':wbXML,'xl/_rels/workbook.xml.rels':wbRelsXML,'xl/sharedStrings.xml':sstXML,'xl/styles.xml':stylesXML};
   sheets.forEach((_,i)=>{fileMap[`xl/worksheets/sheet${i+1}.xml`]=shXMLs[i];});
