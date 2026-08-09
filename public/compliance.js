@@ -202,7 +202,7 @@
 
   window.pgAttendance = pgAttendance = function () {
     var isA = isAdminUser(user) || isPlatformAdmin || canAccess('att_edit');
-    var tabs = isA ? ['Pending Approval','My Records','All Employees','File Attendance'] : ['My Records','File Attendance'];
+    var tabs = isA ? ['Pending Approval','My Records','All Employees','File Attendance','Attendance Report'] : ['My Records','File Attendance'];
     var body = '';
 
     if (isA && tab === 0) {
@@ -253,6 +253,8 @@
             '<td style="white-space:nowrap"><button class="btn btn-sm" onclick="openEditAttRow('+a.eid+',\''+a.date+'\')" title="Edit this record">✎ Edit</button>'+
             ((a.edits && a.edits.length) ? '<button class="btn btn-sm" style="margin-left:4px" onclick="openAttHistory('+a.eid+',\''+a.date+'\')" title="View edit history">🕘 '+a.edits.length+'</button>' : '')+'</td></tr>';
         }).join('')+'</tbody></table></div>';
+    } else if (isA && tab === 4) {
+      body = renderAttendanceReportTab();
     } else {
       body = (isA ? '<div class="field"><label>Employee</label><select id="ae">'+USERS.filter(function (u) { return u.role === 'employee'; }).map(function (u) {
         return '<option value="'+u.id+'">'+esc(u.name)+'</option>';
@@ -273,6 +275,146 @@
       '<div class="tabs">'+tabs.map(function (t,i) { return '<div class="tab'+(tab===i?' active':'')+'" onclick="goTab('+i+')">'+t+(i===0&&isA&&pendingCount?' ('+pendingCount+')':'')+'</div>'; }).join('')+'</div>'+
       '<div class="card">'+body+'</div>';
   };
+
+  // Attendance Report: a payroll-ready Excel export — a Summary sheet with one totals row per
+  // employee (days present/absent, late, undertime, OT, ND, rest day/holiday hours, hours
+  // worked), computed via the exact same TimekeepingCore.periodSummary() payroll itself uses so
+  // the numbers here never drift from what actually gets paid — plus a Detailed sheet with a
+  // day-by-day breakdown per employee (time in/out, status, notes), for whoever needs to see the
+  // underlying logs behind the totals.
+  function attReportFilter() {
+    if (!window._attReportFilter) window._attReportFilter = { periodId: 'custom', from: today(), to: today(), empId: 'all' };
+    return window._attReportFilter;
+  }
+  window.setAttReportFilter = function (key, value) {
+    attReportFilter()[key] = value;
+    render();
+  };
+  function attReportRange() {
+    var f = attReportFilter();
+    if (f.periodId && f.periodId !== 'custom') {
+      var period = PAY_PERIODS.find(function (p) { return String(p.id) === String(f.periodId); });
+      if (period) return { from: period.attendanceFrom || period.from, to: period.attendanceTo || period.to, label: period.label };
+    }
+    return { from: f.from, to: f.to, label: null };
+  }
+  function renderAttendanceReportTab() {
+    var f = attReportFilter();
+    var periods = PAY_PERIODS.slice().sort(function (a,b) { return (b.from||'').localeCompare(a.from||''); });
+    var emps = USERS.filter(function (u) { return u.role === 'employee'; }).sort(function (a,b) { return (a.name||'').localeCompare(b.name||''); });
+    var usingCustom = !f.periodId || f.periodId === 'custom';
+    var range = attReportRange();
+    return '<div class="card-title" style="margin-bottom:6px">Attendance Report</div>'+
+      '<div class="card-sub" style="margin-bottom:14px">Export a payroll-ready attendance report for one pay period (or a custom date range) — a per-employee summary plus the full daily breakdown behind it.</div>'+
+      '<div class="form-row">'+
+        '<div class="field"><label>Pay Period</label><select onchange="setAttReportFilter(\'periodId\', this.value)">'+
+          '<option value="custom" '+(usingCustom?'selected':'')+'>Custom date range…</option>'+
+          periods.map(function (p) { return '<option value="'+p.id+'" '+(String(f.periodId)===String(p.id)?'selected':'')+'>'+esc(p.label)+'</option>'; }).join('')+
+        '</select></div>'+
+        (usingCustom ?
+          '<div class="field"><label>From</label><input type="date" value="'+(f.from||'')+'" onchange="setAttReportFilter(\'from\', this.value)"/></div>'+
+          '<div class="field"><label>To</label><input type="date" value="'+(f.to||'')+'" onchange="setAttReportFilter(\'to\', this.value)"/></div>'
+          : '')+
+      '</div>'+
+      '<div class="field"><label>Employee</label><select onchange="setAttReportFilter(\'empId\', this.value)">'+
+        '<option value="all" '+(f.empId==='all'?'selected':'')+'>All Employees</option>'+
+        emps.map(function (u) { return '<option value="'+u.id+'" '+(String(f.empId)===String(u.id)?'selected':'')+'>'+esc(u.name)+' ('+esc(u.eid||'—')+')</option>'; }).join('')+
+      '</select></div>'+
+      (range.from && range.to ?
+        '<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--txt3);margin-bottom:12px">Report range: <strong style="color:var(--txt)">'+range.from+' to '+range.to+'</strong>'+(range.label?' ('+esc(range.label)+')':'')+'</div>'
+        : '<div style="padding:9px 12px;background:var(--amber-bg);border-radius:8px;font-size:12px;color:var(--amber-txt);margin-bottom:12px">Select a pay period or a custom date range.</div>')+
+      '<button class="btn btn-primary" onclick="downloadAttendanceReport()">⬇ Download Attendance Report (Excel)</button>';
+  }
+  function hhmmToMinutesLocal(v) {
+    var parts = String(v || '').split(':');
+    if (parts.length !== 2) return null;
+    var h = Number(parts[0]), m = Number(parts[1]);
+    return Number.isFinite(h) && Number.isFinite(m) ? h*60+m : null;
+  }
+  var ATT_REPORT_DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  var ATT_REPORT_STATUS_LABEL = { present:'Present', late:'Late', absent:'Absent', leave:'On Leave' };
+  var ATT_REPORT_HOLIDAY_LABEL = { DH_8:'Double Holiday', RH_8:'Regular Holiday', RH_RD_8:'Regular Holiday (Rest Day)', SH_8:'Special Holiday', SH_RD_8:'Special Holiday (Rest Day)', RDH_GENERIC:'Rest Day' };
+  window.downloadAttendanceReport = function () {
+    if (!(isAdminUser(user) || isPlatformAdmin || canAccess('att_edit'))) return;
+    var range = attReportRange();
+    if (!range.from || !range.to) { toast('Select a pay period or a custom date range.', 'warning'); return; }
+    if (range.to < range.from) { toast('"To" date must be on or after "From" date.', 'warning'); return; }
+    var f = attReportFilter();
+    var emps = USERS.filter(function (u) {
+      if (u.role !== 'employee') return false;
+      if (f.empId && f.empId !== 'all' && String(u.id) !== String(f.empId)) return false;
+      return true;
+    }).sort(function (a,b) { return (a.name||'').localeCompare(b.name||''); });
+    if (!emps.length) { toast('No employees match this filter.', 'warning'); return; }
+
+    var shifts = COMPANY.shifts || [], holidays = COMPANY.holidays || [];
+    var summaryRows = [
+      ['ATTENDANCE REPORT — SproutRipple PH'],
+      ['Period: '+range.from+' to '+range.to+(range.label?' ('+range.label+')':'')],
+      ['Generated: '+today()+' by '+(user&&user.name||'')],
+      [],
+      ['EID','Employee Name','Department','Position','Days Present','Days Absent','Late (min)','Undertime (min)','OT Hours','ND Hours','Rest Day / Holiday Hours','Hours Worked','Needs Review']
+    ];
+    var detailedRows = [];
+
+    emps.forEach(function (emp) {
+      var summary = TimekeepingCore.periodSummary(ATT, emp, range.from, range.to, shifts, holidays);
+      var byDate = {};
+      summary.records.forEach(function (r) { byDate[r.date] = r; });
+      var hoursWorked = 0, needsReview = false;
+      summary.records.forEach(function (r) {
+        if (r.approvalStatus === 'pending') needsReview = true;
+        var a = hhmmToMinutesLocal(r.tin), b = hhmmToMinutesLocal(r.tout);
+        if (a == null || b == null) return;
+        if (b <= a) b += 24*60;
+        hoursWorked += (b-a)/60;
+      });
+      var holidayBreakdown = Object.keys(summary.restDayHolidayHoursByCode||{}).map(function (code) {
+        return (ATT_REPORT_HOLIDAY_LABEL[code]||code)+': '+summary.restDayHolidayHoursByCode[code]+'h';
+      }).join(', ');
+
+      summaryRows.push([
+        emp.eid||'', emp.name||'', emp.dept||'', emp.pos||'',
+        summary.presentDays, summary.absentDays, summary.lateMinutes, summary.undertimeMinutes,
+        summary.otHours, summary.ndHours, holidayBreakdown||(summary.restDayHolidayHours||0),
+        +hoursWorked.toFixed(2), needsReview?'Yes — pending approval in range':'No'
+      ]);
+
+      detailedRows.push(['Employee:', emp.name||'', 'EID:', emp.eid||'']);
+      detailedRows.push(['Department:', emp.dept||'—', 'Position:', emp.pos||'—']);
+      detailedRows.push(['Period:', range.from+' to '+range.to, 'Days Present:', summary.presentDays, 'Days Absent:', summary.absentDays]);
+      detailedRows.push(['Date','Day','Shift','Time In','Time Out','Status','Approval','OT (hrs)','ND (hrs)','Notes']);
+      leaveDateRange(range.from, range.to).forEach(function (date) {
+        var rec = byDate[date];
+        var dow = ATT_REPORT_DOW[new Date(date+'T00:00:00Z').getUTCDay()];
+        var sched = TimekeepingCore.scheduleForDate(emp, date, shifts);
+        var isRest = TimekeepingCore.isRestDay(emp, date, shifts);
+        var shiftLabel = isRest ? 'Rest Day' : (sched ? (sched.start+' – '+sched.end) : 'No shift assigned');
+        if (!rec) {
+          detailedRows.push([date, dow, shiftLabel, '—', '—', isRest?'Rest Day':'No Record', '—', 0, 0, '']);
+          return;
+        }
+        detailedRows.push([date, dow, shiftLabel, rec.tin||'—', rec.tout||'—', ATT_REPORT_STATUS_LABEL[rec.status]||rec.status||'—', approvalBadgeText(rec.approvalStatus), rec.ot||0, rec.nd||0, rec.notes||'']);
+      });
+      detailedRows.push(['','','','','','','Totals for period:', summary.otHours, summary.ndHours, +hoursWorked.toFixed(2)+' hrs worked']);
+      detailedRows.push([]);
+    });
+
+    try {
+      var data = buildXLSX([
+        { name:'Summary', rows:summaryRows, colWidths:[14,26,16,18,10,10,10,10,10,10,20,12,24], textColIndices:new Set([0]) },
+        { name:'Detailed', rows:detailedRows, colWidths:[14,7,20,10,10,12,14,10,10,30], textColIndices:new Set([0]) }
+      ]);
+      var blob = new Blob([data], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a'); a.href = url; a.download = 'attendance_report_'+range.from+'_to_'+range.to+'.xlsx'; a.click();
+      URL.revokeObjectURL(url);
+      toast('Attendance report downloaded.', 'success');
+    } catch (ex) {
+      toast('Download failed: '+ex.message, 'warning'); console.error('[attendance-report]', ex);
+    }
+  };
+  function approvalBadgeText(status) { return status ? (status.charAt(0).toUpperCase()+status.slice(1)) : 'Approved'; }
 
   window.submitAtt = submitAtt = function (isA) {
     var eid = isA ? parseInt(document.getElementById('ae').value, 10) : user.id;
