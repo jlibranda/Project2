@@ -349,19 +349,24 @@
     var terms = tokenizeSearch(searchVal);
     var matched = attReportMatchedEmps(ns);
     var dateFromId = ns+'-date-from', dateToId = ns+'-date-to', searchId = ns+'-emp-search';
-    return '<div class="field"><label>Pay Period</label><select onchange="setAttReportFilter(\''+ns+'\',\'periodId\', this.value)">'+
+    // Explicit tabindex on just this form's fields: the app rebuilds its whole DOM (topbar,
+    // sidebar, content) on every render, and where a given element ends up in source order
+    // relative to the sidebar/topbar isn't stable — natural (unset/0) tab order was jumping from
+    // "From" straight into sidebar controls instead of "To" / the employee search / Download.
+    // A local 1-5 sequence keeps this one form's own fields visited in order regardless of that.
+    return '<div class="field"><label>Pay Period</label><select tabindex="1" onchange="setAttReportFilter(\''+ns+'\',\'periodId\', this.value)">'+
         '<option value="custom" '+(usingCustom?'selected':'')+'>Custom date range…</option>'+
         periods.map(function (p) { return '<option value="'+p.id+'" '+(String(f.periodId)===String(p.id)?'selected':'')+'>'+esc(p.label)+'</option>'; }).join('')+
       '</select></div>'+
       (usingCustom ?
         '<div class="form-row">'+
-          '<div class="field"><label>From</label><input id="'+dateFromId+'" type="date" value="'+(f.from||'')+'" onblur="setAttReportDateFilter(\''+ns+'\',\'from\', this.value)"/></div>'+
-          '<div class="field"><label>To</label><input id="'+dateToId+'" type="date" value="'+(f.to||'')+'" onblur="setAttReportDateFilter(\''+ns+'\',\'to\', this.value)"/></div>'+
+          '<div class="field"><label>From</label><input id="'+dateFromId+'" tabindex="2" type="date" value="'+(f.from||'')+'" onblur="setAttReportDateFilter(\''+ns+'\',\'from\', this.value)"/></div>'+
+          '<div class="field"><label>To</label><input id="'+dateToId+'" tabindex="3" type="date" value="'+(f.to||'')+'" onblur="setAttReportDateFilter(\''+ns+'\',\'to\', this.value)"/></div>'+
         '</div>'
         : '')+
       '<div class="field"><label>Employee(s)</label>'+
         '<div style="position:relative;display:flex;align-items:center">'+
-          '<input id="'+searchId+'" class="finput" placeholder="Search by name, ID, dept, position… or paste multiple from Excel (one per line) — leave blank for all employees" '+
+          '<input id="'+searchId+'" tabindex="4" class="finput" placeholder="Search by name, ID, dept, position… or paste multiple from Excel (one per line) — leave blank for all employees" '+
           'value="'+esc(searchVal.replace(/[\n\r]+/g,' | ').replace(/\t+/g,' '))+'" oninput="setAttReportEmpSearch(\''+ns+'\', this.value)" onpaste="onAttReportSearchPaste(\''+ns+'\', event)"/>'+
           (searchVal?'<button onclick="setAttReportEmpSearch(\''+ns+'\', \'\')" style="position:absolute;right:10px;background:none;border:none;cursor:pointer;color:var(--txt3);font-size:18px;line-height:1" title="Clear search">×</button>':'')+
         '</div>'+
@@ -379,7 +384,7 @@
             ? '<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--txt3);margin-bottom:12px">No date filter — showing logs from every date. Pick a pay period or range to narrow it down, or to download a report.</div>'
             : '<div style="padding:9px 12px;background:var(--amber-bg);border-radius:8px;font-size:12px;color:var(--amber-txt);margin-bottom:12px">Select a pay period or a custom date range.</div>'))+
       (opts.showMatchList && range.from && range.to && searchVal.trim() && matched.length ? renderAttReportMatchList(matched, range, ns) : '')+
-      '<button class="btn btn-primary" onclick="downloadAttendanceReport(\''+ns+'\')" '+(!range.from||!range.to?'disabled title="Select a pay period or date range first"':'')+'>⬇ Download Attendance Report (Excel)</button>';
+      '<button class="btn btn-primary" tabindex="5" onclick="downloadAttendanceReport(\''+ns+'\')" '+(!range.from||!range.to?'disabled title="Select a pay period or date range first"':'')+'>⬇ Download Attendance Report (Excel)</button>';
   }
   function renderAttendanceReportTab() {
     return '<div class="card-title" style="margin-bottom:6px">Attendance Report</div>'+
@@ -395,26 +400,32 @@
     var isFiltered = !!(f.empSearch && f.empSearch.trim());
     var matchedIds = {};
     if (isFiltered) attReportMatchedEmps(ns).forEach(function (u) { matchedIds[u.id] = true; });
-    var rows = attendanceRecords().filter(function (a) {
+    // Every log actually recorded, not just the one canonical (first-in/last-out) record
+    // attendanceRecords() collapses each employee-day down to — including punches that got
+    // merged/superseded into another record, so nothing that came in ever silently disappears
+    // from view here even though it's not what payroll ultimately uses per day.
+    var rows = ATT.filter(function (a) {
       if (range.from && range.to && !(a.date>=range.from && a.date<=range.to)) return false;
       if (isFiltered && !matchedIds[a.eid]) return false;
       return true;
-    }).slice().reverse();
+    }).slice().sort(function (x,y) { return (y.date+String(y.id)).localeCompare(x.date+String(x.id)); });
     return '<div class="card-title" style="margin-bottom:6px">Time Logs</div>'+
-      '<div class="card-sub" style="margin-bottom:14px">Browse, search, and export raw attendance logs — the same pay period/date range and employee search as Attendance Report.</div>'+
+      '<div class="card-sub" style="margin-bottom:14px">Every attendance log recorded — the same pay period/date range and employee search as Attendance Report. Includes logs merged into another record for a given day, not just the one used for payroll.</div>'+
       renderAttReportFilterUI(ns, { showMatchList:false, rangeOptional:true })+
       '<div style="display:flex;justify-content:flex-end;margin:14px 0 10px"><button class="btn btn-sm" onclick="openBulkAttendance()">📂 Bulk Import Time Logs</button></div>'+
-      '<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th>Work status</th><th>Approval</th><th>OT</th><th>ND</th><th>Reviewed by</th><th>Actions</th></tr></thead><tbody>'+
+      '<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th>Work status</th><th>Approval</th><th>OT</th><th>ND</th><th>Source</th><th>Reviewed by</th><th>Actions</th></tr></thead><tbody>'+
       (rows.length ? rows.map(function (a) {
         var emp = USERS.find(function (u) { return u.id === a.eid; });
-        return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(emp ? emp.name : '?')+'</div>'+esc(emp ? emp.name : '?')+'</div></td>'+
+        return '<tr'+(a.superseded?' style="opacity:.6"':'')+'><td><div class="emp-cell"><div class="avatar sm">'+ini(emp ? emp.name : '?')+'</div>'+esc(emp ? emp.name : '?')+'</div></td>'+
           '<td class="mono">'+a.date+'</td><td class="mono">'+(a.tin || '—')+'</td><td class="mono">'+(a.tout || '—')+'</td>'+
           '<td><span class="badge b-'+a.status+'">'+esc(a.status)+'</span></td><td>'+approvalBadge(a.approvalStatus)+'</td>'+
-          '<td>'+(a.ot || '—')+'</td><td>'+(a.nd || '—')+'</td><td style="font-size:11px;color:var(--txt3)">'+esc(a.reviewedBy || '—')+'</td>'+
+          '<td>'+(a.ot || '—')+'</td><td>'+(a.nd || '—')+'</td>'+
+          '<td style="font-size:11px;color:var(--txt3)">'+esc(a.source||'—')+(a.superseded?' <span class="badge b-info" style="font-size:9px">merged</span>':'')+'</td>'+
+          '<td style="font-size:11px;color:var(--txt3)">'+esc(a.reviewedBy || '—')+'</td>'+
           '<td style="white-space:nowrap"><button class="btn btn-sm" onclick="openEditAttRow('+a.eid+',\''+a.date+'\')" title="Edit this record">✎ Edit</button>'+
           (emp?' <button class="btn btn-sm" onclick="openAttReportDetailModal(\''+ns+'\','+a.eid+')" title="This employee\'s full daily breakdown">👁 View</button>':'')+
           ((a.edits && a.edits.length) ? ' <button class="btn btn-sm" onclick="openAttHistory('+a.eid+',\''+a.date+'\')" title="View edit history">🕘 '+a.edits.length+'</button>' : '')+'</td></tr>';
-      }).join('') : '<tr><td colspan="10" class="empty-state">No time logs match this filter.</td></tr>')+
+      }).join('') : '<tr><td colspan="11" class="empty-state">No time logs match this filter.</td></tr>')+
       '</tbody></table></div>';
   }
   // Lets an admin inspect an employee's daily breakdown right in the app — the same numbers as
