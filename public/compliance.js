@@ -463,9 +463,13 @@
 
     try {
       var data = buildXLSX([
-        { name:'Summary', rows:summaryRows, colWidths:[14,26,16,18,11,11,10,12,9,9,13,15,17,15,15,15,12,26],
+        { name:'Summary', rows:summaryRows, colWidths:[14,30,20,26,11,11,10,14,9,9,15,22,25,22,25,20,13,34],
           textColIndices:new Set([0]), titleRows:new Set([0,1,2]), headerRows:new Set([4]), borderRows:(function(){var s=new Set();for(var r=4;r<summaryRows.length;r++)s.add(r);return s;})(), freezeRow:5 },
-        { name:'Detailed', rows:detailedRows, colWidths:[14,7,20,10,10,12,14,10,13,9,9,17,30],
+        // Column widths here have to satisfy double duty: the same column holds a short "Day"
+        // abbreviation in the daily rows AND a full employee name / department / date-range
+        // string in the per-employee header rows above it (col B), same story for col C (shift
+        // label vs. position title) — sized to the wider of the two uses so neither gets cut off.
+        { name:'Detailed', rows:detailedRows, colWidths:[14,30,22,26,14,12,20,12,16,10,10,22,34],
           textColIndices:new Set([0]), titleRows:detailTitleRows, headerRows:detailHeaderRows, borderRows:detailBorderRows }
       ]);
       var blob = new Blob([data], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
