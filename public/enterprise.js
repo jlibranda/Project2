@@ -1104,7 +1104,7 @@
 
   function assignedShiftText(shiftId){
     var s=SHIFT_DEFINITIONS.find(function(x){return x.id===shiftId;});
-    return s?s.name+' · '+s.start+' – '+s.end:'No shift assigned';
+    return s?s.name+' · '+describeShiftPattern(s):'No shift assigned';
   }
 
   function attendanceFormFields(form){
@@ -1163,14 +1163,21 @@
     var masterStart=value('satt-shift-start'),masterBreakStart=value('satt-break-start'),masterBreakEnd=value('satt-break-end'),masterEnd=value('satt-shift-end');
     var existingByDate={};
     (window._scheduleAdjRows||[]).forEach(function(r){existingByDate[r.date]=r;});
+    // Re-clicking Generate Dates re-applies whatever the master Shift Start/Break Start/Break
+    // End/Shift End fields say RIGHT NOW to every non-rest-day row — editing those fields and
+    // clicking Generate Dates again is how you're meant to retime the whole table at once, so
+    // silently keeping stale per-row values here (as an earlier version of this did) just makes
+    // the button look broken. The one thing carried over from an existing row is its Rest Day
+    // flag, since that's a deliberate per-date override the user made, not part of the template.
     window._scheduleAdjRows=requestDates(from,to).map(function(date){
-      if(existingByDate[date])return existingByDate[date];
-      var isRest=TimekeepingCore.isRestDay(user,date,SHIFT_DEFINITIONS);
+      var existing=existingByDate[date];
+      var isRest=existing?existing.isRestDay:TimekeepingCore.isRestDay(user,date,SHIFT_DEFINITIONS);
       return {date:date,dow:SCHED_ADJ_DOW[new Date(date+'T00:00:00Z').getUTCDay()],
         start:isRest?'':masterStart,end:isRest?'':masterEnd,
         breakStart:isRest?'':masterBreakStart,breakEnd:isRest?'':masterBreakEnd,
         isRestDay:isRest,noBreak:!masterBreakStart&&!masterBreakEnd};
     });
+    toast('Schedule generated from the Shift Start/Break/Shift End fields above.','success');
     render();
   };
   window.scheduleAdjUpdateRow=function(date,key,val){
