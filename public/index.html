@@ -5282,7 +5282,7 @@ function updateLeaveComputation(){
   if(dayType!=='whole'){leEl.value=lsEl.value;leEl.disabled=true;setLeaveDraftField('le2',leEl.value);}else{leEl.disabled=false;}
   const start=lsEl.value,end=leEl.value||start;
   let days;
-  if(dayType!=='whole')days=0.5;
+  if(dayType!=='whole')days=start?0.5:0;
   else days=countLeaveWorkingDays(start,end);
   window._leaveDays=days;
   if(!box)return;
@@ -5317,7 +5317,7 @@ function leaveDaysCell(l){
   return out;
 }
 function leaveDraft(){
-  if(!window._leaveDraft)window._leaveDraft={lt:'',dayType:'whole',ls:today(),le2:today(),reason:''};
+  if(!window._leaveDraft)window._leaveDraft={lt:'',dayType:'whole',ls:'',le2:'',reason:''};
   return window._leaveDraft;
 }
 function setLeaveDraftField(key,value){leaveDraft()[key]=value;}
@@ -5354,7 +5354,7 @@ function pgLeave(){
     if(opts.length){
       const d=leaveDraft();
       if(!opts.some(t=>t.name===d.lt))d.lt=opts[0].name;
-      const initDays=d.dayType==='whole'?countLeaveWorkingDays(d.ls,d.le2):0.5;
+      const initDays=d.dayType==='whole'?countLeaveWorkingDays(d.ls,d.le2):(d.ls?0.5:0);
       window._leaveDays=initDays;
       const selectedType=opts.find(t=>t.name===d.lt)||opts[0];
       const initHint=leaveBalanceHintText(selectedType,initDays);
@@ -14483,8 +14483,8 @@ render = function() {
 <script src="/bir-2316-pdf.js?v=20260804-official-form-overlay"></script>
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
-<script src="/compliance.js?v=20260810-ot-before-after-shift"></script>
-<script src="/enterprise.js?v=20260810-ot-before-after-shift"></script>
+<script src="/compliance.js?v=20260810-blank-defaults"></script>
+<script src="/enterprise.js?v=20260810-blank-defaults"></script>
 <script src="/payroll-governance.js?v=20260804-annualized-tax"></script>
 <script src="/persistence.js?v=20260804-impersonation-audit"></script>
 </body>

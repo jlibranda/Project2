@@ -1239,7 +1239,7 @@
     if(!reason)return false;
     if(form.kind==='punch'){
       var corrections=window._correctionRows||[];
-      return corrections.length>0&&corrections.every(function(r){return r.date&&r.correctedTime;});
+      return corrections.length>0&&corrections.every(function(r){return r.date&&r.punchType&&r.correctedTime;});
     }
     if(form.kind==='schedule'){
       var schedRows=window._scheduleAdjRows||[];
@@ -1249,18 +1249,18 @@
     if(form.kind==='rdh_ot'){
       var rdhReqStart=attFieldVal('att-form-in',''),rdhReqEnd=attFieldVal('att-form-out','');
       if(!rdhReqStart||!rdhReqEnd)return false;
-      return rdhEligibility(user,attFieldVal('att-form-date',today()),attFieldVal('att-form-rdh-type',''),rdhReqStart,rdhReqEnd).ok;
+      return rdhEligibility(user,attFieldVal('att-form-date',''),attFieldVal('att-form-rdh-type',''),rdhReqStart,rdhReqEnd).ok;
     }
     if(form.kind==='interval'){
       var otReqStart=attFieldVal('att-form-in',''),otReqEnd=attFieldVal('att-form-out','');
       if(!otReqStart||!otReqEnd)return false;
-      return otTypeEligibility(user,attFieldVal('att-form-date',today()),attFieldVal('att-form-ot-type',''),otReqStart,otReqEnd).ok;
+      return otTypeEligibility(user,attFieldVal('att-form-date',''),attFieldVal('att-form-ot-type',''),otReqStart,otReqEnd).ok;
     }
-    var date=attFieldVal('att-form-date',today());
+    var date=attFieldVal('att-form-date','');
     if(!date)return false;
     var tin=attFieldVal('att-form-in',''),tout=attFieldVal('att-form-out','');
     if(form.kind==='ob'&&(!tin||!tout))return false;
-    if(form.kind==='minutes'&&Number(attFieldVal('att-form-minutes','30'))<=0)return false;
+    if(form.kind==='minutes'&&Number(attFieldVal('att-form-minutes',''))<=0)return false;
     var endDate=attFieldVal('att-form-end','');
     if(endDate&&endDate<date)return false;
     return true;
@@ -1282,7 +1282,7 @@
     var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===key&&f.visible;});
     if(!form){toast('This attendance form is not currently available.','warning');return;}
     window._attFormDraft={};
-    if(key==='time_correction')window._correctionRows=[{date:today(),punchType:'time_in',correctedTime:''}];
+    if(key==='time_correction')window._correctionRows=[{date:'',punchType:'',correctedTime:''}];
     if(key==='schedule_adjustment'){window._scheduleAdjRows=null;window._scheduleAdjFrom=null;window._scheduleAdjTo=null;window._scheduleAdjShiftEndTouched=false;}
     window._attendanceFormKey=key;
     tab=(isAdminUser(user)||isPlatformAdmin)?3:1; /* "Attendance Forms" sits at index 3 in the admin tab layout, index 1 otherwise */
@@ -1291,7 +1291,7 @@
 
   window.addCorrectionRow=function(){
     if(!window._correctionRows)window._correctionRows=[];
-    window._correctionRows.push({date:today(),punchType:'time_in',correctedTime:''});render();
+    window._correctionRows.push({date:'',punchType:'',correctedTime:''});render();
   };
   window.removeCorrectionRow=function(index){
     if(!window._correctionRows||window._correctionRows.length<=1){toast('At least one correction row is required.','warning');return;}
@@ -1302,11 +1302,11 @@
   };
 
   function correctionRowsFields(){
-    var rows=window._correctionRows||[{date:today(),punchType:'time_in',correctedTime:''}];
+    var rows=window._correctionRows||[{date:'',punchType:'',correctedTime:''}];
     window._correctionRows=rows;
     return '<div class="card-sub" style="margin-bottom:8px">Add as many Time In or Time Out corrections as needed. Each row becomes a separate approval item.</div>'+
       '<div style="display:grid;gap:8px">'+rows.map(function(row,i){return '<div class="correction-row"><div class="field"><label>Date</label><input type="date" value="'+esc(row.date)+'" onchange="updateCorrectionRow('+i+',\'date\',this.value);updateAttSubmitButton()"></div>'+
-        '<div class="field"><label>Punch</label><select onchange="updateCorrectionRow('+i+',\'punchType\',this.value);updateAttSubmitButton()"><option value="time_in" '+(row.punchType==='time_in'?'selected':'')+'>Time In</option><option value="time_out" '+(row.punchType==='time_out'?'selected':'')+'>Time Out</option></select></div>'+
+        '<div class="field"><label>Punch</label><select onchange="updateCorrectionRow('+i+',\'punchType\',this.value);updateAttSubmitButton()"><option value="" '+(row.punchType?'':'selected')+'>Select…</option><option value="time_in" '+(row.punchType==='time_in'?'selected':'')+'>Time In</option><option value="time_out" '+(row.punchType==='time_out'?'selected':'')+'>Time Out</option></select></div>'+
         '<div class="field"><label>Correct Time</label><input type="time" value="'+esc(row.correctedTime)+'" onchange="updateCorrectionRow('+i+',\'correctedTime\',this.value);updateAttSubmitButton()"></div>'+
         '<button class="btn btn-sm btn-danger" style="align-self:end;margin-bottom:10px" onclick="removeCorrectionRow('+i+')">Remove</button></div>';}).join('')+'</div>'+
       '<button class="btn btn-sm" type="button" onclick="addCorrectionRow()">+ Add another correction</button>';
@@ -1318,7 +1318,6 @@
   }
 
   function attendanceFormFields(form){
-    var todayDate=today();
     var punchFields=(form.kind==='punch')?correctionRowsFields():'';
     var otTypeVal=attFieldVal('att-form-ot-type','');
     var intervalFields=(form.kind==='interval')?
@@ -1332,15 +1331,15 @@
       '<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" value="'+esc(attFieldVal('att-form-in',''))+'" oninput="attFormSync(\'att-form-in\');previewRdhEligibility()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" value="'+esc(attFieldVal('att-form-out',''))+'" oninput="attFormSync(\'att-form-out\');previewRdhEligibility()"></div></div>'+
       '<div id="att-rdh-info" style="padding:10px 12px;background:var(--bg);border:1.5px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px">Select a Type above to check eligibility for this date.</div>'
       :'';
-    var minuteFields=(form.kind==='minutes')?'<div class="field"><label>Undertime Minutes</label><input type="number" id="att-form-minutes" min="1" max="480" step="1" value="'+esc(attFieldVal('att-form-minutes','30'))+'" oninput="attFormSync(\'att-form-minutes\');updateAttSubmitButton()"></div>':'';
+    var minuteFields=(form.kind==='minutes')?'<div class="field"><label>Undertime Minutes</label><input type="number" id="att-form-minutes" min="1" max="480" step="1" placeholder="e.g. 30" value="'+esc(attFieldVal('att-form-minutes',''))+'" oninput="attFormSync(\'att-form-minutes\');updateAttSubmitButton()"></div>':'';
     var isRange=(form.kind==='range'||form.kind==='ob'||form.kind==='wfh');
     var rangeFields=isRange?'<div class="field"><label>Work Location</label><input id="att-form-location" value="'+esc(attFieldVal('att-form-location',''))+'" placeholder="Client site, home, or field location" oninput="attFormSync(\'att-form-location\')"></div>':'';
     var obFields=(form.kind==='ob')?'<div class="form-row"><div class="field"><label>OB Time In</label><input type="time" id="att-form-in" value="'+esc(attFieldVal('att-form-in',''))+'" oninput="attFormSync(\'att-form-in\');updateAttSubmitButton()"></div><div class="field"><label>OB Time Out</label><input type="time" id="att-form-out" value="'+esc(attFieldVal('att-form-out',''))+'" oninput="attFormSync(\'att-form-out\');updateAttSubmitButton()"></div></div><div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">Once approved, these OB times will create or update a Present attendance record for every covered date.</div>':'';
     var wfhNotice=(form.kind==='wfh')?'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;margin-bottom:12px"><strong>Bundy is still required.</strong> You must have completed actual Time In and Time Out logs for every covered WFH date before HR can approve this request.</div>':'';
     var scheduleFields=(form.kind==='schedule')?renderScheduleAdjBuilder():'';
-    var header=(form.kind==='punch'||form.kind==='schedule')?'<div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div>':
-      isRange?'<div class="form-row"><div class="field"><label>From</label><input type="date" id="att-form-date" value="'+esc(attFieldVal('att-form-date',todayDate))+'" oninput="attFormSync(\'att-form-date\');updateAttSubmitButton()"></div><div class="field"><label>To</label><input type="date" id="att-form-end" value="'+esc(attFieldVal('att-form-end',todayDate))+'" oninput="attFormSync(\'att-form-end\');updateAttSubmitButton()"></div></div>':
-      '<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+esc(attFieldVal('att-form-date',todayDate))+'" oninput="attFormSync(\'att-form-date\');'+(form.kind==='interval'?'previewOtEligibility()':form.kind==='rdh_ot'?'previewRdhEligibility()':'updateAttSubmitButton()')+'"></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>';
+    var header=(form.kind==='punch'||form.kind==='schedule')?'':
+      isRange?'<div class="form-row"><div class="field"><label>From</label><input type="date" id="att-form-date" value="'+esc(attFieldVal('att-form-date',''))+'" oninput="attFormSync(\'att-form-date\');updateAttSubmitButton()"></div><div class="field"><label>To</label><input type="date" id="att-form-end" value="'+esc(attFieldVal('att-form-end',''))+'" oninput="attFormSync(\'att-form-end\');updateAttSubmitButton()"></div></div>':
+      '<div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+esc(attFieldVal('att-form-date',''))+'" oninput="attFormSync(\'att-form-date\');'+(form.kind==='interval'?'previewOtEligibility()':form.kind==='rdh_ot'?'previewRdhEligibility()':'updateAttSubmitButton()')+'"></div>';
     return header+rangeFields+punchFields+intervalFields+rdhFields+obFields+wfhNotice+scheduleFields+minuteFields+
       '<div class="field"><label>Reason and supporting details</label><textarea id="att-form-reason" oninput="attFormSync(\'att-form-reason\');updateAttSubmitButton()" rows="4" placeholder="Explain the request and include the expected correction or approval.">'+esc(attFieldVal('att-form-reason',''))+'</textarea></div>';
   }
@@ -1352,28 +1351,13 @@
   // schedule that repeats Mon-Fri), or dropped entirely. Regenerating after edits preserves any
   // date already in the table and only adds/removes what the new range actually changed.
   function renderScheduleAdjBuilder(){
-    var assigned=SHIFT_DEFINITIONS.find(function(s){return s.id===user.shiftId;});
-    // Shifts store a per-day schedule (schedule.mon/tue/…), not flat start/end fields — pull a
-    // representative start/end from the shift's first working (non-rest) day.
-    var assignedWorkDay=null;
-    if(assigned){
-      var normalizedAssigned=TimekeepingCore.normalizeShift(assigned);
-      SHIFT_DAY_KEYS.some(function(k){
-        var d=normalizedAssigned.schedule[k];
-        if(d&&!d.restDay&&d.start&&d.end){assignedWorkDay=d;return true;}
-        return false;
-      });
-    }
     var rows=window._scheduleAdjRows||[];
-    var shiftStartDefault=assignedWorkDay?assignedWorkDay.start:'08:00';
-    var shiftStartDefaultM=minutesFromTime(attFieldVal('satt-shift-start',shiftStartDefault));
-    // Shift End's own default mirrors the same "9 hours after Shift Start" math the onchange
-    // auto-fill uses (8 worked hours + 1-hour break), rather than an unrelated flat fallback —
-    // only when there's no assigned shift to read a real end time from in the first place.
-    var shiftEndDefault=assignedWorkDay?assignedWorkDay.end:(shiftStartDefaultM!=null?minutesToTimeStr(shiftStartDefaultM+540):'17:00');
+    // Shift Start/End are left blank rather than pre-filled from the assigned shift — the info
+    // box below already shows the current assignment for reference. Once the admin types a Shift
+    // Start, scheduleAdjAutoBreak() fills in Break Start/End and Shift End automatically.
     return '<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;margin-bottom:12px">Current assigned shift: <strong>'+esc(assignedShiftText(user.shiftId))+'</strong></div>'+
-      '<div class="form-row"><div class="field"><label>Effectivity From</label><input type="date" id="satt-from" value="'+esc(attFieldVal('satt-from',window._scheduleAdjFrom||today()))+'" oninput="attFormSync(\'satt-from\')"></div><div class="field"><label>Effectivity To</label><input type="date" id="satt-to" value="'+esc(attFieldVal('satt-to',window._scheduleAdjTo||today()))+'" oninput="attFormSync(\'satt-to\')"></div></div>'+
-      '<div class="form-row"><div class="field"><label>Shift Start</label><input type="time" id="satt-shift-start" value="'+esc(attFieldVal('satt-shift-start',shiftStartDefault))+'" oninput="attFormSync(\'satt-shift-start\')" onchange="scheduleAdjAutoBreak()"></div><div class="field"><label>Break Start</label><input type="time" id="satt-break-start" value="'+esc(attFieldVal('satt-break-start',''))+'" oninput="attFormSync(\'satt-break-start\')"></div><div class="field"><label>Break End</label><input type="time" id="satt-break-end" value="'+esc(attFieldVal('satt-break-end',''))+'" oninput="attFormSync(\'satt-break-end\')"></div><div class="field"><label>Shift End</label><input type="time" id="satt-shift-end" value="'+esc(attFieldVal('satt-shift-end',shiftEndDefault))+'" oninput="attFormSync(\'satt-shift-end\');window._scheduleAdjShiftEndTouched=true"></div></div>'+
+      '<div class="form-row"><div class="field"><label>Effectivity From</label><input type="date" id="satt-from" value="'+esc(attFieldVal('satt-from',''))+'" oninput="attFormSync(\'satt-from\')"></div><div class="field"><label>Effectivity To</label><input type="date" id="satt-to" value="'+esc(attFieldVal('satt-to',''))+'" oninput="attFormSync(\'satt-to\')"></div></div>'+
+      '<div class="form-row"><div class="field"><label>Shift Start</label><input type="time" id="satt-shift-start" value="'+esc(attFieldVal('satt-shift-start',''))+'" oninput="attFormSync(\'satt-shift-start\')" onchange="scheduleAdjAutoBreak()"></div><div class="field"><label>Break Start</label><input type="time" id="satt-break-start" value="'+esc(attFieldVal('satt-break-start',''))+'" oninput="attFormSync(\'satt-break-start\')"></div><div class="field"><label>Break End</label><input type="time" id="satt-break-end" value="'+esc(attFieldVal('satt-break-end',''))+'" oninput="attFormSync(\'satt-break-end\')"></div><div class="field"><label>Shift End</label><input type="time" id="satt-shift-end" value="'+esc(attFieldVal('satt-shift-end',''))+'" oninput="attFormSync(\'satt-shift-end\');window._scheduleAdjShiftEndTouched=true"></div></div>'+
       '<div style="margin-bottom:14px"><button type="button" class="btn btn-sm btn-primary" onclick="scheduleAdjGenerateDates()">Generate Dates</button></div>'+
       (rows.length?renderScheduleAdjTable(rows):'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--txt3);margin-bottom:12px">Set an effectivity range above and click Generate Dates to build the day-by-day schedule.</div>');
   }
@@ -1533,7 +1517,7 @@
     if(!reason){toast('Supporting details are required.','warning');return;}
     if(form.kind==='punch'){
       var corrections=window._correctionRows||[];
-      if(!corrections.length||corrections.some(function(r){return !r.date||!r.correctedTime;})){toast('Complete the date and corrected time for every row.','warning');return;}
+      if(!corrections.length||corrections.some(function(r){return !r.date||!r.punchType||!r.correctedTime;})){toast('Complete the date, punch type, and corrected time for every row.','warning');return;}
       var batchId='TC-'+Date.now();
       corrections.forEach(function(row){
         var correctionLinked=attendanceRecord(user.id,row.date);
