@@ -1573,38 +1573,112 @@ function applyBulkAttendance(){
   toast(msg,errors.length?'warning':'success');
   if(errors.length)setTimeout(()=>alert('Skipped rows:\n\n'+errors.join('\n')),400);
 }
-/* ---- Bulk Personal Schedule Import ----
- * One row per employee per day of week (up to 7 rows/employee) rather than a wide 35-column
- * layout — matches the long/tidy shape every other bulk import here already uses (Leave
- * Balance, Attendance) and is far easier to read/edit in a spreadsheet. Applying requires all
- * 7 days present for an employee's group of rows, since a personal schedule always represents
- * a complete week (same rule the Personal Schedule Editor modal enforces). */
+/* ---- Bulk Personal Schedule ----
+ * Two ways to set personal schedules for several employees at once:
+ *  - "multi" mode: search-and-select any number of employees, build ONE day-by-day schedule
+ *    (same table UX as the single Personal Schedule Editor), apply it to everyone selected —
+ *    for the common case of a group that should all follow the same non-default pattern.
+ *  - "excel" mode: one row PER EMPLOYEE with every day laid out horizontally (Rest Day/Start
+ *    Shift/Start Break/End Break/End Shift × Mon–Sun), matching the wide layout this company
+ *    already uses for its own HRIS bulk-upload template — for when every employee genuinely
+ *    needs a different schedule from each other. */
 const BULK_PSCHED_DAY_KEYS=['mon','tue','wed','thu','fri','sat','sun'];
 const BULK_PSCHED_DAY_LABELS={mon:'Monday',tue:'Tuesday',wed:'Wednesday',thu:'Thursday',fri:'Friday',sat:'Saturday',sun:'Sunday'};
+function blankPschedDay(){return {restDay:false,start:'',end:'',breakStart:'',breakEnd:''};}
+function blankPschedWeek(){const w={};BULK_PSCHED_DAY_KEYS.forEach(k=>{w[k]=blankPschedDay();});return w;}
 function openBulkPersonalSchedule(){
   if(!(isAdminUser(user)||isPlatformAdmin))return;
-  modal={type:'bulkPersonalSchedule',rows:[{eid:'',day:'',restDay:'',start:'',end:'',breakStart:'',breakEnd:''}]};
+  modal={type:'bulkPersonalSchedule',mode:'multi',selectedIds:[],search:'',schedule:blankPschedWeek(),rows:[Object.assign({eid:''},blankPschedWeek())]};
   render();
 }
+function setBulkPschedMode(mode){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  modal.mode=mode;render();
+}
+
+/* -- multi mode: search + multi-select, one shared schedule -- */
+function toggleBulkPschedEmployee(id){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  const idx=modal.selectedIds.indexOf(id);
+  if(idx>=0)modal.selectedIds.splice(idx,1);else modal.selectedIds.push(id);
+  render();
+}
+function bulkPschedSetDayField(day,field,value){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  modal.schedule[day][field]=value;
+}
+function bulkPschedToggleRestDay(day,checked){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  modal.schedule[day].restDay=checked;
+  if(checked){modal.schedule[day].start='';modal.schedule[day].end='';modal.schedule[day].breakStart='';modal.schedule[day].breakEnd='';}
+  render();
+}
+function bulkPschedApplyToAll(day){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  const src=modal.schedule[day];
+  BULK_PSCHED_DAY_KEYS.forEach(k=>{
+    if(k===day||modal.schedule[k].restDay)return;
+    modal.schedule[k]=Object.assign({},src,{restDay:false});
+  });
+  render();
+}
+function applyBulkPersonalScheduleMulti(){
+  if(!(isAdminUser(user)||isPlatformAdmin))return;
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  if(!modal.selectedIds.length){toast('Select at least one employee.','warning');return;}
+  const timeOk=v=>/^([01]\d|2[0-3]):[0-5]\d$/.test(v||'');
+  for(const k of BULK_PSCHED_DAY_KEYS){
+    const day=modal.schedule[k];
+    if(day.restDay)continue;
+    if(!timeOk(day.start)||!timeOk(day.end)){toast('Enter valid Start/End times for '+BULK_PSCHED_DAY_LABELS[k]+', or mark it Rest Day.','warning');return;}
+    if(day.breakStart&&!timeOk(day.breakStart)){toast('Enter a valid Break Start time for '+BULK_PSCHED_DAY_LABELS[k]+'.','warning');return;}
+    if(day.breakEnd&&!timeOk(day.breakEnd)){toast('Enter a valid Break End time for '+BULK_PSCHED_DAY_LABELS[k]+'.','warning');return;}
+  }
+  if(BULK_PSCHED_DAY_KEYS.every(k=>modal.schedule[k].restDay)){toast('Every day is marked Rest Day — mark at least one working day.','warning');return;}
+  let applied=0;const skipped=[];
+  modal.selectedIds.forEach(id=>{
+    const emp=USERS.find(u=>u.id===id);
+    if(!emp||emp.active===false){skipped.push(emp?emp.name:('#'+id));return;}
+    emp.personalSchedule=JSON.parse(JSON.stringify(modal.schedule));
+    applied++;
+  });
+  if(applied>0)queueSync('Employees','Personal_Schedules');
+  closeM();
+  let msg='Personal schedule applied to '+applied+' employee(s).';
+  if(skipped.length)msg+=' '+skipped.length+' skipped (inactive).';
+  toast(msg,skipped.length?'warning':'success');
+}
+
+/* -- excel mode: one row per employee, all 7 days laid out horizontally -- */
 function downloadPersonalScheduleTemplate(){
   const emps=USERS.filter(u=>u.role==='employee'&&u.active!==false);
+  const dayHeaders=[];
+  BULK_PSCHED_DAY_KEYS.forEach(k=>{
+    const label=BULK_PSCHED_DAY_LABELS[k];
+    dayHeaders.push(label+' is Rest Day? (Y/N)',label+' Start Shift',label+' Start Break',label+' End Break',label+' End Shift');
+  });
+  const header=['EID *'].concat(dayHeaders);
   const templateRows=[
-    ['PERSONAL SCHEDULE BULK IMPORT — SproutRipple PH','','','','','',''],
-    ['One row per employee per day of week. All 7 days (Mon–Sun) are required for each EID, or that employee\'s rows are skipped.','','','','','',''],
-    ['Rest Day = Y means no shift that day — leave Start/End/Break blank. Only active employees are applied.','','','','','',''],
+    ['PERSONAL SCHEDULE BULK IMPORT — SproutRipple PH'],
+    ['One row per employee. Rest Day = Y means no shift that day — leave that day\'s 4 time columns blank.'],
+    ['Times use 24-hour HH:MM format (e.g. 08:00, 17:00). Only active employees are applied.'],
     [],
-    ['EID *','Day * (Mon/Tue/Wed/Thu/Fri/Sat/Sun)','Rest Day (Y/N) *','Start (HH:MM)','End (HH:MM)','Break Start (HH:MM)','Break End (HH:MM)']
+    header
   ];
   const sample=emps[0];
   if(sample){
-    const days=[['Mon','N','08:00','17:00','12:00','13:00'],['Tue','N','08:00','17:00','12:00','13:00'],['Wed','N','08:00','17:00','12:00','13:00'],
-      ['Thu','N','08:00','17:00','12:00','13:00'],['Fri','N','08:00','17:00','12:00','13:00'],['Sat','N','08:00','17:00','12:00','13:00'],['Sun','Y','','','','']];
-    days.forEach(d=>templateRows.push([sample.eid,d[0],d[1],d[2],d[3],d[4],d[5]]));
+    const row=[sample.eid];
+    BULK_PSCHED_DAY_KEYS.forEach(k=>{
+      if(k==='sun')row.push('Y','','','','');
+      else row.push('N','08:00','12:00','13:00','17:00');
+    });
+    templateRows.push(row);
   }
   const empRows=[['EID','Name','Status']].concat(emps.map(e=>[e.eid,e.name,e.active!==false?'Active':'Inactive']));
   try{
+    const colWidths=[14].concat(BULK_PSCHED_DAY_KEYS.flatMap(()=>[18,12,12,12,12]));
     const data=buildXLSX([
-      {name:'Template',rows:templateRows,colWidths:[14,26,14,12,12,14,14]},
+      {name:'Template',rows:templateRows,colWidths:colWidths},
       {name:'Employees',rows:empRows,colWidths:[14,26,12]}
     ]);
     const blob=new Blob([data],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
@@ -1630,31 +1704,45 @@ function parsePersonalScheduleExcel(file,input){
       if(!raw.length){toast('Empty file','warning');return;}
       const hdrIdx=raw.findIndex(r=>{
         const cells=r.map(v=>String(v||'').toLowerCase().replace(/\s*\*\s*$/,'').trim());
-        return cells.some(v=>v==='eid')&&cells.some(v=>v.startsWith('day'))&&cells.some(v=>v.startsWith('rest day'));
+        return cells.some(v=>v==='eid'||v.startsWith('eid'))&&cells.some(v=>v.includes('monday'))&&cells.some(v=>v.includes('rest day'));
       });
-      if(hdrIdx<0){toast('Header row not found — make sure your file has columns: EID, Day, Rest Day','warning');return;}
+      if(hdrIdx<0){toast('Header row not found — make sure your file has an EID column plus per-day Rest Day/Shift columns','warning');return;}
       const hdr=raw[hdrIdx].map(h=>String(h).toLowerCase().trim());
-      const col=(...kws)=>hdr.findIndex(h=>kws.some(k=>h.includes(k)));
-      const eidCol=col('eid'),dayCol=col('day'),restCol=col('rest day'),startCol=col('start'),endCol=col('end'),bsCol=col('break start'),beCol=col('break end');
-      if(eidCol<0||dayCol<0||restCol<0){toast('Required columns not found (EID, Day, Rest Day)','warning');return;}
+      const eidCol=hdr.findIndex(h=>h==='eid'||h.startsWith('eid'));
+      if(eidCol<0){toast('EID column not found','warning');return;}
+      const dayCols={};
+      BULK_PSCHED_DAY_KEYS.forEach(k=>{
+        const label=BULK_PSCHED_DAY_LABELS[k].toLowerCase();
+        dayCols[k]={
+          rest:hdr.findIndex(h=>h.startsWith(label)&&h.includes('rest')),
+          start:hdr.findIndex(h=>h.startsWith(label)&&h.includes('start shift')),
+          breakStart:hdr.findIndex(h=>h.startsWith(label)&&h.includes('start break')),
+          breakEnd:hdr.findIndex(h=>h.startsWith(label)&&h.includes('end break')),
+          end:hdr.findIndex(h=>h.startsWith(label)&&h.includes('end shift'))
+        };
+      });
       const rows=[];
       raw.slice(hdrIdx+1).forEach(r=>{
         if(!r.some(c=>String(c).trim()))return;
         const first=String(r[0]||'').trim();
         if(/^EXAMPLE/i.test(first))return;
-        rows.push({
-          eid:String(r[eidCol]||'').trim(),
-          day:String(r[dayCol]||'').trim().slice(0,3).toLowerCase(),
-          restDay:/^y/i.test(String(r[restCol]||'').trim())?'Y':'N',
-          start:startCol>=0?String(r[startCol]||'').trim():'',
-          end:endCol>=0?String(r[endCol]||'').trim():'',
-          breakStart:bsCol>=0?String(r[bsCol]||'').trim():'',
-          breakEnd:beCol>=0?String(r[beCol]||'').trim():''
+        const row={eid:String(r[eidCol]||'').trim()};
+        BULK_PSCHED_DAY_KEYS.forEach(k=>{
+          const c=dayCols[k];
+          const isRest=/^y/i.test(String(r[c.rest]||'').trim());
+          row[k]={
+            restDay:isRest,
+            start:isRest||c.start<0?'':String(r[c.start]||'').trim(),
+            end:isRest||c.end<0?'':String(r[c.end]||'').trim(),
+            breakStart:isRest||c.breakStart<0?'':String(r[c.breakStart]||'').trim(),
+            breakEnd:isRest||c.breakEnd<0?'':String(r[c.breakEnd]||'').trim()
+          };
         });
+        rows.push(row);
       });
       if(!rows.length){toast('No data rows found','warning');return;}
       modal.rows=rows;input.value='';render();
-      toast(rows.length+' row(s) loaded — review before applying','info');
+      toast(rows.length+' employee row(s) loaded — review before applying','info');
     }catch(ex){
       toast('Upload failed: '+ex.message,'warning');console.error('[personal-schedule-upload] Failed to parse file',ex);input.value='';
     }
@@ -1663,46 +1751,42 @@ function parsePersonalScheduleExcel(file,input){
 }
 function addBulkPersonalScheduleRow(){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
-  modal.rows.push({eid:'',day:'',restDay:'',start:'',end:'',breakStart:'',breakEnd:''});render();
+  modal.rows.push(Object.assign({eid:''},blankPschedWeek()));render();
 }
 function removeBulkPersonalScheduleRow(i){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
-  modal.rows.splice(i,1);if(!modal.rows.length)modal.rows.push({eid:'',day:'',restDay:'',start:'',end:'',breakStart:'',breakEnd:''});render();
+  modal.rows.splice(i,1);if(!modal.rows.length)modal.rows.push(Object.assign({eid:''},blankPschedWeek()));render();
 }
-function applyBulkPersonalSchedules(){
+function bulkPschedRowToggleRestDay(i,day,checked){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  modal.rows[i][day].restDay=checked;
+  if(checked){modal.rows[i][day].start='';modal.rows[i][day].end='';modal.rows[i][day].breakStart='';modal.rows[i][day].breakEnd='';}
+  render();
+}
+function applyBulkPersonalSchedulesExcel(){
   if(!(isAdminUser(user)||isPlatformAdmin))return;
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
   const timeOk=v=>/^([01]\d|2[0-3]):[0-5]\d$/.test(v||'');
-  const byEid={};
-  modal.rows.forEach((r,i)=>{
-    if(!r.eid&&!r.day)return; /* blank row, ignored */
-    (byEid[r.eid]=byEid[r.eid]||[]).push(Object.assign({rowIndex:i},r));
-  });
   let applied=0;const errors=[];
-  Object.keys(byEid).forEach(eid=>{
-    const rows=byEid[eid];
-    const rowLabel='EID "'+eid+'"';
-    const emp=USERS.find(u=>u.eid===eid&&u.role==='employee');
+  modal.rows.forEach((r,i)=>{
+    if(!r.eid)return; /* blank row, ignored */
+    const rowLabel='Row '+(i+1)+' (EID "'+r.eid+'")';
+    const emp=USERS.find(u=>u.eid===r.eid&&u.role==='employee');
     if(!emp){errors.push(rowLabel+': employee not found');return;}
     if(emp.active===false){errors.push(rowLabel+': '+emp.name+' is inactive — skipped');return;}
-    const byDay={};
     let rowError=null;
-    rows.forEach(r=>{
-      if(!BULK_PSCHED_DAY_KEYS.includes(r.day)){rowError=rowError||('Row '+(r.rowIndex+1)+': "'+r.day+'" is not a valid day (use Mon/Tue/Wed/Thu/Fri/Sat/Sun)');return;}
-      if(byDay[r.day]){rowError=rowError||(rowLabel+': '+BULK_PSCHED_DAY_LABELS[r.day]+' appears more than once');return;}
-      const isRest=r.restDay==='Y';
-      if(!isRest){
-        if(!timeOk(r.start)||!timeOk(r.end)){rowError=rowError||('Row '+(r.rowIndex+1)+': invalid Start/End time for '+BULK_PSCHED_DAY_LABELS[r.day]+' (use HH:MM, or mark it Rest Day)');return;}
-        if(r.breakStart&&!timeOk(r.breakStart)){rowError=rowError||('Row '+(r.rowIndex+1)+': invalid Break Start time for '+BULK_PSCHED_DAY_LABELS[r.day]);return;}
-        if(r.breakEnd&&!timeOk(r.breakEnd)){rowError=rowError||('Row '+(r.rowIndex+1)+': invalid Break End time for '+BULK_PSCHED_DAY_LABELS[r.day]);return;}
-      }
-      byDay[r.day]={restDay:isRest,start:isRest?'':r.start,end:isRest?'':r.end,breakStart:isRest?'':r.breakStart,breakEnd:isRest?'':r.breakEnd};
+    BULK_PSCHED_DAY_KEYS.forEach(k=>{
+      const day=r[k];
+      if(day.restDay)return;
+      if(!timeOk(day.start)||!timeOk(day.end)){rowError=rowError||(rowLabel+': invalid Start/End time for '+BULK_PSCHED_DAY_LABELS[k]);return;}
+      if(day.breakStart&&!timeOk(day.breakStart)){rowError=rowError||(rowLabel+': invalid Break Start time for '+BULK_PSCHED_DAY_LABELS[k]);return;}
+      if(day.breakEnd&&!timeOk(day.breakEnd)){rowError=rowError||(rowLabel+': invalid Break End time for '+BULK_PSCHED_DAY_LABELS[k]);return;}
     });
     if(rowError){errors.push(rowError);return;}
-    const missing=BULK_PSCHED_DAY_KEYS.filter(k=>!byDay[k]);
-    if(missing.length){errors.push(rowLabel+': missing '+missing.map(k=>BULK_PSCHED_DAY_LABELS[k]).join(', ')+' — all 7 days are required');return;}
-    if(BULK_PSCHED_DAY_KEYS.every(k=>byDay[k].restDay)){errors.push(rowLabel+': every day is Rest Day — mark at least one working day');return;}
-    emp.personalSchedule=byDay;
+    if(BULK_PSCHED_DAY_KEYS.every(k=>r[k].restDay)){errors.push(rowLabel+': every day is Rest Day — mark at least one working day');return;}
+    const schedule={};
+    BULK_PSCHED_DAY_KEYS.forEach(k=>{schedule[k]={restDay:r[k].restDay,start:r[k].restDay?'':r[k].start,end:r[k].restDay?'':r[k].end,breakStart:r[k].restDay?'':r[k].breakStart,breakEnd:r[k].restDay?'':r[k].breakEnd};});
+    emp.personalSchedule=schedule;
     applied++;
   });
   if(applied>0)queueSync('Employees','Personal_Schedules');
@@ -9464,75 +9548,119 @@ function renderModal(){
       </div>
     </div>`;
   }else if(modal.type==='bulkPersonalSchedule'){
-    const rows=modal.rows||[];
-    const dayOpts=BULK_PSCHED_DAY_KEYS;
-    const rowsByEid={};
-    rows.forEach(r=>{if(r.eid)(rowsByEid[r.eid]=rowsByEid[r.eid]||[]).push(r);});
-    const readyEids=Object.keys(rowsByEid).filter(eid=>{
-      const g=rowsByEid[eid];
-      const days=new Set(g.map(r=>r.day));
-      return dayOpts.every(d=>days.has(d))&&USERS.some(u=>u.eid===eid&&u.role==='employee');
-    });
-    inner=`<div class="modal-title" style="position:sticky;top:0;z-index:2;background:var(--surface)">
-      <span>📋 Bulk Personal Schedule Import</span>
-      <span style="font-size:11px;color:var(--txt3);font-weight:400;margin-left:8px">${rows.length} row${rows.length!==1?'s':''} · ${readyEids.length} employee${readyEids.length!==1?'s':''} ready</span>
-      <button class="close-x" onclick="closeMConfirmed()">×</button>
-    </div>
-    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">One row per employee per day of week. All 7 days (Mon–Sun) are required per EID before that employee is applied — this replaces their personal schedule outright, same as editing it directly. Employees not listed here keep following their assigned shift template as usual.</div>
-    <div style="background:var(--accent-bg);border:1px solid var(--accent);border-radius:10px;padding:10px 14px;margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <button class="btn btn-sm" onclick="downloadPersonalScheduleTemplate()">⬇ Download Template</button>
-      <label class="btn btn-sm" style="cursor:pointer">📂 Upload Excel
-        <input type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="handlePersonalScheduleExcel(event)"/>
-      </label>
-      <span style="font-size:11px;color:var(--accent-txt)">Or fill in rows manually below.</span>
-    </div>
-    <div style="overflow-x:auto;margin-bottom:12px">
-    <table style="min-width:760px;font-size:12px;border-collapse:separate;border-spacing:0 4px">
-      <thead><tr style="background:var(--bg)">
-        <th style="width:20px;padding:4px 8px">#</th>
-        <th style="padding:4px 8px;text-align:left">EID <span style="color:var(--red)">*</span></th>
-        <th style="padding:4px 8px;text-align:left">Day <span style="color:var(--red)">*</span></th>
-        <th style="padding:4px 8px;text-align:left">Rest Day <span style="color:var(--red)">*</span></th>
-        <th style="padding:4px 8px;text-align:left">Start</th>
-        <th style="padding:4px 8px;text-align:left">End</th>
-        <th style="padding:4px 8px;text-align:left">Break Start</th>
-        <th style="padding:4px 8px;text-align:left">Break End</th>
-        <th></th>
-      </tr></thead>
-      <tbody>
-      ${rows.map((r,i)=>{
-        const emp=USERS.find(u=>u.eid===r.eid&&u.role==='employee');
-        const empOk=!!emp,empActive=emp&&emp.active!==false;
-        const isRest=r.restDay==='Y';
-        return`<tr style="background:var(--surface2)">
-          <td style="text-align:center;color:var(--txt3)">${i+1}</td>
-          <td><input class="finput" style="font-size:12px;${r.eid&&!empOk?'border-color:var(--red)':r.eid&&!empActive?'border-color:var(--amber)':''}" value="${esc(r.eid)}" placeholder="EID" oninput="modal.rows[${i}].eid=this.value.trim()"/>${r.eid&&!empOk?'<div style="font-size:10px;color:var(--red)">Not found</div>':r.eid&&!empActive?'<div style="font-size:10px;color:var(--amber-txt)">Inactive</div>':''}</td>
-          <td><select class="finput" style="font-size:12px;${r.day&&!dayOpts.includes(r.day)?'border-color:var(--red)':''}" onchange="modal.rows[${i}].day=this.value;render()">
-            <option value="">Select…</option>
-            ${dayOpts.map(d=>`<option value="${d}" ${r.day===d?'selected':''}>${BULK_PSCHED_DAY_LABELS[d]}</option>`).join('')}
-          </select></td>
-          <td><select class="finput" style="font-size:12px" onchange="modal.rows[${i}].restDay=this.value;render()">
-            <option value="">Select…</option>
-            <option value="N" ${r.restDay==='N'?'selected':''}>No</option>
-            <option value="Y" ${r.restDay==='Y'?'selected':''}>Yes</option>
-          </select></td>
-          <td><input type="time" class="finput mono" style="font-size:12px" ${isRest?'disabled':''} value="${isRest?'':esc(r.start)}" onchange="modal.rows[${i}].start=this.value"/></td>
-          <td><input type="time" class="finput mono" style="font-size:12px" ${isRest?'disabled':''} value="${isRest?'':esc(r.end)}" onchange="modal.rows[${i}].end=this.value"/></td>
-          <td><input type="time" class="finput mono" style="font-size:12px" ${isRest?'disabled':''} value="${isRest?'':esc(r.breakStart)}" onchange="modal.rows[${i}].breakStart=this.value"/></td>
-          <td><input type="time" class="finput mono" style="font-size:12px" ${isRest?'disabled':''} value="${isRest?'':esc(r.breakEnd)}" onchange="modal.rows[${i}].breakEnd=this.value"/></td>
-          <td><button class="btn btn-sm btn-danger" onclick="removeBulkPersonalScheduleRow(${i})" title="Remove row">✕</button></td>
-        </tr>`;
-      }).join('')}
-      </tbody>
-    </table>
-    </div>
-    <div style="display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap">
-      <button class="btn btn-sm" onclick="addBulkPersonalScheduleRow()">+ Add Row</button>
-      <div style="display:flex;gap:8px">
-        <button class="btn" onclick="closeM()">Cancel</button>
-        <button class="btn btn-primary" onclick="applyBulkPersonalSchedules()" ${readyEids.length?'':'disabled'}>Apply ${readyEids.length} Schedule${readyEids.length!==1?'s':''}</button>
-      </div>
+    const mode=modal.mode||'multi';
+    const modeTabs=`<div class="tabs" style="margin-bottom:14px">
+      <div class="tab ${mode==='multi'?'active':''}" onclick="setBulkPschedMode('multi')">Multiple Employees, Same Schedule</div>
+      <div class="tab ${mode==='excel'?'active':''}" onclick="setBulkPschedMode('excel')">Excel Upload — Different per Employee</div>
     </div>`;
+    if(mode==='multi'){
+      const activeEmps=USERS.filter(u=>u.role==='employee'&&u.active!==false).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+      const q=(modal.search||'').toLowerCase();
+      const selectedEmps=activeEmps.filter(e=>modal.selectedIds.includes(e.id));
+      inner=`<div class="modal-title" style="position:sticky;top:0;z-index:2;background:var(--surface)">
+        <span>📋 Bulk Personal Schedule</span>
+        <button class="close-x" onclick="closeMConfirmed()">×</button>
+      </div>
+      ${modeTabs}
+      <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">Search and select any number of employees, then build one weekly schedule below — it replaces the personal schedule for everyone selected. An approved Schedule Adjustment still overrides this when it applies.</div>
+      <div class="field" style="margin-bottom:8px"><label>Employees</label>
+        <div style="font-size:11px;margin-bottom:6px">
+          ${selectedEmps.length
+            ?'<span style="color:var(--green);font-weight:600">'+selectedEmps.length+' selected: </span>'+selectedEmps.map(e=>'<span class="badge b-approved" style="font-size:10px;margin-right:2px">'+esc(e.name)+'</span>').join('')
+            :'<span style="color:var(--txt3)">No employees selected.</span>'}
+        </div>
+        <input class="finput" style="font-size:12px;margin-bottom:6px" placeholder="Search name, EID or position…" value="${esc(modal.search||'')}" oninput="modal.search=this.value;render()"/>
+        <div style="max-height:180px;overflow-y:auto;display:grid;gap:3px;border:1px solid var(--border);border-radius:8px;padding:6px">
+          ${activeEmps.filter(e=>!q||(e.name+' '+(e.eid||'')+' '+(e.pos||'')).toLowerCase().includes(q)).map(e=>{
+            const chk=modal.selectedIds.includes(e.id);
+            return`<label style="display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:7px;border:1px solid ${chk?'var(--accent)':'var(--border)'};background:${chk?'var(--accent-bg)':'var(--surface)'};cursor:pointer"
+              onclick="event.preventDefault();toggleBulkPschedEmployee(${e.id})">
+              <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${chk?'checked':''} onclick="event.preventDefault()"/>
+              <div style="flex:1;min-width:0">
+                <div style="font-weight:500;font-size:12px">${esc(e.name)}</div>
+                <div style="font-size:10px;color:var(--txt3)">${esc(e.eid||'')}${e.pos?' · '+esc(e.pos):''}</div>
+              </div>
+            </label>`;
+          }).join('')||'<div style="font-size:11px;color:var(--txt3);padding:6px">No employees match.</div>'}
+        </div>
+      </div>
+      <div style="overflow-x:auto;margin-bottom:12px">
+      <table><thead><tr><th>Day</th><th>Rest Day</th><th>Start</th><th>Break Start</th><th>Break End</th><th>End</th><th></th></tr></thead>
+      <tbody>${BULK_PSCHED_DAY_KEYS.map(k=>{
+        const day=modal.schedule[k];
+        return`<tr>
+          <td style="font-weight:600;font-size:13px">${BULK_PSCHED_DAY_LABELS[k]}</td>
+          <td><input type="checkbox" ${day.restDay?'checked':''} onchange="bulkPschedToggleRestDay('${k}',this.checked)"/></td>
+          <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.start||'')}" onchange="bulkPschedSetDayField('${k}','start',this.value)"/></td>
+          <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakStart||'')}" onchange="bulkPschedSetDayField('${k}','breakStart',this.value)"/></td>
+          <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakEnd||'')}" onchange="bulkPschedSetDayField('${k}','breakEnd',this.value)"/></td>
+          <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.end||'')}" onchange="bulkPschedSetDayField('${k}','end',this.value)"/></td>
+          <td>${day.restDay?'':`<button class="btn btn-sm" onclick="bulkPschedApplyToAll('${k}')" title="Copy this day's times to every other non-rest day">Apply to all</button>`}</td>
+        </tr>`;
+      }).join('')}</tbody></table>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" onclick="closeM()">Cancel</button>
+        <button class="btn btn-primary" onclick="applyBulkPersonalScheduleMulti()" ${modal.selectedIds.length?'':'disabled'}>Apply to ${modal.selectedIds.length} Employee${modal.selectedIds.length!==1?'s':''}</button>
+      </div>`;
+    }else{
+      const rows=modal.rows||[];
+      const readyCount=rows.filter(r=>r.eid&&USERS.some(u=>u.eid===r.eid&&u.role==='employee')).length;
+      inner=`<div class="modal-title" style="position:sticky;top:0;z-index:2;background:var(--surface)">
+        <span>📋 Bulk Personal Schedule</span>
+        <span style="font-size:11px;color:var(--txt3);font-weight:400;margin-left:8px">${rows.length} row${rows.length!==1?'s':''} · ${readyCount} ready</span>
+        <button class="close-x" onclick="closeMConfirmed()">×</button>
+      </div>
+      ${modeTabs}
+      <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">One row per employee, every day of the week laid out horizontally — matches this company's own HRIS bulk-upload layout. Replaces that employee's personal schedule outright, same as editing it directly.</div>
+      <div style="background:var(--accent-bg);border:1px solid var(--accent);border-radius:10px;padding:10px 14px;margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-sm" onclick="downloadPersonalScheduleTemplate()">⬇ Download Template</button>
+        <label class="btn btn-sm" style="cursor:pointer">📂 Upload Excel
+          <input type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="handlePersonalScheduleExcel(event)"/>
+        </label>
+        <span style="font-size:11px;color:var(--accent-txt)">Or fill in rows manually below.</span>
+      </div>
+      <div style="overflow-x:auto;margin-bottom:12px">
+      <table style="min-width:${260+BULK_PSCHED_DAY_KEYS.length*300}px;font-size:12px;border-collapse:separate;border-spacing:0 4px">
+        <thead><tr style="background:var(--bg)">
+          <th style="width:20px;padding:4px 8px">#</th>
+          <th style="padding:4px 8px;text-align:left">EID <span style="color:var(--red)">*</span></th>
+          ${BULK_PSCHED_DAY_KEYS.map(k=>`<th colspan="5" style="padding:4px 8px;text-align:center;border-left:1px solid var(--border)">${BULK_PSCHED_DAY_LABELS[k]}</th>`).join('')}
+          <th></th>
+        </tr><tr style="background:var(--bg)">
+          <th></th><th></th>
+          ${BULK_PSCHED_DAY_KEYS.map(()=>`<th style="padding:2px 6px;font-size:10px;border-left:1px solid var(--border)">Rest</th><th style="padding:2px 6px;font-size:10px">Start</th><th style="padding:2px 6px;font-size:10px">Break Start</th><th style="padding:2px 6px;font-size:10px">Break End</th><th style="padding:2px 6px;font-size:10px">End</th>`).join('')}
+          <th></th>
+        </tr></thead>
+        <tbody>
+        ${rows.map((r,i)=>{
+          const emp=USERS.find(u=>u.eid===r.eid&&u.role==='employee');
+          const empOk=!!emp,empActive=emp&&emp.active!==false;
+          return`<tr style="background:var(--surface2)">
+            <td style="text-align:center;color:var(--txt3)">${i+1}</td>
+            <td><input class="finput" style="font-size:12px;width:90px;${r.eid&&!empOk?'border-color:var(--red)':r.eid&&!empActive?'border-color:var(--amber)':''}" value="${esc(r.eid)}" placeholder="EID" oninput="modal.rows[${i}].eid=this.value.trim()"/>${r.eid&&!empOk?'<div style="font-size:10px;color:var(--red)">Not found</div>':r.eid&&!empActive?'<div style="font-size:10px;color:var(--amber-txt)">Inactive</div>':''}</td>
+            ${BULK_PSCHED_DAY_KEYS.map(k=>{
+              const day=r[k];
+              return`<td style="border-left:1px solid var(--border)"><input type="checkbox" ${day.restDay?'checked':''} onchange="bulkPschedRowToggleRestDay(${i},'${k}',this.checked)"/></td>
+              <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.start||'')}" onchange="modal.rows[${i}]['${k}'].start=this.value"/></td>
+              <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakStart||'')}" onchange="modal.rows[${i}]['${k}'].breakStart=this.value"/></td>
+              <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakEnd||'')}" onchange="modal.rows[${i}]['${k}'].breakEnd=this.value"/></td>
+              <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.end||'')}" onchange="modal.rows[${i}]['${k}'].end=this.value"/></td>`;
+            }).join('')}
+            <td><button class="btn btn-sm btn-danger" onclick="removeBulkPersonalScheduleRow(${i})" title="Remove row">✕</button></td>
+          </tr>`;
+        }).join('')}
+        </tbody>
+      </table>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap">
+        <button class="btn btn-sm" onclick="addBulkPersonalScheduleRow()">+ Add Row</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn" onclick="closeM()">Cancel</button>
+          <button class="btn btn-primary" onclick="applyBulkPersonalSchedulesExcel()" ${readyCount?'':'disabled'}>Apply ${readyCount} Schedule${readyCount!==1?'s':''}</button>
+        </div>
+      </div>`;
+    }
   }else if(modal.type==='editAttRow'){
     const emp=USERS.find(u=>u.id===modal.eid);
     const d=modal.draft;
