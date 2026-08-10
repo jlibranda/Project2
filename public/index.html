@@ -10700,7 +10700,7 @@ function renderModal(){
     </div>`;
   }
   const attDetailMaximized=modal&&modal.type==='attReportDetail'&&modal.maximized;
-  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeMConfirmed()"><div class="modal-box" style="${attDetailMaximized?'width:96vw;max-width:96vw;height:90vh;max-height:90vh':modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance'||modal.type==='bulkAttendance'||modal.type==='attReportDetail')?'width:1100px;max-width:98vw':''}">${inner}</div></div>`;
+  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeMConfirmed()"><div class="modal-box" style="${attDetailMaximized?'width:96vw;max-width:96vw;height:90vh;max-height:90vh':modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance'||modal.type==='bulkAttendance'||modal.type==='attReportDetail'||modal.type==='shiftEditor'||modal.type==='personalScheduleEditor')?'width:1100px;max-width:98vw':''}">${inner}</div></div>`;
   setTimeout(updatePayGroupPreview,0);
   return html;
 }
