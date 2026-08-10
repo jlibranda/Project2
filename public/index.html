@@ -1573,6 +1573,145 @@ function applyBulkAttendance(){
   toast(msg,errors.length?'warning':'success');
   if(errors.length)setTimeout(()=>alert('Skipped rows:\n\n'+errors.join('\n')),400);
 }
+/* ---- Bulk Personal Schedule Import ----
+ * One row per employee per day of week (up to 7 rows/employee) rather than a wide 35-column
+ * layout — matches the long/tidy shape every other bulk import here already uses (Leave
+ * Balance, Attendance) and is far easier to read/edit in a spreadsheet. Applying requires all
+ * 7 days present for an employee's group of rows, since a personal schedule always represents
+ * a complete week (same rule the Personal Schedule Editor modal enforces). */
+const BULK_PSCHED_DAY_KEYS=['mon','tue','wed','thu','fri','sat','sun'];
+const BULK_PSCHED_DAY_LABELS={mon:'Monday',tue:'Tuesday',wed:'Wednesday',thu:'Thursday',fri:'Friday',sat:'Saturday',sun:'Sunday'};
+function openBulkPersonalSchedule(){
+  if(!(isAdminUser(user)||isPlatformAdmin))return;
+  modal={type:'bulkPersonalSchedule',rows:[{eid:'',day:'',restDay:'',start:'',end:'',breakStart:'',breakEnd:''}]};
+  render();
+}
+function downloadPersonalScheduleTemplate(){
+  const emps=USERS.filter(u=>u.role==='employee'&&u.active!==false);
+  const templateRows=[
+    ['PERSONAL SCHEDULE BULK IMPORT — SproutRipple PH','','','','','',''],
+    ['One row per employee per day of week. All 7 days (Mon–Sun) are required for each EID, or that employee\'s rows are skipped.','','','','','',''],
+    ['Rest Day = Y means no shift that day — leave Start/End/Break blank. Only active employees are applied.','','','','','',''],
+    [],
+    ['EID *','Day * (Mon/Tue/Wed/Thu/Fri/Sat/Sun)','Rest Day (Y/N) *','Start (HH:MM)','End (HH:MM)','Break Start (HH:MM)','Break End (HH:MM)']
+  ];
+  const sample=emps[0];
+  if(sample){
+    const days=[['Mon','N','08:00','17:00','12:00','13:00'],['Tue','N','08:00','17:00','12:00','13:00'],['Wed','N','08:00','17:00','12:00','13:00'],
+      ['Thu','N','08:00','17:00','12:00','13:00'],['Fri','N','08:00','17:00','12:00','13:00'],['Sat','N','08:00','17:00','12:00','13:00'],['Sun','Y','','','','']];
+    days.forEach(d=>templateRows.push([sample.eid,d[0],d[1],d[2],d[3],d[4],d[5]]));
+  }
+  const empRows=[['EID','Name','Status']].concat(emps.map(e=>[e.eid,e.name,e.active!==false?'Active':'Inactive']));
+  try{
+    const data=buildXLSX([
+      {name:'Template',rows:templateRows,colWidths:[14,26,14,12,12,14,14]},
+      {name:'Employees',rows:empRows,colWidths:[14,26,12]}
+    ]);
+    const blob=new Blob([data],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');a.href=url;a.download='personal_schedule_import_template.xlsx';a.click();
+    URL.revokeObjectURL(url);
+    toast('Template downloaded — see Employees sheet for valid EIDs','info');
+  }catch(ex){toast('Download failed: '+ex.message,'warning');console.error(ex);}
+}
+function handlePersonalScheduleExcel(evt){
+  const file=evt.target.files[0];if(!file)return;
+  const input=evt.target;input.disabled=true;
+  toast('Loading Excel reader and checking the file…','info');
+  loadXLSXLib(function(){input.disabled=false;parsePersonalScheduleExcel(file,input);},function(){input.disabled=false;input.value='';});
+}
+function parsePersonalScheduleExcel(file,input){
+  const reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      const wb=XLSX.read(e.target.result,{type:'array'});
+      const ws=wb.Sheets[wb.SheetNames[0]];
+      const raw=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+      if(!raw.length){toast('Empty file','warning');return;}
+      const hdrIdx=raw.findIndex(r=>{
+        const cells=r.map(v=>String(v||'').toLowerCase().replace(/\s*\*\s*$/,'').trim());
+        return cells.some(v=>v==='eid')&&cells.some(v=>v.startsWith('day'))&&cells.some(v=>v.startsWith('rest day'));
+      });
+      if(hdrIdx<0){toast('Header row not found — make sure your file has columns: EID, Day, Rest Day','warning');return;}
+      const hdr=raw[hdrIdx].map(h=>String(h).toLowerCase().trim());
+      const col=(...kws)=>hdr.findIndex(h=>kws.some(k=>h.includes(k)));
+      const eidCol=col('eid'),dayCol=col('day'),restCol=col('rest day'),startCol=col('start'),endCol=col('end'),bsCol=col('break start'),beCol=col('break end');
+      if(eidCol<0||dayCol<0||restCol<0){toast('Required columns not found (EID, Day, Rest Day)','warning');return;}
+      const rows=[];
+      raw.slice(hdrIdx+1).forEach(r=>{
+        if(!r.some(c=>String(c).trim()))return;
+        const first=String(r[0]||'').trim();
+        if(/^EXAMPLE/i.test(first))return;
+        rows.push({
+          eid:String(r[eidCol]||'').trim(),
+          day:String(r[dayCol]||'').trim().slice(0,3).toLowerCase(),
+          restDay:/^y/i.test(String(r[restCol]||'').trim())?'Y':'N',
+          start:startCol>=0?String(r[startCol]||'').trim():'',
+          end:endCol>=0?String(r[endCol]||'').trim():'',
+          breakStart:bsCol>=0?String(r[bsCol]||'').trim():'',
+          breakEnd:beCol>=0?String(r[beCol]||'').trim():''
+        });
+      });
+      if(!rows.length){toast('No data rows found','warning');return;}
+      modal.rows=rows;input.value='';render();
+      toast(rows.length+' row(s) loaded — review before applying','info');
+    }catch(ex){
+      toast('Upload failed: '+ex.message,'warning');console.error('[personal-schedule-upload] Failed to parse file',ex);input.value='';
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+function addBulkPersonalScheduleRow(){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  modal.rows.push({eid:'',day:'',restDay:'',start:'',end:'',breakStart:'',breakEnd:''});render();
+}
+function removeBulkPersonalScheduleRow(i){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  modal.rows.splice(i,1);if(!modal.rows.length)modal.rows.push({eid:'',day:'',restDay:'',start:'',end:'',breakStart:'',breakEnd:''});render();
+}
+function applyBulkPersonalSchedules(){
+  if(!(isAdminUser(user)||isPlatformAdmin))return;
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  const timeOk=v=>/^([01]\d|2[0-3]):[0-5]\d$/.test(v||'');
+  const byEid={};
+  modal.rows.forEach((r,i)=>{
+    if(!r.eid&&!r.day)return; /* blank row, ignored */
+    (byEid[r.eid]=byEid[r.eid]||[]).push(Object.assign({rowIndex:i},r));
+  });
+  let applied=0;const errors=[];
+  Object.keys(byEid).forEach(eid=>{
+    const rows=byEid[eid];
+    const rowLabel='EID "'+eid+'"';
+    const emp=USERS.find(u=>u.eid===eid&&u.role==='employee');
+    if(!emp){errors.push(rowLabel+': employee not found');return;}
+    if(emp.active===false){errors.push(rowLabel+': '+emp.name+' is inactive — skipped');return;}
+    const byDay={};
+    let rowError=null;
+    rows.forEach(r=>{
+      if(!BULK_PSCHED_DAY_KEYS.includes(r.day)){rowError=rowError||('Row '+(r.rowIndex+1)+': "'+r.day+'" is not a valid day (use Mon/Tue/Wed/Thu/Fri/Sat/Sun)');return;}
+      if(byDay[r.day]){rowError=rowError||(rowLabel+': '+BULK_PSCHED_DAY_LABELS[r.day]+' appears more than once');return;}
+      const isRest=r.restDay==='Y';
+      if(!isRest){
+        if(!timeOk(r.start)||!timeOk(r.end)){rowError=rowError||('Row '+(r.rowIndex+1)+': invalid Start/End time for '+BULK_PSCHED_DAY_LABELS[r.day]+' (use HH:MM, or mark it Rest Day)');return;}
+        if(r.breakStart&&!timeOk(r.breakStart)){rowError=rowError||('Row '+(r.rowIndex+1)+': invalid Break Start time for '+BULK_PSCHED_DAY_LABELS[r.day]);return;}
+        if(r.breakEnd&&!timeOk(r.breakEnd)){rowError=rowError||('Row '+(r.rowIndex+1)+': invalid Break End time for '+BULK_PSCHED_DAY_LABELS[r.day]);return;}
+      }
+      byDay[r.day]={restDay:isRest,start:isRest?'':r.start,end:isRest?'':r.end,breakStart:isRest?'':r.breakStart,breakEnd:isRest?'':r.breakEnd};
+    });
+    if(rowError){errors.push(rowError);return;}
+    const missing=BULK_PSCHED_DAY_KEYS.filter(k=>!byDay[k]);
+    if(missing.length){errors.push(rowLabel+': missing '+missing.map(k=>BULK_PSCHED_DAY_LABELS[k]).join(', ')+' — all 7 days are required');return;}
+    if(BULK_PSCHED_DAY_KEYS.every(k=>byDay[k].restDay)){errors.push(rowLabel+': every day is Rest Day — mark at least one working day');return;}
+    emp.personalSchedule=byDay;
+    applied++;
+  });
+  if(applied>0)queueSync('Employees','Personal_Schedules');
+  closeM();
+  let msg=applied+' employee schedule(s) applied.';
+  if(errors.length)msg+=' '+errors.length+' skipped.';
+  toast(msg,errors.length?'warning':'success');
+  if(errors.length)setTimeout(()=>alert('Skipped:\n\n'+errors.join('\n')),400);
+}
 function isPayrollAdjustmentReady(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.isReady(record):!!record&&['ready','approved','pending'].includes(record.status);}
 function canDeletePayrollAdjustment(record){return window.PayrollAdjustmentCore?PayrollAdjustmentCore.canDelete(record):!!record&&record.status!=='applied'&&!record.payrollRunId;}
 function setPayrollPreviewFilter(kind,value){
@@ -9324,6 +9463,76 @@ function renderModal(){
         <button class="btn btn-primary" onclick="applyBulkLeaveBalances()" ${readyCount?'':'disabled'}>Apply ${readyCount} Balance${readyCount!==1?'s':''}</button>
       </div>
     </div>`;
+  }else if(modal.type==='bulkPersonalSchedule'){
+    const rows=modal.rows||[];
+    const dayOpts=BULK_PSCHED_DAY_KEYS;
+    const rowsByEid={};
+    rows.forEach(r=>{if(r.eid)(rowsByEid[r.eid]=rowsByEid[r.eid]||[]).push(r);});
+    const readyEids=Object.keys(rowsByEid).filter(eid=>{
+      const g=rowsByEid[eid];
+      const days=new Set(g.map(r=>r.day));
+      return dayOpts.every(d=>days.has(d))&&USERS.some(u=>u.eid===eid&&u.role==='employee');
+    });
+    inner=`<div class="modal-title" style="position:sticky;top:0;z-index:2;background:var(--surface)">
+      <span>📋 Bulk Personal Schedule Import</span>
+      <span style="font-size:11px;color:var(--txt3);font-weight:400;margin-left:8px">${rows.length} row${rows.length!==1?'s':''} · ${readyEids.length} employee${readyEids.length!==1?'s':''} ready</span>
+      <button class="close-x" onclick="closeMConfirmed()">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">One row per employee per day of week. All 7 days (Mon–Sun) are required per EID before that employee is applied — this replaces their personal schedule outright, same as editing it directly. Employees not listed here keep following their assigned shift template as usual.</div>
+    <div style="background:var(--accent-bg);border:1px solid var(--accent);border-radius:10px;padding:10px 14px;margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <button class="btn btn-sm" onclick="downloadPersonalScheduleTemplate()">⬇ Download Template</button>
+      <label class="btn btn-sm" style="cursor:pointer">📂 Upload Excel
+        <input type="file" accept=".xlsx,.xls,.csv" style="display:none" onchange="handlePersonalScheduleExcel(event)"/>
+      </label>
+      <span style="font-size:11px;color:var(--accent-txt)">Or fill in rows manually below.</span>
+    </div>
+    <div style="overflow-x:auto;margin-bottom:12px">
+    <table style="min-width:760px;font-size:12px;border-collapse:separate;border-spacing:0 4px">
+      <thead><tr style="background:var(--bg)">
+        <th style="width:20px;padding:4px 8px">#</th>
+        <th style="padding:4px 8px;text-align:left">EID <span style="color:var(--red)">*</span></th>
+        <th style="padding:4px 8px;text-align:left">Day <span style="color:var(--red)">*</span></th>
+        <th style="padding:4px 8px;text-align:left">Rest Day <span style="color:var(--red)">*</span></th>
+        <th style="padding:4px 8px;text-align:left">Start</th>
+        <th style="padding:4px 8px;text-align:left">End</th>
+        <th style="padding:4px 8px;text-align:left">Break Start</th>
+        <th style="padding:4px 8px;text-align:left">Break End</th>
+        <th></th>
+      </tr></thead>
+      <tbody>
+      ${rows.map((r,i)=>{
+        const emp=USERS.find(u=>u.eid===r.eid&&u.role==='employee');
+        const empOk=!!emp,empActive=emp&&emp.active!==false;
+        const isRest=r.restDay==='Y';
+        return`<tr style="background:var(--surface2)">
+          <td style="text-align:center;color:var(--txt3)">${i+1}</td>
+          <td><input class="finput" style="font-size:12px;${r.eid&&!empOk?'border-color:var(--red)':r.eid&&!empActive?'border-color:var(--amber)':''}" value="${esc(r.eid)}" placeholder="EID" oninput="modal.rows[${i}].eid=this.value.trim()"/>${r.eid&&!empOk?'<div style="font-size:10px;color:var(--red)">Not found</div>':r.eid&&!empActive?'<div style="font-size:10px;color:var(--amber-txt)">Inactive</div>':''}</td>
+          <td><select class="finput" style="font-size:12px;${r.day&&!dayOpts.includes(r.day)?'border-color:var(--red)':''}" onchange="modal.rows[${i}].day=this.value;render()">
+            <option value="">Select…</option>
+            ${dayOpts.map(d=>`<option value="${d}" ${r.day===d?'selected':''}>${BULK_PSCHED_DAY_LABELS[d]}</option>`).join('')}
+          </select></td>
+          <td><select class="finput" style="font-size:12px" onchange="modal.rows[${i}].restDay=this.value;render()">
+            <option value="">Select…</option>
+            <option value="N" ${r.restDay==='N'?'selected':''}>No</option>
+            <option value="Y" ${r.restDay==='Y'?'selected':''}>Yes</option>
+          </select></td>
+          <td><input type="time" class="finput mono" style="font-size:12px" ${isRest?'disabled':''} value="${isRest?'':esc(r.start)}" onchange="modal.rows[${i}].start=this.value"/></td>
+          <td><input type="time" class="finput mono" style="font-size:12px" ${isRest?'disabled':''} value="${isRest?'':esc(r.end)}" onchange="modal.rows[${i}].end=this.value"/></td>
+          <td><input type="time" class="finput mono" style="font-size:12px" ${isRest?'disabled':''} value="${isRest?'':esc(r.breakStart)}" onchange="modal.rows[${i}].breakStart=this.value"/></td>
+          <td><input type="time" class="finput mono" style="font-size:12px" ${isRest?'disabled':''} value="${isRest?'':esc(r.breakEnd)}" onchange="modal.rows[${i}].breakEnd=this.value"/></td>
+          <td><button class="btn btn-sm btn-danger" onclick="removeBulkPersonalScheduleRow(${i})" title="Remove row">✕</button></td>
+        </tr>`;
+      }).join('')}
+      </tbody>
+    </table>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap">
+      <button class="btn btn-sm" onclick="addBulkPersonalScheduleRow()">+ Add Row</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn" onclick="closeM()">Cancel</button>
+        <button class="btn btn-primary" onclick="applyBulkPersonalSchedules()" ${readyEids.length?'':'disabled'}>Apply ${readyEids.length} Schedule${readyEids.length!==1?'s':''}</button>
+      </div>
+    </div>`;
   }else if(modal.type==='editAttRow'){
     const emp=USERS.find(u=>u.id===modal.eid);
     const d=modal.draft;
@@ -10700,7 +10909,7 @@ function renderModal(){
     </div>`;
   }
   const attDetailMaximized=modal&&modal.type==='attReportDetail'&&modal.maximized;
-  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeMConfirmed()"><div class="modal-box" style="${attDetailMaximized?'width:96vw;max-width:96vw;height:90vh;max-height:90vh':modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance'||modal.type==='bulkAttendance'||modal.type==='attReportDetail'||modal.type==='shiftEditor'||modal.type==='personalScheduleEditor')?'width:1100px;max-width:98vw':''}">${inner}</div></div>`;
+  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeMConfirmed()"><div class="modal-box" style="${attDetailMaximized?'width:96vw;max-width:96vw;height:90vh;max-height:90vh':modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance'||modal.type==='bulkAttendance'||modal.type==='attReportDetail'||modal.type==='shiftEditor'||modal.type==='personalScheduleEditor'||modal.type==='bulkPersonalSchedule')?'width:1100px;max-width:98vw':''}">${inner}</div></div>`;
   setTimeout(updatePayGroupPreview,0);
   return html;
 }
@@ -14510,8 +14719,8 @@ render = function() {
 <script src="/bir-2316-pdf.js?v=20260804-official-form-overlay"></script>
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
-<script src="/compliance.js?v=20260810-personal-schedule"></script>
-<script src="/enterprise.js?v=20260810-personal-schedule"></script>
+<script src="/compliance.js?v=20260810-bulk-pschedule"></script>
+<script src="/enterprise.js?v=20260810-bulk-pschedule"></script>
 <script src="/payroll-governance.js?v=20260804-annualized-tax"></script>
 <script src="/persistence.js?v=20260804-impersonation-audit"></script>
 </body>
