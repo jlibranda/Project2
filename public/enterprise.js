@@ -538,7 +538,10 @@
     if(!d.name||!d.name.trim()){toast('Shift name is required.','warning');return;}
     for(var i=0;i<SHIFT_DAY_KEYS.length;i++){
       var k=SHIFT_DAY_KEYS[i],day=d.schedule[k];
-      if(day.restDay)continue;
+      // A rest day never keeps leftover times underneath — whether from an old save made
+      // before this was enforced, or from a row toggled to Rest Day and back — so nothing
+      // downstream (reports, exports) can read stale hours off a day marked Rest Day.
+      if(day.restDay){day.start='';day.end='';day.breakStart='';day.breakEnd='';continue;}
       if(!validShiftTime(day.start)||!validShiftTime(day.end)){toast('Enter valid start/end times for '+SHIFT_DAY_LABELS[k]+', or mark it as a rest day.','warning');return;}
       if(day.breakStart&&!validShiftTime(day.breakStart)){toast('Enter a valid break start time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
       if(day.breakEnd&&!validShiftTime(day.breakEnd)){toast('Enter a valid break end time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
@@ -618,7 +621,10 @@
     var d=modal.draft;
     for(var i=0;i<SHIFT_DAY_KEYS.length;i++){
       var k=SHIFT_DAY_KEYS[i],day=d[k];
-      if(day.restDay)continue;
+      // A rest day never keeps leftover times underneath — whether from an old save made
+      // before this was enforced, or from a row toggled to Rest Day and back — so nothing
+      // downstream (reports, exports) can read stale hours off a day marked Rest Day.
+      if(day.restDay){day.start='';day.end='';day.breakStart='';day.breakEnd='';continue;}
       if(!validShiftTime(day.start)||!validShiftTime(day.end)){toast('Enter valid start/end times for '+SHIFT_DAY_LABELS[k]+', or mark it as a rest day.','warning');return;}
       if(day.breakStart&&!validShiftTime(day.breakStart)){toast('Enter a valid break start time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
       if(day.breakEnd&&!validShiftTime(day.breakEnd)){toast('Enter a valid break end time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
