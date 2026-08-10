@@ -3316,6 +3316,32 @@ function findAllDuplicates(){
   return result;
 }
 
+// Quick-access widget for employee self-service — the most common actions someone would
+// otherwise have to find in the sidebar, surfaced right on their landing page. Reuses the
+// Attendance Forms catalog's card style (attendance-form-card/-mark/-arrow, injected globally
+// by enterprise.js) so it reads as one consistent design language, not a bolted-on widget.
+// goView() always resets tab to 0, so a target sub-tab is set AFTER calling it, not before.
+function dashboardQuickActions(){
+  const actions=[
+    (canAccess('leave')&&clientHasModule('leave'))?{v:'leave',tab:1,mark:'LV',title:'File Leave',desc:'Request vacation, sick, or other leave'}:null,
+    (canAccess('attendance')&&clientHasModule('attendance'))?{v:'attendance',tab:1,mark:'AT',title:'Attendance Forms',desc:'File corrections, overtime, or a schedule adjustment'}:null,
+    (canAccess('webbundy')&&clientHasModule('webbundy'))?{v:'webbundy',mark:'IN',title:'Web Bundy',desc:'Clock in or out for today'}:null,
+    (canAccess('myslips')&&clientHasModule('myslips'))?{v:'myslips',mark:'₱',title:'My Payslips',desc:'View and download released payslips'}:null,
+    {v:'myprofile',mark:'ID',title:'My 201 File',desc:'View your personal HR record'},
+    {v:'profilechanges',mark:'✎',title:'Change Requests',desc:'Update your personal information'}
+  ].filter(Boolean);
+  if(!actions.length)return'';
+  return`<div class="card" style="margin-bottom:1rem">
+    <div class="card-title" style="margin-bottom:10px">Quick Actions</div>
+    <div class="attendance-catalog">
+      ${actions.map(a=>`<button class="attendance-form-card" onclick="goView('${a.v}');${a.tab!=null?'tab='+a.tab+';render();':''}">
+        <span class="attendance-form-mark">${esc(a.mark)}</span>
+        <span><strong>${esc(a.title)}</strong><small>${esc(a.desc)}</small></span>
+        <span class="attendance-form-arrow">›</span>
+      </button>`).join('')}
+    </div>
+  </div>`;
+}
 function pgDashboard(){
   const isA=isAdminUser(user);
   const myA=attendanceRecords().filter(a=>a.eid===user.id);
@@ -3341,6 +3367,7 @@ function pgDashboard(){
     <div class="metric"><div class="metric-label">Pending Leaves</div><div class="metric-val" style="color:var(--blue)">${LEAVES.filter(l=>l.eid===user.id&&l.status==='pending').length}</div></div>
     `}
   </div>
+  ${!isA?dashboardQuickActions():''}
   <div class="dashboard-main-grid">
     ${isA?(()=>{
       const dupes=findAllDuplicates();
