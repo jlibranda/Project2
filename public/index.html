@@ -80,22 +80,31 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--txt);min-he
 .avatar.lg{width:40px;height:40px;font-size:13px}
 /* ---- SIDEBAR ---- */
 .sidebar{width:252px;background:var(--surface);border-right:1px solid var(--border);position:fixed;top:56px;bottom:0;left:0;overflow:hidden;padding:0;display:flex;flex-direction:column;box-shadow:8px 0 24px rgba(15,23,42,.025);z-index:20}
-.sidebar-tools{padding:14px 12px 10px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,var(--surface),color-mix(in srgb,var(--surface) 92%,var(--bg)))}
+.sidebar-tools{padding:14px 12px 10px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,var(--surface),color-mix(in srgb,var(--surface) 92%,var(--bg)));position:relative}
 .sidebar-label{display:flex;align-items:center;justify-content:space-between;padding:0 3px 8px;font-size:10px;font-weight:800;color:var(--txt3);text-transform:uppercase;letter-spacing:.9px}
 .sidebar-label span:last-child{font-weight:600;text-transform:none;letter-spacing:0;opacity:.75}
 .sidebar-search{display:flex;align-items:center;gap:8px;height:36px;padding:0 10px;border:1px solid var(--border);border-radius:10px;background:var(--bg);transition:border-color .15s,box-shadow .15s}
 .sidebar-search:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
 .sidebar-search input{width:100%;border:0;outline:0;background:transparent;color:var(--txt);font:inherit;font-size:12px}
 .sidebar-search input::placeholder{color:var(--txt3)}
+.sidebar-search-results{display:none;position:absolute;left:12px;right:12px;top:100%;margin-top:6px;background:var(--surface);border:1px solid var(--border);border-radius:10px;box-shadow:0 16px 40px rgba(15,23,42,.16);padding:6px;z-index:31;max-height:320px;overflow-y:auto}
+.sidebar-search-results.show{display:block}
+.sidebar-search-empty{padding:10px;font-size:12px;color:var(--txt3);text-align:center}
+.sidebar-search-section{font-size:10px;color:var(--txt3);flex-shrink:0;padding-left:8px}
 .sidebar-nav{flex:1;overflow-y:auto;padding:8px 8px 14px;scrollbar-width:thin;scrollbar-color:var(--border2) transparent}
-.nav-section-block{margin:2px 0 7px}
-.nav-section{display:flex;align-items:center;justify-content:space-between;width:100%;font-size:10px;font-weight:800;color:var(--txt3);padding:8px 9px 5px;text-transform:uppercase;letter-spacing:.75px;cursor:pointer;border-radius:7px;user-select:none;transition:color .15s,background .15s}
-.nav-section:hover{color:var(--txt2);background:var(--bg)}
-.nav-section-chevron{font-size:13px;line-height:1;transition:transform .18s;opacity:.65}
-.nav-section.collapsed .nav-section-chevron{transform:rotate(-90deg)}
-.nav-items{display:grid;grid-template-rows:1fr;transition:grid-template-rows .2s ease,opacity .15s ease;opacity:1}
-.nav-items.collapsed{grid-template-rows:0fr;opacity:0}
-.nav-items-inner{min-height:0;overflow:hidden}
+.rail-item{justify-content:space-between}
+.rail-item .rail-label{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rail-chevron{font-size:11px;line-height:1;opacity:.55;flex-shrink:0;margin-left:4px}
+.rail-item.flyout-open{background:var(--bg);color:var(--txt)}
+.rail-item.flyout-open .rail-chevron{opacity:.9}
+.sidebar-flyout-backdrop{position:fixed;inset:0;z-index:29;background:transparent}
+.sidebar-flyout{position:fixed;min-width:220px;max-width:280px;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:0 16px 40px rgba(15,23,42,.16);padding:6px;z-index:30}
+.sidebar-flyout-title{font-size:10px;font-weight:800;color:var(--txt3);text-transform:uppercase;letter-spacing:.75px;padding:6px 8px 4px}
+.sidebar-flyout-item{justify-content:space-between}
+.sidebar-flyout-item .rail-label{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sidebar-fav-star{background:transparent;border:0;cursor:pointer;padding:2px 3px;color:var(--txt3);font-size:14px;line-height:1;flex-shrink:0;border-radius:5px;transition:color .15s,background .15s}
+.sidebar-fav-star:hover{color:#f5b301;background:var(--bg)}
+.sidebar-fav-star.faved{color:#f5b301}
 .nav-link{display:flex;align-items:center;gap:10px;min-height:38px;margin:2px 0;padding:8px 10px;font-size:12.5px;font-weight:500;color:var(--txt2);cursor:pointer;border-radius:9px;transition:background .15s,color .15s,transform .15s;position:relative}
 .nav-link:hover{background:var(--bg);color:var(--txt);transform:translateX(1px)}
 .nav-link.active{background:linear-gradient(90deg,var(--accent-bg),color-mix(in srgb,var(--accent-bg) 65%,transparent));color:var(--accent);font-weight:700;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--accent) 14%,transparent)}
@@ -1866,20 +1875,66 @@ USERS.forEach((u,i)=>{u.active=true;u.accessLevelId=u.role==='admin'?1:5;});
 let user=null,view='dashboard',tab=0,modal=null,aiText='',aiLoad=false;
 let sessionRestoring=!!sessionStorage.getItem('sproutripple_session');
 let sidebarCollapsed=window.innerWidth<=900; /* collapsible sidebar state */
-let sidebarSectionState={Overview:true,People:true,'Time & Attendance':true,Payroll:true,Talent:true,Setup:false,Tools:true};
-function toggleNavSection(title){sidebarSectionState[title]=!(sidebarSectionState[title]!==false);render();}
+let sidebarOpenFlyout=null; /* title of the rail category whose flyout is open, or null */
+function sidebarFavKey(){return 'sr_sidebar_favs_'+(user&&(user.email||user.id)||'anon');}
+function getSidebarFavorites(){try{return JSON.parse(localStorage.getItem(sidebarFavKey())||'[]');}catch(e){return[];}}
+function toggleSidebarFavorite(v){
+  const favs=getSidebarFavorites();
+  const i=favs.indexOf(v);
+  if(i>=0)favs.splice(i,1);else favs.push(v);
+  try{localStorage.setItem(sidebarFavKey(),JSON.stringify(favs));}catch(e){}
+  if(sidebarOpenFlyout==='Favorites'&&favs.length===0)sidebarOpenFlyout=null;
+  render();
+}
+function toggleSidebarFlyout(title,ev){
+  if(ev)ev.stopPropagation();
+  sidebarOpenFlyout=sidebarOpenFlyout===title?null:title;
+  render();
+}
+function positionSidebarFlyout(){
+  const trigger=document.querySelector('.rail-item[data-flyout-open="1"]');
+  const flyout=document.getElementById('sidebar-flyout');
+  if(!trigger||!flyout)return;
+  const r=trigger.getBoundingClientRect();
+  const fh=flyout.offsetHeight||200;
+  let top=r.top;
+  if(top+fh>window.innerHeight-10)top=Math.max(10,window.innerHeight-10-fh);
+  flyout.style.top=top+'px';
+  flyout.style.left=(r.right+8)+'px';
+}
+document.addEventListener('scroll',function(e){
+  if(sidebarOpenFlyout&&e.target&&e.target.classList&&e.target.classList.contains('sidebar-nav'))positionSidebarFlyout();
+},true);
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape'&&sidebarOpenFlyout){sidebarOpenFlyout=null;render();}
+});
+document.addEventListener('click',function(e){
+  const box=document.getElementById('sidebar-search-results');
+  if(box&&box.classList.contains('show')&&!box.contains(e.target)&&!e.target.closest('.sidebar-search')){
+    box.classList.remove('show');box.innerHTML='';
+  }
+});
 function filterSidebarNav(input){
   const q=(input.value||'').trim().toLowerCase();
-  document.querySelectorAll('.nav-section-block').forEach(block=>{
-    let matches=0;
-    block.querySelectorAll('.nav-link[data-nav-label]').forEach(link=>{
-      const hit=!q||link.dataset.navLabel.includes(q);
-      link.style.display=hit?'flex':'none';
-      if(hit)matches++;
+  const box=document.getElementById('sidebar-search-results');
+  if(!box)return;
+  if(!q){box.classList.remove('show');box.innerHTML='';return;}
+  const matches=[];
+  sidebarSections().forEach(sec=>{
+    sec.items.forEach(it=>{
+      if((it.l+' '+sec.title).toLowerCase().includes(q))matches.push({...it,sectionTitle:sec.title});
     });
-    block.style.display=matches?'block':'none';
-    if(q){block.querySelector('.nav-items')?.classList.remove('collapsed');block.querySelector('.nav-section')?.classList.remove('collapsed');}
   });
+  box.innerHTML=matches.length
+    ?matches.slice(0,12).map(it=>`<div class="nav-link sidebar-flyout-item" onclick="closeSidebarSearch();sidebarOpenFlyout=null;goView('${it.v}')">${ico(it.k,16)}<span class="rail-label">${esc(it.l)}</span><span class="sidebar-search-section">${esc(it.sectionTitle)}</span></div>`).join('')
+    :'<div class="sidebar-search-empty">No matching module.</div>';
+  box.classList.add('show');
+}
+function closeSidebarSearch(){
+  const box=document.getElementById('sidebar-search-results');
+  if(box){box.classList.remove('show');box.innerHTML='';}
+  const inp=document.querySelector('.sidebar-search input');
+  if(inp)inp.value='';
 }
 let globalSearch='';        /* global search state */
 let showGlobalSearch=false; /* search dropdown open */
@@ -3097,6 +3152,7 @@ const ICONS={
   settings:`<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/>`,
   shield:`<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>`,
   edit:`<path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>`,
+  star:`<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>`,
 };
 const ico=(k,sz=16,col)=>`<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="none" stroke="${col||'currentColor'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[k]||''}</svg>`;
 
@@ -3195,7 +3251,8 @@ function doGuestBundy(){
   user=u;view='webbundy';render();
 }
 /* ========== SIDEBAR ========== */
-function renderSidebar(){
+const SIDEBAR_SECTION_ICON={Overview:'dashboard',People:'people','Time & Attendance':'clock',Payroll:'peso',Talent:'recruit',Setup:'settings',Tools:'chart'};
+function sidebarSections(){
   const isA=isAdminUser(user)||isPlatformAdmin;
   /* God Admin inside a company: all modules EXCEPT leave (not a company employee) */
   const godInCompany=isPlatformAdmin&&activeClientId;
@@ -3245,25 +3302,55 @@ function renderSidebar(){
       ...(has('assistant')?[{v:'assistant',k:'robot',l:'HR Assistant'}]:[]),
     ]},
   ].filter(s=>s.items.length>0);
+  if(typeof window.sidebarExtraSections==='function'){
+    (window.sidebarExtraSections()||[]).forEach(extra=>{
+      if(!extra||!extra.items||!extra.items.length)return;
+      const idx=sections.findIndex(s=>s.title==='Payroll');
+      sections.splice(idx>=0?idx:sections.length,0,extra);
+    });
+  }
+  return sections;
+}
+function renderRailSection(sec){
+  if(sec.items.length===1&&!sec.isFav){
+    const it=sec.items[0];
+    return`<div class="nav-link${view===it.v?' active':''}" onclick="sidebarOpenFlyout=null;goView('${it.v}')" title="${esc(it.l)}">${ico(it.k,17)}<span class="rail-label">${esc(it.l)}</span>${it.badge?`<span class="nav-badge">${it.badge}</span>`:''}</div>`;
+  }
+  const isOpen=sidebarOpenFlyout===sec.title;
+  const icon=sec.isFav?'star':(SIDEBAR_SECTION_ICON[sec.title]||(sec.items[0]&&sec.items[0].k)||'settings');
+  const isActive=sec.items.some(it=>it.v===view);
+  return`<div class="nav-link rail-item${isOpen?' flyout-open':''}${isActive?' active':''}" data-flyout-open="${isOpen?'1':'0'}" onclick="toggleSidebarFlyout('${esc(sec.title)}',event)" title="${esc(sec.title)}">${ico(icon,17)}<span class="rail-label">${esc(sec.title)}</span><span class="rail-chevron">${isOpen?'▾':'▸'}</span></div>`;
+}
+function renderSidebarFlyout(railSections){
+  const sec=railSections.find(s=>s.title===sidebarOpenFlyout);
+  if(!sec)return'';
+  const favIds=getSidebarFavorites();
+  return`<div class="sidebar-flyout" id="sidebar-flyout">
+    <div class="sidebar-flyout-title">${esc(sec.title)}</div>
+    ${sec.items.map(it=>{
+      const faved=favIds.includes(it.v);
+      return`<div class="nav-link sidebar-flyout-item${view===it.v?' active':''}" onclick="sidebarOpenFlyout=null;goView('${it.v}')" title="${esc(it.l)}">${ico(it.k,16)}<span class="rail-label">${esc(it.l)}</span>${it.badge?`<span class="nav-badge">${it.badge}</span>`:''}<button type="button" class="sidebar-fav-star${faved?' faved':''}" onclick="event.stopPropagation();toggleSidebarFavorite('${it.v}')" title="${faved?'Remove from Favorites':'Add to Favorites'}" aria-label="${faved?'Remove from Favorites':'Add to Favorites'}">${faved?'★':'☆'}</button></div>`;
+    }).join('')}
+  </div>`;
+}
+function renderSidebar(){
+  const sections=sidebarSections();
+  const favIds=getSidebarFavorites();
+  const allItems=sections.flatMap(s=>s.items);
+  const favItems=favIds.map(v=>allItems.find(it=>it.v===v)).filter(Boolean);
+  const railSections=favItems.length?[{title:'Favorites',isFav:true,items:favItems},...sections]:sections;
+  const totalModules=sections.reduce((n,s)=>n+s.items.length,0);
   return`<aside class="sidebar" aria-label="Main navigation" style="${sidebarCollapsed?'width:0;min-width:0;overflow:hidden;border-right:none':'transition:width .25s'}">
     <div class="sidebar-tools">
-      <div class="sidebar-label"><span>Workspace</span><span>${sections.reduce((n,s)=>n+s.items.length,0)} modules</span></div>
+      <div class="sidebar-label"><span>Workspace</span><span>${totalModules} modules</span></div>
       <label class="sidebar-search" title="Find a module">
         ${ico('search',14)}
         <input type="search" placeholder="Find a module…" oninput="filterSidebarNav(this)" aria-label="Find a module">
       </label>
+      <div id="sidebar-search-results" class="sidebar-search-results"></div>
     </div>
-    <nav class="sidebar-nav">${sections.map(sec=>{
-      const expanded=sec.items.some(it=>it.v===view)||sidebarSectionState[sec.title]!==false;
-      return`<div class="nav-section-block" data-nav-section="${esc(sec.title)}">
-        <div class="nav-section${expanded?'':' collapsed'}" onclick="toggleNavSection('${sec.title}')" role="button" aria-expanded="${expanded}">
-          <span>${sec.title}</span><span class="nav-section-chevron">⌄</span>
-        </div>
-        <div class="nav-items${expanded?'':' collapsed'}"><div class="nav-items-inner">
-          ${sec.items.map(it=>`<div class="nav-link${view===it.v?' active':''}" data-nav-label="${esc((it.l+' '+sec.title).toLowerCase())}" onclick="goView('${it.v}')" title="${esc(it.l)}">${ico(it.k,17)}<span>${it.l}</span>${it.badge?`<span class="nav-badge">${it.badge}</span>`:''}</div>`).join('')}
-        </div></div>
-      </div>`;
-    }).join('')}</nav>
+    <nav class="sidebar-nav">${railSections.map(sec=>`<!--rail:${esc(sec.title)}-->${renderRailSection(sec)}`).join('')}</nav>
+    ${sidebarOpenFlyout?`<div class="sidebar-flyout-backdrop" onclick="sidebarOpenFlyout=null;render()"></div>${renderSidebarFlyout(railSections)}`:''}
     <div class="sidebar-footer">
       <div class="sidebar-user">
         <div class="avatar sm">${esc(user.initials||user.name.split(/\s+/).map(n=>n[0]||'').join('').slice(0,2).toUpperCase())}</div>
@@ -14613,6 +14700,7 @@ function render(){
       if(fi)fi.focus();
     },50);
   }
+  if(sidebarOpenFlyout)requestAnimationFrame(positionSidebarFlyout);
 }
 
 /* ═══════════════════════════════════════════════════════════

@@ -267,19 +267,11 @@
       '<div class="tabs">'+tabs.map(function(t,i){return '<div class="tab'+(tab===i?' active':'')+'" onclick="window._resolutionForm=null;goTab('+i+')">'+t+'</div>';}).join('')+'</div><div class="card">'+body+'</div>';
   };
 
-  var baseSidebar=renderSidebar;
-  window.renderSidebar=renderSidebar=function(){
-    var html=baseSidebar();
+  window.sidebarExtraSections=function(){
     var pending=RESOLUTION_CASES.filter(function(c){return c.status==='open'||c.status==='in_review';}).length;
-    html=html.replace(/(<div class="sidebar-label"><span>Workspace<\/span><span>)(\d+)( modules<\/span>)/,function(_,before,count,after){return before+(Number(count)+1)+after;});
-    var expanded=view==='resolution'||sidebarSectionState['Service Desk']!==false;
-    var link='<div class="nav-section-block" data-nav-section="Service Desk">'+
-      '<div class="nav-section'+(expanded?'':' collapsed')+'" onclick="toggleNavSection(\'Service Desk\')" role="button" aria-expanded="'+expanded+'"><span>Service Desk</span><span class="nav-section-chevron">⌄</span></div>'+
-      '<div class="nav-items'+(expanded?'':' collapsed')+'"><div class="nav-items-inner">'+
-      '<div class="nav-link'+(view==='resolution'?' active':'')+'" data-nav-label="resolution center service desk" onclick="goView(\'resolution\')" title="Resolution Center">'+ico('file',17)+'<span>Resolution Center</span>'+(pending?'<span class="nav-badge">'+pending+'</span>':'')+'</div>'+
-      '</div></div></div>';
-    var payroll='<div class="nav-section-block" data-nav-section="Payroll">';
-    return html.replace(payroll,link+payroll);
+    return [{title:'Service Desk',items:[
+      {v:'resolution',k:'file',l:'Resolution Center',badge:pending}
+    ]}];
   };
 
   var baseMySlips=pgMySlips;
