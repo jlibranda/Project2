@@ -5295,6 +5295,18 @@ function updateLeaveComputation(){
     html+='<div style="margin-top:4px;font-size:11px;color:'+(exceeds?'var(--amber-txt)':'var(--txt3)')+'">'+esc(text)+'</div>';
   }
   box.innerHTML=html;
+  updateLeaveSubmitButton();
+}
+// Grays out Submit Request until there's a reason and at least one day requested — the balance
+// shortfall itself stays a confirm() prompt at submit time rather than a hard block, since filing
+// an over-balance/unpaid request is a valid, deliberate choice the employee can still make.
+function updateLeaveSubmitButton(){
+  const btn=document.getElementById('leave-submit-btn');
+  if(!btn)return;
+  const reason=((document.getElementById('lr')||{}).value||'').trim();
+  const ok=!!(reason&&(window._leaveDays||0)>0);
+  btn.disabled=!ok;
+  btn.title=ok?'':'Enter a reason and make sure the selected dates have at least 1 day requested.';
 }
 function leaveDaysCell(l){
   let out=String(l.days);
@@ -5362,8 +5374,8 @@ function pgLeave(){
         <strong>Total requested: ${initDays} day${initDays===1?'':'s'}</strong>${calcExtra}
         <div style="margin-top:4px;font-size:11px;color:${initHint.exceeds?'var(--amber-txt)':'var(--txt3)'}">${esc(initHint.text)}</div>
       </div>
-      <div class="field"><label>Reason / Remarks</label><textarea id="lr" rows="3" placeholder="Briefly describe your leave..." oninput="setLeaveDraftField('reason',this.value)">${esc(d.reason)}</textarea></div>
-      <div style="margin-top:4px"><button class="btn btn-primary" onclick="submitLeave()">Submit Request</button></div>`;
+      <div class="field"><label>Reason / Remarks</label><textarea id="lr" rows="3" placeholder="Briefly describe your leave..." oninput="setLeaveDraftField('reason',this.value);updateLeaveSubmitButton()">${esc(d.reason)}</textarea></div>
+      <div style="margin-top:4px"><button class="btn btn-primary" id="leave-submit-btn" ${(!d.reason||!d.reason.trim()||initDays<=0)?'disabled title="Enter a reason and make sure the selected dates have at least 1 day requested."':''} onclick="submitLeave()">Submit Request</button></div>`;
     }else{
       body=`<div class="empty-state">No leave types are currently assigned to you. Contact HR if you believe this is incorrect.</div>`;
     }
@@ -14469,8 +14481,8 @@ render = function() {
 <script src="/bir-2316-pdf.js?v=20260804-official-form-overlay"></script>
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
-<script src="/compliance.js?v=20260809-holiday-locks"></script>
-<script src="/enterprise.js?v=20260809-holiday-locks"></script>
+<script src="/compliance.js?v=20260810-disable-submit-all"></script>
+<script src="/enterprise.js?v=20260810-disable-submit-all"></script>
 <script src="/payroll-governance.js?v=20260804-annualized-tax"></script>
 <script src="/persistence.js?v=20260804-impersonation-audit"></script>
 </body>
