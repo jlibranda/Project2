@@ -1122,7 +1122,7 @@
   // Shared between the live preview and the submit/approval-time checks so they can never disagree.
   function rdhEligibility(employee,date,type,reqStart,reqEnd){
     if(!date)return {ok:false,html:'Select a request date.'};
-    if(!type)return {ok:false,html:'Select whether this is a <strong>Holiday</strong> or <strong>Rest Day</strong> claim.'};
+    if(!type)return {ok:false,html:'Select whether this is a <strong>Rest Day</strong>, <strong>Holiday</strong>, or <strong>Rest Day on a Holiday</strong> claim.'};
     var isRest=TimekeepingCore.isRestDay(employee,date,SHIFT_DEFINITIONS);
     var holiday=HOLIDAYS.find(function(h){return h.date===date;});
     if(type==='rest_day'&&!isRest){
@@ -1130,6 +1130,14 @@
     }
     if(type==='holiday'&&!holiday){
       return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ This date isn\'t configured as a holiday.</strong><br>Please contact your System Administrator.'};
+    }
+    if(type==='both'){
+      var bothMissing=[];
+      if(!isRest)bothMissing.push('your Rest Day');
+      if(!holiday)bothMissing.push('a configured Holiday');
+      if(bothMissing.length){
+        return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ This date isn\'t '+bothMissing.join(' or ')+'.</strong><br>'+(!isRest?'Check your attendance/Schedule Adjustment for the Rest Day side. ':'')+(!holiday?'Contact your System Administrator for the Holiday side.':'')};
+      }
     }
     var log=actualLogForDate(employee.id,date);
     if(!log){
@@ -1146,7 +1154,9 @@
     var rawMinutes=toutM-tinM;
     var workedMinutes=Math.max(0,rawMinutes-RDH_BREAK_MINUTES);
     var otWindowStart=tinM+RDH_REGULAR_MINUTES+RDH_BREAK_MINUTES; // 8 worked hrs + 1-hr break, elapsed from Time In
-    var label=type==='holiday'?(HOLIDAY_TYPE_LABELS[holiday.type]||'Holiday')+' — '+esc(holiday.name):'Rest Day';
+    var label=type==='holiday'?(HOLIDAY_TYPE_LABELS[holiday.type]||'Holiday')+' — '+esc(holiday.name):
+      type==='both'?'Rest Day + '+(HOLIDAY_TYPE_LABELS[holiday.type]||'Holiday')+' — '+esc(holiday.name):
+      'Rest Day';
     var logSummary='Logged: '+esc(log.tin)+' – '+esc(log.tout)+' ('+(workedMinutes/60).toFixed(2)+' hrs worked, net of a 1-hr break)';
     if(workedMinutes<=RDH_REGULAR_MINUTES){
       return {ok:false,html:'<strong>'+label+'</strong> confirmed for this date, but '+logSummary.toLowerCase()+" don't exceed 8 — there's no overtime to claim on this form."};
@@ -1202,7 +1212,7 @@
     if(!form){toast('This attendance form is not currently available.','warning');return;}
     window._attFormDraft={};
     if(key==='time_correction')window._correctionRows=[{date:today(),punchType:'time_in',correctedTime:''}];
-    if(key==='schedule_adjustment'){window._scheduleAdjRows=null;window._scheduleAdjFrom=null;window._scheduleAdjTo=null;}
+    if(key==='schedule_adjustment'){window._scheduleAdjRows=null;window._scheduleAdjFrom=null;window._scheduleAdjTo=null;window._scheduleAdjShiftEndTouched=false;}
     window._attendanceFormKey=key;
     tab=(isAdminUser(user)||isPlatformAdmin)?3:1; /* "Attendance Forms" sits at index 3 in the admin tab layout, index 1 otherwise */
     render();
@@ -1246,7 +1256,7 @@
       :'';
     var rdhTypeVal=attFieldVal('att-form-rdh-type','');
     var rdhFields=(form.kind==='rdh_ot')?
-      '<div class="field"><label>Type</label><select id="att-form-rdh-type" onchange="attFormSync(\'att-form-rdh-type\');previewRdhEligibility()"><option value="" '+(rdhTypeVal===''?'selected':'')+'>Select…</option><option value="rest_day" '+(rdhTypeVal==='rest_day'?'selected':'')+'>Rest Day</option><option value="holiday" '+(rdhTypeVal==='holiday'?'selected':'')+'>Holiday</option></select></div>'+
+      '<div class="field"><label>Type</label><select id="att-form-rdh-type" onchange="attFormSync(\'att-form-rdh-type\');previewRdhEligibility()"><option value="" '+(rdhTypeVal===''?'selected':'')+'>Select…</option><option value="rest_day" '+(rdhTypeVal==='rest_day'?'selected':'')+'>Rest Day</option><option value="holiday" '+(rdhTypeVal==='holiday'?'selected':'')+'>Holiday</option><option value="both" '+(rdhTypeVal==='both'?'selected':'')+'>Rest Day on a Holiday</option></select></div>'+
       '<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" value="'+esc(attFieldVal('att-form-in',''))+'" oninput="attFormSync(\'att-form-in\');previewRdhEligibility()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" value="'+esc(attFieldVal('att-form-out',''))+'" oninput="attFormSync(\'att-form-out\');previewRdhEligibility()"></div></div>'+
       '<div id="att-rdh-info" style="padding:10px 12px;background:var(--bg);border:1.5px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px">Select a Type above to check eligibility for this date.</div>'
       :'';
@@ -1268,10 +1278,27 @@
   // date already in the table and only adds/removes what the new range actually changed.
   function renderScheduleAdjBuilder(){
     var assigned=SHIFT_DEFINITIONS.find(function(s){return s.id===user.shiftId;});
+    // Shifts store a per-day schedule (schedule.mon/tue/…), not flat start/end fields — pull a
+    // representative start/end from the shift's first working (non-rest) day.
+    var assignedWorkDay=null;
+    if(assigned){
+      var normalizedAssigned=TimekeepingCore.normalizeShift(assigned);
+      SHIFT_DAY_KEYS.some(function(k){
+        var d=normalizedAssigned.schedule[k];
+        if(d&&!d.restDay&&d.start&&d.end){assignedWorkDay=d;return true;}
+        return false;
+      });
+    }
     var rows=window._scheduleAdjRows||[];
+    var shiftStartDefault=assignedWorkDay?assignedWorkDay.start:'08:00';
+    var shiftStartDefaultM=minutesFromTime(attFieldVal('satt-shift-start',shiftStartDefault));
+    // Shift End's own default mirrors the same "9 hours after Shift Start" math the onchange
+    // auto-fill uses (8 worked hours + 1-hour break), rather than an unrelated flat fallback —
+    // only when there's no assigned shift to read a real end time from in the first place.
+    var shiftEndDefault=assignedWorkDay?assignedWorkDay.end:(shiftStartDefaultM!=null?minutesToTimeStr(shiftStartDefaultM+540):'17:00');
     return '<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;margin-bottom:12px">Current assigned shift: <strong>'+esc(assignedShiftText(user.shiftId))+'</strong></div>'+
       '<div class="form-row"><div class="field"><label>Effectivity From</label><input type="date" id="satt-from" value="'+esc(attFieldVal('satt-from',window._scheduleAdjFrom||today()))+'" oninput="attFormSync(\'satt-from\')"></div><div class="field"><label>Effectivity To</label><input type="date" id="satt-to" value="'+esc(attFieldVal('satt-to',window._scheduleAdjTo||today()))+'" oninput="attFormSync(\'satt-to\')"></div></div>'+
-      '<div class="form-row"><div class="field"><label>Shift Start</label><input type="time" id="satt-shift-start" value="'+esc(attFieldVal('satt-shift-start',assigned?assigned.start:'08:00'))+'" oninput="attFormSync(\'satt-shift-start\')" onchange="scheduleAdjAutoBreak()"></div><div class="field"><label>Break Start</label><input type="time" id="satt-break-start" value="'+esc(attFieldVal('satt-break-start',''))+'" oninput="attFormSync(\'satt-break-start\')"></div><div class="field"><label>Break End</label><input type="time" id="satt-break-end" value="'+esc(attFieldVal('satt-break-end',''))+'" oninput="attFormSync(\'satt-break-end\')"></div><div class="field"><label>Shift End</label><input type="time" id="satt-shift-end" value="'+esc(attFieldVal('satt-shift-end',assigned?assigned.end:'17:00'))+'" oninput="attFormSync(\'satt-shift-end\')"></div></div>'+
+      '<div class="form-row"><div class="field"><label>Shift Start</label><input type="time" id="satt-shift-start" value="'+esc(attFieldVal('satt-shift-start',shiftStartDefault))+'" oninput="attFormSync(\'satt-shift-start\')" onchange="scheduleAdjAutoBreak()"></div><div class="field"><label>Break Start</label><input type="time" id="satt-break-start" value="'+esc(attFieldVal('satt-break-start',''))+'" oninput="attFormSync(\'satt-break-start\')"></div><div class="field"><label>Break End</label><input type="time" id="satt-break-end" value="'+esc(attFieldVal('satt-break-end',''))+'" oninput="attFormSync(\'satt-break-end\')"></div><div class="field"><label>Shift End</label><input type="time" id="satt-shift-end" value="'+esc(attFieldVal('satt-shift-end',shiftEndDefault))+'" oninput="attFormSync(\'satt-shift-end\');window._scheduleAdjShiftEndTouched=true"></div></div>'+
       '<div style="margin-bottom:14px"><button type="button" class="btn btn-sm btn-primary" onclick="scheduleAdjGenerateDates()">Generate Dates</button></div>'+
       (rows.length?renderScheduleAdjTable(rows):'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--txt3);margin-bottom:12px">Set an effectivity range above and click Generate Dates to build the day-by-day schedule.</div>');
   }
@@ -1295,19 +1322,24 @@
         '</tr>';
       }).join('')+'</tbody></table></div>';
   }
-  // Auto-suggests Break Start/End as 3 hours after Shift Start (a 1-hour break) the moment Shift
-  // Start is entered — still fully editable, and only fills in while both break fields are still
-  // blank, so it never overwrites a break time the admin already typed themselves.
+  // Auto-suggests Break Start/End (3 hours after Shift Start, a 1-hour break) and Shift End (9
+  // hours after Shift Start — 8 worked hours plus that same 1-hour break) the moment Shift Start
+  // is entered — still fully editable. Break Start/End only fill in while both are blank. Shift
+  // End always starts with a sensible default (so it can't be "blank" to key off of) and instead
+  // tracks a "touched" flag: it keeps following Shift Start until the admin edits it directly.
   window.scheduleAdjAutoBreak=function(){
-    var startEl=document.getElementById('satt-shift-start'),breakStartEl=document.getElementById('satt-break-start'),breakEndEl=document.getElementById('satt-break-end');
-    if(!startEl||!breakStartEl||!breakEndEl)return;
-    if(!breakStartEl.value&&!breakEndEl.value){
-      var startM=minutesFromTime(startEl.value);
-      if(startM!=null){
-        breakStartEl.value=minutesToTimeStr(startM+180);
-        breakEndEl.value=minutesToTimeStr(startM+240);
-        attFormSync('satt-break-start');attFormSync('satt-break-end');
-      }
+    var startEl=document.getElementById('satt-shift-start'),breakStartEl=document.getElementById('satt-break-start'),breakEndEl=document.getElementById('satt-break-end'),endEl=document.getElementById('satt-shift-end');
+    if(!startEl)return;
+    var startM=minutesFromTime(startEl.value);
+    if(startM==null)return;
+    if(breakStartEl&&breakEndEl&&!breakStartEl.value&&!breakEndEl.value){
+      breakStartEl.value=minutesToTimeStr(startM+180);
+      breakEndEl.value=minutesToTimeStr(startM+240);
+      attFormSync('satt-break-start');attFormSync('satt-break-end');
+    }
+    if(endEl&&!window._scheduleAdjShiftEndTouched){
+      endEl.value=minutesToTimeStr(startM+540);
+      attFormSync('satt-shift-end');
     }
   };
   window.scheduleAdjGenerateDates=function(){
@@ -1460,8 +1492,9 @@
       if(!rdhCheck.ok){toast(rdhCheck.html.replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim(),'warning',7000);return;}
       var rdhLog=actualLogForDate(user.id,date);
       var rdhHoliday=HOLIDAYS.find(function(h){return h.date===date;});
-      var rdhDetails=['Request date: '+date,'Type: '+(rdhType==='holiday'?'Holiday':'Rest Day'),'Requested OT: '+rdhReqStart+' – '+rdhReqEnd];
-      if(rdhType==='holiday'&&rdhHoliday)rdhDetails.push('Holiday: '+rdhHoliday.name+' ('+(HOLIDAY_TYPE_LABELS[rdhHoliday.type]||rdhHoliday.type)+')');
+      var rdhTypeLabel=rdhType==='holiday'?'Holiday':rdhType==='both'?'Rest Day on a Holiday':'Rest Day';
+      var rdhDetails=['Request date: '+date,'Type: '+rdhTypeLabel,'Requested OT: '+rdhReqStart+' – '+rdhReqEnd];
+      if((rdhType==='holiday'||rdhType==='both')&&rdhHoliday)rdhDetails.push('Holiday: '+rdhHoliday.name+' ('+(HOLIDAY_TYPE_LABELS[rdhHoliday.type]||rdhHoliday.type)+')');
       rdhDetails.push('Actual log: '+rdhLog.tin+' – '+rdhLog.tout,'Eligible Rest Day/Holiday overtime hours (net of 1-hr break): '+rdhCheck.hours.toFixed(2),'Details: '+reason);
       var rdhId=nextCaseId++,rdhDue=new Date();rdhDue.setDate(rdhDue.getDate()+2);
       RESOLUTION_CASES.push({id:rdhId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(rdhId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:rdhDetails.join('\n'),priority:'high',status:'open',linkedType:'attendance',linkedId:rdhLog.id,attendanceRequestType:form.key,requestDate:date,requestEndDate:date,requestedStart:rdhReqStart,requestedEnd:rdhReqEnd,rdhType:rdhType,eligibleHours:rdhCheck.hours,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:rdhDue.toISOString().slice(0,10),resolution:''});
