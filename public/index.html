@@ -138,8 +138,10 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--txt);min-he
 /* ---- BUTTONS ---- */
 .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;border:1px solid var(--border);background:var(--surface);color:var(--txt);font-family:'Inter',sans-serif;transition:all .1s;white-space:nowrap}
 .btn:hover{background:var(--bg);border-color:var(--border2)}
+.btn:disabled,.btn:disabled:hover{opacity:.45;cursor:not-allowed;filter:grayscale(.3)}
 .btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
 .btn-primary:hover{background:#4338ca}
+.btn-primary:disabled,.btn-primary:disabled:hover{background:var(--accent)}
 .btn-success{background:var(--green);color:#fff;border-color:var(--green)}
 .btn-danger{background:var(--red);color:#fff;border-color:var(--red)}
 .btn-amber{background:var(--amber);color:#fff;border-color:var(--amber)}
