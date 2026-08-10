@@ -1360,14 +1360,15 @@
     // flag, since that's a deliberate per-date override the user made, not part of the template.
     window._scheduleAdjRows=requestDates(from,to).map(function(date){
       var existing=existingByDate[date];
-      // A date locks like a Rest Day if it's explicitly one on the assigned shift's weekly
-      // pattern, OR if there's simply no shift configured for that date at all — either way
-      // there's no real schedule to plot, which most often shows up as a holiday landing on a
-      // day the employee isn't otherwise scheduled to begin with.
-      var isRest=existing?existing.isRestDay:(TimekeepingCore.isRestDay(user,date,SHIFT_DEFINITIONS)||!TimekeepingCore.scheduleForDate(user,date,SHIFT_DEFINITIONS));
-      // Holiday match is always freshly looked up (never carried over like Rest Day) — it's
-      // informational only, not a per-date override the user could have deliberately made.
       var holiday=HOLIDAYS.find(function(h){return h.date===date;})||null;
+      // A date locks like a Rest Day if it's explicitly one on the assigned shift's weekly
+      // pattern, if there's simply no shift configured for that date at all, OR if it's a
+      // holiday — no regular shift schedule needs to be plotted for a holiday; if the employee
+      // actually works it, that's claimed through Rest Day/Holiday Overtime, not pre-planned
+      // here. Carried over from an existing row once generated, same as a manual Rest Day
+      // toggle, so unchecking it to force a plotted schedule on a worked holiday sticks across
+      // re-clicking Generate Dates.
+      var isRest=existing?existing.isRestDay:(TimekeepingCore.isRestDay(user,date,SHIFT_DEFINITIONS)||!TimekeepingCore.scheduleForDate(user,date,SHIFT_DEFINITIONS)||!!holiday);
       return {date:date,dow:SCHED_ADJ_DOW[new Date(date+'T00:00:00Z').getUTCDay()],
         start:isRest?'':masterStart,end:isRest?'':masterEnd,
         breakStart:isRest?'':masterBreakStart,breakEnd:isRest?'':masterBreakEnd,
