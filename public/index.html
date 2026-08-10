@@ -9151,10 +9151,10 @@ function renderModal(){
       return`<tr>
         <td style="font-weight:600;font-size:13px">${dayLabels[k]}</td>
         <td><input type="checkbox" ${day.restDay?'checked':''} onchange="modal.draft.schedule['${k}'].restDay=this.checked;if(this.checked){modal.draft.schedule['${k}'].start='';modal.draft.schedule['${k}'].end='';modal.draft.schedule['${k}'].breakStart='';modal.draft.schedule['${k}'].breakEnd='';}render()"/></td>
-        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${esc(day.start||'')}" onchange="modal.draft.schedule['${k}'].start=this.value"/></td>
-        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${esc(day.end||'')}" onchange="modal.draft.schedule['${k}'].end=this.value"/></td>
-        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${esc(day.breakStart||'')}" onchange="modal.draft.schedule['${k}'].breakStart=this.value"/></td>
-        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${esc(day.breakEnd||'')}" onchange="modal.draft.schedule['${k}'].breakEnd=this.value"/></td>
+        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.start||'')}" onchange="modal.draft.schedule['${k}'].start=this.value"/></td>
+        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.end||'')}" onchange="modal.draft.schedule['${k}'].end=this.value"/></td>
+        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakStart||'')}" onchange="modal.draft.schedule['${k}'].breakStart=this.value"/></td>
+        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakEnd||'')}" onchange="modal.draft.schedule['${k}'].breakEnd=this.value"/></td>
         <td>${day.restDay?'':`<button class="btn btn-sm" onclick="shiftEditorApplyToAll('${k}')" title="Copy this day's times to every other non-rest day">Apply to all</button>`}</td>
       </tr>`;}).join('')}</tbody></table>
     </div>
@@ -9178,10 +9178,10 @@ function renderModal(){
       return`<tr>
         <td style="font-weight:600;font-size:13px">${dayLabels[k]}</td>
         <td><input type="checkbox" ${day.restDay?'checked':''} onchange="modal.draft['${k}'].restDay=this.checked;if(this.checked){modal.draft['${k}'].start='';modal.draft['${k}'].end='';modal.draft['${k}'].breakStart='';modal.draft['${k}'].breakEnd='';}render()"/></td>
-        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${esc(day.start||'')}" onchange="modal.draft['${k}'].start=this.value"/></td>
-        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${esc(day.end||'')}" onchange="modal.draft['${k}'].end=this.value"/></td>
-        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${esc(day.breakStart||'')}" onchange="modal.draft['${k}'].breakStart=this.value"/></td>
-        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${esc(day.breakEnd||'')}" onchange="modal.draft['${k}'].breakEnd=this.value"/></td>
+        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.start||'')}" onchange="modal.draft['${k}'].start=this.value"/></td>
+        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.end||'')}" onchange="modal.draft['${k}'].end=this.value"/></td>
+        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakStart||'')}" onchange="modal.draft['${k}'].breakStart=this.value"/></td>
+        <td><input type="time" class="finput mono" style="font-size:12px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakEnd||'')}" onchange="modal.draft['${k}'].breakEnd=this.value"/></td>
         <td>${day.restDay?'':`<button class="btn btn-sm" onclick="personalScheduleApplyToAll('${k}')" title="Copy this day's times to every other non-rest day">Apply to all</button>`}</td>
       </tr>`;}).join('')}</tbody></table>
     </div>
