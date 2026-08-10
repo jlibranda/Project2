@@ -105,8 +105,10 @@
 
   window.resolveCase=function(id,decision) {
     var c=RESOLUTION_CASES.find(function(x){return x.id===id;});if(!c)return;
-    if(decision==='resolved'&&c.attendanceRequestType==='overtime'&&!actualLogForDate(c.employeeId,c.requestDate)){
-      toast('A completed actual Time In and Time Out log is required before approval.','warning');return;
+    if(decision==='resolved'&&c.attendanceRequestType==='overtime'){
+      var otEmployee=USERS.find(function(u){return u.id===c.employeeId;});
+      var otApprovalCheck=otTypeEligibility(otEmployee,c.requestDate,c.otType,c.requestedStart,c.requestedEnd);
+      if(!otApprovalCheck.ok){toast('No longer eligible: '+otApprovalCheck.html.replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim(),'warning',7000);return;}
     }
     if(decision==='resolved'&&c.attendanceRequestType==='rest_day_holiday'){
       var rdhEmployee=USERS.find(function(u){return u.id===c.employeeId;});
@@ -164,14 +166,18 @@
         undertime.notes=(undertime.notes?undertime.notes+' · ':'')+'Approved undertime: '+undertime.undertimeMinutes+' minute(s)';
         c.linkedType='attendance';c.linkedId=undertime.id;queueSync('Attendance');
       }else if(c.attendanceRequestType==='overtime'){
-        var eligible=calculateEligibleHours(c.employeeId,c.requestDate,c.requestedStart,c.requestedEnd);
-        var actual=eligible.log;
-        c.eligibleHours=eligible.hours;
+        // Re-run through otTypeEligibility (not just calculateEligibleHours) so approval also
+        // re-validates the Before/After Shift boundary against the schedule at approval time —
+        // the pre-check above already blocked approval if it's no longer eligible, so ok here.
+        var otApprovalEmployee=USERS.find(function(u){return u.id===c.employeeId;});
+        var otResult=otTypeEligibility(otApprovalEmployee,c.requestDate,c.otType,c.requestedStart,c.requestedEnd);
+        var actual=actualLogForDate(c.employeeId,c.requestDate);
+        c.eligibleHours=otResult.hours;
         c.actualTimeIn=actual&&actual.tin||'';
         c.actualTimeOut=actual&&actual.tout||'';
         if(actual){
           actual.approvalStatus='approved';actual.reviewedBy=user.name;actual.reviewedAt=c.resolvedAt;
-          actual.ot=eligible.hours;
+          actual.ot=otResult.hours;
           c.linkedType='attendance';c.linkedId=actual.id;
           queueSync('Attendance');
         }
@@ -1080,34 +1086,6 @@
     return {hours:Math.round(eligible/60*100)/100,minutes:eligible,log:log};
   }
 
-  function scheduleInfoHtml(date){
-    var isRest=TimekeepingCore.isRestDay(user,date,SHIFT_DEFINITIONS);
-    if(isRest)return 'Scheduled for '+date+': <strong>Rest Day</strong> — no regular shift.';
-    var sched=TimekeepingCore.scheduleForDate(user,date,SHIFT_DEFINITIONS);
-    if(sched)return 'Scheduled for '+date+': <strong>'+esc(sched.start)+' – '+esc(sched.end)+'</strong>.';
-    return 'No shift assigned for '+date+'.';
-  }
-
-  window.previewEligibleHours=function(){
-    var box=document.getElementById('att-eligible-preview');if(!box)return;
-    var value=function(id){return ((document.getElementById(id)||{}).value||'').trim();};
-    var date=value('att-form-date');
-    var schedBox=document.getElementById('att-schedule-info');
-    if(schedBox)schedBox.innerHTML=scheduleInfoHtml(date);
-    // Auto-suggest OT to start right where the regular shift ends — only while the field is
-    // still untouched, so this never clobbers a value the employee actually typed in.
-    var inField=document.getElementById('att-form-in');
-    if(inField&&!inField.value){
-      var sched=TimekeepingCore.scheduleForDate(user,date,SHIFT_DEFINITIONS);
-      if(sched&&sched.end)inField.value=sched.end;
-    }
-    var result=calculateEligibleHours(user.id,date,value('att-form-in'),value('att-form-out'));
-    box.innerHTML=result.log?
-      '<strong>Actual log: '+esc(result.log.tin)+' – '+esc(result.log.tout)+'</strong><br>Estimated eligible hours: <strong>'+result.hours.toFixed(2)+'</strong>. The approved value will be recalculated from the latest actual log.':
-      '<strong>No completed actual log found for this date.</strong><br>Estimated eligible hours: <strong>0.00</strong>. HR will recalculate when a completed actual log is available.';
-    updateAttSubmitButton();
-  };
-
   var RDH_BREAK_MINUTES=60,RDH_REGULAR_MINUTES=480; // 1-hour unpaid break, 8 regular hours
   function minutesToTimeStr(mins){
     mins=((Math.round(mins)%1440)+1440)%1440;
@@ -1189,6 +1167,51 @@
     updateAttSubmitButton();
   };
 
+  // Regular Overtime (kind:'interval') claims time worked outside the assigned shift on an
+  // otherwise-normal workday — Before Shift (early login) or After Shift (stayed late). Rest
+  // day/holiday work has its own dedicated form with its own premium rules, so this one requires
+  // an actual scheduled shift to measure "before"/"after" against.
+  function otTypeEligibility(employee,date,type,reqStart,reqEnd){
+    if(!date)return {ok:false,html:'Select a request date.'};
+    if(!type)return {ok:false,html:'Select whether this is <strong>Before Shift</strong> or <strong>After Shift</strong> overtime.'};
+    var sched=TimekeepingCore.scheduleForDate(employee,date,SHIFT_DEFINITIONS);
+    if(!sched){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ No regular shift is scheduled for this date.</strong><br>If you worked a rest day or holiday, file that through Rest Day/Holiday Overtime instead.'};
+    }
+    var shiftStartM=minutesFromTime(sched.start),shiftEndM=minutesFromTime(sched.end);
+    var label=type==='before'?'Before Shift':'After Shift';
+    var boundaryText=type==='before'?('on or before your shift start ('+esc(sched.start)+')'):('on or after your shift end ('+esc(sched.end)+')');
+    var schedSummary='Scheduled shift: <strong>'+esc(sched.start)+' – '+esc(sched.end)+'</strong>';
+    if(!reqStart||!reqEnd){
+      return {ok:false,html:'<strong>'+label+' Overtime</strong><br>'+schedSummary+'<br>Enter your OT Start and End Time — both must fall '+boundaryText+'.'};
+    }
+    var reqStartM=minutesFromTime(reqStart),reqEndM=minutesFromTime(reqEnd);
+    if(reqStartM===null||reqEndM===null)return {ok:false,html:'Enter both a valid Requested Start Time and End Time.'};
+    var reqEndAdj=reqEndM<=reqStartM?reqEndM+1440:reqEndM;
+    if(type==='before'&&reqEndAdj>shiftStartM){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ Before Shift OT must end on or before your shift start ('+esc(sched.start)+').</strong>'};
+    }
+    if(type==='after'&&reqStartM<shiftEndM){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ After Shift OT must start on or after your shift end ('+esc(sched.end)+').</strong>'};
+    }
+    var eligible=calculateEligibleHours(employee.id,date,reqStart,reqEnd);
+    if(!eligible.log){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ No completed attendance log found for this date yet.</strong><br>File this request once your Time In and Time Out for that day are recorded.'};
+    }
+    if(eligible.hours<=0){
+      return {ok:false,html:'The requested interval doesn\'t overlap with your actual logged hours ('+esc(eligible.log.tin)+' – '+esc(eligible.log.tout)+').'};
+    }
+    return {ok:true,hours:eligible.hours,html:'<strong style="color:var(--green)">✓ '+label+' Overtime</strong><br>'+schedSummary+'<br>Actual log: '+esc(eligible.log.tin)+' – '+esc(eligible.log.tout)+'<br>Eligible overtime: <strong>'+eligible.hours.toFixed(2)+' hrs</strong> (capped by your actual log).'};
+  }
+  window.previewOtEligibility=function(){
+    var box=document.getElementById('att-ot-info');if(!box)return;
+    var value=function(id){return ((document.getElementById(id)||{}).value||'').trim();};
+    var check=otTypeEligibility(user,value('att-form-date'),value('att-form-ot-type'),value('att-form-in')||null,value('att-form-out')||null);
+    box.innerHTML=check.html;
+    box.style.borderColor=check.ok?'var(--green)':'var(--amber)';
+    updateAttSubmitButton();
+  };
+
   // The realtime ZK biometric poll (see index.html's zkPullAttendance, every 20s) calls render()
   // unconditionally whenever no input/textarea/select currently has focus — which still leaves a
   // real gap: a field the user already filled in but isn't actively focused on RIGHT NOW (e.g.
@@ -1228,14 +1251,14 @@
       if(!rdhReqStart||!rdhReqEnd)return false;
       return rdhEligibility(user,attFieldVal('att-form-date',today()),attFieldVal('att-form-rdh-type',''),rdhReqStart,rdhReqEnd).ok;
     }
+    if(form.kind==='interval'){
+      var otReqStart=attFieldVal('att-form-in',''),otReqEnd=attFieldVal('att-form-out','');
+      if(!otReqStart||!otReqEnd)return false;
+      return otTypeEligibility(user,attFieldVal('att-form-date',today()),attFieldVal('att-form-ot-type',''),otReqStart,otReqEnd).ok;
+    }
     var date=attFieldVal('att-form-date',today());
     if(!date)return false;
-    // Matches attendanceFormFields()'s own suggestedIn default (Overtime pre-fills Start Time
-    // from today's schedule end) so an untouched, already-valid suggested value doesn't read as
-    // blank here and wrongly gray out the button.
-    var intervalInDefault=form.kind==='interval'?(function(){var s=TimekeepingCore.scheduleForDate(user,today(),SHIFT_DEFINITIONS);return s&&s.end?s.end:'';})():'';
-    var tin=attFieldVal('att-form-in',intervalInDefault),tout=attFieldVal('att-form-out','');
-    if(form.kind==='interval'&&(!tin||!tout))return false;
+    var tin=attFieldVal('att-form-in',''),tout=attFieldVal('att-form-out','');
     if(form.kind==='ob'&&(!tin||!tout))return false;
     if(form.kind==='minutes'&&Number(attFieldVal('att-form-minutes','30'))<=0)return false;
     var endDate=attFieldVal('att-form-end','');
@@ -1297,10 +1320,11 @@
   function attendanceFormFields(form){
     var todayDate=today();
     var punchFields=(form.kind==='punch')?correctionRowsFields():'';
-    var suggestedIn=attFieldVal('att-form-in',(form.kind==='interval')?(function(){var s=TimekeepingCore.scheduleForDate(user,todayDate,SHIFT_DEFINITIONS);return s&&s.end?s.end:'';})():'');
+    var otTypeVal=attFieldVal('att-form-ot-type','');
     var intervalFields=(form.kind==='interval')?
-      '<div id="att-schedule-info" style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;margin-bottom:12px">'+scheduleInfoHtml(todayDate)+'</div>'+
-      '<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" value="'+esc(suggestedIn)+'" oninput="attFormSync(\'att-form-in\');previewEligibleHours()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" value="'+esc(attFieldVal('att-form-out',''))+'" oninput="attFormSync(\'att-form-out\');previewEligibleHours()"></div></div><div id="att-eligible-preview" style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px"><strong>Enter a start and end time.</strong><br>Eligible hours will be limited to the employee’s actual Time In and Time Out.</div>'
+      '<div class="field"><label>Type</label><select id="att-form-ot-type" onchange="attFormSync(\'att-form-ot-type\');previewOtEligibility()"><option value="" '+(otTypeVal===''?'selected':'')+'>Select…</option><option value="before" '+(otTypeVal==='before'?'selected':'')+'>Before Shift</option><option value="after" '+(otTypeVal==='after'?'selected':'')+'>After Shift</option></select></div>'+
+      '<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" value="'+esc(attFieldVal('att-form-in',''))+'" oninput="attFormSync(\'att-form-in\');previewOtEligibility()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" value="'+esc(attFieldVal('att-form-out',''))+'" oninput="attFormSync(\'att-form-out\');previewOtEligibility()"></div></div>'+
+      '<div id="att-ot-info" style="padding:10px 12px;background:var(--bg);border:1.5px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px">Select a Type above to check eligibility for this date.</div>'
       :'';
     var rdhTypeVal=attFieldVal('att-form-rdh-type','');
     var rdhFields=(form.kind==='rdh_ot')?
@@ -1316,7 +1340,7 @@
     var scheduleFields=(form.kind==='schedule')?renderScheduleAdjBuilder():'';
     var header=(form.kind==='punch'||form.kind==='schedule')?'<div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div>':
       isRange?'<div class="form-row"><div class="field"><label>From</label><input type="date" id="att-form-date" value="'+esc(attFieldVal('att-form-date',todayDate))+'" oninput="attFormSync(\'att-form-date\');updateAttSubmitButton()"></div><div class="field"><label>To</label><input type="date" id="att-form-end" value="'+esc(attFieldVal('att-form-end',todayDate))+'" oninput="attFormSync(\'att-form-end\');updateAttSubmitButton()"></div></div>':
-      '<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+esc(attFieldVal('att-form-date',todayDate))+'" oninput="attFormSync(\'att-form-date\');'+(form.kind==='interval'?'previewEligibleHours()':form.kind==='rdh_ot'?'previewRdhEligibility()':'updateAttSubmitButton()')+'"></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>';
+      '<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+esc(attFieldVal('att-form-date',todayDate))+'" oninput="attFormSync(\'att-form-date\');'+(form.kind==='interval'?'previewOtEligibility()':form.kind==='rdh_ot'?'previewRdhEligibility()':'updateAttSubmitButton()')+'"></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>';
     return header+rangeFields+punchFields+intervalFields+rdhFields+obFields+wfhNotice+scheduleFields+minuteFields+
       '<div class="field"><label>Reason and supporting details</label><textarea id="att-form-reason" oninput="attFormSync(\'att-form-reason\');updateAttSubmitButton()" rows="4" placeholder="Explain the request and include the expected correction or approval.">'+esc(attFieldVal('att-form-reason',''))+'</textarea></div>';
   }
@@ -1551,9 +1575,22 @@
       window._attendanceFormKey=null;
       toast('Rest Day/Holiday overtime submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
     }
+    if(form.kind==='interval'){
+      var otType=value('att-form-ot-type');
+      var otReqStart=value('att-form-in'),otReqEnd=value('att-form-out');
+      if(!otReqStart||!otReqEnd){toast('Enter both a Requested Start Time and End Time.','warning');return;}
+      var otCheck=otTypeEligibility(user,date,otType,otReqStart,otReqEnd);
+      if(!otCheck.ok){toast(otCheck.html.replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim(),'warning',7000);return;}
+      var otLog=actualLogForDate(user.id,date);
+      var otTypeLabel=otType==='before'?'Before Shift':'After Shift';
+      var otDetails=['Request date: '+date,'Type: '+otTypeLabel+' Overtime','Requested OT: '+otReqStart+' – '+otReqEnd,'Actual log: '+otLog.tin+' – '+otLog.tout,'Estimated eligible hours: '+otCheck.hours.toFixed(2),'Details: '+reason];
+      var otId=nextCaseId++,otDue=new Date();otDue.setDate(otDue.getDate()+2);
+      RESOLUTION_CASES.push({id:otId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(otId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:otDetails.join('\n'),priority:'high',status:'open',linkedType:'attendance',linkedId:otLog.id,attendanceRequestType:form.key,requestDate:date,requestEndDate:date,requestedStart:otReqStart,requestedEnd:otReqEnd,otType:otType,eligibleHours:otCheck.hours,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:otDue.toISOString().slice(0,10),resolution:''});
+      window._attendanceFormKey=null;
+      toast('Overtime request submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
+    }
     if(!date){toast('Request date is required.','warning');return;}
     var tin=value('att-form-in'),tout=value('att-form-out');
-    if(form.kind==='interval'&&(!tin||!tout)){toast('Start time and end time are required.','warning');return;}
     if(form.kind==='ob'&&(!tin||!tout)){toast('OB Time In and Time Out are required.','warning');return;}
     if(form.kind==='minutes'&&Number(value('att-form-minutes'))<=0){toast('Enter valid undertime minutes.','warning');return;}
     if(value('att-form-end')&&value('att-form-end')<date){toast('End date cannot be earlier than the request date.','warning');return;}
@@ -1564,13 +1601,11 @@
       if(tin)details.push((form.kind==='ob'?'OB Time In':'Requested start')+': '+tin);
       if(tout)details.push((form.kind==='ob'?'OB Time Out':'Requested end')+': '+tout);
       if(form.kind==='wfh')details.push('Attendance rule: Completed actual Time In and Time Out logs required for every covered date');
-      var eligibility=form.kind==='interval'?calculateEligibleHours(user.id,date,tin,tout):null;
-      if(eligibility)details.push('Actual log at filing: '+(eligibility.log?(eligibility.log.tin+' – '+eligibility.log.tout):'No completed log'), 'Estimated eligible hours: '+eligibility.hours.toFixed(2));
       if(value('att-form-minutes'))details.push('Minutes: '+value('att-form-minutes'));
       if(value('att-form-location'))details.push('Location: '+value('att-form-location'));
       details.push('Details: '+reason);
-      var id=nextCaseId++,due=new Date();due.setDate(due.getDate()+(form.key==='overtime'?2:4));
-      RESOLUTION_CASES.push({id:id,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(id).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:details.join('\n'),priority:form.key==='overtime'?'high':'normal',status:'open',linkedType:linked?'attendance':'',linkedId:linked?linked.id:null,attendanceRequestType:form.key,requestDate:date,requestEndDate:value('att-form-end')||date,requestedStart:tin,requestedEnd:tout,requestedMinutes:Number(value('att-form-minutes')||0),punchType:value('att-form-punch'),correctedTime:value('att-form-time'),eligibleHours:eligibility?eligibility.hours:null,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:due.toISOString().slice(0,10),resolution:''});
+      var id=nextCaseId++,due=new Date();due.setDate(due.getDate()+4);
+      RESOLUTION_CASES.push({id:id,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(id).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:details.join('\n'),priority:'normal',status:'open',linkedType:linked?'attendance':'',linkedId:linked?linked.id:null,attendanceRequestType:form.key,requestDate:date,requestEndDate:value('att-form-end')||date,requestedStart:tin,requestedEnd:tout,requestedMinutes:Number(value('att-form-minutes')||0),punchType:value('att-form-punch'),correctedTime:value('att-form-time'),eligibleHours:null,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:due.toISOString().slice(0,10),resolution:''});
     window._attendanceFormKey=null;
     toast(form.label+' submitted for approval.','success');
     tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();
