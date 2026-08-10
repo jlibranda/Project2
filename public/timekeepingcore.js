@@ -159,6 +159,12 @@
     return { adjustment: latest, day: dayOverride || null };
   }
 
+  // A personal schedule (employee.personalSchedule, same {mon:{...},...,sun:{...}} shape as
+  // a shift's normalized schedule) is an optional, permanent per-employee override of the
+  // shared shift template's day pattern — lets one employee's hours/rest-day differ from
+  // everyone else assigned to the same shift without forking a new template just for them.
+  // It sits between Schedule Adjustment (temporary, still wins) and the shared shift
+  // template (the fallback default when no personal schedule is set).
   function scheduleForDate(employee, date, shifts) {
     var assigned = (shifts || []).find(function (item) { return employee && item.id === employee.shiftId; });
     var found = scheduleAdjustmentForDate(employee, date);
@@ -171,27 +177,37 @@
         return { start: found.adjustment.start, end: found.adjustment.end, graceMinutes: Number(assigned && assigned.graceMinutes || 0), source: 'schedule-adjustment' };
       }
     }
+    var dayKey = GETDAY_TO_KEY[new Date(date + 'T00:00:00Z').getUTCDay()];
+    if (employee && employee.personalSchedule) {
+      var personalDay = employee.personalSchedule[dayKey];
+      if (!personalDay || personalDay.restDay || !personalDay.start || !personalDay.end) return null;
+      return { start: personalDay.start, end: personalDay.end, breakStart: personalDay.breakStart || '', breakEnd: personalDay.breakEnd || '', graceMinutes: Number(assigned && assigned.graceMinutes || 0), source: 'personal-schedule' };
+    }
     if (!assigned) return null;
     var normalized = normalizeShift(assigned);
-    var dayKey = GETDAY_TO_KEY[new Date(date + 'T00:00:00Z').getUTCDay()];
     var day = normalized.schedule[dayKey];
     if (!day || day.restDay || !day.start || !day.end) return null; // rest day / not configured — no shift expected
     return { start: day.start, end: day.end, breakStart: day.breakStart || '', breakEnd: day.breakEnd || '', graceMinutes: Number(normalized.graceMinutes || 0), source: 'assigned-shift' };
   }
 
   // True only when this weekday is explicitly marked as a rest day on the employee's
-  // assigned shift, OR a per-day schedule adjustment explicitly makes it one — unlike
-  // scheduleForDate()'s null return, this never conflates "no shift assigned at all" with
-  // "designated rest day" (matters for holiday-pay math, where those two cases lead to
-  // different pay rules). An approved per-day adjustment overrides the assigned shift in
-  // both directions: it can turn a normal rest day into a work day, or vice versa.
+  // personal schedule (if set) or assigned shift, OR a per-day schedule adjustment
+  // explicitly makes it one — unlike scheduleForDate()'s null return, this never conflates
+  // "no shift assigned at all" with "designated rest day" (matters for holiday-pay math,
+  // where those two cases lead to different pay rules). An approved per-day adjustment
+  // overrides everything else in both directions: it can turn a normal rest day into a work
+  // day, or vice versa.
   function isRestDay(employee, date, shifts) {
     var found = scheduleAdjustmentForDate(employee, date);
     if (found && found.day) return !!found.day.isRestDay;
+    var dayKey = GETDAY_TO_KEY[new Date(date + 'T00:00:00Z').getUTCDay()];
+    if (employee && employee.personalSchedule) {
+      var personalDay = employee.personalSchedule[dayKey];
+      return !!(personalDay && personalDay.restDay);
+    }
     var assigned = (shifts || []).find(function (item) { return employee && item.id === employee.shiftId; });
     if (!assigned) return false;
     var normalized = normalizeShift(assigned);
-    var dayKey = GETDAY_TO_KEY[new Date(date + 'T00:00:00Z').getUTCDay()];
     var day = normalized.schedule[dayKey];
     return !!(day && day.restDay);
   }

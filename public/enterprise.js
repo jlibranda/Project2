@@ -577,6 +577,72 @@
     employee.shiftId=shiftId;queueSync('Employees','Employee_Shifts');toast(shift.name+' assigned to '+employee.name+'.','success');render();
   };
 
+  // Personal Schedule: an optional, permanent per-employee override of the shared shift
+  // template's weekly pattern (same day-by-day shape as a shift), for the one employee whose
+  // hours or rest day genuinely differ from everyone else on the same shift — without forking
+  // a new shared template just for them. TimekeepingCore checks this before falling back to
+  // the assigned shift; an approved Schedule Adjustment still overrides both.
+  window.openPersonalScheduleEditor=function(employeeId){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var employee=USERS.find(function(e){return e.id===employeeId;});
+    if(!employee)return;
+    var isNew=!employee.personalSchedule;
+    var baseSchedule;
+    if(!isNew){
+      baseSchedule=JSON.parse(JSON.stringify(employee.personalSchedule));
+    }else{
+      // Intelligent default: start from whatever this employee currently actually follows
+      // (their assigned shift's pattern) so the admin only has to change the day(s) that
+      // need to be different, instead of re-entering a whole week from scratch.
+      var assignedShift=SHIFT_DEFINITIONS.find(function(s){return s.id===employee.shiftId;});
+      baseSchedule=assignedShift?JSON.parse(JSON.stringify(TimekeepingCore.normalizeShift(assignedShift).schedule)):defaultShiftSchedule();
+    }
+    modal={type:'personalScheduleEditor',employeeId:employeeId,draft:baseSchedule,isNew:isNew};
+    render();
+  };
+
+  window.personalScheduleApplyToAll=function(dayKey){
+    if(!modal||modal.type!=='personalScheduleEditor')return;
+    var src=modal.draft[dayKey];
+    SHIFT_DAY_KEYS.forEach(function(k){
+      if(k===dayKey||modal.draft[k].restDay)return;
+      modal.draft[k]=Object.assign({},src,{restDay:false});
+    });
+    render();
+  };
+
+  window.savePersonalSchedule=function(){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var employee=USERS.find(function(e){return e.id===modal.employeeId;});
+    if(!employee)return;
+    var d=modal.draft;
+    for(var i=0;i<SHIFT_DAY_KEYS.length;i++){
+      var k=SHIFT_DAY_KEYS[i],day=d[k];
+      if(day.restDay)continue;
+      if(!validShiftTime(day.start)||!validShiftTime(day.end)){toast('Enter valid start/end times for '+SHIFT_DAY_LABELS[k]+', or mark it as a rest day.','warning');return;}
+      if(day.breakStart&&!validShiftTime(day.breakStart)){toast('Enter a valid break start time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
+      if(day.breakEnd&&!validShiftTime(day.breakEnd)){toast('Enter a valid break end time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
+    }
+    // Refuse a week that's entirely rest days — almost certainly a mistake (every field left
+    // unedited from a rest-day-heavy starting point), not a deliberate "never works" schedule.
+    if(SHIFT_DAY_KEYS.every(function(k){return d[k].restDay;})){toast('Every day is marked Rest Day — mark at least one working day, or remove the personal schedule instead.','warning');return;}
+    employee.personalSchedule=d;
+    queueSync('Employees','Personal_Schedules');
+    closeM();
+    toast('Personal schedule saved for '+employee.name+'.','success');
+  };
+
+  window.removePersonalSchedule=function(employeeId){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var employee=USERS.find(function(e){return e.id===employeeId;});
+    if(!employee||!employee.personalSchedule)return;
+    if(!confirm(employee.name+' will go back to following the assigned shift template. Continue?'))return;
+    delete employee.personalSchedule;
+    queueSync('Employees','Personal_Schedules');
+    toast('Personal schedule removed — now following the assigned shift template.','success');
+    render();
+  };
+
   function renderShiftManager(){
     return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Shift Setup</div><div class="card-sub">Set a start/end and break per day of the week, with rest days, and assign from each employee profile</div></div><button class="btn btn-primary btn-sm" onclick="openShiftEditor()">+ Add Shift</button></div>'+
       '<div style="overflow-x:auto"><table><thead><tr><th>Shift</th><th>Weekly Pattern</th><th>Grace</th><th>Employees</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
@@ -1613,10 +1679,19 @@
   function renderEmployeeShiftCard(employee){
     var shift=SHIFT_DEFINITIONS.find(function(s){return s.id===employee.shiftId;});
     var adjustments=(employee.scheduleAdjustments||[]).slice().reverse().slice(0,5);
-    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Assigned Work Shift</div><div class="card-sub">Employee profile schedule used for attendance policy and schedule-adjustment requests</div></div><span class="badge '+(shift&&shift.active?'b-approved':'b-pending')+'">'+(shift&&shift.active?'Active shift':'Needs assignment')+'</span></div>'+
-      '<div class="form-row"><div class="field"><label>Shift Assignment</label><select onchange="assignEmployeeShift('+employee.id+',parseInt(this.value,10))">'+SHIFT_DEFINITIONS.filter(function(s){return s.active||s.id===employee.shiftId;}).map(function(s){return '<option value="'+s.id+'" '+(s.id===employee.shiftId?'selected':'')+'>'+esc(s.name)+(s.active?'':' (inactive)')+'</option>';}).join('')+'</select></div>'+
-      '<div style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;align-self:end;margin-bottom:10px">'+(shift?'<strong>'+esc(shift.name)+'</strong><br>'+esc(describeShiftPattern(shift))+' · '+shift.graceMinutes+'-minute grace':'No shift is assigned.')+'</div></div>'+
-      (adjustments.length?'<div class="section-header" style="margin-top:8px">Recent approved schedule adjustments</div>'+adjustments.map(function(a){
+    var hasPersonal=!!employee.personalSchedule;
+    var effectivePatternHtml=hasPersonal
+      ?'<strong>Personal Schedule</strong><br>'+esc(describeShiftPattern({schedule:employee.personalSchedule}))
+      :(shift?'<strong>'+esc(shift.name)+'</strong><br>'+esc(describeShiftPattern(shift))+' · '+shift.graceMinutes+'-minute grace':'No shift is assigned.');
+    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Assigned Work Shift</div><div class="card-sub">Employee profile schedule used for attendance policy and schedule-adjustment requests</div></div><span class="badge '+(hasPersonal?'b-info':(shift&&shift.active?'b-approved':'b-pending'))+'">'+(hasPersonal?'Personal schedule':(shift&&shift.active?'Active shift':'Needs assignment'))+'</span></div>'+
+      '<div class="form-row"><div class="field"><label>Shift Assignment</label><select onchange="assignEmployeeShift('+employee.id+',parseInt(this.value,10))">'+SHIFT_DEFINITIONS.filter(function(s){return s.active||s.id===employee.shiftId;}).map(function(s){return '<option value="'+s.id+'" '+(s.id===employee.shiftId?'selected':'')+'>'+esc(s.name)+(s.active?'':' (inactive)')+'</option>';}).join('')+'</select>'+(hasPersonal?'<div style="font-size:11px;color:var(--txt3);margin-top:5px">Used as the fallback if the personal schedule below is removed.</div>':'')+'</div>'+
+      '<div style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;align-self:end;margin-bottom:10px">Currently following: '+effectivePatternHtml+'</div></div>'+
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:12px;border-top:1px solid var(--border)">'+
+      (hasPersonal?
+        '<button class="btn btn-sm" onclick="openPersonalScheduleEditor('+employee.id+')">Edit Personal Schedule</button><button class="btn btn-sm btn-danger" onclick="removePersonalSchedule('+employee.id+')">Remove — follow shift template</button>':
+        '<button class="btn btn-sm" onclick="openPersonalScheduleEditor('+employee.id+')">+ Set Personal Schedule</button><span style="font-size:11px;color:var(--txt3)">For when this one employee\'s hours or rest day need to differ from the shift they\'re assigned to.</span>')+
+      '</div>'+
+      (adjustments.length?'<div class="section-header" style="margin-top:12px">Recent approved schedule adjustments</div>'+adjustments.map(function(a){
         var summary=a.days?a.days.length+' day(s) individually scheduled':(a.start+' – '+a.end);
         return '<div class="info-row"><span>'+a.from+(a.to&&a.to!==a.from?' – '+a.to:'')+'</span><strong class="mono">'+summary+'</strong></div>';
       }).join(''):'')+'</div>';
