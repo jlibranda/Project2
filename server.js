@@ -328,8 +328,12 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
         const timestamp = (cols[1] || '').trim();
         const statusCode = (cols[2] || '').trim();
         if (!userId || !timestamp) return;
-        const [date, time] = timestamp.split(' ');
-        if (!date || !time) return;
+        const [date, rawTime] = timestamp.split(' ');
+        if (!date || !rawTime) return;
+        // Some firmware reports seconds (HH:MM:SS) in the ATTLOG timestamp -- normalize to
+        // HH:MM at the source so every downstream consumer (attendance calc, display, the
+        // Attendance Report) only ever sees the clean format the rest of the app expects.
+        const time = rawTime.slice(0, 5);
         punches.push({ userId, date, time, statusCode });
       });
       const record = await readState();
