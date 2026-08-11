@@ -768,16 +768,19 @@
     var date = document.getElementById('adate').value;
     if (!date) { toast('Select a date.', 'warning'); return; }
     var duplicate = attendanceRecord(eid,date);
-    upsertAttendance(eid,date,{
-      tin:document.getElementById('atin').value, tout:document.getElementById('atout').value,
-      status:document.getElementById('ast').value,
-      ot:parseFloat(document.getElementById('aot').value) || 0,
-      nd:parseFloat(document.getElementById('and').value) || 0,
-      notes:document.getElementById('anotes').value.trim(),
+    // computedAttendancePatch (index.html) folds tin/tout into the permanent punch log and
+    // auto-derives late/undertime/OT/ND/attendance-policy (half day, LWOP) from them, the same
+    // way biometric and Web Bundy punches already do -- filing or correcting a record by hand
+    // shouldn't be the one path where none of that gets computed.
+    var patch = computedAttendancePatch(eid, date,
+      document.getElementById('atin').value, document.getElementById('atout').value, document.getElementById('ast').value,
+      parseFloat(document.getElementById('aot').value) || 0, parseFloat(document.getElementById('and').value) || 0,
+      document.getElementById('anotes').value.trim(), 'manual');
+    upsertAttendance(eid,date,Object.assign(patch, {
       approvalStatus:isA ? 'approved' : 'pending',
-      filedBy:user.name, filedAt:new Date().toISOString(), source:'manual',
+      filedBy:user.name, filedAt:new Date().toISOString(),
       reviewedBy:isA ? user.name : '', reviewedAt:isA ? new Date().toISOString() : ''
-    });
+    }));
     queueSync('Attendance');
     toast(isA ? (duplicate?'Authoritative attendance updated and approved.':'Attendance saved and approved.') : (duplicate?'Attendance update submitted for approval.':'Attendance submitted for approval.'), 'success');
     tab = isA ? 2 : 0;
