@@ -549,6 +549,11 @@ const PERM_DEFS=[
 
   /* ── SELF-SERVICE ─────────────────────────────────────────── */
   {grp:'Self-Service',        k:'myprofile',          l:'My 201 File',                     desc:'View own HR profile, employment history, and personal documents',                       sub:false},
+  {grp:'Self-Service',        k:'self_view_personal', l:'My Personal Info',                desc:'See own name, birthday, contact, address, department, position, and emergency contact', sub:true},
+  {grp:'Self-Service',        k:'self_view_govt',     l:'My Gov\'t Numbers',               desc:'See own SSS, PhilHealth, Pag-IBIG, and TIN/BIR numbers',                                sub:true},
+  {grp:'Self-Service',        k:'self_view_compensation',l:'My Compensation',              desc:'See own daily rate, 13th month estimate, and statutory contribution breakdown',         sub:true},
+  {grp:'Self-Service',        k:'self_view_allowances',l:'My Recurring Allowances',         desc:'See own recurring allowances (transportation, rice subsidy, etc.)',                     sub:true},
+  {grp:'Self-Service',        k:'self_view_movements', l:'My Movement History',             desc:'See own position, transfer, and salary change history',                                sub:true},
   {grp:'Self-Service',        k:'onboarding',         l:'Onboarding Tasks',                desc:'Complete and view personal onboarding checklist',                                       sub:false},
   {grp:'Self-Service',        k:'profilechanges',     l:'Profile Change Requests',         desc:'Submit changes to own profile for HR approval',                                         sub:false},
   {grp:'Self-Service',        k:'profile_approve',    l:'Approve Profile Changes',         desc:'Review and approve or reject employee self-edit requests',                              sub:true},
@@ -601,13 +606,13 @@ const PERM_DEFS=[
 
 const ACCESS_PRESETS={
   'Employee':{
-    dashboard:true,myprofile:true,emp_view_personal:true,
+    dashboard:true,myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,emp_view_personal:true,
     webbundy:true,attendance:true,leave:true,leave_apply:true,
     myslips:true,loans:true,loans_apply:true,
     performance:true,perf_self:true,assistant:true,profilechanges:true,resolution:true,
   },
   'Team Leader':{
-    dashboard:true,employees:true,emp_view_personal:true,emp_view_employment:true,myprofile:true,
+    dashboard:true,employees:true,emp_view_personal:true,emp_view_employment:true,myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,
     webbundy:true,attendance:true,att_edit:true,bundyadmin:true,
     leave:true,leave_apply:true,leave_approve:true,
     myslips:true,loans:true,loans_apply:true,
@@ -618,7 +623,7 @@ const ACCESS_PRESETS={
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_compensation:true,emp_view_govt:true,emp_view_banking:true,emp_view_documents:true,emp_view_movements:true,
     emp_edit:true,emp_edit_personal:true,emp_edit_employment:true,emp_edit_govt:true,emp_add:true,emp_export:true,emp_reset_password:true,emp_toggle_active:true,
-    myprofile:true,onboarding:true,profilechanges:true,profile_approve:true,
+    myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,onboarding:true,profilechanges:true,profile_approve:true,
     webbundy:true,attendance:true,att_edit:true,bundyadmin:true,
     leave:true,leave_apply:true,leave_approve:true,leave_credits:true,
     government:true,myslips:true,all_payslips:true,loans:true,loans_apply:true,loans_approve:true,
@@ -630,7 +635,7 @@ const ACCESS_PRESETS={
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_compensation:true,emp_view_govt:true,emp_view_banking:true,emp_view_movements:true,
     emp_edit:true,emp_edit_compensation:true,emp_edit_govt:true,emp_edit_banking:true,emp_export:true,
-    myprofile:true,profilechanges:true,
+    myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,profilechanges:true,
     webbundy:true,attendance:true,att_edit:true,bundyadmin:true,
     leave:true,leave_apply:true,
     payroll:true,payroll_approve:true,government:true,myslips:true,all_payslips:true,loans:true,loans_approve:true,
@@ -639,7 +644,7 @@ const ACCESS_PRESETS={
   'Department Head':{
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_movements:true,
-    myprofile:true,onboarding:true,profilechanges:true,profile_approve:true,
+    myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,onboarding:true,profilechanges:true,profile_approve:true,
     webbundy:true,attendance:true,bundyadmin:true,
     leave:true,leave_apply:true,leave_approve:true,
     myslips:true,loans:true,loans_apply:true,
@@ -649,20 +654,20 @@ const ACCESS_PRESETS={
   'Finance Officer':{
     dashboard:true,
     employees:true,emp_view_employment:true,emp_view_compensation:true,emp_view_banking:true,emp_export:true,
-    myprofile:true,
+    myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,
     webbundy:true,attendance:true,leave:true,leave_apply:true,
     payroll:true,payroll_approve:true,government:true,myslips:true,all_payslips:true,loans:true,loans_approve:true,
     analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,
   },
   'IT Admin':{
-    dashboard:true,myprofile:true,
+    dashboard:true,myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,
     webbundy:true,leave:true,leave_apply:true,myslips:true,
     accesssetup:true,access_manage:true,gsheets:true,zksetup:true,assistant:true,resolution:true,
   },
   'Auditor':{
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_compensation:true,emp_view_govt:true,emp_view_movements:true,emp_export:true,
-    myprofile:true,attendance:true,bundyadmin:true,leave:true,
+    myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,attendance:true,bundyadmin:true,leave:true,
     myslips:true,all_payslips:true,government:true,loans:true,
     analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,
   },
@@ -5819,6 +5824,9 @@ function pgMyProfile(){
   const myLoans=LOANS.filter(l=>l.eid===emp.id);
   const myAllowances=employeeRecurringAllowances(emp);
   const ms=emp.rate*22;
+  const canPersonal=canAccess('self_view_personal'),canGovt=canAccess('self_view_govt'),
+    canComp=canAccess('self_view_compensation'),canAllow=canAccess('self_view_allowances'),
+    canMove=canAccess('self_view_movements');
   return`<div class="page-header"><div><div class="page-title">My 201 File</div><div class="page-sub">Your personal HR record</div></div>
   <button class="btn btn-primary" onclick="modal={type:'editProfile',emp:user,draft:JSON.parse(JSON.stringify(user))};render()">${ico('edit',14)} Edit My Details</button></div>
   <div style="display:grid;grid-template-columns:280px 1fr;gap:1rem">
@@ -5832,29 +5840,29 @@ function pgMyProfile(){
         <div style="font-size:12px;color:var(--txt3)">Service: <strong style="color:var(--txt)">${yearsService(emp.hired)}</strong></div>
         <div style="font-size:12px;color:var(--txt3);margin-top:4px">Hired: <strong style="color:var(--txt)">${emp.hired}</strong></div>
       </div>
-      <div class="card">
+      ${canGovt?`<div class="card">
         <div class="card-title" style="margin-bottom:.75rem">Government Numbers</div>
         ${[['SSS',emp.sss],['PhilHealth',emp.ph],['Pag-IBIG',emp.pi],['TIN (BIR)',emp.tin]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span class="mono" style="font-size:11px">${v}</span></div>`).join('')}
-      </div>
+      </div>`:''}
     </div>
     <div>
-      <div class="card">
+      ${canPersonal?`<div class="card">
         <div class="card-title" style="margin-bottom:.875rem">Personal Information</div>
         <div class="form-row"><div>${[['Full Name',emp.name],['Birthday',emp.bday],['Contact',emp.contact],['Address',emp.address]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span>${v}</span></div>`).join('')}</div>
         <div>${[['Department',emp.dept],['Position',emp.pos],['Band Level',emp.bandLevel||'—'],['Entity',emp.entityName||'—']].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span>${v}</span></div>`).join('')}</div></div>
         <div class="info-row"><span class="info-label">Emergency Contact</span><span>${emp.emergency||'—'}</span></div>
-      </div>
-      <div class="card">
+      </div>`:''}
+      ${canComp?`<div class="card">
         <div class="card-title" style="margin-bottom:.875rem">Compensation Summary</div>
         ${[['Basic daily rate',fmt(emp.rate)],['Monthly equivalent',fmt(ms)],['13th Month Pay (annual)',fmt(thirteenth(emp))],['SSS Employee Share',fmt(sssContrib(ms))],['PhilHealth Employee Share',fmt(phContrib(ms))],['Pag-IBIG Employee Share',fmt(piContrib(ms))],['Est. Withholding Tax',fmt(birTax(ms))]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span class="mono">${v}</span></div>`).join('')}
-      </div>
-      ${myAllowances.length?`<div class="card"><div class="card-title" style="margin-bottom:.875rem">Recurring Allowances</div>
+      </div>`:''}
+      ${canAllow&&myAllowances.length?`<div class="card"><div class="card-title" style="margin-bottom:.875rem">Recurring Allowances</div>
       ${myAllowances.map(a=>{const type=INCOME_TYPES.find(t=>t.code===a.payItemCode);return`<div class="info-row"><span class="info-label">${esc(type?.name||a.payItemCode)}</span><span class="mono">${fmt(a.monthlyAmount||a.amount||0)}${a.active===false?' <span class="badge b-absent" style="font-size:10px">Inactive</span>':''}</span></div>`;}).join('')}
       </div>`:''}
-      ${myLoans.length?`<div class="card"><div class="card-title" style="margin-bottom:.875rem">Active Loans</div>
+      ${canAccess('loans')&&myLoans.length?`<div class="card"><div class="card-title" style="margin-bottom:.875rem">Active Loans</div>
       ${myLoans.map(l=>`<div class="loan-row"><div style="display:flex;justify-content:space-between"><span style="font-weight:500">${l.type}</span><span class="badge b-${l.status}">${l.status}</span></div><div style="display:flex;justify-content:space-between;margin-top:6px;font-size:12px;color:var(--txt3)"><span>Balance: <strong class="mono" style="color:var(--red)">${fmt(l.balance)}</strong></span><span>Monthly: <strong class="mono">${fmt(l.monthly)}</strong></span></div><div class="progress-bar" style="margin-top:6px"><div class="progress-fill" style="width:${Math.round((1-l.balance/l.amount)*100)}%;background:var(--green)"></div></div></div>`).join('')}
       </div>`:''}
-      <div class="card"><div class="card-title" style="margin-bottom:.875rem">Movement History</div>${renderMovementHistory(emp.movements||[])}</div>
+      ${canMove?`<div class="card"><div class="card-title" style="margin-bottom:.875rem">Movement History</div>${renderMovementHistory(emp.movements||[])}</div>`:''}
     </div>
   </div>`;
 }
