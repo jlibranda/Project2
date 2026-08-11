@@ -179,16 +179,6 @@ function zkPunchKind(statusCode) {
   if (statusCode === '1' || statusCode === '2' || statusCode === '3' || statusCode === '5') return 'out';
   return null;
 }
-// Prefer the device's own in/out tag when any punch that day has one; only fall back to
-// earliest-in/latest-out (the old behavior) when none of the day's punches are tagged —
-// e.g. older firmware that doesn't send a status code at all.
-function zkPickInOut(entries) {
-  const ins = entries.filter(e => e.kind === 'in').map(e => e.time).sort();
-  const outs = entries.filter(e => e.kind === 'out').map(e => e.time).sort();
-  if (ins.length || outs.length) return { tin: ins[0] || '', tout: outs.length ? outs[outs.length - 1] : '' };
-  const allTimes = entries.map(e => e.time).filter(Boolean).sort();
-  return { tin: allTimes[0] || '', tout: allTimes.length > 1 ? allTimes[allTimes.length - 1] : '' };
-}
 
 function appendNote(existingNotes, note) {
   const notes = String(existingNotes || '').split(' · ').filter(Boolean);
@@ -209,36 +199,43 @@ function describeOutOfWindowReason(employee, punchDate, shifts) {
   return `Punch time falls outside the allowed buffer around ${name}'s scheduled shift hours — needs confirmation.`;
 }
 
-// Mirrors the client's zkImport() merge logic: extend an existing day's tin/tout with new
-// punches rather than overwrite, so a check-out committed after a check-in isn't lost.
+// Permanently folds every incoming punch into the day's record (via TimekeepingCore.mergePunches
+// -- additive only, nothing already captured is ever dropped or replaced) and re-derives
+// tin/tout/late/undertime/OT/night-differential/rest-day-holiday hours from the FULL punch log
+// using the employee's actual schedule, instead of the flat "tin>=08:30 is late" heuristic and
+// always-zero OT/ND this used to leave for a human to fill in by hand.
 // outOfBufferReasons (empId|date -> reason text) mark days where the punch fell outside the
 // employee's scheduled shift buffer — those are committed but flagged pending instead of
 // auto-approved, with the specific reason surfaced to the approver.
 function zkCommitPunches(state, punchesByEmpDate, outOfBufferReasons) {
   state.attendance = Array.isArray(state.attendance) ? state.attendance : [];
   let nextId = state.attendance.reduce((max, r) => Math.max(max, Number(r.id) || 0), 0) + 1;
+  const employees = state.users || [];
+  const shifts = (state.company && state.company.shifts) || [];
+  const receivedAt = new Date().toISOString();
   let committed = 0;
   punchesByEmpDate.forEach((entries, key) => {
     const sep = key.indexOf('|');
     const empId = Number(key.slice(0, sep));
     const date = key.slice(sep + 1);
+    const employee = employees.find(u => u.id === empId);
     const existing = state.attendance.find(r => r.eid === empId && r.date === date && r.active !== false);
-    const allEntries = entries.slice();
-    if (existing && existing.tin) allEntries.push({ time: existing.tin, kind: 'in' });
-    if (existing && existing.tout) allEntries.push({ time: existing.tout, kind: 'out' });
-    const { tin, tout } = zkPickInOut(allEntries);
-    const isLate = tin >= '08:30';
+    const mergedPunches = TimekeepingCore.mergePunches(existing && existing.punches, entries.map(e => Object.assign({ receivedAt }, e)));
+    const schedule = employee ? TimekeepingCore.scheduleForDate(employee, date, shifts) : null;
+    const isRestDay = employee ? TimekeepingCore.isRestDay(employee, date, shifts) : false;
+    const computed = TimekeepingCore.computeFromPunches(mergedPunches, schedule, isRestDay) || {};
     const reason = outOfBufferReasons && outOfBufferReasons.get(key);
-    const patch = {
-      tin, tout, status: isLate ? 'late' : 'present', source: 'zkteco-realtime',
-      approvalStatus: reason ? 'pending' : 'approved', filedBy: 'ZKTeco realtime',
-      active: true, updatedAt: new Date().toISOString()
-    };
+    const patch = Object.assign({}, computed, {
+      punches: mergedPunches,
+      status: isRestDay ? (existing ? existing.status : 'present') : (computed.lateMinutes > 0 ? 'late' : 'present'),
+      source: 'zkteco-realtime', approvalStatus: reason ? 'pending' : 'approved', filedBy: 'ZKTeco realtime',
+      active: true, updatedAt: receivedAt
+    });
     if (reason) patch.notes = appendNote(existing && existing.notes, reason);
     if (existing) {
       Object.assign(existing, patch);
     } else {
-      state.attendance.push(Object.assign({ id: nextId++, eid: empId, date, ot: 0, nd: 0, notes: '' }, patch));
+      state.attendance.push(Object.assign({ id: nextId++, eid: empId, date, notes: '' }, patch));
     }
     committed++;
   });
@@ -355,7 +352,7 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
           const finalDate = resolvedDate || p.date;
           const key = empId + '|' + finalDate;
           if (!punchesByEmpDate.has(key)) punchesByEmpDate.set(key, []);
-          punchesByEmpDate.get(key).push({ time: p.time, kind: zkPunchKind(p.statusCode) });
+          punchesByEmpDate.get(key).push({ time: p.time, kind: zkPunchKind(p.statusCode), statusCode: p.statusCode, serial: sn, source: 'zkteco-realtime' });
           if (hasShift && !resolvedDate) outOfBufferReasons.set(key, describeOutOfWindowReason(employee, p.date, shifts));
         });
         try {
