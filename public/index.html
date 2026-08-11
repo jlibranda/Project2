@@ -2206,6 +2206,21 @@ function canAccess(viewKey){
   if(!al)return false;
   return al.perms[viewKey]===true;
 }
+/* Page-level access gate — the sidebar already hides links a user's access level
+   doesn't grant, but that alone only prevents them from clicking there; it doesn't stop
+   the page itself from rendering if `view` gets set some other way (a search result, a
+   stray onclick, browser state). Every module route goes through this in render() so the
+   permission is enforced at the one place all navigation ultimately passes through,
+   not just at the link. */
+function renderAccessDenied(label){
+  return`<div class="page-header"><div><div class="page-title">Access Restricted</div><div class="page-sub">You don't have permission to view ${esc(label||'this module')}.</div></div></div>
+  <div class="card" style="text-align:center;padding:2.5rem 1.5rem;color:var(--txt3)">
+    <div style="opacity:.5">${ico('shield',34)}</div>
+    <div style="font-weight:700;margin-top:10px;color:var(--txt)">You don't have access to this module</div>
+    <div style="font-size:13px;margin-top:4px;max-width:380px;margin-left:auto;margin-right:auto">Ask your administrator to grant it from Company Settings → Access &amp; Permissions if you believe this is a mistake.</div>
+    <button class="btn btn-primary" style="margin-top:16px" onclick="goView('dashboard')">← Back to Dashboard</button>
+  </div>`;
+}
 
 /* ========== PH DEDUCTIONS ========== */
 /* ========== CONFIGURABLE GOVT RATES ========== */
@@ -13388,6 +13403,16 @@ function pgEmpDetail(){
   const al=ACCESS_LEVELS.find(a=>a.id===e.accessLevelId)||ACCESS_LEVELS[4];
   const alColors={purple:'#7c3aed',blue:'#2563eb',green:'#059669',amber:'#d97706',gray:'#6b7280'};
   const tabs=['Personal','Employment','Compensation','Recurring Allowances','Gov\'t & Bank','Emergency','Offboarding','Movements','Tax & YTD','Leave'];
+  /* Sub-permissions from Access & Permissions (emp_view_*) that gate individual tabs here —
+     an admin can grant the base 'employees' directory permission without also handing out
+     compensation, gov't ID, or salary-history visibility. Tabs with no dedicated sub-permission
+     defined yet (Emergency, Offboarding, Tax & YTD, Leave) stay open to anyone who can reach
+     this page at all, same as before. */
+  const TAB_PERM=['emp_view_personal','emp_view_employment','emp_view_compensation','emp_view_compensation',null,null,null,'emp_view_movements',null,null];
+  const tabAllowed=(i)=>{
+    if(i===4)return canAccess('emp_view_govt')||canAccess('emp_view_banking');
+    return TAB_PERM[i]?canAccess(TAB_PERM[i]):true;
+  };
 
   /* ── helper: render a field as view or edit ── */
   const d=detailDraft;
@@ -13429,7 +13454,12 @@ function pgEmpDetail(){
 
   /* ── tab content ── */
   let tabBody='';
-  if(detailTab===0){tabBody=`
+  if(!tabAllowed(detailTab)){tabBody=`<div style="text-align:center;padding:2.5rem 1.5rem;color:var(--txt3)">
+    <div style="opacity:.5">${ico('shield',30)}</div>
+    <div style="font-weight:700;margin-top:10px;color:var(--txt)">You don't have access to this tab</div>
+    <div style="font-size:13px;margin-top:4px">Ask your administrator to grant it from Access &amp; Permissions.</div>
+  </div>`;}
+  else if(detailTab===0){tabBody=`
     <div class="form-row">
       <div>
         ${etext('firstName','Legal First Name')}
@@ -14139,7 +14169,7 @@ function pgEmpDetail(){
       <!-- Tab bar + Edit/Save controls -->
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0;border-bottom:1px solid var(--border)">
         <div style="display:flex;gap:0;flex-wrap:wrap;min-width:0">
-          ${tabs.map((t,i)=>`<div class="tab${detailTab===i?' active':''}" onclick="detailTab=${i};render()" style="white-space:nowrap">${t}</div>`).join('')}
+          ${tabs.map((t,i)=>tabAllowed(i)?`<div class="tab${detailTab===i?' active':''}" onclick="detailTab=${i};render()" style="white-space:nowrap">${t}</div>`:'').join('')}
         </div>
         ${isA&&detailTab!==3&&detailTab!==7&&detailTab!==8&&detailTab!==9?`<div style="display:flex;gap:6px;padding-bottom:8px;flex-shrink:0;margin-left:12px">
           ${detailEdit
@@ -14588,35 +14618,39 @@ function render(){
     return;
   }
   let pg='';
+  /* Every route below except dashboard/resolution (self-scoping by design, open to all
+     logged-in users) is gated on the matching PERM_DEFS key before its page function ever
+     runs — see renderAccessDenied() for why this can't just live in the sidebar. */
+  const gate=(key,label,fn)=>canAccess(key)?fn():renderAccessDenied(label);
   try{
     if(view==='dashboard')pg=pgDashboard();
-    else if(view==='employees')pg=pgEmployees();
-    else if(view==='empdetail')pg=pgEmpDetail();
-    else if(view==='onboarding')pg=pgOnboarding();
-    else if(view==='attendance')pg=pgAttendance();
-    else if(view==='leave')pg=pgLeave();
-    else if(view==='myprofile')pg=pgMyProfile();
-    else if(view==='payroll')pg=pgPayroll();
-    else if(view==='government')pg=pgGovernment();
-    else if(view==='myslips')pg=pgMySlips();
-    else if(view==='loans')pg=pgLoans();
-    else if(view==='recruitment')pg=pgRecruitment();
-    else if(view==='performance')pg=pgPerformance();
-    else if(view==='analytics')pg=pgAnalytics();
-    else if(view==='reports')pg=pgReports();
-    else if(view==='assistant')pg=pgAssistant();
+    else if(view==='employees')pg=gate('employees','Employees',pgEmployees);
+    else if(view==='empdetail')pg=gate('employees','Employee Records',pgEmpDetail);
+    else if(view==='onboarding')pg=gate('onboarding','Onboarding',pgOnboarding);
+    else if(view==='attendance')pg=gate('attendance','Attendance',pgAttendance);
+    else if(view==='leave')pg=gate('leave','Leave',pgLeave);
+    else if(view==='myprofile')pg=gate('myprofile','My 201 File',pgMyProfile);
+    else if(view==='payroll')pg=gate('payroll','Payroll',pgPayroll);
+    else if(view==='government')pg=gate('government',"Gov't Remittances",pgGovernment);
+    else if(view==='myslips')pg=gate('myslips','My Payslips',pgMySlips);
+    else if(view==='loans')pg=gate('loans','Loans',pgLoans);
+    else if(view==='recruitment')pg=gate('recruitment','Recruitment',pgRecruitment);
+    else if(view==='performance')pg=gate('performance','Performance',pgPerformance);
+    else if(view==='analytics')pg=gate('analytics','Analytics',pgAnalytics);
+    else if(view==='reports')pg=gate('reports','Reports',pgReports);
+    else if(view==='assistant')pg=gate('assistant','HR Assistant',pgAssistant);
     else if(view==='resolution')pg=pgResolution();
-    else if(view==='orgsetup')pg=pgOrgSetup();
-    else if(view==='approvalsetup')pg=pgApprovalSetup();
-    else if(view==='lookupsetup')pg=pgLookupSetup();
-    else if(view==='accesssetup')pg=pgAccessSetup();
-    else if(view==='profilechanges')pg=pgProfileChanges();
-    else if(view==='zksetup')pg=pgZKSetup();
-    else if(view==='webbundy')pg=pgWebBundy();
-    else if(view==='bundyadmin')pg=pgBundyAdmin();
-    else if(view==='company')pg=pgCompanySettings();
-    else if(view==='gsheets')pg=pgGoogleSheets();
-    else if(view==='fieldconfig')pg=pgFieldConfig();
+    else if(view==='orgsetup')pg=gate('orgsetup','Org Structure',pgOrgSetup);
+    else if(view==='approvalsetup')pg=gate('approvalsetup','Approval Layers',pgApprovalSetup);
+    else if(view==='lookupsetup')pg=gate('lookupsetup','Lookup Tables',pgLookupSetup);
+    else if(view==='accesssetup')pg=gate('accesssetup','Access & Permissions',pgAccessSetup);
+    else if(view==='profilechanges')pg=gate('profilechanges','Profile Changes',pgProfileChanges);
+    else if(view==='zksetup')pg=gate('zksetup','ZKTeco Device',pgZKSetup);
+    else if(view==='webbundy')pg=gate('webbundy','Web Bundy',pgWebBundy);
+    else if(view==='bundyadmin')pg=gate('bundyadmin','Bundy Logs',pgBundyAdmin);
+    else if(view==='company')pg=gate('company','Company Settings',pgCompanySettings);
+    else if(view==='gsheets')pg=gate('gsheets','Google Sheets Sync',pgGoogleSheets);
+    else if(view==='fieldconfig')pg=gate('fieldconfig','Field Configuration',pgFieldConfig);
   }catch(err){
     console.error('Render error in view='+view+' tab='+tab+':', err);
     pg=`<div class="card" style="border:2px solid var(--red);margin:2rem">
@@ -14784,7 +14818,10 @@ function doGlobalSearch(v) {
   if (!box) return;
   if (!v.trim()) { box.style.display = 'none'; return; }
   var q = v.toLowerCase();
-  var emps = USERS.filter(function(u) {
+  // Anyone who can't browse the Employees directory shouldn't be able to look other
+  // employees up here either — clicking a result opens their full 201 file (compensation,
+  // gov't IDs, banking) via openEmp(), so this has to carry the same gate as the directory.
+  var emps = !canAccess('employees') ? [] : USERS.filter(function(u) {
     // Same "is this really an employee" test as the Employees list — role==='admin' is a
     // deliberately hidden service/outsourced admin account (not part of the company's own
     // staff), so it shouldn't be discoverable here either. A record with role missing/broken
