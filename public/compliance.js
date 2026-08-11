@@ -607,14 +607,16 @@
         days.push({ date:date, dow:dow, shift:shiftLabel, tin:'—', tout:'—', status:isRest?'Rest Day':(isMissing?'LWOP (no log)':'No Record'), approval:'', late:0, undertime:0, ot:0, nd:0, rdh:0, notes:isMissing?'No time log captured for this scheduled work day':'' });
         return;
       }
-      var lu = dailyLateUndertime(emp, rec, shifts);
+      var incomplete = isIncompleteLog(rec);
+      var lu = incomplete ? { late:0, undertime:0 } : dailyLateUndertime(emp, rec, shifts);
       days.push({ date:date, dow:dow, shift:shiftLabel, tin:rec.tin||'—', tout:rec.tout||'—',
-        status:ATT_REPORT_STATUS_LABEL[rec.status]||rec.status||'—', approval:approvalBadgeText(rec.approvalStatus),
-        late:lu.late, undertime:lu.undertime, ot:rec.ot||0, nd:rec.nd||0, rdh:rec.restDayHolidayHours||0, notes:rec.notes||'' });
+        status:incomplete?'Absent (incomplete log)':(ATT_REPORT_STATUS_LABEL[rec.status]||rec.status||'—'), approval:approvalBadgeText(rec.approvalStatus),
+        late:lu.late, undertime:lu.undertime, ot:incomplete?0:(rec.ot||0), nd:incomplete?0:(rec.nd||0), rdh:rec.restDayHolidayHours||0, notes:rec.notes||'' });
     });
     var missingCount = Object.keys(missingSet).length;
+    var incompleteButNotAbsent = summary.records.filter(function (r) { return isIncompleteLog(r) && r.status !== 'absent'; }).length;
     modal = { type:'attReportDetail', ns:ns, emp:{ id:emp.id, name:emp.name, eid:emp.eid, dept:emp.dept, pos:emp.pos },
-      range:range, summary:{ presentDays:summary.presentDays, absentDays:summary.absentDays+missingCount, lateMinutes:summary.lateMinutes,
+      range:range, summary:{ presentDays:summary.presentDays-incompleteButNotAbsent, absentDays:summary.absentDays+missingCount+incompleteButNotAbsent, lateMinutes:summary.lateMinutes,
         undertimeMinutes:summary.undertimeMinutes, otHours:summary.otHours, ndHours:summary.ndHours,
         restDayHolidayHours:summary.restDayHolidayHours, hoursWorked:+hoursWorked.toFixed(2), missingLogDays:missingCount }, days:days };
     render();
@@ -628,6 +630,15 @@
     if (parts.length < 2) return null;
     var h = Number(parts[0]), m = Number(parts[1]);
     return Number.isFinite(h) && Number.isFinite(m) ? h*60+m : null;
+  }
+  // A record with only one half of the punch pair (Time In with no Time Out, or vice versa) —
+  // whatever status happens to be stored on it (including an already-saved record from before
+  // this check existed, which could read "Late") — is treated as Absent for report display,
+  // consistent with how new writes now compute it (see index.html's computedAttendancePatch /
+  // TimekeepingCore.computeFromPunches's `incomplete` flag). Nothing on the record is rewritten;
+  // this only changes what the report shows and tallies.
+  function isIncompleteLog(rec) {
+    return !!((rec.tin && !rec.tout) || (rec.tout && !rec.tin));
   }
   var ATT_REPORT_DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   var ATT_REPORT_STATUS_LABEL = { present:'Present', late:'Late', absent:'Absent', leave:'On Leave' };
@@ -718,7 +729,9 @@
       var missingSet = {};
       missingLogDates(emp, range.from, range.to, shifts).forEach(function (d) { missingSet[d] = true; });
       var missingCount = Object.keys(missingSet).length;
-      var effectiveAbsentDays = summary.absentDays + missingCount;
+      var incompleteButNotAbsent = summary.records.filter(function (r) { return isIncompleteLog(r) && r.status !== 'absent'; }).length;
+      var effectivePresentDays = summary.presentDays - incompleteButNotAbsent;
+      var effectiveAbsentDays = summary.absentDays + missingCount + incompleteButNotAbsent;
       var hoursWorked = 0, needsReview = false;
       summary.records.forEach(function (r) {
         if (r.approvalStatus === 'pending') needsReview = true;
@@ -729,13 +742,13 @@
       });
       var byCode = summary.restDayHolidayHoursByCode || {};
 
-      summaryRows.push([emp.eid||'', emp.name||'', emp.dept||'', emp.pos||'', summary.presentDays, effectiveAbsentDays, summary.lateMinutes, summary.undertimeMinutes, summary.otHours, summary.ndHours]
+      summaryRows.push([emp.eid||'', emp.name||'', emp.dept||'', emp.pos||'', effectivePresentDays, effectiveAbsentDays, summary.lateMinutes, summary.undertimeMinutes, summary.otHours, summary.ndHours]
         .concat(ATT_REPORT_HOLIDAY_CODES.map(function (c) { return byCode[c] || 0; }))
         .concat([+hoursWorked.toFixed(2), needsReview?'Yes — pending approval in range':'No']));
 
       detailedRows.push(['Employee:', emp.name||'', 'EID:', emp.eid||'']);
       detailedRows.push(['Department:', emp.dept||'—', 'Position:', emp.pos||'—']);
-      detailedRows.push(['Period:', range.from+' to '+range.to, 'Days Present:', summary.presentDays, 'Days Absent:', effectiveAbsentDays]);
+      detailedRows.push(['Period:', range.from+' to '+range.to, 'Days Present:', effectivePresentDays, 'Days Absent:', effectiveAbsentDays]);
       var detailHeaderRowIdx = detailedRows.length;
       detailedRows.push(['Date','Day','Shift','Time In','Time Out','Status','Approval','Late (min)','Undertime (min)','OT (hrs)','ND (hrs)','Rest Day/Holiday (hrs)','Notes']);
       var totOt=0, totNd=0, totRdh=0;
@@ -750,9 +763,11 @@
           detailedRows.push([date, dow, shiftLabel, '—', '—', isRest?'Rest Day':(isMissing?'LWOP (no log)':'No Record'), '—', 0, 0, 0, 0, 0, isMissing?'No time log captured for this scheduled work day':'']);
           return;
         }
-        var lu = dailyLateUndertime(emp, rec, shifts);
-        totOt += Number(rec.ot||0); totNd += Number(rec.nd||0); totRdh += Number(rec.restDayHolidayHours||0);
-        detailedRows.push([date, dow, shiftLabel, rec.tin||'—', rec.tout||'—', ATT_REPORT_STATUS_LABEL[rec.status]||rec.status||'—', approvalBadgeText(rec.approvalStatus), lu.late, lu.undertime, rec.ot||0, rec.nd||0, rec.restDayHolidayHours||0, rec.notes||'']);
+        var incomplete = isIncompleteLog(rec);
+        var lu = incomplete ? { late:0, undertime:0 } : dailyLateUndertime(emp, rec, shifts);
+        var rowOt = incomplete ? 0 : Number(rec.ot||0), rowNd = incomplete ? 0 : Number(rec.nd||0);
+        totOt += rowOt; totNd += rowNd; totRdh += Number(rec.restDayHolidayHours||0);
+        detailedRows.push([date, dow, shiftLabel, rec.tin||'—', rec.tout||'—', incomplete?'Absent (incomplete log)':(ATT_REPORT_STATUS_LABEL[rec.status]||rec.status||'—'), approvalBadgeText(rec.approvalStatus), lu.late, lu.undertime, rowOt, rowNd, rec.restDayHolidayHours||0, rec.notes||'']);
       });
       var totalsRowIdx = detailedRows.length;
       detailedRows.push(['','','','','','','Totals for period:', summary.lateMinutes, summary.undertimeMinutes, +totOt.toFixed(2), +totNd.toFixed(2), +totRdh.toFixed(2), +hoursWorked.toFixed(2)+' hrs worked']);

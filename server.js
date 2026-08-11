@@ -229,7 +229,7 @@ function zkCommitPunches(state, punchesByEmpDate, outOfBufferReasons) {
     const policyNote = computed.policyNotes ? computed.policyNotes.join(' · ') : '';
     const patch = Object.assign({}, computed, {
       punches: mergedPunches,
-      status: computed.lwop ? 'absent' : isRestDay ? (existing ? existing.status : 'present') : (computed.lateMinutes > 0 ? 'late' : 'present'),
+      status: (computed.lwop || computed.incomplete) ? 'absent' : isRestDay ? (existing ? existing.status : 'present') : (computed.lateMinutes > 0 ? 'late' : 'present'),
       source: 'zkteco-realtime', approvalStatus: reason ? 'pending' : 'approved', filedBy: 'ZKTeco realtime',
       active: true, updatedAt: receivedAt
     });
