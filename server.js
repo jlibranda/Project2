@@ -485,6 +485,7 @@ app.get('/api/zk/status', requireAuth, async (_req, res) => {
 const ZK_COMMANDS = {
   reboot: { content: 'REBOOT', label: 'Restart device' },
   resync: { content: 'DATA QUERY ATTLOG', label: 'Resync attendance log' },
+  resyncusers: { content: 'DATA QUERY USERINFO', label: 'Resync user list' },
   clearlog: { content: 'CLEAR LOG', label: 'Clear attendance log' }
 };
 app.post('/api/zk/command', requireAuth, async (req, res) => {
