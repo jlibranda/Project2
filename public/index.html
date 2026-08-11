@@ -2145,6 +2145,24 @@ function zkSaveMapping(){
   render();
   alert('User mapping saved!');
 }
+// Pre-fills any still-unmapped device user's dropdown with the employee whose Biometric
+// Number (Employee Detail → Employment tab) exactly matches that device user ID — a
+// convenience for re-applying matches after biometric numbers are added/edited mid-session.
+// Never overwrites a dropdown that already has a value (saved mapping or an already-applied
+// suggestion), and doesn't touch ZK.userMapping itself — the admin still reviews and clicks
+// Save mapping to commit, same as picking manually.
+function zkAutoMatchByBiometric(){
+  const mappableUsers=zkMappableUsers();
+  let matched=0;
+  mappableUsers.forEach(du=>{
+    const sel=document.getElementById('zkmap-'+du.userId);
+    if(!sel||sel.value)return;
+    const emp=USERS.find(u=>u.role==='employee'&&u.active!==false&&u.biometricNo&&String(u.biometricNo).trim()===String(du.userId).trim());
+    if(emp){sel.value=String(emp.id);matched++;}
+  });
+  if(matched)toast(matched+' device user'+(matched!==1?'s':'')+' matched by Biometric Number. Review below, then click Save mapping.','success');
+  else toast('No new matches found. Make sure Biometric Number is set on the Employment tab of each employee\'s 201 file, and matches the device user ID exactly.','info');
+}
 // Mirrors server.js's zkPunchKind/zkPickInOut: trust the device's own in/out toggle
 // (ATTLOG status code) when any punch that day has one, otherwise fall back to
 // earliest-in/latest-out.
@@ -11646,9 +11664,10 @@ function pgZKSetup(){
     const unmappedEmployees=USERS.filter(u=>u.role==='employee'&&u.active!==false&&!mappedEmpIds.has(u.id));
     body=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.875rem">
-      <div style="font-size:13px;color:var(--txt2)">Map each ZKTeco user ID to an employee. This is a one-time setup.</div>
-      <div style="display:flex;gap:6px">
+      <div style="font-size:13px;color:var(--txt2)">Map each ZKTeco user ID to an employee — or set each employee's <strong>Biometric Number</strong> (201 File → Employment tab) to their device user ID and let it match automatically.</div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
         <button class="btn btn-sm" onclick="zkRefreshStatus()" ${ZK.loading?'disabled':''}>↻ Refresh device users</button>
+        <button class="btn btn-sm" onclick="zkAutoMatchByBiometric()">🔗 Auto-match by Biometric No.</button>
         <button class="btn btn-sm btn-primary" onclick="zkSaveMapping()">Save mapping</button>
       </div>
     </div>
@@ -11656,15 +11675,20 @@ function pgZKSetup(){
     <tbody>${mappableUsers.map(du=>{
       const mapped=ZK.userMapping[du.userId]?USERS.find(u=>u.id===ZK.userMapping[du.userId]):null;
       const isDuplicate=mapped&&empUseCount[mapped.id]>1;
+      // Smart default for a still-unmapped device user: suggest whichever active employee's
+      // Biometric Number matches this device user ID exactly, pre-selected but not yet saved —
+      // the admin reviews the "Suggested" badge below and clicks Save mapping to commit it.
+      const suggested=!mapped?USERS.find(u=>u.role==='employee'&&u.active!==false&&u.biometricNo&&String(u.biometricNo).trim()===String(du.userId).trim()):null;
+      const selectedId=mapped?mapped.id:(suggested?suggested.id:null);
       return`<tr>
         <td class="mono" style="font-size:12px">${du.userId}</td>
         <td>${du.name||(du.fromPunchesOnly?'<span style="color:var(--txt3);font-style:italic">seen in punches only</span>':'—')}</td>
         <td class="mono" style="font-size:11px">${du.cardNo||'—'}</td>
         <td><select id="zkmap-${du.userId}" class="finput" style="font-size:12px">
           <option value="">— Unmapped —</option>
-          ${USERS.filter(u=>u.role==='employee').map(e=>`<option value="${e.id}" ${ZK.userMapping[du.userId]===e.id?'selected':''}>${e.name} (${e.eid})</option>`).join('')}
-        </select></td>
-        <td>${mapped?`<span class="badge b-approved">${mapped.name}</span>`:`<span class="badge b-absent">Unmapped</span>`}${isDuplicate?` <span class="badge b-late" title="This employee is also mapped to another device user ID — their punches from all mapped IDs will be merged into one attendance record.">⚠ Already mapped elsewhere</span>`:''}</td>
+          ${USERS.filter(u=>u.role==='employee').map(e=>`<option value="${e.id}" ${selectedId===e.id?'selected':''}>${e.name} (${e.eid})</option>`).join('')}
+        </select>${suggested?`<div style="font-size:10px;color:var(--green-txt);margin-top:3px">🔗 Suggested via Biometric No. match</div>`:''}</td>
+        <td>${mapped?`<span class="badge b-approved">${mapped.name}</span>`:suggested?`<span class="badge b-pending">Suggested: ${esc(suggested.name)}</span>`:`<span class="badge b-absent">Unmapped</span>`}${isDuplicate?` <span class="badge b-late" title="This employee is also mapped to another device user ID — their punches from all mapped IDs will be merged into one attendance record.">⚠ Already mapped elsewhere</span>`:''}</td>
       </tr>`;}).join('')}</tbody></table>`
     :`<div class="empty-state"><div class="ei">👆</div>No device users seen yet. Users appear here automatically as they're enrolled on the device or as punches come in, or click "Refresh device users".</div>`}
     <div class="card" style="margin-top:1rem">
