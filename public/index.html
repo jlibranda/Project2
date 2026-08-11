@@ -549,10 +549,13 @@ const PERM_DEFS=[
 
   /* ── SELF-SERVICE ─────────────────────────────────────────── */
   {grp:'Self-Service',        k:'myprofile',          l:'My 201 File',                     desc:'View own HR profile, employment history, and personal documents',                       sub:false},
-  {grp:'Self-Service',        k:'self_view_personal', l:'My Personal Info',                desc:'See own name, birthday, contact, address, department, position, and emergency contact', sub:true},
+  {grp:'Self-Service',        k:'self_view_personal', l:'My Personal Info',                desc:'See own legal name, birthday, gender, civil status, address, and contact numbers',     sub:true},
+  {grp:'Self-Service',        k:'self_view_employment',l:'My Employment Info',              desc:'See own position, department, org placement, employment type, dates, and reporting chain', sub:true},
   {grp:'Self-Service',        k:'self_view_govt',     l:'My Gov\'t Numbers',               desc:'See own SSS, PhilHealth, Pag-IBIG, and TIN/BIR numbers',                                sub:true},
+  {grp:'Self-Service',        k:'self_view_banking',  l:'My Banking Details',              desc:'See own bank name and bank account number',                                             sub:true},
   {grp:'Self-Service',        k:'self_view_compensation',l:'My Compensation',              desc:'See own daily rate, 13th month estimate, and statutory contribution breakdown',         sub:true},
   {grp:'Self-Service',        k:'self_view_allowances',l:'My Recurring Allowances',         desc:'See own recurring allowances (transportation, rice subsidy, etc.)',                     sub:true},
+  {grp:'Self-Service',        k:'self_view_emergency', l:'My Emergency Contacts',           desc:'See own emergency contact names, relationships, numbers, and addresses',                sub:true},
   {grp:'Self-Service',        k:'self_view_movements', l:'My Movement History',             desc:'See own position, transfer, and salary change history',                                sub:true},
   {grp:'Self-Service',        k:'onboarding',         l:'Onboarding Tasks',                desc:'Complete and view personal onboarding checklist',                                       sub:false},
   {grp:'Self-Service',        k:'profilechanges',     l:'Profile Change Requests',         desc:'Submit changes to own profile for HR approval',                                         sub:false},
@@ -606,13 +609,13 @@ const PERM_DEFS=[
 
 const ACCESS_PRESETS={
   'Employee':{
-    dashboard:true,myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,emp_view_personal:true,
+    dashboard:true,myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,emp_view_personal:true,
     webbundy:true,attendance:true,leave:true,leave_apply:true,
     myslips:true,loans:true,loans_apply:true,
     performance:true,perf_self:true,assistant:true,profilechanges:true,resolution:true,
   },
   'Team Leader':{
-    dashboard:true,employees:true,emp_view_personal:true,emp_view_employment:true,myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,
+    dashboard:true,employees:true,emp_view_personal:true,emp_view_employment:true,myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,
     webbundy:true,attendance:true,att_edit:true,bundyadmin:true,
     leave:true,leave_apply:true,leave_approve:true,
     myslips:true,loans:true,loans_apply:true,
@@ -623,7 +626,7 @@ const ACCESS_PRESETS={
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_compensation:true,emp_view_govt:true,emp_view_banking:true,emp_view_documents:true,emp_view_movements:true,
     emp_edit:true,emp_edit_personal:true,emp_edit_employment:true,emp_edit_govt:true,emp_add:true,emp_export:true,emp_reset_password:true,emp_toggle_active:true,
-    myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,onboarding:true,profilechanges:true,profile_approve:true,
+    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,onboarding:true,profilechanges:true,profile_approve:true,
     webbundy:true,attendance:true,att_edit:true,bundyadmin:true,
     leave:true,leave_apply:true,leave_approve:true,leave_credits:true,
     government:true,myslips:true,all_payslips:true,loans:true,loans_apply:true,loans_approve:true,
@@ -635,7 +638,7 @@ const ACCESS_PRESETS={
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_compensation:true,emp_view_govt:true,emp_view_banking:true,emp_view_movements:true,
     emp_edit:true,emp_edit_compensation:true,emp_edit_govt:true,emp_edit_banking:true,emp_export:true,
-    myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,profilechanges:true,
+    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,profilechanges:true,
     webbundy:true,attendance:true,att_edit:true,bundyadmin:true,
     leave:true,leave_apply:true,
     payroll:true,payroll_approve:true,government:true,myslips:true,all_payslips:true,loans:true,loans_approve:true,
@@ -644,7 +647,7 @@ const ACCESS_PRESETS={
   'Department Head':{
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_movements:true,
-    myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,onboarding:true,profilechanges:true,profile_approve:true,
+    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,onboarding:true,profilechanges:true,profile_approve:true,
     webbundy:true,attendance:true,bundyadmin:true,
     leave:true,leave_apply:true,leave_approve:true,
     myslips:true,loans:true,loans_apply:true,
@@ -654,20 +657,20 @@ const ACCESS_PRESETS={
   'Finance Officer':{
     dashboard:true,
     employees:true,emp_view_employment:true,emp_view_compensation:true,emp_view_banking:true,emp_export:true,
-    myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,
+    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,
     webbundy:true,attendance:true,leave:true,leave_apply:true,
     payroll:true,payroll_approve:true,government:true,myslips:true,all_payslips:true,loans:true,loans_approve:true,
     analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,
   },
   'IT Admin':{
-    dashboard:true,myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,
+    dashboard:true,myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,
     webbundy:true,leave:true,leave_apply:true,myslips:true,
     accesssetup:true,access_manage:true,gsheets:true,zksetup:true,assistant:true,resolution:true,
   },
   'Auditor':{
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_compensation:true,emp_view_govt:true,emp_view_movements:true,emp_export:true,
-    myprofile:true,self_view_personal:true,self_view_govt:true,self_view_compensation:true,self_view_allowances:true,self_view_movements:true,attendance:true,bundyadmin:true,leave:true,
+    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,attendance:true,bundyadmin:true,leave:true,
     myslips:true,all_payslips:true,government:true,loans:true,
     analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,
   },
@@ -5820,17 +5823,151 @@ function submitLeave(){
 
 function pgMyProfile(){
   const emp=user;
-  const att=attendanceRecords().filter(a=>a.eid===emp.id);
   const myLoans=LOANS.filter(l=>l.eid===emp.id);
   const myAllowances=employeeRecurringAllowances(emp);
   const ms=emp.rate*22;
-  const canPersonal=canAccess('self_view_personal'),canGovt=canAccess('self_view_govt'),
+  const age=emp.bday?Math.floor((new Date()-new Date(emp.bday))/(365.25*24*3600*1000)):null;
+  const vrow=(label,value)=>`<div class="info-row"><span class="info-label">${label}</span><span style="font-size:13px">${esc(value===undefined||value===null||value===''?'—':String(value))}</span></div>`;
+  const fv=(tabKey,key)=>FIELD_CONFIG[tabKey]?.visible[key]!==false;
+  const customFieldRO=(f)=>{
+    const cv=emp[f.key];
+    let display=cv!==undefined&&cv!==''?cv:'—';
+    if((f.type==='number'||f.type==='amount')&&cv&&!isNaN(parseFloat(cv)))display=f.type==='amount'?'₱'+parseFloat(cv).toLocaleString('en-PH',{minimumFractionDigits:2}):cv;
+    return vrow(f.label,display);
+  };
+
+  const canPersonal=canAccess('self_view_personal'),canEmployment=canAccess('self_view_employment'),
+    canGovt=canAccess('self_view_govt'),canBanking=canAccess('self_view_banking'),
     canComp=canAccess('self_view_compensation'),canAllow=canAccess('self_view_allowances'),
-    canMove=canAccess('self_view_movements');
+    canEmergency=canAccess('self_view_emergency'),canMove=canAccess('self_view_movements'),
+    canLoans=canAccess('loans');
+
+  /* Every section below is gated on its own Access & Permissions toggle (Self-Service group,
+     under My 201 File) — this only builds the tab bar out of whichever ones the current
+     user's access level actually grants, same pattern as the admin Employee Detail tabs. */
+  const TABS=[
+    canPersonal&&{key:'personal',label:'Personal'},
+    canEmployment&&{key:'employment',label:'Employment'},
+    canComp&&{key:'compensation',label:'Compensation'},
+    canAllow&&{key:'allowances',label:'Allowances'},
+    (canGovt||canBanking)&&{key:'govtbank',label:'Gov\'t & Bank'},
+    canEmergency&&{key:'emergency',label:'Emergency'},
+    (canLoans&&myLoans.length)&&{key:'loans',label:'Loans'},
+    canMove&&{key:'movements',label:'Movements'},
+  ].filter(Boolean);
+
+  const active=TABS[tab]||TABS[0];
+  let body='';
+  if(!active){
+    body=`<div style="text-align:center;padding:2.5rem 1.5rem;color:var(--txt3)">
+      <div style="opacity:.5">${ico('shield',30)}</div>
+      <div style="font-weight:700;margin-top:10px;color:var(--txt)">Nothing to show yet</div>
+      <div style="font-size:13px;margin-top:4px">Ask your administrator to grant sections from Access &amp; Permissions → My 201 File.</div>
+    </div>`;
+  }else if(active.key==='personal'){
+    body=`<div class="form-row">
+      <div>
+        ${vrow('Legal First Name',emp.firstName)}
+        ${fv('personal','middleName')?vrow('Middle Name',emp.middleName):''}
+        ${vrow('Legal Last Name',emp.lastName)}
+        ${fv('personal','suffix')?vrow('Suffix',emp.suffix):''}
+        ${fv('personal','bday')?vrow('Date of Birth',emp.bday):''}
+        ${fv('personal','bday')?vrow('Age',age!==null?age+' years':'—'):''}
+        ${fv('personal','gender')?vrow('Gender',emp.gender):''}
+      </div>
+      <div>
+        ${fv('personal','maritalStatus')?vrow('Marital Status',emp.maritalStatus):''}
+        ${fv('personal','spouseName')?vrow('Spouse Name',emp.spouseName):''}
+        ${fv('personal','religion')?vrow('Religion',emp.religion):''}
+        ${fv('personal','city')?vrow('City',emp.city):''}
+        ${fv('personal','permanentAddress')?vrow('Permanent Address',emp.permanentAddress):''}
+        ${fv('personal','temporaryAddress')?vrow('Temporary Address',emp.temporaryAddress):''}
+        ${FIELD_CONFIG.personal.custom.map(f=>customFieldRO(f)).join('')}
+      </div>
+    </div>
+    <div style="border-top:1px solid var(--border);margin:10px 0"></div>
+    <div class="form-row">
+      <div>
+        ${fv('personal','contact')?vrow('Primary Contact',emp.contact):''}
+        ${fv('personal','contact2')?vrow('Secondary Contact',emp.contact2):''}
+      </div>
+      <div>
+        ${vrow('Company Email',emp.email)}
+        ${fv('personal','personalEmail')?vrow('Personal Email',emp.personalEmail):''}
+      </div>
+    </div>`;
+  }else if(active.key==='employment'){
+    const ihEmp=USERS.find(u=>u.eid===emp.immediateHeadEid);
+    const chain=getApprovalChain(emp.eid);
+    body=`<div class="form-row">
+      <div>
+        ${vrow('Employee ID',emp.eid)}
+        ${fv('employment','biometricNo')?vrow('Biometric Number',emp.biometricNo):''}
+        ${fv('employment','entityName')?vrow('Entity Name',emp.entityName):''}
+        ${fv('employment','bu')?vrow('Business Unit',emp.bu):''}
+        ${fv('employment','dept')?vrow('Department',emp.dept):''}
+        ${fv('employment','team')?vrow('Team',emp.team):''}
+        ${fv('employment','subteam')?vrow('Subteam',emp.subteam):''}
+        ${fv('employment','discipline')?vrow('Discipline',emp.discipline):''}
+        ${fv('employment','pod')?vrow('Pod',emp.pod):''}
+      </div>
+      <div>
+        ${vrow('Position',emp.pos)}
+        ${fv('employment','bandLevel')?vrow('Band Level',emp.bandLevel):''}
+        ${fv('employment','nonMass')?vrow('Non-Mass / Mass',emp.nonMass):''}
+        ${fv('employment','costCenter')?vrow('Cost Center',emp.costCenter):''}
+        ${vrow('Employment Type',emp.type)}
+        ${vrow('Start Date',emp.hired)}
+        ${fv('employment','thirdMonthEval')?vrow('3rd Month Evaluation',emp.thirdMonthEval):''}
+        ${fv('employment','fifthMonthEval')?vrow('5th Month Evaluation',emp.fifthMonthEval):''}
+        ${fv('employment','probEndDate')?vrow('Probation End Date',emp.probEndDate):''}
+        ${FIELD_CONFIG.employment.custom.map(f=>customFieldRO(f)).join('')}
+      </div>
+    </div>
+    <div style="border-top:1px solid var(--border);margin:10px 0"></div>
+    <div class="section-header" style="margin-bottom:8px">Reporting &amp; Approval</div>
+    <div style="display:grid;gap:6px">
+      <div class="info-row"><span class="info-label">Immediate Head</span><span style="font-size:13px">${ihEmp?`${esc(ihEmp.name)} <span style="font-size:11px;color:var(--txt3)">${esc(ihEmp.pos||'')}</span>`:'—'}</span></div>
+      ${chain.length?`<div style="margin-top:4px;padding:8px 10px;background:var(--bg);border-radius:7px;border:1px solid var(--border)">
+        <div style="font-size:11px;font-weight:700;color:var(--txt3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px">Approval Chain</div>
+        <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:12px">
+          <span style="padding:2px 8px;border-radius:5px;background:var(--accent-bg);color:var(--accent-txt);font-weight:600">${esc(emp.name)}</span>
+          ${chain.map(l=>`<span style="color:var(--txt3)">→</span><span style="padding:2px 8px;border-radius:5px;background:var(--bg);border:1px solid ${l.mode==='custom'?'var(--amber)':'var(--border)'}">${esc(l.approver.name)}<span style="font-size:10px;color:var(--txt3);margin-left:2px">L${l.layer}</span></span>`).join('')}
+        </div>
+      </div>`:'<div style="font-size:11px;color:var(--txt3);font-style:italic">No approval chain configured</div>'}
+    </div>`;
+  }else if(active.key==='compensation'){
+    body=[['Basic daily rate',fmt(emp.rate)],['Monthly equivalent',fmt(ms)],['13th Month Pay (annual)',fmt(thirteenth(emp))],['SSS Employee Share',fmt(sssContrib(ms))],['PhilHealth Employee Share',fmt(phContrib(ms))],['Pag-IBIG Employee Share',fmt(piContrib(ms))],['Est. Withholding Tax',fmt(birTax(ms))]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span class="mono">${v}</span></div>`).join('');
+  }else if(active.key==='allowances'){
+    body=myAllowances.length?myAllowances.map(a=>{const type=INCOME_TYPES.find(t=>t.code===a.payItemCode);return`<div class="info-row"><span class="info-label">${esc(type?.name||a.payItemCode)}</span><span class="mono">${fmt(a.monthlyAmount||a.amount||0)}${a.active===false?' <span class="badge b-absent" style="font-size:10px">Inactive</span>':''}</span></div>`;}).join(''):`<div class="empty-state"><div class="ei">💵</div>No recurring allowances configured.</div>`;
+  }else if(active.key==='govtbank'){
+    body=`${canGovt?`<div class="section-header" style="margin-bottom:8px">Government Numbers</div>
+    ${[['SSS',emp.sss],['PhilHealth',emp.ph],['Pag-IBIG',emp.pi],['TIN (BIR)',emp.tin]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span class="mono" style="font-size:12px">${esc(v||'—')}</span></div>`).join('')}`:''}
+    ${canGovt&&canBanking?'<div style="border-top:1px solid var(--border);margin:14px 0"></div>':''}
+    ${canBanking?`<div class="section-header" style="margin-bottom:8px">Banking Details</div>
+    ${[['Bank',emp.bank],['Account No.',emp.bankAccount]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span class="mono" style="font-size:12px">${esc(v||'—')}</span></div>`).join('')}`:''}`;
+  }else if(active.key==='emergency'){
+    body=`<div class="section-header">Emergency Contact 1</div>
+    <div class="form-row">
+      <div>${vrow('Name',emp.ec1Name)}${vrow('Relationship',emp.ec1Rel)}</div>
+      <div>${vrow('Contact Number',emp.ec1Contact)}${vrow('Home Address',emp.ec1Addr)}</div>
+    </div>
+    <div style="border-top:1px solid var(--border);margin:10px 0"></div>
+    <div class="section-header">Emergency Contact 2</div>
+    <div class="form-row">
+      <div>${vrow('Name',emp.ec2Name)}${vrow('Relationship',emp.ec2Rel)}</div>
+      <div>${vrow('Contact Number',emp.ec2Contact)}${vrow('Home Address',emp.ec2Addr)}</div>
+    </div>`;
+  }else if(active.key==='loans'){
+    body=myLoans.map(l=>`<div class="loan-row"><div style="display:flex;justify-content:space-between"><span style="font-weight:500">${l.type}</span><span class="badge b-${l.status}">${l.status}</span></div><div style="display:flex;justify-content:space-between;margin-top:6px;font-size:12px;color:var(--txt3)"><span>Balance: <strong class="mono" style="color:var(--red)">${fmt(l.balance)}</strong></span><span>Monthly: <strong class="mono">${fmt(l.monthly)}</strong></span></div><div class="progress-bar" style="margin-top:6px"><div class="progress-fill" style="width:${Math.round((1-l.balance/l.amount)*100)}%;background:var(--green)"></div></div></div>`).join('');
+  }else if(active.key==='movements'){
+    body=renderMovementHistory(emp.movements||[]);
+  }
+
   return`<div class="page-header"><div><div class="page-title">My 201 File</div><div class="page-sub">Your personal HR record</div></div>
   <button class="btn btn-primary" onclick="modal={type:'editProfile',emp:user,draft:JSON.parse(JSON.stringify(user))};render()">${ico('edit',14)} Edit My Details</button></div>
-  <div style="display:grid;grid-template-columns:280px 1fr;gap:1rem">
-    <div>
+  <div class="detail-layout" style="display:flex;gap:1.25rem;align-items:flex-start">
+    <div class="detail-sidebar" style="width:240px;flex-shrink:0">
       <div class="card" style="text-align:center">
         <div class="avatar lg" style="width:56px;height:56px;font-size:17px;margin:0 auto 12px">${ini(emp.name)}</div>
         <div style="font-weight:700;font-size:16px">${emp.name}</div>
@@ -5840,31 +5977,13 @@ function pgMyProfile(){
         <div style="font-size:12px;color:var(--txt3)">Service: <strong style="color:var(--txt)">${yearsService(emp.hired)}</strong></div>
         <div style="font-size:12px;color:var(--txt3);margin-top:4px">Hired: <strong style="color:var(--txt)">${emp.hired}</strong></div>
       </div>
-      ${canGovt?`<div class="card">
-        <div class="card-title" style="margin-bottom:.75rem">Government Numbers</div>
-        ${[['SSS',emp.sss],['PhilHealth',emp.ph],['Pag-IBIG',emp.pi],['TIN (BIR)',emp.tin]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span class="mono" style="font-size:11px">${v}</span></div>`).join('')}
-      </div>`:''}
     </div>
-    <div>
-      ${canPersonal?`<div class="card">
-        <div class="card-title" style="margin-bottom:.875rem">Personal Information</div>
-        <div class="form-row"><div>${[['Full Name',emp.name],['Birthday',emp.bday],['Contact',emp.contact],['Address',emp.address]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span>${v}</span></div>`).join('')}</div>
-        <div>${[['Department',emp.dept],['Position',emp.pos],['Band Level',emp.bandLevel||'—'],['Entity',emp.entityName||'—']].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span>${v}</span></div>`).join('')}</div></div>
-        <div class="info-row"><span class="info-label">Emergency Contact</span><span>${emp.emergency||'—'}</span></div>
-      </div>`:''}
-      ${canComp?`<div class="card">
-        <div class="card-title" style="margin-bottom:.875rem">Compensation Summary</div>
-        ${[['Basic daily rate',fmt(emp.rate)],['Monthly equivalent',fmt(ms)],['13th Month Pay (annual)',fmt(thirteenth(emp))],['SSS Employee Share',fmt(sssContrib(ms))],['PhilHealth Employee Share',fmt(phContrib(ms))],['Pag-IBIG Employee Share',fmt(piContrib(ms))],['Est. Withholding Tax',fmt(birTax(ms))]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span class="mono">${v}</span></div>`).join('')}
-      </div>`:''}
-      ${canAllow&&myAllowances.length?`<div class="card"><div class="card-title" style="margin-bottom:.875rem">Recurring Allowances</div>
-      ${myAllowances.map(a=>{const type=INCOME_TYPES.find(t=>t.code===a.payItemCode);return`<div class="info-row"><span class="info-label">${esc(type?.name||a.payItemCode)}</span><span class="mono">${fmt(a.monthlyAmount||a.amount||0)}${a.active===false?' <span class="badge b-absent" style="font-size:10px">Inactive</span>':''}</span></div>`;}).join('')}
-      </div>`:''}
-      ${canAccess('loans')&&myLoans.length?`<div class="card"><div class="card-title" style="margin-bottom:.875rem">Active Loans</div>
-      ${myLoans.map(l=>`<div class="loan-row"><div style="display:flex;justify-content:space-between"><span style="font-weight:500">${l.type}</span><span class="badge b-${l.status}">${l.status}</span></div><div style="display:flex;justify-content:space-between;margin-top:6px;font-size:12px;color:var(--txt3)"><span>Balance: <strong class="mono" style="color:var(--red)">${fmt(l.balance)}</strong></span><span>Monthly: <strong class="mono">${fmt(l.monthly)}</strong></span></div><div class="progress-bar" style="margin-top:6px"><div class="progress-fill" style="width:${Math.round((1-l.balance/l.amount)*100)}%;background:var(--green)"></div></div></div>`).join('')}
-      </div>`:''}
-      ${canMove?`<div class="card"><div class="card-title" style="margin-bottom:.875rem">Movement History</div>${renderMovementHistory(emp.movements||[])}</div>`:''}
+    <div class="detail-main" style="flex:1;min-width:0">
+      ${TABS.length?`<div class="tabs">${TABS.map((t,i)=>`<div class="tab${active&&t.key===active.key?' active':''}" onclick="goTab(${i})">${t.label}</div>`).join('')}</div>`:''}
+      <div class="card">${body}</div>
     </div>
-  </div>`;
+  </div>
+  <style>@media(max-width:900px){.detail-layout{flex-direction:column!important}.detail-sidebar{width:100%!important}}</style>`;
 }
 
 function filterPayrollEmployees(value){
