@@ -223,15 +223,18 @@ function zkCommitPunches(state, punchesByEmpDate, outOfBufferReasons) {
     const mergedPunches = TimekeepingCore.mergePunches(existing && existing.punches, entries.map(e => Object.assign({ receivedAt }, e)));
     const schedule = employee ? TimekeepingCore.scheduleForDate(employee, date, shifts) : null;
     const isRestDay = employee ? TimekeepingCore.isRestDay(employee, date, shifts) : false;
-    const computed = TimekeepingCore.computeFromPunches(mergedPunches, schedule, isRestDay) || {};
+    const rawComputed = TimekeepingCore.computeFromPunches(mergedPunches, schedule, isRestDay) || {};
+    const computed = isRestDay ? rawComputed : TimekeepingCore.applyAttendancePolicy(rawComputed, schedule, state.attendancePolicy);
     const reason = outOfBufferReasons && outOfBufferReasons.get(key);
+    const policyNote = computed.policyNotes ? computed.policyNotes.join(' · ') : '';
     const patch = Object.assign({}, computed, {
       punches: mergedPunches,
-      status: isRestDay ? (existing ? existing.status : 'present') : (computed.lateMinutes > 0 ? 'late' : 'present'),
+      status: computed.lwop ? 'absent' : isRestDay ? (existing ? existing.status : 'present') : (computed.lateMinutes > 0 ? 'late' : 'present'),
       source: 'zkteco-realtime', approvalStatus: reason ? 'pending' : 'approved', filedBy: 'ZKTeco realtime',
       active: true, updatedAt: receivedAt
     });
     if (reason) patch.notes = appendNote(existing && existing.notes, reason);
+    else if (policyNote) patch.notes = appendNote(existing && existing.notes, policyNote);
     if (existing) {
       Object.assign(existing, patch);
     } else {

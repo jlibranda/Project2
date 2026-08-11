@@ -26,7 +26,7 @@
       candidates:CANDIDATES,performance:PERF,onboarding:ONBOARD,accessLevels:ACCESS_LEVELS,
       changeRequests:CHANGE_REQUESTS,bundyLogs:BUNDY_LOGS,officeZones:OFFICE_ZONES,company:COMPANY,
       employeeNumberConfig:EMP_NUM_CONFIG,statutoryConfig:STATUTORY_CONFIG,approvalConfig:APPROVAL_CONFIG,
-      fieldConfig:FIELD_CONFIG,incomeTypes:INCOME_TYPES,attendanceAdjustments:ATTENDANCE_ADJ,
+      fieldConfig:FIELD_CONFIG,incomeTypes:INCOME_TYPES,attendanceAdjustments:ATTENDANCE_ADJ,attendancePolicy:ATTENDANCE_POLICY,
       overtimeRates:OT_RATES,payrollGroups:PAYROLL_GROUPS,payPeriods:PAY_PERIODS,
       payrollAdjustments:PAYROLL_ADJ,finalPayList:FINAL_PAY_LIST,payrollAudit:PAYROLL_AUDIT,securityAudit:SECURITY_AUDIT,
       governmentRates:GOVT_RATES,birTaxVersions:BIR_TAX_VERSIONS,platformClients:PLATFORM_CLIENTS,
@@ -53,6 +53,7 @@
     if(saved.employeeNumberConfig)EMP_NUM_CONFIG=saved.employeeNumberConfig;if(saved.statutoryConfig)STATUTORY_CONFIG=saved.statutoryConfig;
     if(saved.approvalConfig)APPROVAL_CONFIG=saved.approvalConfig;if(saved.fieldConfig)FIELD_CONFIG=saved.fieldConfig;
     replaceArray(INCOME_TYPES,saved.incomeTypes);if(saved.attendanceAdjustments)ATTENDANCE_ADJ=saved.attendanceAdjustments;
+    if(saved.attendancePolicy)Object.assign(ATTENDANCE_POLICY,saved.attendancePolicy);
     replaceArray(OT_RATES,saved.overtimeRates);replaceArray(PAYROLL_GROUPS,saved.payrollGroups);replaceArray(PAY_PERIODS,saved.payPeriods);
     replaceArray(PAYROLL_ADJ,saved.payrollAdjustments);replaceArray(FINAL_PAY_LIST,saved.finalPayList);replaceArray(PAYROLL_AUDIT,saved.payrollAudit);replaceArray(SECURITY_AUDIT,saved.securityAudit);
     if(saved.governmentRates)GOVT_RATES=saved.governmentRates;replaceArray(BIR_TAX_VERSIONS,saved.birTaxVersions);replaceArray(PLATFORM_CLIENTS,saved.platformClients);

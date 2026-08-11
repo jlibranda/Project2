@@ -412,10 +412,50 @@
     if (el) el.focus();
   };
   function renderAttendanceReportTab() {
+    var range = attReportRange('attReport');
     return '<div class="card-title" style="margin-bottom:6px">Attendance Report</div>'+
       '<div class="card-sub" style="margin-bottom:14px">Export a payroll-ready attendance report for one pay period (or a custom date range) — a per-employee summary plus the full daily breakdown behind it.</div>'+
-      renderAttReportFilterUI('attReport', { showMatchList:true });
+      renderAttReportFilterUI('attReport', { showMatchList:true })+
+      '<div style="margin-top:10px;padding:10px 12px;background:var(--amber-bg);border-radius:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
+        '<div style="font-size:12px;color:var(--amber-txt);flex:1;min-width:200px">Find every scheduled work day in this range with no time log at all (no biometric, Web Bundy, or manual entry), and mark it LWOP.</div>'+
+        '<button class="btn btn-sm btn-amber" onclick="flagMissingLogsAsLWOP(\'attReport\')" '+(!range.from||!range.to?'disabled title="Select a pay period or date range first"':'')+'>🔍 Flag Missing Logs as LWOP</button>'+
+      '</div>';
   }
+  // The 4th automatic attendance rule ("kulang ang time logs -> automatic LWOP") can't run off a
+  // punch event like the other three (computeFromPunches has nothing to compute from when there
+  // are literally zero punches for the day) — it needs a day to have fully passed with nothing
+  // recorded at all, which only an explicit, reviewable sweep over a date range can determine
+  // safely. Skips rest days, days with no shift configured (nothing to be late/absent against),
+  // and days covered by an approved leave request — and never touches a day that already has a
+  // record, however that record got there.
+  window.flagMissingLogsAsLWOP = function (ns) {
+    if (!(isAdminUser(user) || isPlatformAdmin || canAccess('att_edit'))) return;
+    var range = attReportRange(ns);
+    if (!range.from || !range.to) { toast('Select a pay period or date range first.', 'warning'); return; }
+    var shifts = COMPANY.shifts || [];
+    var emps = attReportMatchedEmps(ns).filter(function (u) { return u.active !== false; });
+    var dates = leaveDateRange(range.from, range.to);
+    var candidates = [];
+    emps.forEach(function (emp) {
+      dates.forEach(function (date) {
+        if (emp.hired && date < emp.hired) return;
+        if (TimekeepingCore.isRestDay(emp, date, shifts)) return;
+        if (!TimekeepingCore.scheduleForDate(emp, date, shifts)) return;
+        var onLeave = LEAVES.some(function (l) { return l.eid === emp.id && l.status === 'approved' && date >= l.s && date <= l.e; });
+        if (onLeave) return;
+        if (attendanceRecord(emp.id, date)) return;
+        candidates.push({ emp: emp, date: date });
+      });
+    });
+    if (!candidates.length) { toast('No missing logs found in this range for the matched employees.', 'info'); return; }
+    if (!confirm('Found '+candidates.length+' scheduled work day(s) with no time log at all, from '+range.from+' to '+range.to+'.\n\nMark all of these LWOP (Leave Without Pay / Absent)? Nothing existing is touched — each gets a clearly-labeled new record you can review or edit afterward.')) return;
+    candidates.forEach(function (c) {
+      upsertAttendance(c.emp.id, c.date, { tin:'', tout:'', status:'absent', ot:0, nd:0, notes:'LWOP — no time log on record for this scheduled work day', source:'attendance-policy', approvalStatus:'approved', filedBy:'Attendance Policy' });
+    });
+    queueSync('Attendance');
+    toast(candidates.length+' day(s) marked LWOP for missing time logs.', 'success');
+    render();
+  };
   // Time Logs: the same filter/search engine as Attendance Report, but for browsing and editing
   // the underlying records directly instead of only exporting them.
   var ATT_SOURCE_LABEL = { 'zkteco-import':'Biometric (ZKTeco)', 'zkteco-realtime':'Biometric (ZKTeco)', 'web-bundy':'Web Bundy (GPS)', 'bulk-import':'Bulk Import', 'admin-entry':'Admin Entry', 'employee-entry':'Employee Entry', 'admin-edit':'Admin Edit', 'leave-approval':'Leave Approval' };
