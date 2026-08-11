@@ -421,29 +421,39 @@
         '<button class="btn btn-sm btn-amber" onclick="flagMissingLogsAsLWOP(\'attReport\')" '+(!range.from||!range.to?'disabled title="Select a pay period or date range first"':'')+'>🔍 Flag Missing Logs as LWOP</button>'+
       '</div>';
   }
+  // A "missing log" day: a scheduled work day (not a rest day, has a configured shift, employee
+  // already hired) with no approved leave covering it and no attendance record at all yet.
+  // Shared by flagMissingLogsAsLWOP (which commits real LWOP records for these, on request) and
+  // the Attendance Report (which shows/tallies them as LWOP for review even before that sweep is
+  // ever run — see openAttReportDetailModal / downloadAttendanceReport) so the two never
+  // disagree about which days count.
+  function missingLogDates(emp, from, to, shifts) {
+    return leaveDateRange(from, to).filter(function (date) {
+      if (emp.hired && date < emp.hired) return false;
+      if (TimekeepingCore.isRestDay(emp, date, shifts)) return false;
+      if (!TimekeepingCore.scheduleForDate(emp, date, shifts)) return false;
+      var onLeave = LEAVES.some(function (l) { return l.eid === emp.id && l.status === 'approved' && date >= l.s && date <= l.e; });
+      if (onLeave) return false;
+      if (attendanceRecord(emp.id, date)) return false;
+      return true;
+    });
+  }
   // The 4th automatic attendance rule ("kulang ang time logs -> automatic LWOP") can't run off a
   // punch event like the other three (computeFromPunches has nothing to compute from when there
   // are literally zero punches for the day) — it needs a day to have fully passed with nothing
-  // recorded at all, which only an explicit, reviewable sweep over a date range can determine
-  // safely. Skips rest days, days with no shift configured (nothing to be late/absent against),
-  // and days covered by an approved leave request — and never touches a day that already has a
-  // record, however that record got there.
+  // recorded at all. The Attendance Report already shows/tallies these as LWOP on its own (see
+  // missingLogDates above), but that's a computed-for-display figure only; this is what actually
+  // commits a real, reviewable record for each one — an explicit, idempotent sweep rather than a
+  // silent background write.
   window.flagMissingLogsAsLWOP = function (ns) {
     if (!(isAdminUser(user) || isPlatformAdmin || canAccess('att_edit'))) return;
     var range = attReportRange(ns);
     if (!range.from || !range.to) { toast('Select a pay period or date range first.', 'warning'); return; }
     var shifts = COMPANY.shifts || [];
     var emps = attReportMatchedEmps(ns).filter(function (u) { return u.active !== false; });
-    var dates = leaveDateRange(range.from, range.to);
     var candidates = [];
     emps.forEach(function (emp) {
-      dates.forEach(function (date) {
-        if (emp.hired && date < emp.hired) return;
-        if (TimekeepingCore.isRestDay(emp, date, shifts)) return;
-        if (!TimekeepingCore.scheduleForDate(emp, date, shifts)) return;
-        var onLeave = LEAVES.some(function (l) { return l.eid === emp.id && l.status === 'approved' && date >= l.s && date <= l.e; });
-        if (onLeave) return;
-        if (attendanceRecord(emp.id, date)) return;
+      missingLogDates(emp, range.from, range.to, shifts).forEach(function (date) {
         candidates.push({ emp: emp, date: date });
       });
     });
@@ -576,6 +586,8 @@
     var summary = TimekeepingCore.periodSummary(ATT, emp, range.from, range.to, shifts, holidays);
     var byDate = {};
     summary.records.forEach(function (r) { byDate[r.date] = r; });
+    var missingSet = {};
+    missingLogDates(emp, range.from, range.to, shifts).forEach(function (d) { missingSet[d] = true; });
     var hoursWorked = 0;
     summary.records.forEach(function (r) {
       var a = hhmmToMinutesLocal(r.tin), b = hhmmToMinutesLocal(r.tout);
@@ -590,21 +602,30 @@
       var sched = TimekeepingCore.scheduleForDate(emp, date, shifts);
       var isRest = TimekeepingCore.isRestDay(emp, date, shifts);
       var shiftLabel = isRest ? 'Rest Day' : (sched ? (sched.start+' – '+sched.end) : 'No shift assigned');
-      if (!rec) { days.push({ date:date, dow:dow, shift:shiftLabel, tin:'—', tout:'—', status:isRest?'Rest Day':'No Record', approval:'', late:0, undertime:0, ot:0, nd:0, rdh:0, notes:'' }); return; }
+      if (!rec) {
+        var isMissing = !!missingSet[date];
+        days.push({ date:date, dow:dow, shift:shiftLabel, tin:'—', tout:'—', status:isRest?'Rest Day':(isMissing?'LWOP (no log)':'No Record'), approval:'', late:0, undertime:0, ot:0, nd:0, rdh:0, notes:isMissing?'No time log captured for this scheduled work day':'' });
+        return;
+      }
       var lu = dailyLateUndertime(emp, rec, shifts);
       days.push({ date:date, dow:dow, shift:shiftLabel, tin:rec.tin||'—', tout:rec.tout||'—',
         status:ATT_REPORT_STATUS_LABEL[rec.status]||rec.status||'—', approval:approvalBadgeText(rec.approvalStatus),
         late:lu.late, undertime:lu.undertime, ot:rec.ot||0, nd:rec.nd||0, rdh:rec.restDayHolidayHours||0, notes:rec.notes||'' });
     });
+    var missingCount = Object.keys(missingSet).length;
     modal = { type:'attReportDetail', ns:ns, emp:{ id:emp.id, name:emp.name, eid:emp.eid, dept:emp.dept, pos:emp.pos },
-      range:range, summary:{ presentDays:summary.presentDays, absentDays:summary.absentDays, lateMinutes:summary.lateMinutes,
+      range:range, summary:{ presentDays:summary.presentDays, absentDays:summary.absentDays+missingCount, lateMinutes:summary.lateMinutes,
         undertimeMinutes:summary.undertimeMinutes, otHours:summary.otHours, ndHours:summary.ndHours,
-        restDayHolidayHours:summary.restDayHolidayHours, hoursWorked:+hoursWorked.toFixed(2) }, days:days };
+        restDayHolidayHours:summary.restDayHolidayHours, hoursWorked:+hoursWorked.toFixed(2), missingLogDays:missingCount }, days:days };
     render();
   };
+  // Tolerates HH:MM:SS (some device firmware reports seconds in ATTLOG timestamps) the same
+  // way TimekeepingCore's own timeToMinutes() does — a stricter parts.length!==2 check here
+  // used to silently return null for any such value, making Late/Undertime read as 0 in the
+  // report even though the record's own computed lateMinutes/undertimeMinutes were correct.
   function hhmmToMinutesLocal(v) {
     var parts = String(v || '').split(':');
-    if (parts.length !== 2) return null;
+    if (parts.length < 2) return null;
     var h = Number(parts[0]), m = Number(parts[1]);
     return Number.isFinite(h) && Number.isFinite(m) ? h*60+m : null;
   }
@@ -694,6 +715,10 @@
       var summary = TimekeepingCore.periodSummary(ATT, emp, range.from, range.to, shifts, holidays);
       var byDate = {};
       summary.records.forEach(function (r) { byDate[r.date] = r; });
+      var missingSet = {};
+      missingLogDates(emp, range.from, range.to, shifts).forEach(function (d) { missingSet[d] = true; });
+      var missingCount = Object.keys(missingSet).length;
+      var effectiveAbsentDays = summary.absentDays + missingCount;
       var hoursWorked = 0, needsReview = false;
       summary.records.forEach(function (r) {
         if (r.approvalStatus === 'pending') needsReview = true;
@@ -704,13 +729,13 @@
       });
       var byCode = summary.restDayHolidayHoursByCode || {};
 
-      summaryRows.push([emp.eid||'', emp.name||'', emp.dept||'', emp.pos||'', summary.presentDays, summary.absentDays, summary.lateMinutes, summary.undertimeMinutes, summary.otHours, summary.ndHours]
+      summaryRows.push([emp.eid||'', emp.name||'', emp.dept||'', emp.pos||'', summary.presentDays, effectiveAbsentDays, summary.lateMinutes, summary.undertimeMinutes, summary.otHours, summary.ndHours]
         .concat(ATT_REPORT_HOLIDAY_CODES.map(function (c) { return byCode[c] || 0; }))
         .concat([+hoursWorked.toFixed(2), needsReview?'Yes — pending approval in range':'No']));
 
       detailedRows.push(['Employee:', emp.name||'', 'EID:', emp.eid||'']);
       detailedRows.push(['Department:', emp.dept||'—', 'Position:', emp.pos||'—']);
-      detailedRows.push(['Period:', range.from+' to '+range.to, 'Days Present:', summary.presentDays, 'Days Absent:', summary.absentDays]);
+      detailedRows.push(['Period:', range.from+' to '+range.to, 'Days Present:', summary.presentDays, 'Days Absent:', effectiveAbsentDays]);
       var detailHeaderRowIdx = detailedRows.length;
       detailedRows.push(['Date','Day','Shift','Time In','Time Out','Status','Approval','Late (min)','Undertime (min)','OT (hrs)','ND (hrs)','Rest Day/Holiday (hrs)','Notes']);
       var totOt=0, totNd=0, totRdh=0;
@@ -721,7 +746,8 @@
         var isRest = TimekeepingCore.isRestDay(emp, date, shifts);
         var shiftLabel = isRest ? 'Rest Day' : (sched ? (sched.start+' – '+sched.end) : 'No shift assigned');
         if (!rec) {
-          detailedRows.push([date, dow, shiftLabel, '—', '—', isRest?'Rest Day':'No Record', '—', 0, 0, 0, 0, 0, '']);
+          var isMissing = !!missingSet[date];
+          detailedRows.push([date, dow, shiftLabel, '—', '—', isRest?'Rest Day':(isMissing?'LWOP (no log)':'No Record'), '—', 0, 0, 0, 0, 0, isMissing?'No time log captured for this scheduled work day':'']);
           return;
         }
         var lu = dailyLateUndertime(emp, rec, shifts);
