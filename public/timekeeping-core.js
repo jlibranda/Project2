@@ -41,6 +41,25 @@
     return notes.join(' · ');
   }
 
+  // Punches are the permanent source-of-truth log: every raw scan/clock event ever received
+  // for a day, from every source (ZKTeco realtime push, ZKTeco pull-and-import, Web Bundy).
+  // This merge is additive-only — union by (time, source, kind), never truncate or replace —
+  // so no caller can accidentally lose a punch just by passing a shorter or older list.
+  function mergePunches(existing, incoming) {
+    var list = Array.isArray(existing) ? existing.slice() : [];
+    var seen = {};
+    list.forEach(function (p) { seen[p.time + '|' + p.source + '|' + (p.kind || '')] = true; });
+    (incoming || []).forEach(function (p) {
+      if (!p || !p.time) return;
+      var key = p.time + '|' + p.source + '|' + (p.kind || '');
+      if (seen[key]) return;
+      seen[key] = true;
+      list.push(p);
+    });
+    list.sort(function (a, b) { return a.time < b.time ? -1 : a.time > b.time ? 1 : 0; });
+    return list;
+  }
+
   function consolidate(records, employeeId, date) {
     var matches = recordsForDate(records, employeeId, date);
     if (!matches.length) return null;
@@ -53,6 +72,7 @@
       primary.ot = Math.max(Number(primary.ot || 0), Number(record.ot || 0));
       primary.nd = Math.max(Number(primary.nd || 0), Number(record.nd || 0));
       primary.undertimeMinutes = Math.max(Number(primary.undertimeMinutes || 0), Number(record.undertimeMinutes || 0));
+      primary.punches = mergePunches(primary.punches, record.punches);
       primary.notes = appendUniqueNote(primary.notes, record.notes);
       if (mergedIds.indexOf(record.id) < 0) mergedIds.push(record.id);
       record.superseded = true;
@@ -84,18 +104,24 @@
     var record = consolidate(records, employeeId, date);
     var isNew = !record;
     if (!record) {
-      record = { id: nextId(), eid: employeeId, date: date, tin: '', tout: '', status: 'present', ot: 0, nd: 0, notes: '' };
+      record = { id: nextId(), eid: employeeId, date: date, tin: '', tout: '', status: 'present', ot: 0, nd: 0, notes: '', punches: [] };
       records.push(record);
     }
+    // punches is append-only: a patch can only ever grow it (via mergePunches), never replace
+    // it with a shorter list — so no write path here can silently drop a previously-captured log.
+    var effectivePatch = patch || {};
+    if (effectivePatch.punches) {
+      effectivePatch = Object.assign({}, effectivePatch, { punches: mergePunches(record.punches, effectivePatch.punches) });
+    }
     if (!isNew && editedBy) {
-      var changes = diffForAudit(record, patch);
+      var changes = diffForAudit(record, effectivePatch);
       if (Object.keys(changes).length) {
         record.edits = record.edits || [];
         record.edits.unshift({ at: new Date().toISOString(), by: editedBy, changes: changes });
       }
     }
-    Object.keys(patch || {}).forEach(function (key) {
-      if (typeof patch[key] !== 'undefined') record[key] = patch[key];
+    Object.keys(effectivePatch).forEach(function (key) {
+      if (typeof effectivePatch[key] !== 'undefined') record[key] = effectivePatch[key];
     });
     record.eid = employeeId;
     record.date = date;
@@ -271,6 +297,111 @@
     return best ? best.day : null;
   }
 
+  // Philippine night-shift differential (Labor Code Art. 86) applies to hours actually worked
+  // between 22:00 and 06:00. Expressed as two 8h windows on a 48h timeline anchored to the
+  // punch day's midnight, so a single overlap check correctly covers both a shift that starts
+  // in the evening and crosses into the window, and one that starts before dawn and is already
+  // inside it when it begins.
+  var NIGHT_WINDOWS = [[22 * 60, 30 * 60], [22 * 60 - 1440, 30 * 60 - 1440]];
+  function intervalNightMinutes(startMin, endMin) {
+    if (startMin == null || endMin == null || endMin <= startMin) return 0;
+    var total = 0;
+    NIGHT_WINDOWS.forEach(function (w) {
+      var s = Math.max(startMin, w[0]);
+      var e = Math.min(endMin, w[1]);
+      if (e > s) total += (e - s);
+    });
+    return total;
+  }
+  function round2(n) { return Math.round(n * 100) / 100; }
+
+  // Derives a day's attendance facts — time in/out, late, undertime, OT, night differential,
+  // rest-day/holiday hours — from its FULL raw punch log plus that day's schedule. Pure and
+  // side-effect-free like the rest of this module: callers apply the returned patch through
+  // upsert(), which is what actually writes it down (and never lets it shrink the punch log).
+  //
+  // Multiple punches between the first (time in) and last (time out) of the day are treated as
+  // break out/in pairs when there's an even number of them (consecutive pairing); an odd count
+  // can't be paired unambiguously, so it falls back to the shift's configured break window
+  // instead of guessing which punch is the stray one.
+  function computeFromPunches(punches, schedule, isRestDayOrHoliday) {
+    var valid = (punches || []).filter(function (p) { return p && p.time; });
+    if (!valid.length) return null;
+    var sorted = valid.slice().sort(function (a, b) { return a.time < b.time ? -1 : a.time > b.time ? 1 : 0; });
+
+    // Prefer the device's own in/out toggle (kind) when any punch carries one — this is also
+    // what correctly orders an overnight shift, since a plain time-of-day string sort can't
+    // tell that 22:00 came before 06:00 the next day (there's no date on a punch, only a
+    // time). Only fall back to earliest/latest-by-time when no punch is tagged at all.
+    var insSorted = valid.filter(function (p) { return p.kind === 'in'; }).map(function (p) { return p.time; }).sort();
+    var outsSorted = valid.filter(function (p) { return p.kind === 'out'; }).map(function (p) { return p.time; }).sort();
+    var hasKindTags = insSorted.length > 0 || outsSorted.length > 0;
+    var tin = hasKindTags && insSorted.length ? insSorted[0] : sorted[0].time;
+    var tout = hasKindTags && outsSorted.length ? outsSorted[outsSorted.length - 1]
+      : (sorted.length > 1 ? sorted[sorted.length - 1].time : '');
+    if (tout === tin) tout = sorted.length > 1 ? sorted[sorted.length - 1].time : '';
+
+    var tinMin = timeToMinutes(tin);
+    var toutMin = tout ? timeToMinutes(tout) : null;
+    var overnight = toutMin != null && toutMin <= tinMin;
+    var toutMinAbs = toutMin != null ? (overnight ? toutMin + 1440 : toutMin) : null;
+
+    // Punches strictly between tin and tout are break candidates — only attempted when the
+    // shift doesn't cross midnight, since without a date on each punch there's no reliable way
+    // to chronologically order "inner" punches around a wraparound (an overnight shift falls
+    // straight through to the schedule's configured break window below instead of guessing).
+    var inner = !overnight ? sorted.filter(function (p) { return p.time !== tin && p.time !== tout; }) : [];
+    var breakMinutes = 0;
+    var breakSpans = [];
+    if (inner.length && inner.length % 2 === 0) {
+      for (var i = 0; i < inner.length; i += 2) {
+        var bs = timeToMinutes(inner[i].time);
+        var be = timeToMinutes(inner[i + 1].time);
+        if (be <= bs) be += 1440;
+        breakMinutes += (be - bs);
+        breakSpans.push([bs, be]);
+      }
+    } else if (schedule && schedule.breakStart && schedule.breakEnd && tinMin != null && toutMinAbs != null) {
+      var schedBreakStart = timeToMinutes(schedule.breakStart);
+      var schedBreakEnd = timeToMinutes(schedule.breakEnd);
+      if (schedBreakEnd <= schedBreakStart) schedBreakEnd += 1440;
+      if (schedBreakStart >= tinMin && schedBreakEnd <= toutMinAbs) {
+        breakMinutes = schedBreakEnd - schedBreakStart;
+        breakSpans.push([schedBreakStart, schedBreakEnd]);
+      }
+    }
+
+    var grossMinutes = toutMinAbs != null ? Math.max(0, toutMinAbs - tinMin) : null;
+    var hoursWorked = grossMinutes != null ? round2((grossMinutes - breakMinutes) / 60) : null;
+
+    var shiftStart = schedule ? timeToMinutes(schedule.start) : null;
+    var shiftEnd = schedule ? timeToMinutes(schedule.end) : null;
+    if (shiftStart != null && shiftEnd != null && shiftEnd <= shiftStart) shiftEnd += 1440;
+    var grace = schedule ? Number(schedule.graceMinutes || 0) : 0;
+
+    var lateMinutes = !isRestDayOrHoliday && shiftStart != null && tinMin != null ? Math.max(0, tinMin - shiftStart - grace) : 0;
+    var undertimeMinutes = !isRestDayOrHoliday && shiftEnd != null && toutMinAbs != null ? Math.max(0, shiftEnd - toutMinAbs) : 0;
+    var otMinutes = !isRestDayOrHoliday && shiftEnd != null && toutMinAbs != null ? Math.max(0, toutMinAbs - shiftEnd) : 0;
+
+    var nightGross = toutMinAbs != null ? intervalNightMinutes(tinMin, toutMinAbs) : 0;
+    var nightBreak = 0;
+    breakSpans.forEach(function (span) { nightBreak += intervalNightMinutes(span[0], span[1]); });
+    var ndHours = round2((nightGross - nightBreak) / 60);
+
+    return {
+      tin: tin,
+      tout: tout,
+      lateMinutes: lateMinutes,
+      undertimeMinutes: undertimeMinutes,
+      ot: round2(otMinutes / 60),
+      nd: ndHours,
+      restDayHolidayHours: isRestDayOrHoliday && hoursWorked != null ? hoursWorked : 0,
+      breakMinutes: breakMinutes,
+      hoursWorked: hoursWorked,
+      stillClockedIn: !tout
+    };
+  }
+
   function periodSummary(records, employee, from, to, shifts, holidays) {
     var rows = canonicalRecords(records).filter(function (record) {
       return record.eid === employee.id && record.date >= from && record.date <= to && record.approvalStatus !== 'rejected';
@@ -315,6 +446,8 @@
     canonicalRecords: canonicalRecords,
     consolidate: consolidate,
     upsert: upsert,
+    mergePunches: mergePunches,
+    computeFromPunches: computeFromPunches,
     validateLinkedRecord: validateLinkedRecord,
     scheduleForDate: scheduleForDate,
     normalizeShift: normalizeShift,
