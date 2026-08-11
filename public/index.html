@@ -467,7 +467,7 @@ let ATT=[
 function attendanceRecord(eid,date){return TimekeepingCore.canonicalRecord(ATT,eid,date);}
 function attendanceRecords(){return TimekeepingCore.canonicalRecords(ATT);}
 function upsertAttendance(eid,date,patch){return TimekeepingCore.upsert(ATT,eid,date,patch,function(){return nAtt++;},user&&user.name);}
-function attendancePeriodSummary(emp,from,to){return TimekeepingCore.periodSummary(ATT,emp,from,to,typeof SHIFT_DEFINITIONS==='undefined'?[]:SHIFT_DEFINITIONS);}
+function attendancePeriodSummary(emp,from,to){return TimekeepingCore.periodSummary(ATT,emp,from,to,COMPANY.shifts||[]);}
 function myFlaggedAttendance(){
   if(!user)return[];
   return attendanceRecords().filter(a=>a.eid===user.id&&a.approvalStatus==='pending'&&/Outside scheduled shift window/.test(a.notes||''));
@@ -2203,33 +2203,38 @@ function zkPickInOut(entries){
 }
 async function zkImport(){
   const toImport=ZK.importPreview.filter(r=>r.mapped&&!r.duplicate&&r.date);
-  // Group by empId+shift-day (not raw device date) → merge with any already-imported
-  // tin/tout for that day, then pick in/out using the device's own toggle where available.
+  // Group by empId+shift-day (not raw device date). Every raw punch is folded permanently into
+  // that day's record.punches (never overwritten — see TimekeepingCore.mergePunches), and
+  // tin/tout/late/undertime/OT/night-differential/rest-day-holiday hours are all re-derived
+  // from the complete punch log via TimekeepingCore.computeFromPunches instead of being reduced
+  // to a bare tin/tout with OT and ND left at 0 for a human to fill in by hand.
   const grouped={};
   const outOfBufferKeys=new Set();
+  const receivedAt=new Date().toISOString();
   toImport.forEach(r=>{
     const emp=USERS.find(u=>u.id===r.empId);
     const hasShift=!!(emp&&emp.shiftId!=null);
     const resolvedDate=hasShift?TimekeepingCore.resolveShiftDay(emp,r.date,r.time,COMPANY.shifts||[],ZK.punchBuffer.beforeMinutes,ZK.punchBuffer.afterMinutes):r.date;
     const finalDate=resolvedDate||r.date;
     const key=`${r.empId}_${finalDate}`;
-    if(!grouped[key]){
-      const existing=attendanceRecord(r.empId,finalDate);
-      grouped[key]={empId:r.empId,date:finalDate,entries:[
-        existing&&existing.tin?{time:existing.tin,kind:'in'}:null,
-        existing&&existing.tout?{time:existing.tout,kind:'out'}:null
-      ].filter(Boolean)};
-    }
-    if(r.time)grouped[key].entries.push({time:r.time,kind:zkPunchKind(r.statusCode)});
+    if(!grouped[key])grouped[key]={empId:r.empId,date:finalDate,punches:[]};
+    if(r.time)grouped[key].punches.push({time:r.time,kind:zkPunchKind(r.statusCode),statusCode:r.statusCode,serial:r.serial,source:'zkteco-import',receivedAt});
     if(hasShift&&!resolvedDate)outOfBufferKeys.add(key);
   });
   let added=0,flaggedCount=0;
   Object.values(grouped).forEach(g=>{
-    const{tin,tout}=zkPickInOut(g.entries);
-    const isLate=tin>='08:30';
+    const emp=USERS.find(u=>u.id===g.empId);
+    const existing=attendanceRecord(g.empId,g.date);
+    const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,g.punches);
+    const schedule=emp?TimekeepingCore.scheduleForDate(emp,g.date,COMPANY.shifts||[]):null;
+    const isRest=emp?TimekeepingCore.isRestDay(emp,g.date,COMPANY.shifts||[]):false;
+    const computed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest)||{};
     const flagged=outOfBufferKeys.has(`${g.empId}_${g.date}`);
     if(flagged)flaggedCount++;
-    upsertAttendance(g.empId,g.date,{tin,tout,status:isLate?'late':'present',ot:0,nd:0,notes:flagged?'ZKTeco import · Outside scheduled shift window — needs confirmation':'ZKTeco import',source:'zkteco-import',approvalStatus:flagged?'pending':'approved',filedBy:'ZKTeco import'});
+    upsertAttendance(g.empId,g.date,{...computed,punches:mergedPunches,
+      status:isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),
+      notes:flagged?'ZKTeco import · Outside scheduled shift window — needs confirmation':'ZKTeco import',
+      source:'zkteco-import',approvalStatus:flagged?'pending':'approved',filedBy:'ZKTeco import'});
     added++;
   });
   try{
@@ -5584,11 +5589,11 @@ function pgAttendance(){
   let body='';
   if(tab===0){
     const mine=attendanceRecords().filter(a=>a.eid===user.id).slice().reverse();
-    body=`<table><thead><tr><th>Date</th><th>Time In</th><th>Time Out</th><th>Status</th><th>OT Hrs</th><th>ND Hrs</th><th>Notes</th></tr></thead>
-    <tbody>${mine.length?mine.map(a=>`<tr><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td style="text-align:center;color:${a.ot>0?'var(--accent)':'var(--txt3)'}">${a.ot||'—'}</td><td style="text-align:center;color:${a.nd>0?'var(--purple)':'var(--txt3)'}">${a.nd||'—'}</td><td style="color:var(--txt3)">${a.notes||'—'}</td></tr>`).join(''):'<tr><td colspan="7" class="empty-state">No records</td></tr>'}</tbody></table>`;
+    body=`<table><thead><tr><th>Date</th><th>Time In</th><th>Time Out</th><th>Status</th><th>OT Hrs</th><th>ND Hrs</th><th>Notes</th><th>Logs</th></tr></thead>
+    <tbody>${mine.length?mine.map(a=>`<tr><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td style="text-align:center;color:${a.ot>0?'var(--accent)':'var(--txt3)'}">${a.ot||'—'}</td><td style="text-align:center;color:${a.nd>0?'var(--purple)':'var(--txt3)'}">${a.nd||'—'}</td><td style="color:var(--txt3)">${a.notes||'—'}</td><td><span class="badge b-info" style="cursor:pointer" onclick="openAttHistory(${a.eid},'${a.date}')" title="View raw time logs and edit history">🕘 ${(a.punches||[]).length}</span></td></tr>`).join(''):'<tr><td colspan="8" class="empty-state">No records</td></tr>'}</tbody></table>`;
   }else if(isA&&tab===1){
-    body=`<table><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th>Status</th><th>OT</th><th>ND</th></tr></thead>
-    <tbody>${attendanceRecords().slice().reverse().map(a=>{const emp=USERS.find(u=>u.id===a.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td>${a.ot?`<span style="color:var(--accent);font-weight:600">${a.ot}h</span>`:'—'}</td><td>${a.nd?`<span style="color:var(--purple);font-weight:600">${a.nd}h</span>`:'—'}</td></tr>`;}).join('')}</tbody></table>`;
+    body=`<table><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th>Status</th><th>OT</th><th>ND</th><th>Logs</th></tr></thead>
+    <tbody>${attendanceRecords().slice().reverse().map(a=>{const emp=USERS.find(u=>u.id===a.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td>${a.ot?`<span style="color:var(--accent);font-weight:600">${a.ot}h</span>`:'—'}</td><td>${a.nd?`<span style="color:var(--purple);font-weight:600">${a.nd}h</span>`:'—'}</td><td><span class="badge b-info" style="cursor:pointer" onclick="openAttHistory(${a.eid},'${a.date}')" title="View raw time logs and edit history">🕘 ${(a.punches||[]).length}</span></td></tr>`;}).join('')}</tbody></table>`;
   }else{
     body=`${isA?`<div class="field"><label>Employee</label><select id="ae">${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}</select></div>`:''}
     <div class="form-row"><div class="field"><label>Date</label><input type="date" id="adate" value="${today()}"/></div><div class="field"><label>Status</label><select id="ast"><option value="present">Present</option><option value="late">Late</option><option value="absent">Absent</option><option value="leave">On Leave</option></select></div></div>
@@ -10012,15 +10017,26 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='attHistory'){
     const emp=USERS.find(u=>u.id===modal.eid);
-    const edits=modal.rec.edits||[];
+    const liveRec=attendanceRecord(modal.eid,modal.date)||modal.rec;
+    const edits=liveRec.edits||[];
+    const punches=(liveRec.punches||[]).slice().sort((a,b)=>a.time<b.time?-1:a.time>b.time?1:0);
+    const sourceLabel={'zkteco-realtime':'📡 Biometric (realtime)','zkteco-import':'📡 Biometric (import)','web-bundy':'📱 Web Bundy'};
     const fieldLabel={tin:'Time In',tout:'Time Out',status:'Status',ot:'OT Hours',nd:'ND Hours',undertimeMinutes:'Undertime (min)',restDayHolidayHours:'Rest Day/Holiday Hours'};
     inner=`<div class="modal-title">Attendance Edit History
       <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">${esc(emp?.name||'')} · ${esc(modal.date)}</div>
-    <div style="max-height:360px;overflow-y:auto">
+    <div class="card-title" style="margin-bottom:.4rem;font-size:12px">Raw Time Logs (${punches.length})</div>
+    <div style="font-size:11px;color:var(--txt3);margin-bottom:8px">Every punch ever captured for this day, from every source — permanent, never deleted or replaced. Time In/Out and computed hours above are re-derived from this full log.</div>
+    <div style="max-height:160px;overflow-y:auto;margin-bottom:14px">
+    <table><thead><tr><th>Time</th><th>Kind</th><th>Source</th></tr></thead><tbody>
+      ${punches.length?punches.map(p=>`<tr><td class="mono" style="font-size:12px">${esc(p.time)}</td><td>${p.kind?`<span class="badge ${p.kind==='in'?'b-approved':'b-info'}">${p.kind}</span>`:'<span style="color:var(--txt3)">—</span>'}</td><td style="font-size:12px">${sourceLabel[p.source]||esc(p.source||'—')}</td></tr>`).join(''):'<tr><td colspan="3" class="empty-state">No device/app punches captured for this day — this record was filed or edited manually.</td></tr>'}
+    </tbody></table>
+    </div>
+    <div class="card-title" style="margin-bottom:.4rem;font-size:12px">Edit History</div>
+    <div style="max-height:240px;overflow-y:auto">
     <table><thead><tr><th>When</th><th>By</th><th>Changes</th></tr></thead><tbody>
-      ${edits.length?edits.map(e=>`<tr><td style="font-size:11px;color:var(--txt3)">${new Date(e.at).toLocaleString('en-PH')}</td><td style="font-size:12px">${esc(e.by||'—')}</td><td style="font-size:12px">${Object.keys(e.changes||{}).map(k=>`<div><strong>${fieldLabel[k]||k}:</strong> ${esc(String(e.changes[k].from||'—'))} → ${esc(String(e.changes[k].to||'—'))}</div>`).join('')}</td></tr>`).join(''):'<tr><td colspan="3" class="empty-state">No edits recorded yet.</td></tr>'}
+      ${edits.length?edits.map(e=>`<tr><td style="font-size:11px;color:var(--txt3)">${new Date(e.at).toLocaleString('en-PH')}</td><td style="font-size:12px">${esc(e.by||'—')}</td><td style="font-size:12px">${Object.keys(e.changes||{}).map(k=>`<div><strong>${fieldLabel[k]||k}:</strong> ${esc(String(e.changes[k].from||'—'))} → ${esc(String(e.changes[k].to||'—'))}</div>`).join('')}</td></tr>`).join(''):'<tr><td colspan="3" class="empty-state">No manual edits recorded yet.</td></tr>'}
     </tbody></table>
     </div>
     <div style="margin-top:1rem"><button class="btn" onclick="closeM()">Close</button></div>`;
@@ -12442,13 +12458,20 @@ async function doBundy(type){
     address:geoSt.address,zoneResult:geoSt.zoneResult,
     withinZone:geoSt.zoneResult?.within||false,selfie:selfieData};
   BUNDY_LOGS.push(entry);
-  /* Sync to attendance */
+  /* Sync to attendance — fold in every one of today's bundy punches (not just the very first
+     in/out of the day), permanently, so a break clock-out/in or a corrected re-clock is
+     captured and reflected in the computed hours instead of being ignored after the first one.
+     Late/OT/ND are derived from the employee's actual shift schedule instead of a flat 08:30
+     threshold with OT/ND always left at 0. */
   const existing=attendanceRecord(user.id,today());
-  if(type==='in'&&!existing){
-    const late=now.getHours()>8||(now.getHours()===8&&now.getMinutes()>=30);
-    upsertAttendance(user.id,today(),{tin:entry.time,tout:'',status:late?'late':'present',ot:0,nd:0,notes:'Web Bundy',source:'web-bundy',approvalStatus:'approved',filedBy:user.name});
-  }else if(type==='in'&&existing&&!existing.tin){upsertAttendance(user.id,today(),{tin:entry.time,source:'web-bundy',approvalStatus:'approved',filedBy:user.name});
-  }else if(type==='out'&&existing&&!existing.tout){upsertAttendance(user.id,today(),{tout:entry.time,source:'web-bundy',approvalStatus:'approved',filedBy:user.name});}
+  const todaysPunches=[...todayLogs,entry].map(b=>({time:b.time,kind:b.type,source:'web-bundy',receivedAt:b.datetime}));
+  const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,todaysPunches);
+  const schedule=TimekeepingCore.scheduleForDate(user,today(),COMPANY.shifts||[]);
+  const isRest=TimekeepingCore.isRestDay(user,today(),COMPANY.shifts||[]);
+  const computed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest)||{};
+  upsertAttendance(user.id,today(),{...computed,punches:mergedPunches,
+    status:isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),
+    notes:'Web Bundy',source:'web-bundy',approvalStatus:'approved',filedBy:user.name});
   queueSync('Bundy_Logs','Attendance');selfieData=null;
   const zoneNote=entry.withinZone?'\n\u2705 Within office zone':'\n\u26A0 You are outside the office zone';
   alert((type==='in'?'Clocked IN at '+entry.time:'Clocked OUT at '+entry.time)+zoneNote);
