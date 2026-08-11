@@ -402,6 +402,50 @@
     };
   }
 
+  // Layers employer-configured attendance policy (Company Settings > Attendance Formula and
+  // Overtime Table > Attendance Policy Rules) on top of the objective facts computeFromPunches
+  // already derived. Kept as a separate step on purpose: computeFromPunches stays pure
+  // timekeeping math, this is where configurable business rules (which an employer can turn
+  // off or retune) get applied. A day marked LWOP here is meant to be recorded as status
+  // 'absent' by the caller — LWOP is an unpaid day, exactly what the existing 'absent' payroll
+  // deduction already means — with a note explaining why so it reads differently from a
+  // manually-filed absence.
+  function applyAttendancePolicy(computed, schedule, policy) {
+    if (!computed || !policy || policy.active === false) return computed;
+    var result = Object.assign({}, computed);
+    var notes = [];
+
+    if (policy.deductLateFromOT && result.ot > 0 && result.lateMinutes > 0) {
+      var otMinutes = Math.round(result.ot * 60);
+      var deduct = Math.min(otMinutes, result.lateMinutes);
+      result.ot = round2((otMinutes - deduct) / 60);
+      if (deduct > 0) { result.lateDeductedFromOtMinutes = deduct; notes.push(deduct + ' min late deducted from OT'); }
+    }
+
+    var halfDayThreshold = Number(policy.lateHalfDayMinutes);
+    if (halfDayThreshold > 0 && result.lateMinutes >= halfDayThreshold) {
+      result.halfDay = true;
+      var shiftStart = schedule ? timeToMinutes(schedule.start) : null;
+      var shiftEndRaw = schedule ? timeToMinutes(schedule.end) : null;
+      var shiftMinutes = shiftStart != null && shiftEndRaw != null
+        ? (shiftEndRaw <= shiftStart ? shiftEndRaw + 1440 - shiftStart : shiftEndRaw - shiftStart) : null;
+      if (shiftMinutes) {
+        var halfMinutes = Math.round(shiftMinutes / 2);
+        if (Number(result.undertimeMinutes || 0) < halfMinutes) result.undertimeMinutes = halfMinutes;
+      }
+      notes.push('Half day — late ' + result.lateMinutes + ' min (policy threshold ' + halfDayThreshold + ' min)');
+    }
+
+    var minHours = Number(policy.minHoursFullDay);
+    if (minHours > 0 && !result.stillClockedIn && result.hoursWorked != null && result.hoursWorked < minHours) {
+      result.lwop = true;
+      notes.push('LWOP — only ' + result.hoursWorked + 'h worked (below ' + minHours + 'h minimum)');
+    }
+
+    if (notes.length) result.policyNotes = notes;
+    return result;
+  }
+
   function periodSummary(records, employee, from, to, shifts, holidays) {
     var rows = canonicalRecords(records).filter(function (record) {
       return record.eid === employee.id && record.date >= from && record.date <= to && record.approvalStatus !== 'rejected';
@@ -448,6 +492,7 @@
     upsert: upsert,
     mergePunches: mergePunches,
     computeFromPunches: computeFromPunches,
+    applyAttendancePolicy: applyAttendancePolicy,
     validateLinkedRecord: validateLinkedRecord,
     scheduleForDate: scheduleForDate,
     normalizeShift: normalizeShift,
