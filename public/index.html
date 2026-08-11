@@ -2244,7 +2244,7 @@ async function zkImport(){
     if(flagged)flaggedCount++;
     const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
     upsertAttendance(g.empId,g.date,{...computed,punches:mergedPunches,
-      status:computed.lwop?'absent':isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),
+      status:(computed.lwop||computed.incomplete)?'absent':isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),
       notes:[flagged?'ZKTeco import · Outside scheduled shift window — needs confirmation':'ZKTeco import',policyNote].filter(Boolean).join(' · '),
       source:'zkteco-import',approvalStatus:flagged?'pending':'approved',filedBy:'ZKTeco import'});
     added++;
@@ -5628,9 +5628,22 @@ function pgAttendance(){
 function computedAttendancePatch(empId,date,tin,tout,manualStatus,manualOt,manualNd,notes,source){
   const base={tin,tout,status:manualStatus,ot:manualOt,nd:manualNd,notes,source};
   const emp=USERS.find(u=>u.id===empId);
-  if(!(tin&&tout&&emp)||manualStatus==='leave')return base;
+  if(!emp||manualStatus==='leave')return base;
   const existing=attendanceRecord(empId,date);
   const receivedAt=new Date().toISOString();
+  // Exactly one of tin/tout given (the other left blank) is an incomplete log, not a valid day —
+  // capture whichever punch was entered permanently, but mark the day Absent rather than
+  // computing a Late/Present from the half that's actually there. Both blank falls through to
+  // `base` below unchanged (a deliberate no-times filing, e.g. an explicit Absent/manual status).
+  if((tin&&!tout)||(tout&&!tin)){
+    const newPunches=[];
+    if(tin)newPunches.push({time:tin,kind:'in',source,receivedAt});
+    if(tout)newPunches.push({time:tout,kind:'out',source,receivedAt});
+    const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,newPunches);
+    return{tin,tout,status:'absent',ot:0,nd:0,punches:mergedPunches,
+      notes:[notes,'Incomplete time log (missing '+(tin?'Time Out':'Time In')+') — marked Absent'].filter(Boolean).join(' · '),source};
+  }
+  if(!(tin&&tout))return base;
   const newPunches=[{time:tin,kind:'in',source,receivedAt},{time:tout,kind:'out',source,receivedAt}];
   const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,newPunches);
   const schedule=TimekeepingCore.scheduleForDate(emp,date,COMPANY.shifts||[]);
@@ -5639,7 +5652,7 @@ function computedAttendancePatch(empId,date,tin,tout,manualStatus,manualOt,manua
   const computed=isRest?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
   const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
   return{...computed,punches:mergedPunches,
-    status:computed.lwop?'absent':(isRest?manualStatus:(computed.lateMinutes>0?'late':'present')),
+    status:(computed.lwop||computed.incomplete)?'absent':(isRest?manualStatus:(computed.lateMinutes>0?'late':'present')),
     ot:manualOt>0?manualOt:computed.ot,nd:manualNd>0?manualNd:computed.nd,
     notes:[notes,policyNote].filter(Boolean).join(' · '),source};
 }
@@ -12555,7 +12568,7 @@ async function doBundy(type){
   const computed=isRest?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
   const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
   upsertAttendance(user.id,today(),{...computed,punches:mergedPunches,
-    status:computed.lwop?'absent':isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),
+    status:(computed.lwop||computed.incomplete)?'absent':isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),
     notes:['Web Bundy',policyNote].filter(Boolean).join(' · '),source:'web-bundy',approvalStatus:'approved',filedBy:user.name});
   queueSync('Bundy_Logs','Attendance');selfieData=null;
   const zoneNote=entry.withinZone?'\n\u2705 Within office zone':'\n\u26A0 You are outside the office zone';

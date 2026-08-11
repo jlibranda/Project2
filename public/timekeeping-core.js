@@ -398,7 +398,12 @@
       restDayHolidayHours: isRestDayOrHoliday && hoursWorked != null ? hoursWorked : 0,
       breakMinutes: breakMinutes,
       hoursWorked: hoursWorked,
-      stillClockedIn: !tout
+      stillClockedIn: !tout,
+      // A punch pair missing either half (no time in, or clocked in but never clocked out) can't
+      // establish that a full day was actually worked -- callers should treat this as Absent
+      // rather than Late/Present, whatever the raw late-minutes math on the half that IS present
+      // happens to say.
+      incomplete: !tin || !tout
     };
   }
 
