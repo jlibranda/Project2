@@ -2032,6 +2032,7 @@ async function zkRefreshStatus(){
     ZK.devices=d.devices||[];
     ZK.deviceUsers=d.deviceUsers||[];
     if(d.userMapping&&!Object.keys(ZK.userMapping).length)ZK.userMapping=d.userMapping;
+    zkAutoApplyBiometricMatches();
   }catch(e){/* surfaced via the page's own empty/error states */}
   ZK.loading=false;render();
 }
@@ -2144,6 +2145,29 @@ function zkSaveMapping(){
   zkBuildPreview();
   render();
   alert('User mapping saved!');
+}
+// Automatically COMMITS a mapping (straight into ZK.userMapping, no "Save mapping" click
+// needed) for any still-unmapped device user whose ID exactly matches exactly one active
+// employee's Biometric Number (Employee Detail → Employment tab). Skips ambiguous cases —
+// two employees sharing the same Biometric Number by data-entry mistake — rather than
+// guessing, and never touches a device user that already has a mapping (manual or
+// previously auto-applied). Called automatically whenever the device reports its user list
+// (zkRefreshStatus) or an employee's Biometric Number is saved (applyEmpSave), plus
+// available as an on-demand recheck from the User Mapping tab.
+function zkAutoApplyBiometricMatches(){
+  let applied=0;
+  zkMappableUsers().forEach(du=>{
+    if(ZK.userMapping[du.userId])return;
+    const matches=USERS.filter(u=>u.role==='employee'&&u.active!==false&&u.biometricNo&&String(u.biometricNo).trim()===String(du.userId).trim());
+    if(matches.length===1){ZK.userMapping[du.userId]=matches[0].id;applied++;}
+  });
+  return applied;
+}
+function zkRunAutoMatchNow(){
+  const applied=zkAutoApplyBiometricMatches();
+  render();
+  if(applied)toast(applied+' device user'+(applied!==1?'s':'')+' mapped automatically by Biometric Number.','success');
+  else toast('No new matches found. Make sure Biometric Number is set on the Employment tab of each employee\'s 201 file, and matches the device user ID exactly.','info');
 }
 // Mirrors server.js's zkPunchKind/zkPickInOut: trust the device's own in/out toggle
 // (ATTLOG status code) when any punch that day has one, otherwise fall back to
@@ -11639,6 +11663,11 @@ function pgZKSetup(){
 
   /* ── Tab 1: User Mapping ── */
   else if(tab===1){
+    // Catches any match a biometric number/device user could satisfy that wasn't already
+    // caught by the automatic triggers (zkRefreshStatus, applyEmpSave) — e.g. bulk-imported
+    // employees whose Biometric Number already matched a device user seen earlier. Cheap and
+    // idempotent, so it's safe to run on every render of this tab.
+    zkAutoApplyBiometricMatches();
     const mappableUsers=zkMappableUsers();
     const empUseCount={};
     Object.values(ZK.userMapping).forEach(empId=>{if(empId)empUseCount[empId]=(empUseCount[empId]||0)+1;});
@@ -11646,9 +11675,10 @@ function pgZKSetup(){
     const unmappedEmployees=USERS.filter(u=>u.role==='employee'&&u.active!==false&&!mappedEmpIds.has(u.id));
     body=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.875rem">
-      <div style="font-size:13px;color:var(--txt2)">Map each ZKTeco user ID to an employee. This is a one-time setup.</div>
-      <div style="display:flex;gap:6px">
+      <div style="font-size:13px;color:var(--txt2)">Set an employee's <strong>Biometric Number</strong> (201 File → Employment tab) to their device user ID and they're mapped automatically — no need to pick from the list below unless a device user has no matching Biometric Number on file.</div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
         <button class="btn btn-sm" onclick="zkRefreshStatus()" ${ZK.loading?'disabled':''}>↻ Refresh device users</button>
+        <button class="btn btn-sm" onclick="zkRunAutoMatchNow()">🔗 Recheck Biometric matches</button>
         <button class="btn btn-sm btn-primary" onclick="zkSaveMapping()">Save mapping</button>
       </div>
     </div>
@@ -11656,14 +11686,15 @@ function pgZKSetup(){
     <tbody>${mappableUsers.map(du=>{
       const mapped=ZK.userMapping[du.userId]?USERS.find(u=>u.id===ZK.userMapping[du.userId]):null;
       const isDuplicate=mapped&&empUseCount[mapped.id]>1;
+      const autoMatched=mapped&&mapped.biometricNo&&String(mapped.biometricNo).trim()===String(du.userId).trim();
       return`<tr>
         <td class="mono" style="font-size:12px">${du.userId}</td>
         <td>${du.name||(du.fromPunchesOnly?'<span style="color:var(--txt3);font-style:italic">seen in punches only</span>':'—')}</td>
         <td class="mono" style="font-size:11px">${du.cardNo||'—'}</td>
         <td><select id="zkmap-${du.userId}" class="finput" style="font-size:12px">
           <option value="">— Unmapped —</option>
-          ${USERS.filter(u=>u.role==='employee').map(e=>`<option value="${e.id}" ${ZK.userMapping[du.userId]===e.id?'selected':''}>${e.name} (${e.eid})</option>`).join('')}
-        </select></td>
+          ${USERS.filter(u=>u.role==='employee').map(e=>`<option value="${e.id}" ${mapped&&mapped.id===e.id?'selected':''}>${e.name} (${e.eid})</option>`).join('')}
+        </select>${autoMatched?`<div style="font-size:10px;color:var(--green-txt);margin-top:3px">🔗 Auto-matched via Biometric No.</div>`:''}</td>
         <td>${mapped?`<span class="badge b-approved">${mapped.name}</span>`:`<span class="badge b-absent">Unmapped</span>`}${isDuplicate?` <span class="badge b-late" title="This employee is also mapped to another device user ID — their punches from all mapped IDs will be merged into one attendance record.">⚠ Already mapped elsewhere</span>`:''}</td>
       </tr>`;}).join('')}</tbody></table>`
     :`<div class="empty-state"><div class="ei">👆</div>No device users seen yet. Users appear here automatically as they're enrolled on the device or as punches come in, or click "Refresh device users".</div>`}
@@ -14440,6 +14471,7 @@ function applyEmpSave(reason){
       toast(e.name+' moved from "'+(oldGrp?.name||'no group')+'" to "'+(newGrp?.name||'no group')+'" — '+changedField+' updated.','info');
     }
   }
+  if('biometricNo' in draftToApply)zkAutoApplyBiometricMatches();
   render();queueSync('Employees');
 }
 
