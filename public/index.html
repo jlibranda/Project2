@@ -5817,6 +5817,7 @@ function pgMyProfile(){
   const emp=user;
   const att=attendanceRecords().filter(a=>a.eid===emp.id);
   const myLoans=LOANS.filter(l=>l.eid===emp.id);
+  const myAllowances=employeeRecurringAllowances(emp);
   const ms=emp.rate*22;
   return`<div class="page-header"><div><div class="page-title">My 201 File</div><div class="page-sub">Your personal HR record</div></div>
   <button class="btn btn-primary" onclick="modal={type:'editProfile',emp:user,draft:JSON.parse(JSON.stringify(user))};render()">${ico('edit',14)} Edit My Details</button></div>
@@ -5840,16 +5841,20 @@ function pgMyProfile(){
       <div class="card">
         <div class="card-title" style="margin-bottom:.875rem">Personal Information</div>
         <div class="form-row"><div>${[['Full Name',emp.name],['Birthday',emp.bday],['Contact',emp.contact],['Address',emp.address]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span>${v}</span></div>`).join('')}</div>
-        <div>${[['Department',emp.dept],['Position',emp.pos],['Daily Rate',fmt(emp.rate)],['Monthly Equiv.',fmt(ms)]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span>${v}</span></div>`).join('')}</div></div>
-        <div class="info-row"><span class="info-label">Emergency Contact</span><span>${emp.emergency}</span></div>
+        <div>${[['Department',emp.dept],['Position',emp.pos],['Band Level',emp.bandLevel||'—'],['Entity',emp.entityName||'—']].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span>${v}</span></div>`).join('')}</div></div>
+        <div class="info-row"><span class="info-label">Emergency Contact</span><span>${emp.emergency||'—'}</span></div>
       </div>
       <div class="card">
         <div class="card-title" style="margin-bottom:.875rem">Compensation Summary</div>
         ${[['Basic daily rate',fmt(emp.rate)],['Monthly equivalent',fmt(ms)],['13th Month Pay (annual)',fmt(thirteenth(emp))],['SSS Employee Share',fmt(sssContrib(ms))],['PhilHealth Employee Share',fmt(phContrib(ms))],['Pag-IBIG Employee Share',fmt(piContrib(ms))],['Est. Withholding Tax',fmt(birTax(ms))]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span class="mono">${v}</span></div>`).join('')}
       </div>
+      ${myAllowances.length?`<div class="card"><div class="card-title" style="margin-bottom:.875rem">Recurring Allowances</div>
+      ${myAllowances.map(a=>{const type=INCOME_TYPES.find(t=>t.code===a.payItemCode);return`<div class="info-row"><span class="info-label">${esc(type?.name||a.payItemCode)}</span><span class="mono">${fmt(a.monthlyAmount||a.amount||0)}${a.active===false?' <span class="badge b-absent" style="font-size:10px">Inactive</span>':''}</span></div>`;}).join('')}
+      </div>`:''}
       ${myLoans.length?`<div class="card"><div class="card-title" style="margin-bottom:.875rem">Active Loans</div>
       ${myLoans.map(l=>`<div class="loan-row"><div style="display:flex;justify-content:space-between"><span style="font-weight:500">${l.type}</span><span class="badge b-${l.status}">${l.status}</span></div><div style="display:flex;justify-content:space-between;margin-top:6px;font-size:12px;color:var(--txt3)"><span>Balance: <strong class="mono" style="color:var(--red)">${fmt(l.balance)}</strong></span><span>Monthly: <strong class="mono">${fmt(l.monthly)}</strong></span></div><div class="progress-bar" style="margin-top:6px"><div class="progress-fill" style="width:${Math.round((1-l.balance/l.amount)*100)}%;background:var(--green)"></div></div></div>`).join('')}
       </div>`:''}
+      <div class="card"><div class="card-title" style="margin-bottom:.875rem">Movement History</div>${renderMovementHistory(emp.movements||[])}</div>
     </div>
   </div>`;
 }
@@ -13400,6 +13405,56 @@ function deleteRecurringAllowance(empId,allowanceId){
   if(item?.legacyField)emp[item.legacyField]=0;
   queueSync('Employees');toast('Recurring allowance deleted','success');render();
 }
+/* Read-only movement-history timeline — shared by the admin Employee Detail page and the
+   employee's own My 201 File self-view, so both stay in sync with one rendering. */
+function renderMovementHistory(mvs){
+  const typeColors={'Position Change':'var(--accent)','Transfer':'var(--blue)','Compensation Change':'var(--green)','Profile Update':'var(--txt3)'};
+  return mvs.length?`
+  <div style="display:grid;gap:12px">
+    ${mvs.map((m,mi)=>{
+      const tc=typeColors[m.type]||'var(--accent)';
+      return`<div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);position:relative">
+        <!-- Header -->
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px">
+          <div>
+            <span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;background:${tc}18;color:${tc};font-size:11px;font-weight:700">${esc(m.type)}</span>
+            <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:6px;font-size:12px">
+              <div>
+                <span style="font-size:10px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.3px">Effective </span>
+                <span style="font-weight:700;color:${m.effectiveDate>m.date?'var(--amber-txt)':m.effectiveDate===m.date?'var(--green-txt)':'var(--txt)'}">${m.effectiveDate||m.date}</span>
+                ${m.effectiveDate&&m.effectiveDate>m.date?`<span style="font-size:10px;color:var(--amber);margin-left:4px">upcoming</span>`:''}
+              </div>
+              <div style="color:var(--txt3)">
+                <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Recorded </span>
+                ${m.date} ${m.time?`at ${m.time}`:''}
+              </div>
+              <div style="color:var(--txt3)">by <strong>${esc(m.changedBy||'—')}</strong></div>
+            </div>
+          </div>
+          <span style="font-size:11px;color:var(--txt3);white-space:nowrap">#${mi+1}</span>
+        </div>
+        <!-- Reason -->
+        <div style="padding:8px 10px;background:var(--surface2);border-radius:7px;font-size:12px;margin-bottom:10px;border-left:3px solid ${tc}">
+          <span style="font-size:10px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.4px">Reason: </span>${esc(m.reason||'—')}
+        </div>
+        <!-- Changes -->
+        <div style="display:grid;gap:5px">
+          ${(m.changes||[]).map(c=>`
+          <div style="display:grid;grid-template-columns:110px 1fr auto 1fr;align-items:center;gap:6px;font-size:12px">
+            <span style="font-size:10px;font-weight:700;color:var(--txt3);text-transform:uppercase">${esc(c.label)}</span>
+            <span style="padding:2px 8px;border-radius:4px;background:#fee2e2;color:#dc2626;text-decoration:line-through">${esc(String(c.from||'—'))}</span>
+            <span style="color:var(--txt3)">→</span>
+            <span style="padding:2px 8px;border-radius:4px;background:#dcfce7;color:#16a34a;font-weight:600">${esc(String(c.to||'—'))}</span>
+          </div>`).join('')}
+        </div>
+      </div>`;
+    }).join('')}
+  </div>`:`<div style="text-align:center;padding:3rem 1rem;color:var(--txt3)">
+    <div style="font-size:40px;margin-bottom:10px">📋</div>
+    <div style="font-weight:600;margin-bottom:4px">No movement history yet</div>
+    <div style="font-size:12px">Changes to position, band level, org placement, or compensation will be recorded here with a reason.</div>
+  </div>`;
+}
 
 function pgEmpDetail(){
   ensureAnnualizedTaxConfig();
@@ -14033,53 +14088,7 @@ function pgEmpDetail(){
 
   /* ── Tab 7: Movements ── */
   else if(detailTab===7){
-    const mvs=(e.movements||[]);
-    const typeColors={'Position Change':'var(--accent)','Transfer':'var(--blue)','Compensation Change':'var(--green)','Profile Update':'var(--txt3)'};
-    tabBody=mvs.length?`
-    <div style="display:grid;gap:12px">
-      ${mvs.map((m,mi)=>{
-        const tc=typeColors[m.type]||'var(--accent)';
-        return`<div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--bg);position:relative">
-          <!-- Header -->
-          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px">
-            <div>
-              <span style="display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;background:${tc}18;color:${tc};font-size:11px;font-weight:700">${esc(m.type)}</span>
-              <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:6px;font-size:12px">
-                <div>
-                  <span style="font-size:10px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.3px">Effective </span>
-                  <span style="font-weight:700;color:${m.effectiveDate>m.date?'var(--amber-txt)':m.effectiveDate===m.date?'var(--green-txt)':'var(--txt)'}">${m.effectiveDate||m.date}</span>
-                  ${m.effectiveDate&&m.effectiveDate>m.date?`<span style="font-size:10px;color:var(--amber);margin-left:4px">upcoming</span>`:''}
-                </div>
-                <div style="color:var(--txt3)">
-                  <span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.3px">Recorded </span>
-                  ${m.date} ${m.time?`at ${m.time}`:''}
-                </div>
-                <div style="color:var(--txt3)">by <strong>${esc(m.changedBy||'—')}</strong></div>
-              </div>
-            </div>
-            <span style="font-size:11px;color:var(--txt3);white-space:nowrap">#${mi+1}</span>
-          </div>
-          <!-- Reason -->
-          <div style="padding:8px 10px;background:var(--surface2);border-radius:7px;font-size:12px;margin-bottom:10px;border-left:3px solid ${tc}">
-            <span style="font-size:10px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.4px">Reason: </span>${esc(m.reason||'—')}
-          </div>
-          <!-- Changes -->
-          <div style="display:grid;gap:5px">
-            ${(m.changes||[]).map(c=>`
-            <div style="display:grid;grid-template-columns:110px 1fr auto 1fr;align-items:center;gap:6px;font-size:12px">
-              <span style="font-size:10px;font-weight:700;color:var(--txt3);text-transform:uppercase">${esc(c.label)}</span>
-              <span style="padding:2px 8px;border-radius:4px;background:#fee2e2;color:#dc2626;text-decoration:line-through">${esc(String(c.from||'—'))}</span>
-              <span style="color:var(--txt3)">→</span>
-              <span style="padding:2px 8px;border-radius:4px;background:#dcfce7;color:#16a34a;font-weight:600">${esc(String(c.to||'—'))}</span>
-            </div>`).join('')}
-          </div>
-        </div>`;
-      }).join('')}
-    </div>`:`<div style="text-align:center;padding:3rem 1rem;color:var(--txt3)">
-      <div style="font-size:40px;margin-bottom:10px">📋</div>
-      <div style="font-weight:600;margin-bottom:4px">No movement history yet</div>
-      <div style="font-size:12px">Changes to position, band level, org placement, or compensation will be recorded here with a reason.</div>
-    </div>`;
+    tabBody=renderMovementHistory(e.movements||[]);
   }
   else if(detailTab===8){
     const taxYear=Number(window._empTaxYear||new Date().getFullYear());
