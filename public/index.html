@@ -1590,7 +1590,8 @@ function applyBulkAttendance(){
     if(!emp){errors.push(rowLabel+': employee EID "'+r.eid+'" not found');return;}
     if(emp.active===false){errors.push(rowLabel+': '+emp.name+' is inactive — skipped');return;}
     if(!r.date||!/^\d{4}-\d{2}-\d{2}$/.test(r.date)){errors.push(rowLabel+': invalid date "'+r.date+'" (use YYYY-MM-DD)');return;}
-    upsertAttendance(emp.id,r.date,{tin:r.tin||'',tout:r.tout||'',status:r.status||'present',ot:parseFloat(r.ot)||0,nd:parseFloat(r.nd)||0,notes:r.notes||'',source:'bulk-import',approvalStatus:'approved',reviewedBy:user.name,reviewedAt:new Date().toISOString()});
+    const patch=computedAttendancePatch(emp.id,r.date,r.tin||'',r.tout||'',r.status||'present',parseFloat(r.ot)||0,parseFloat(r.nd)||0,r.notes||'','bulk-import');
+    upsertAttendance(emp.id,r.date,{...patch,approvalStatus:'approved',reviewedBy:user.name,reviewedAt:new Date().toISOString()});
     applied++;
   });
   if(applied>0)queueSync('Attendance');
@@ -5616,12 +5617,42 @@ function pgAttendance(){
   return`<div class="page-header"><div class="page-title">Attendance</div>${tab<(isA?2:1)?'':''}
   </div><div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div><div class="card">${body}</div>`;
 }
+// Shared by every MANUAL attendance entry point (File Attendance form, Edit Attendance Row,
+// Bulk Import) so filing or correcting a record by hand gets the same intelligent late/
+// undertime/OT/ND/attendance-policy computation the automatic sources (biometric, Web Bundy)
+// already get — instead of requiring late/undertime/OT/ND to be worked out and typed in by
+// hand. The entered tin/tout is folded into the record's permanent punches log too, same as
+// any other source. 'leave' status is left alone (nothing time-based to compute against); a
+// non-zero OT/ND the admin typed themselves is treated as an explicit override and wins over
+// the computed figure (e.g. pre-authorized OT that doesn't match strict schedule math).
+function computedAttendancePatch(empId,date,tin,tout,manualStatus,manualOt,manualNd,notes,source){
+  const base={tin,tout,status:manualStatus,ot:manualOt,nd:manualNd,notes,source};
+  const emp=USERS.find(u=>u.id===empId);
+  if(!(tin&&tout&&emp)||manualStatus==='leave')return base;
+  const existing=attendanceRecord(empId,date);
+  const receivedAt=new Date().toISOString();
+  const newPunches=[{time:tin,kind:'in',source,receivedAt},{time:tout,kind:'out',source,receivedAt}];
+  const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,newPunches);
+  const schedule=TimekeepingCore.scheduleForDate(emp,date,COMPANY.shifts||[]);
+  const isRest=TimekeepingCore.isRestDay(emp,date,COMPANY.shifts||[]);
+  const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest)||{};
+  const computed=isRest?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
+  const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
+  return{...computed,punches:mergedPunches,
+    status:computed.lwop?'absent':(isRest?manualStatus:(computed.lateMinutes>0?'late':'present')),
+    ot:manualOt>0?manualOt:computed.ot,nd:manualNd>0?manualNd:computed.nd,
+    notes:[notes,policyNote].filter(Boolean).join(' · '),source};
+}
 function submitAtt(isA){
   const eid=isA?parseInt(document.getElementById('ae').value):user.id;
   const date=document.getElementById('adate').value;
   if(!date){alert('Select a date.');return;}
   const existing=attendanceRecord(eid,date);
-  upsertAttendance(eid,date,{tin:document.getElementById('atin').value,tout:document.getElementById('atout').value,status:document.getElementById('ast').value,ot:parseFloat(document.getElementById('aot').value)||0,nd:parseFloat(document.getElementById('and').value)||0,notes:document.getElementById('anotes').value,source:isA?'admin-entry':'employee-entry'});
+  const patch=computedAttendancePatch(eid,date,
+    document.getElementById('atin').value,document.getElementById('atout').value,document.getElementById('ast').value,
+    parseFloat(document.getElementById('aot').value)||0,parseFloat(document.getElementById('and').value)||0,
+    document.getElementById('anotes').value,isA?'admin-entry':'employee-entry');
+  upsertAttendance(eid,date,patch);
   queueSync('Attendance');alert(existing?'Attendance updated. The employee now has one authoritative record for this date.':'Attendance filed!');goTab(0);
 }
 // Attendance-record editing is admin/att_edit-gated and modal-based (not tab navigation) so it
@@ -5639,7 +5670,8 @@ function openEditAttRow(eid,date){
 function saveEditAttRow(){
   if(!modal||modal.type!=='editAttRow'||!canEditAttendance())return;
   const d=modal.draft;
-  upsertAttendance(modal.eid,modal.date,{tin:d.tin,tout:d.tout,status:d.status,ot:parseFloat(d.ot)||0,nd:parseFloat(d.nd)||0,notes:d.notes,approvalStatus:'approved',reviewedBy:user.name,reviewedAt:new Date().toISOString(),source:'admin-edit'});
+  const patch=computedAttendancePatch(modal.eid,modal.date,d.tin,d.tout,d.status,parseFloat(d.ot)||0,parseFloat(d.nd)||0,d.notes,'admin-edit');
+  upsertAttendance(modal.eid,modal.date,{...patch,approvalStatus:'approved',reviewedBy:user.name,reviewedAt:new Date().toISOString()});
   queueSync('Attendance');closeM();toast('Attendance record updated.','success');
 }
 function openAttHistory(eid,date){
