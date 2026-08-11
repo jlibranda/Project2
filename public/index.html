@@ -552,6 +552,7 @@ const PERM_DEFS=[
   {grp:'Self-Service',        k:'onboarding',         l:'Onboarding Tasks',                desc:'Complete and view personal onboarding checklist',                                       sub:false},
   {grp:'Self-Service',        k:'profilechanges',     l:'Profile Change Requests',         desc:'Submit changes to own profile for HR approval',                                         sub:false},
   {grp:'Self-Service',        k:'profile_approve',    l:'Approve Profile Changes',         desc:'Review and approve or reject employee self-edit requests',                              sub:true},
+  {grp:'Self-Service',        k:'resolution',         l:'Resolution Center',               desc:'File and track HR/payroll support cases; admins triage and resolve from the same queue', sub:false},
 
   /* ── TIME & ATTENDANCE ────────────────────────────────────── */
   {grp:'Time & Attendance',   k:'webbundy',           l:'Web Bundy (Clock-in)',             desc:'Clock in/out using the GPS-tagged web bundy tool',                                     sub:false},
@@ -603,7 +604,7 @@ const ACCESS_PRESETS={
     dashboard:true,myprofile:true,emp_view_personal:true,
     webbundy:true,attendance:true,leave:true,leave_apply:true,
     myslips:true,loans:true,loans_apply:true,
-    performance:true,perf_self:true,assistant:true,profilechanges:true,
+    performance:true,perf_self:true,assistant:true,profilechanges:true,resolution:true,
   },
   'Team Leader':{
     dashboard:true,employees:true,emp_view_personal:true,emp_view_employment:true,myprofile:true,
@@ -611,7 +612,7 @@ const ACCESS_PRESETS={
     leave:true,leave_apply:true,leave_approve:true,
     myslips:true,loans:true,loans_apply:true,
     performance:true,perf_manage:true,perf_self:true,
-    analytics:true,assistant:true,profilechanges:true,
+    analytics:true,assistant:true,profilechanges:true,resolution:true,
   },
   'HR Staff':{
     dashboard:true,
@@ -622,7 +623,7 @@ const ACCESS_PRESETS={
     leave:true,leave_apply:true,leave_approve:true,leave_credits:true,
     government:true,myslips:true,all_payslips:true,loans:true,loans_apply:true,loans_approve:true,
     recruitment:true,recruitment_manage:true,performance:true,perf_manage:true,perf_self:true,
-    analytics:true,reports:true,reports_export:true,assistant:true,
+    analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,
     orgsetup:true,lookupsetup:true,accesssetup:true,approvalsetup:true,
   },
   'Payroll Specialist':{
@@ -633,7 +634,7 @@ const ACCESS_PRESETS={
     webbundy:true,attendance:true,att_edit:true,bundyadmin:true,
     leave:true,leave_apply:true,
     payroll:true,payroll_approve:true,government:true,myslips:true,all_payslips:true,loans:true,loans_approve:true,
-    analytics:true,reports:true,reports_export:true,assistant:true,
+    analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,
   },
   'Department Head':{
     dashboard:true,
@@ -643,7 +644,7 @@ const ACCESS_PRESETS={
     leave:true,leave_apply:true,leave_approve:true,
     myslips:true,loans:true,loans_apply:true,
     recruitment:true,recruitment_manage:true,performance:true,perf_manage:true,perf_self:true,
-    analytics:true,reports:true,assistant:true,
+    analytics:true,reports:true,assistant:true,resolution:true,
   },
   'Finance Officer':{
     dashboard:true,
@@ -651,19 +652,19 @@ const ACCESS_PRESETS={
     myprofile:true,
     webbundy:true,attendance:true,leave:true,leave_apply:true,
     payroll:true,payroll_approve:true,government:true,myslips:true,all_payslips:true,loans:true,loans_approve:true,
-    analytics:true,reports:true,reports_export:true,assistant:true,
+    analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,
   },
   'IT Admin':{
     dashboard:true,myprofile:true,
     webbundy:true,leave:true,leave_apply:true,myslips:true,
-    accesssetup:true,access_manage:true,gsheets:true,zksetup:true,assistant:true,
+    accesssetup:true,access_manage:true,gsheets:true,zksetup:true,assistant:true,resolution:true,
   },
   'Auditor':{
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_compensation:true,emp_view_govt:true,emp_view_movements:true,emp_export:true,
     myprofile:true,attendance:true,bundyadmin:true,leave:true,
     myslips:true,all_payslips:true,government:true,loans:true,
-    analytics:true,reports:true,reports_export:true,assistant:true,
+    analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,
   },
   'Full Admin':Object.fromEntries(PERM_DEFS.map(p=>[p.k,true])),
 };
@@ -14618,9 +14619,9 @@ function render(){
     return;
   }
   let pg='';
-  /* Every route below except dashboard/resolution (self-scoping by design, open to all
-     logged-in users) is gated on the matching PERM_DEFS key before its page function ever
-     runs — see renderAccessDenied() for why this can't just live in the sidebar. */
+  /* Every route below except dashboard (universal by design, and self-scoping internally
+     for admin vs. employee content) is gated on the matching PERM_DEFS key before its page
+     function ever runs — see renderAccessDenied() for why this can't just live in the sidebar. */
   const gate=(key,label,fn)=>canAccess(key)?fn():renderAccessDenied(label);
   try{
     if(view==='dashboard')pg=pgDashboard();
@@ -14639,7 +14640,7 @@ function render(){
     else if(view==='analytics')pg=gate('analytics','Analytics',pgAnalytics);
     else if(view==='reports')pg=gate('reports','Reports',pgReports);
     else if(view==='assistant')pg=gate('assistant','HR Assistant',pgAssistant);
-    else if(view==='resolution')pg=pgResolution();
+    else if(view==='resolution')pg=gate('resolution','Resolution Center',pgResolution);
     else if(view==='orgsetup')pg=gate('orgsetup','Org Structure',pgOrgSetup);
     else if(view==='approvalsetup')pg=gate('approvalsetup','Approval Layers',pgApprovalSetup);
     else if(view==='lookupsetup')pg=gate('lookupsetup','Lookup Tables',pgLookupSetup);

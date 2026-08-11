@@ -268,6 +268,7 @@
   };
 
   window.sidebarExtraSections=function(){
+    if(!canAccess('resolution'))return[];
     var pending=RESOLUTION_CASES.filter(function(c){return c.status==='open'||c.status==='in_review';}).length;
     return [{title:'Service Desk',items:[
       {v:'resolution',k:'file',l:'Resolution Center',badge:pending}
