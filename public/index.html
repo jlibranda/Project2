@@ -2036,6 +2036,23 @@ async function zkRefreshStatus(){
   }catch(e){/* surfaced via the page's own empty/error states */}
   ZK.loading=false;render();
 }
+// Silent background counterpart used by the realtime poll (startRealtime) so newly-enrolled
+// device users (pushed via OPERLOG) show up without needing a manual "Refresh device users"
+// click — previously only punches (ATTLOG) were auto-polled, not the user list. No loading
+// spinner and no render() while the admin is mid-typing elsewhere, matching zkPullAttendance's
+// existing guard against clobbering an in-progress form.
+async function zkPollDeviceUsers(){
+  try{
+    const d=await zkApi('/status');
+    ZK.devices=d.devices||[];
+    ZK.deviceUsers=d.deviceUsers||[];
+    if(d.userMapping&&!Object.keys(ZK.userMapping).length)ZK.userMapping=d.userMapping;
+    zkAutoApplyBiometricMatches();
+  }catch(e){return;}
+  const active=document.activeElement;
+  const isEditing=active&&(active.tagName==='INPUT'||active.tagName==='TEXTAREA'||active.tagName==='SELECT');
+  if(!isEditing)render();
+}
 function zkSaveConnectionOverride(){
   const address=(document.getElementById('zk-conn-address').value||'').trim();
   const port=(document.getElementById('zk-conn-port').value||'').trim();
@@ -2057,7 +2074,7 @@ function zkSavePunchBuffer(){
   render();
   alert('Saved. New punches will use this window going forward.');
 }
-const ZK_COMMAND_LABELS={reboot:'Restart device',resync:'Resync attendance log',clearlog:'Clear attendance log'};
+const ZK_COMMAND_LABELS={reboot:'Restart device',resync:'Resync attendance log',resyncusers:'Resync user list',clearlog:'Clear attendance log'};
 async function zkSendCommand(serial,action,confirmMsg){
   if(confirmMsg&&!confirm(confirmMsg))return;
   try{
@@ -11759,7 +11776,7 @@ function pgZKSetup(){
   else if(tab===3){body=`
     <div class="card" style="margin-bottom:1rem">
       <div class="card-title" style="margin-bottom:.875rem">Live Punch Monitor</div>
-      <p style="font-size:13px;color:var(--txt2);margin-bottom:1rem">ADMS devices push punches to the server as they happen — there's nothing to "enable" on the device side. Turn this on to auto-refresh the pending list here every 20 seconds while you're on this page; you still choose when to import (Pull &amp; Import tab).</p>
+      <p style="font-size:13px;color:var(--txt2);margin-bottom:1rem">ADMS devices push punches and newly-enrolled users to the server as they happen — there's nothing to "enable" on the device side. Turn this on to auto-refresh the pending punch list <em>and</em> the device user list (User Mapping tab) every 20 seconds while you're on this page; you still choose when to import (Pull &amp; Import tab).</p>
       <div style="display:flex;align-items:center;gap:14px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px">
           <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ZK.realtimeEnabled?'checked':''} onchange="ZK.realtimeEnabled=this.checked;if(ZK.realtimeEnabled)startRealtime();else stopRealtime();render()"/>
@@ -11786,6 +11803,7 @@ function pgZKSetup(){
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             <button class="btn btn-sm" onclick="zkSendCommand('${esc(d.serial)}','reboot')">🔄 Restart device</button>
             <button class="btn btn-sm" onclick="zkSendCommand('${esc(d.serial)}','resync')">📡 Resync attendance log</button>
+            <button class="btn btn-sm" onclick="zkSendCommand('${esc(d.serial)}','resyncusers')">👤 Resync user list</button>
             <button class="btn btn-sm" style="color:var(--red)" onclick="zkSendCommand('${esc(d.serial)}','clearlog','⚠ This permanently deletes the attendance log stored on the device itself. Any punches the server hasn\\'t received yet will be lost. Continue?')">🗑️ Clear attendance log</button>
           </div>
         </div>
@@ -11817,6 +11835,7 @@ function startRealtime(){
   realtimeTimer=setInterval(async()=>{
     if(!ZK.realtimeEnabled)return;
     await zkPullAttendance();
+    await zkPollDeviceUsers();
   },20000);
 }
 function stopRealtime(){if(realtimeTimer){clearInterval(realtimeTimer);realtimeTimer=null;}}
