@@ -119,7 +119,20 @@
   window.disconnectDatabaseSession=function(){token='';stateVersion=0;lastSavedPayload='';sessionStorage.removeItem('sproutripple_session');};
 
   var baseRender=render;
-  render=function(){baseRender();if(user&&token)window.queueDatabaseSave();};
+  // Never autosave while a God Admin is browsing a simulated demo client (Platform > Clients,
+  // any client other than id 1 / the real company). That view swaps the live USERS/ATT/etc.
+  // arrays to that demo client's own (often empty) sample data purely for in-browser display —
+  // it was never wired to real per-tenant storage, and this deployment has exactly one real
+  // database row. Autosaving from inside that swapped, fake state would silently overwrite the
+  // real company's actual data the moment a render fires (this is what happened once already:
+  // entering a demo client with no seeded employees replaced the live USERS array with an empty
+  // one, which the very next render then saved for real). Only the real company's own session
+  // (activeClientId null or 1) is ever allowed to persist.
+  render=function(){
+    baseRender();
+    var browsingDemoClient=typeof activeClientId!=='undefined'&&activeClientId&&activeClientId!==1;
+    if(user&&token&&!browsingDemoClient)window.queueDatabaseSave();
+  };
 
   // A page refresh previously always dropped back to the login screen even with a
   // still-valid session token sitting in sessionStorage. Decode the token (it's just
