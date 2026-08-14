@@ -265,6 +265,25 @@
     return Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : null;
   }
 
+  // A native <input type="time"> always returns a clean 24-hour "HH:MM" value with no separate
+  // AM/PM to lose -- so a shift saved with End="06:00" really did have its AM/PM segment left on
+  // AM at the moment it was set, most often because it was meant to be 6:00 PM (18:00) for a
+  // same-day shift. Rather than silently treating every End <= Start as an overnight shift (the
+  // old behavior), catch the specific case where reinterpreting a morning End time as its PM
+  // equivalent produces a sane same-day shift length, and return the corrected value -- otherwise
+  // (End is already PM, or the PM reinterpretation doesn't fit before Start) return null,
+  // leaving a genuine overnight shift like 22:00-06:00 untouched.
+  function autoCorrectShiftEndAmPm(start, end) {
+    var startMin = timeToMinutes(start), endMin = timeToMinutes(end);
+    if (startMin == null || endMin == null || endMin > startMin) return null;
+    if (endMin >= 12 * 60) return null;
+    var pmEndMin = endMin + 12 * 60;
+    var pmSpan = pmEndMin - startMin;
+    if (pmSpan <= 0 || pmSpan > 16 * 60) return null;
+    var hh = Math.floor(pmEndMin / 60), mm = pmEndMin % 60;
+    return (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
+  }
+
   function addDaysToDateStr(dateStr, days) {
     var d = new Date(dateStr + 'T00:00:00Z');
     d.setUTCDate(d.getUTCDate() + days);
@@ -505,6 +524,7 @@
     mergePunches: mergePunches,
     computeFromPunches: computeFromPunches,
     applyAttendancePolicy: applyAttendancePolicy,
+    autoCorrectShiftEndAmPm: autoCorrectShiftEndAmPm,
     validateLinkedRecord: validateLinkedRecord,
     scheduleForDate: scheduleForDate,
     normalizeShift: normalizeShift,
