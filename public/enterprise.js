@@ -529,6 +529,7 @@
     if(!(isAdminUser(user)||isPlatformAdmin))return;
     var d=modal.draft;
     if(!d.name||!d.name.trim()){toast('Shift name is required.','warning');return;}
+    var amPmFixes=[];
     for(var i=0;i<SHIFT_DAY_KEYS.length;i++){
       var k=SHIFT_DAY_KEYS[i],day=d.schedule[k];
       // A rest day never keeps leftover times underneath — whether from an old save made
@@ -538,6 +539,13 @@
       if(!validShiftTime(day.start)||!validShiftTime(day.end)){toast('Enter valid start/end times for '+SHIFT_DAY_LABELS[k]+', or mark it as a rest day.','warning');return;}
       if(day.breakStart&&!validShiftTime(day.breakStart)){toast('Enter a valid break start time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
       if(day.breakEnd&&!validShiftTime(day.breakEnd)){toast('Enter a valid break end time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
+      // An End Time in the AM half that doesn't make sense before Start on the same day is
+      // almost always the time-picker's AM/PM segment left on AM by mistake (e.g. 06:00 typed
+      // meaning 6:00 PM) rather than an intentional overnight shift — reinterpreting it as PM
+      // and checking the resulting same-day length is sane catches that specific mistake
+      // automatically, without touching a genuine overnight shift like 22:00–06:00.
+      var corrected=TimekeepingCore.autoCorrectShiftEndAmPm(day.start,day.end);
+      if(corrected){amPmFixes.push(SHIFT_DAY_LABELS[k]+': '+day.end+' → '+corrected);day.end=corrected;}
     }
     var graceMinutes=parseInt(d.graceMinutes,10);
     if(isNaN(graceMinutes)||graceMinutes<0){toast('Enter a valid grace period.','warning');return;}
@@ -548,7 +556,9 @@
     }else{
       SHIFT_DEFINITIONS.push({id:nextShiftId++,name:d.name.trim(),graceMinutes:graceMinutes,active:true,schedule:d.schedule});
     }
-    saveShiftConfig();closeM();toast('Shift saved.','success');
+    saveShiftConfig();closeM();
+    if(amPmFixes.length)toast('Shift saved. Auto-corrected a likely AM/PM mix-up — '+amPmFixes.join(', ')+'. If any of these was meant to be an overnight shift, reopen and re-enter that End Time.','info',7000);
+    else toast('Shift saved.','success');
   };
 
   window.toggleShift=function(id){
@@ -612,6 +622,7 @@
     var employee=USERS.find(function(e){return e.id===modal.employeeId;});
     if(!employee)return;
     var d=modal.draft;
+    var amPmFixes=[];
     for(var i=0;i<SHIFT_DAY_KEYS.length;i++){
       var k=SHIFT_DAY_KEYS[i],day=d[k];
       // A rest day never keeps leftover times underneath — whether from an old save made
@@ -621,6 +632,8 @@
       if(!validShiftTime(day.start)||!validShiftTime(day.end)){toast('Enter valid start/end times for '+SHIFT_DAY_LABELS[k]+', or mark it as a rest day.','warning');return;}
       if(day.breakStart&&!validShiftTime(day.breakStart)){toast('Enter a valid break start time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
       if(day.breakEnd&&!validShiftTime(day.breakEnd)){toast('Enter a valid break end time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
+      var corrected=TimekeepingCore.autoCorrectShiftEndAmPm(day.start,day.end);
+      if(corrected){amPmFixes.push(SHIFT_DAY_LABELS[k]+': '+day.end+' → '+corrected);day.end=corrected;}
     }
     // Refuse a week that's entirely rest days — almost certainly a mistake (every field left
     // unedited from a rest-day-heavy starting point), not a deliberate "never works" schedule.
@@ -628,7 +641,8 @@
     employee.personalSchedule=d;
     queueSync('Employees','Personal_Schedules');
     closeM();
-    toast('Personal schedule saved for '+employee.name+'.','success');
+    if(amPmFixes.length)toast('Personal schedule saved for '+employee.name+'. Auto-corrected a likely AM/PM mix-up — '+amPmFixes.join(', ')+'.','info',7000);
+    else toast('Personal schedule saved for '+employee.name+'.','success');
   };
 
   window.removePersonalSchedule=function(employeeId){
