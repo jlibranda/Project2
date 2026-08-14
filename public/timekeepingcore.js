@@ -480,7 +480,10 @@
       var shiftOut = schedule && minutes(schedule.end);
       var calculatedLate = actualIn != null && shiftIn != null ? Math.max(0, actualIn - shiftIn - Number(schedule.graceMinutes || 0)) : 0;
       var calculatedUndertime = actualOut != null && shiftOut != null ? Math.max(0, shiftOut - actualOut) : 0;
-      summary.lateMinutes += Number(record.lateMinutes != null ? record.lateMinutes : calculatedLate);
+      // Max of stored vs. recomputed, same as undertime below -- a record can carry an explicit
+      // lateMinutes:0 that predates this engine and was simply never computed, which a plain
+      // "use it if it's not null" check can't distinguish from a real zero.
+      summary.lateMinutes += Math.max(Number(record.lateMinutes || 0), calculatedLate);
       summary.undertimeMinutes += Math.max(Number(record.undertimeMinutes || 0), calculatedUndertime);
     });
     Object.keys(summary).forEach(function (key) {

@@ -677,7 +677,13 @@
     var shiftIn = sched && hhmmToMinutesLocal(sched.start), shiftOut = sched && hhmmToMinutesLocal(sched.end);
     var late = actualIn != null && shiftIn != null ? Math.max(0, actualIn - shiftIn - Number(sched.graceMinutes||0)) : 0;
     var undertime = actualOut != null && shiftOut != null ? Math.max(0, shiftOut - actualOut) : 0;
-    return { late: rec.lateMinutes != null ? rec.lateMinutes : late, undertime: Math.max(Number(rec.undertimeMinutes||0), undertime) };
+    // Both take the max of the stored figure and a fresh recompute from tin/tout+schedule --
+    // never trust a stored 0 blindly. Older records (predating the Attendance Policy engine)
+    // can carry an explicit lateMinutes:0 that was simply never computed in the first place,
+    // which a plain "use the stored value if it's not null" check can't tell apart from a
+    // correctly-computed zero. undertime already worked this way; late didn't, which is exactly
+    // why a record noted "Late arrival" with a real late tin still read 0 here.
+    return { late: Math.max(Number(rec.lateMinutes||0), late), undertime: Math.max(Number(rec.undertimeMinutes||0), undertime) };
   }
   // Time Logs' download button shares the Attendance Report/Time Logs filter engine's UI (same
   // renderAttReportFilterUI, same button), but the two tabs mean completely different things by
