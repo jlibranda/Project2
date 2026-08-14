@@ -566,12 +566,15 @@
   // one person's attendance.
   function renderAttReportMatchList(matched, range, ns) {
     var shown = matched.slice(0, 50);
+    var shifts = COMPANY.shifts || [];
     return '<div class="field"><label>Matched Employees'+(matched.length>shown.length?' (showing first 50 of '+matched.length+')':'')+'</label>'+
       '<div style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:8px">'+
       '<table style="margin:0"><tbody>'+
       shown.map(function (u) {
         var hasPending = attendanceRecords().some(function (a) { return a.eid===u.id && a.date>=range.from && a.date<=range.to && a.approvalStatus==='pending'; });
-        return '<tr><td style="font-size:12px">'+esc(u.name)+' <span style="color:var(--txt3);font-size:11px">('+esc(u.eid||'—')+')</span>'+(hasPending?redBubble(1):'')+'</td>'+
+        var noSchedule = hasNoScheduleInRange(u, range.from, range.to, shifts);
+        return '<tr><td style="font-size:12px">'+esc(u.name)+' <span style="color:var(--txt3);font-size:11px">('+esc(u.eid||'—')+')</span>'+(hasPending?redBubble(1):'')+
+          (noSchedule?' <span class="badge b-absent" style="font-size:9px" title="No shift assigned in this range — Late/Undertime will read 0">⚠ No shift</span>':'')+'</td>'+
           '<td style="text-align:right;white-space:nowrap"><button class="btn btn-sm" onclick="openAttReportDetailModal(\''+ns+'\','+u.id+')">👁 View Detailed</button></td></tr>';
       }).join('')+
       '</tbody></table></div></div>';
@@ -584,6 +587,7 @@
     if (!emp) return;
     var shifts = COMPANY.shifts || [], holidays = COMPANY.holidays || [];
     var summary = TimekeepingCore.periodSummary(ATT, emp, range.from, range.to, shifts, holidays);
+    var noSchedule = hasNoScheduleInRange(emp, range.from, range.to, shifts);
     var byDate = {};
     summary.records.forEach(function (r) { byDate[r.date] = r; });
     var missingSet = {};
@@ -622,7 +626,7 @@
       range:range, summary:{ presentDays:summary.presentDays-incompleteButNotAbsent, absentDays:summary.absentDays+missingCount+incompleteButNotAbsent, lateMinutes:summary.lateMinutes,
         undertimeMinutes:summary.undertimeMinutes, otHours:summary.otHours, ndHours:summary.ndHours,
         restDayHolidayHours:summary.restDayHolidayHours, hoursWorked:+hoursWorked.toFixed(2), missingLogDays:missingCount,
-        halfDayCount:halfDayCount, lwopInsufficientHoursCount:lwopInsufficientHoursCount, incompleteLogCount:incompleteCount }, days:days };
+        halfDayCount:halfDayCount, lwopInsufficientHoursCount:lwopInsufficientHoursCount, incompleteLogCount:incompleteCount, noSchedule:noSchedule }, days:days };
     render();
   };
   // Tolerates HH:MM:SS (some device firmware reports seconds in ATTLOG timestamps) the same
@@ -643,6 +647,18 @@
   // this only changes what the report shows and tallies.
   function isIncompleteLog(rec) {
     return !!((rec.tin && !rec.tout) || (rec.tout && !rec.tin));
+  }
+  // Late/Undertime literally cannot be computed without a schedule to compare a punch against —
+  // there's no "on time" to be late relative to. An employee with no shift (and no personal
+  // schedule / approved schedule adjustment) covering ANY working day in the range will always
+  // read exactly 0 for both, no matter how late their actual punches were, and their missing
+  // log days are silently invisible to missingLogDates() too (same reason: no schedule to check
+  // against). Checked once per employee per report render rather than assumed from emp.shiftId
+  // alone, since a personal schedule or schedule adjustment can cover a day even without one.
+  function hasNoScheduleInRange(emp, from, to, shifts) {
+    return !leaveDateRange(from, to).some(function (date) {
+      return !!TimekeepingCore.scheduleForDate(emp, date, shifts) || TimekeepingCore.isRestDay(emp, date, shifts);
+    });
   }
   var ATT_REPORT_DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
   var ATT_REPORT_STATUS_LABEL = { present:'Present', late:'Late', absent:'Absent', leave:'On Leave' };
@@ -713,7 +729,7 @@
     if (ns === 'timeLogs') { downloadTimeLogsReport(emps, range); return; }
 
     var shifts = COMPANY.shifts || [], holidays = COMPANY.holidays || [];
-    var summaryHeaderRow = ['EID','Employee Name','Department','Position','Days Present','Days Absent','Late (min)','Undertime (min)','OT Hours','ND Hours','Half Day Count','LWOP — Insufficient Hours','LWOP — Missing Log','Incomplete Log Count']
+    var summaryHeaderRow = ['EID','Employee Name','Department','Position','No Shift Assigned','Days Present','Days Absent','Late (min)','Undertime (min)','OT Hours','ND Hours','Half Day Count','LWOP — Insufficient Hours','LWOP — Missing Log','Incomplete Log Count']
       .concat(ATT_REPORT_HOLIDAY_CODES.map(function (c) { return ATT_REPORT_HOLIDAY_LABEL[c]+' (hrs)'; }))
       .concat(['Hours Worked','Needs Review']);
     var summaryRows = [
@@ -728,6 +744,7 @@
 
     emps.forEach(function (emp) {
       var summary = TimekeepingCore.periodSummary(ATT, emp, range.from, range.to, shifts, holidays);
+      var noSchedule = hasNoScheduleInRange(emp, range.from, range.to, shifts);
       var byDate = {};
       summary.records.forEach(function (r) { byDate[r.date] = r; });
       var missingSet = {};
@@ -749,7 +766,7 @@
       });
       var byCode = summary.restDayHolidayHoursByCode || {};
 
-      summaryRows.push([emp.eid||'', emp.name||'', emp.dept||'', emp.pos||'', effectivePresentDays, effectiveAbsentDays, summary.lateMinutes, summary.undertimeMinutes, summary.otHours, summary.ndHours, halfDayCount, lwopInsufficientHoursCount, missingCount, incompleteCount]
+      summaryRows.push([emp.eid||'', emp.name||'', emp.dept||'', emp.pos||'', noSchedule?'⚠ YES — Late/Undertime cannot compute':'No', effectivePresentDays, effectiveAbsentDays, summary.lateMinutes, summary.undertimeMinutes, summary.otHours, summary.ndHours, halfDayCount, lwopInsufficientHoursCount, missingCount, incompleteCount]
         .concat(ATT_REPORT_HOLIDAY_CODES.map(function (c) { return byCode[c] || 0; }))
         .concat([+hoursWorked.toFixed(2), needsReview?'Yes — pending approval in range':'No']));
 
@@ -791,7 +808,7 @@
 
     try {
       var data = buildXLSX([
-        { name:'Summary', rows:summaryRows, colWidths:[14,30,20,26,11,11,10,14,9,9,13,20,17,16,15,22,25,22,25,20,13,34],
+        { name:'Summary', rows:summaryRows, colWidths:[14,30,20,26,30,11,11,10,14,9,9,13,20,17,16,15,22,25,22,25,20,13,34],
           textColIndices:new Set([0]), titleRows:new Set([0,1,2]), headerRows:new Set([4]), borderRows:(function(){var s=new Set();for(var r=4;r<summaryRows.length;r++)s.add(r);return s;})(), freezeRow:5 },
         // Column widths here have to satisfy double duty: the same column holds a short "Day"
         // abbreviation in the daily rows AND a full employee name / department / date-range
