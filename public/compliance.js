@@ -748,6 +748,16 @@
     var detailedRows = [];
     var detailBlocks = []; // {headerRow, totalsRow} per employee, 0-based row indices into detailedRows
 
+    // Company-wide totals across every matched employee, appended as a TOTAL row below the
+    // per-employee rows -- the per-employee rows alone don't answer "how many late minutes /
+    // absences across everyone in this period," which is what a payroll-facing summary sheet is
+    // for. Mirrors the Detailed sheet's own per-employee "Totals for period" row, one level up.
+    var grandTotals = {
+      noScheduleCount: 0, presentDays: 0, absentDays: 0, lateMinutes: 0, undertimeMinutes: 0,
+      otHours: 0, ndHours: 0, halfDayCount: 0, lwopInsufficientHoursCount: 0, missingCount: 0,
+      incompleteCount: 0, hoursWorked: 0, needsReviewCount: 0, byHolidayCode: {}
+    };
+
     emps.forEach(function (emp) {
       var summary = TimekeepingCore.periodSummary(ATT, emp, range.from, range.to, shifts, holidays);
       var noSchedule = hasNoScheduleInRange(emp, range.from, range.to, shifts);
@@ -775,6 +785,21 @@
       summaryRows.push([emp.eid||'', emp.name||'', emp.dept||'', emp.pos||'', noSchedule?'⚠ YES — Late/Undertime cannot compute':'No', effectivePresentDays, effectiveAbsentDays, summary.lateMinutes, summary.undertimeMinutes, summary.otHours, summary.ndHours, halfDayCount, lwopInsufficientHoursCount, missingCount, incompleteCount]
         .concat(ATT_REPORT_HOLIDAY_CODES.map(function (c) { return byCode[c] || 0; }))
         .concat([+hoursWorked.toFixed(2), needsReview?'Yes — pending approval in range':'No']));
+
+      if (noSchedule) grandTotals.noScheduleCount++;
+      grandTotals.presentDays += effectivePresentDays;
+      grandTotals.absentDays += effectiveAbsentDays;
+      grandTotals.lateMinutes += summary.lateMinutes;
+      grandTotals.undertimeMinutes += summary.undertimeMinutes;
+      grandTotals.otHours += summary.otHours;
+      grandTotals.ndHours += summary.ndHours;
+      grandTotals.halfDayCount += halfDayCount;
+      grandTotals.lwopInsufficientHoursCount += lwopInsufficientHoursCount;
+      grandTotals.missingCount += missingCount;
+      grandTotals.incompleteCount += incompleteCount;
+      grandTotals.hoursWorked += hoursWorked;
+      if (needsReview) grandTotals.needsReviewCount++;
+      ATT_REPORT_HOLIDAY_CODES.forEach(function (c) { grandTotals.byHolidayCode[c] = (grandTotals.byHolidayCode[c] || 0) + (byCode[c] || 0); });
 
       detailedRows.push(['Employee:', emp.name||'', 'EID:', emp.eid||'']);
       detailedRows.push(['Department:', emp.dept||'—', 'Position:', emp.pos||'—']);
@@ -805,6 +830,15 @@
       detailBlocks.push({ headerRow: detailHeaderRowIdx, totalsRow: totalsRowIdx });
     });
 
+    var summaryTotalRowIdx = summaryRows.length;
+    summaryRows.push(['', 'TOTAL — ' + emps.length + ' employee' + (emps.length!==1?'s':''), '', '',
+      grandTotals.noScheduleCount ? grandTotals.noScheduleCount + ' employee(s) w/o shift' : 'No',
+      grandTotals.presentDays, grandTotals.absentDays, grandTotals.lateMinutes, grandTotals.undertimeMinutes,
+      +grandTotals.otHours.toFixed(2), +grandTotals.ndHours.toFixed(2), grandTotals.halfDayCount,
+      grandTotals.lwopInsufficientHoursCount, grandTotals.missingCount, grandTotals.incompleteCount]
+      .concat(ATT_REPORT_HOLIDAY_CODES.map(function (c) { return +((grandTotals.byHolidayCode[c]||0).toFixed(2)); }))
+      .concat([+grandTotals.hoursWorked.toFixed(2), grandTotals.needsReviewCount ? grandTotals.needsReviewCount+' employee(s) pending' : 'No']));
+
     var detailHeaderRows = new Set(), detailBorderRows = new Set(), detailTitleRows = new Set();
     detailBlocks.forEach(function (block) {
       detailTitleRows.add(block.headerRow-3).add(block.headerRow-2).add(block.headerRow-1);
@@ -815,7 +849,7 @@
     try {
       var data = buildXLSX([
         { name:'Summary', rows:summaryRows, colWidths:[14,30,20,26,30,11,11,10,14,9,9,13,20,17,16,15,22,25,22,25,20,13,34],
-          textColIndices:new Set([0]), titleRows:new Set([0,1,2]), headerRows:new Set([4]), borderRows:(function(){var s=new Set();for(var r=4;r<summaryRows.length;r++)s.add(r);return s;})(), freezeRow:5 },
+          textColIndices:new Set([0]), titleRows:new Set([0,1,2]), headerRows:new Set([4, summaryTotalRowIdx]), borderRows:(function(){var s=new Set();for(var r=4;r<summaryRows.length;r++)s.add(r);return s;})(), freezeRow:5 },
         // Column widths here have to satisfy double duty: the same column holds a short "Day"
         // abbreviation in the daily rows AND a full employee name / department / date-range
         // string in the per-employee header rows above it (col B), same story for col C (shift
