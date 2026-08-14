@@ -2887,6 +2887,12 @@ function renderModuleManagerModal(){
 function enterClient(clientId){
   const c=PLATFORM_CLIENTS.find(x=>x.id===clientId);
   if(!c)return;
+  // Every client here except id 1 (the real company) is sample/demo data for showing what a
+  // multi-tenant platform view would look like — this deployment only has one real database
+  // behind it. Saving is suspended for the whole time you're inside a demo client's view (see
+  // persistence.js), but the confirmation stays as a clear signal this is a demo sandbox, not a
+  // second real company you can safely leave open.
+  if(clientId!==1&&!confirm('"'+c.name+'" is sample/demo data, not a real connected company — this deployment only has one real database. Entering it swaps in demo data for browsing; nothing will be saved while you\'re inside it, and your real data returns when you exit. Continue?'))return;
   activeClientId=clientId;
 
   if(clientId!==1){
