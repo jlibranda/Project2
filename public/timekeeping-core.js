@@ -147,9 +147,13 @@
     });
   }
 
+  // Tolerates HH:MM:SS the same way timeToMinutes() below does — some device firmware reports
+  // seconds in ATTLOG timestamps, and a stricter parts.length!==2 check here used to silently
+  // return null for those, zeroing out periodSummary's lateMinutes/undertimeMinutes totals (the
+  // Excel Summary sheet) even when the per-record fields it falls back to were computed fine.
   function minutes(value) {
     var parts = String(value || '').split(':');
-    if (parts.length !== 2) return null;
+    if (parts.length < 2) return null;
     var hour = Number(parts[0]);
     var minute = Number(parts[1]);
     return Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : null;
