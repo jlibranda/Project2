@@ -10100,7 +10100,12 @@ function renderModal(){
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:14px">
       ${[['Days Present',s.presentDays],['Days Absent',s.absentDays],['Late (min)',s.lateMinutes],['Undertime (min)',s.undertimeMinutes],['OT (hrs)',s.otHours],['ND (hrs)',s.ndHours],['Rest Day/Holiday (hrs)',s.restDayHolidayHours],['Hours Worked',s.hoursWorked]]
         .map(([label,val])=>`<div style="padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:8px"><div style="font-size:10px;color:var(--txt3)">${label}</div><div style="font-weight:700;font-size:15px">${val}</div></div>`).join('')}
-      ${s.missingLogDays?`<div style="padding:8px 10px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px" title="Already counted inside Days Absent above — this breaks out how many of those are missing-log LWOP days specifically, versus a filed Absent"><div style="font-size:10px;color:var(--red-txt)">Missing Logs (LWOP)</div><div style="font-weight:700;font-size:15px;color:var(--red-txt)">${s.missingLogDays}</div></div>`:''}
+      ${[['Half Day Count',s.halfDayCount,'var(--amber)','var(--amber-bg)','var(--amber-txt)','2+ hours late, auto-marked Half Day by Attendance Policy'],
+         ['LWOP — Insufficient Hours',s.lwopInsufficientHoursCount,'var(--red)','var(--red-bg)','var(--red-txt)','Worked below the minimum hours for a full day, auto-marked LWOP by Attendance Policy'],
+         ['LWOP — Missing Log',s.missingLogDays,'var(--red)','var(--red-bg)','var(--red-txt)','No time log at all for a scheduled work day — already counted inside Days Absent above'],
+         ['Incomplete Log Count',s.incompleteLogCount,'var(--red)','var(--red-bg)','var(--red-txt)','Only Time In or only Time Out on record — auto-marked Absent, already counted inside Days Absent above']]
+        .filter(([,val])=>val)
+        .map(([label,val,border,bg,txt,title])=>`<div style="padding:8px 10px;background:${bg};border:1px solid ${border};border-radius:8px" title="${esc(title)}"><div style="font-size:10px;color:${txt}">${label}</div><div style="font-weight:700;font-size:15px;color:${txt}">${val}</div></div>`).join('')}
     </div>
     <div style="max-height:${modal.maximized?'calc(85vh - 220px)':'420px'};overflow-y:auto">
     <table><thead><tr style="position:sticky;top:0;z-index:1">${['Date','Day','Shift','Time In','Time Out','Status','Approval','Late','Undertime','OT','ND','Notes'].map(h=>`<th style="position:sticky;top:0;background:var(--surface2);box-shadow:0 1px 0 var(--border)">${h}</th>`).join('')}</tr></thead><tbody>

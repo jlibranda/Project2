@@ -614,11 +614,15 @@
         late:lu.late, undertime:lu.undertime, ot:incomplete?0:(rec.ot||0), nd:incomplete?0:(rec.nd||0), rdh:rec.restDayHolidayHours||0, notes:rec.notes||'' });
     });
     var missingCount = Object.keys(missingSet).length;
+    var incompleteCount = summary.records.filter(isIncompleteLog).length;
     var incompleteButNotAbsent = summary.records.filter(function (r) { return isIncompleteLog(r) && r.status !== 'absent'; }).length;
+    var halfDayCount = summary.records.filter(function (r) { return r.halfDay; }).length;
+    var lwopInsufficientHoursCount = summary.records.filter(function (r) { return r.lwop; }).length;
     modal = { type:'attReportDetail', ns:ns, emp:{ id:emp.id, name:emp.name, eid:emp.eid, dept:emp.dept, pos:emp.pos },
       range:range, summary:{ presentDays:summary.presentDays-incompleteButNotAbsent, absentDays:summary.absentDays+missingCount+incompleteButNotAbsent, lateMinutes:summary.lateMinutes,
         undertimeMinutes:summary.undertimeMinutes, otHours:summary.otHours, ndHours:summary.ndHours,
-        restDayHolidayHours:summary.restDayHolidayHours, hoursWorked:+hoursWorked.toFixed(2), missingLogDays:missingCount }, days:days };
+        restDayHolidayHours:summary.restDayHolidayHours, hoursWorked:+hoursWorked.toFixed(2), missingLogDays:missingCount,
+        halfDayCount:halfDayCount, lwopInsufficientHoursCount:lwopInsufficientHoursCount, incompleteLogCount:incompleteCount }, days:days };
     render();
   };
   // Tolerates HH:MM:SS (some device firmware reports seconds in ATTLOG timestamps) the same
@@ -709,7 +713,7 @@
     if (ns === 'timeLogs') { downloadTimeLogsReport(emps, range); return; }
 
     var shifts = COMPANY.shifts || [], holidays = COMPANY.holidays || [];
-    var summaryHeaderRow = ['EID','Employee Name','Department','Position','Days Present','Days Absent','Late (min)','Undertime (min)','OT Hours','ND Hours']
+    var summaryHeaderRow = ['EID','Employee Name','Department','Position','Days Present','Days Absent','Late (min)','Undertime (min)','OT Hours','ND Hours','Half Day Count','LWOP — Insufficient Hours','LWOP — Missing Log','Incomplete Log Count']
       .concat(ATT_REPORT_HOLIDAY_CODES.map(function (c) { return ATT_REPORT_HOLIDAY_LABEL[c]+' (hrs)'; }))
       .concat(['Hours Worked','Needs Review']);
     var summaryRows = [
@@ -729,7 +733,10 @@
       var missingSet = {};
       missingLogDates(emp, range.from, range.to, shifts).forEach(function (d) { missingSet[d] = true; });
       var missingCount = Object.keys(missingSet).length;
+      var incompleteCount = summary.records.filter(isIncompleteLog).length;
       var incompleteButNotAbsent = summary.records.filter(function (r) { return isIncompleteLog(r) && r.status !== 'absent'; }).length;
+      var halfDayCount = summary.records.filter(function (r) { return r.halfDay; }).length;
+      var lwopInsufficientHoursCount = summary.records.filter(function (r) { return r.lwop; }).length;
       var effectivePresentDays = summary.presentDays - incompleteButNotAbsent;
       var effectiveAbsentDays = summary.absentDays + missingCount + incompleteButNotAbsent;
       var hoursWorked = 0, needsReview = false;
@@ -742,7 +749,7 @@
       });
       var byCode = summary.restDayHolidayHoursByCode || {};
 
-      summaryRows.push([emp.eid||'', emp.name||'', emp.dept||'', emp.pos||'', effectivePresentDays, effectiveAbsentDays, summary.lateMinutes, summary.undertimeMinutes, summary.otHours, summary.ndHours]
+      summaryRows.push([emp.eid||'', emp.name||'', emp.dept||'', emp.pos||'', effectivePresentDays, effectiveAbsentDays, summary.lateMinutes, summary.undertimeMinutes, summary.otHours, summary.ndHours, halfDayCount, lwopInsufficientHoursCount, missingCount, incompleteCount]
         .concat(ATT_REPORT_HOLIDAY_CODES.map(function (c) { return byCode[c] || 0; }))
         .concat([+hoursWorked.toFixed(2), needsReview?'Yes — pending approval in range':'No']));
 
@@ -784,7 +791,7 @@
 
     try {
       var data = buildXLSX([
-        { name:'Summary', rows:summaryRows, colWidths:[14,30,20,26,11,11,10,14,9,9,15,22,25,22,25,20,13,34],
+        { name:'Summary', rows:summaryRows, colWidths:[14,30,20,26,11,11,10,14,9,9,13,20,17,16,15,22,25,22,25,20,13,34],
           textColIndices:new Set([0]), titleRows:new Set([0,1,2]), headerRows:new Set([4]), borderRows:(function(){var s=new Set();for(var r=4;r<summaryRows.length;r++)s.add(r);return s;})(), freezeRow:5 },
         // Column widths here have to satisfy double duty: the same column holds a short "Day"
         // abbreviation in the daily rows AND a full employee name / department / date-range
