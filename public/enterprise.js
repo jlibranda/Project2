@@ -74,7 +74,7 @@
 
   window.openResolutionForm=function(category,linkedType,linkedId) {
     window._resolutionForm={category:category||'Attendance',linkedType:linkedType||'',linkedId:linkedId||null};
-    view='resolution';tab=isAdminUser(user)?0:1;render();
+    view='resolution';tab=(isAdminUser(user)||isPlatformAdmin)?0:1;render();
   };
 
   window.submitResolutionCase=function() {

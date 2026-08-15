@@ -1367,7 +1367,7 @@ function resetLeaveBalanceHistory(empId,typeId){
 
 /* ---- Bulk Leave Balance Import (mid-year migration for a new client) ---- */
 function openBulkLeaveBalance(){
-  if(!isAdminUser(user))return;
+  if(!isAdminUser(user)&&!isPlatformAdmin)return;
   modal={type:'bulkLeaveBalance',rows:[{eid:'',code:'',balance:'',reason:'Migration balance'}]};
   render();
 }
@@ -1492,7 +1492,7 @@ function applyBulkLeaveBalances(){
 }
 /* ---- Bulk Attendance / Time Log Import ---- */
 function openBulkAttendance(){
-  if(!isAdminUser(user))return;
+  if(!isAdminUser(user)&&!isPlatformAdmin)return;
   modal={type:'bulkAttendance',rows:[{eid:'',date:today(),tin:'',tout:'',status:'present',ot:'',nd:'',notes:''}]};
   render();
 }
@@ -3344,12 +3344,7 @@ function doGuestBundy(){
 const SIDEBAR_SECTION_ICON={Overview:'dashboard',People:'people','Time & Attendance':'clock',Payroll:'peso',Talent:'recruit',Setup:'settings',Tools:'chart'};
 function sidebarSections(){
   const isA=isAdminUser(user)||isPlatformAdmin;
-  /* God Admin inside a company: all modules EXCEPT leave (not a company employee) */
-  const godInCompany=isPlatformAdmin&&activeClientId;
-  const has=v=>{
-    if(godInCompany&&v==='leave')return false; /* God Admin is not an employee — no leave */
-    return(isA||canAccess(v))&&clientHasModule(v);
-  };
+  const has=v=>(isA||canAccess(v))&&clientHasModule(v);
   const pendingCR=CHANGE_REQUESTS.filter(r=>r.status==='pending').length;
   const sections=[
     {title:'Overview',items:[{v:'dashboard',k:'dashboard',l:'Dashboard'}]},
@@ -3520,7 +3515,7 @@ function dashboardQuickActions(){
   </div>`;
 }
 function pgDashboard(){
-  const isA=isAdminUser(user);
+  const isA=isAdminUser(user)||isPlatformAdmin;
   const myA=attendanceRecords().filter(a=>a.eid===user.id);
   const pr=myA.filter(a=>a.status==='present').length;
   const la=myA.filter(a=>a.status==='late').length;
@@ -5808,7 +5803,7 @@ function myLeaveRequestsTable(){
   <tbody>${mine.length?mine.map(l=>`<tr><td>${l.type}</td><td>${l.s}</td><td>${l.e}</td><td style="text-align:center">${leaveDaysCell(l)}</td><td>${l.reason}</td><td><span class="badge b-${l.status}">${l.status}</span></td><td>${l.status==='pending'?`<button class="btn btn-sm btn-danger" onclick="cancelLeaveRequest(${l.id})">Cancel</button>`:''}</td></tr>`).join(''):'<tr><td colspan="7" class="empty-state">No leave requests yet</td></tr>'}</tbody></table></div>`;
 }
 function pgLeave(){
-  const isA=isAdminUser(user);
+  const isA=isAdminUser(user)||isPlatformAdmin;
   const tabs=isA?['Pending Approval','My Leaves','All Requests','File Leave']:['My Leaves','File Leave'];
   let body='';
   if(isA&&tab===0){
@@ -8451,7 +8446,7 @@ function pgMySlips(){
 function openSlip(rid){const run=PAYROLLS.find(r=>r.id===rid);const item=run.items.find(i=>i.eid===user.id);modal={type:'slip',run,item};render();}
 
 function pgLoans(){
-  const isA=isAdminUser(user);
+  const isA=isAdminUser(user)||isPlatformAdmin;
   const myLoans=isA?LOANS:LOANS.filter(l=>l.eid===user.id);
   return`<div class="page-header"><div><div class="page-title">Loans</div><div class="page-sub">${isA?'All employee loans':'My active loans'}</div></div>
   ${isA?`<button class="btn btn-primary" onclick="modal={type:'addLoan'};render()">${ico('loan',14)} Add Loan</button>`:''}</div>
@@ -12701,7 +12696,7 @@ function pgWebBundy(){
 }
 
 function pgBundyAdmin(){
-  const isA=isAdminUser(user);
+  const isA=isAdminUser(user)||isPlatformAdmin;
   const tabs=isA?['Today\'s Status','Office Zones']:['My Logs'];
   const todayAll=BUNDY_LOGS.filter(b=>b.date===today());
   let body='';
@@ -13778,7 +13773,7 @@ function pgEmpDetail(){
   ensureAnnualizedTaxConfig();
   const e=USERS.find(u=>u.id===detailEmpId);
   if(!e)return`<div class="page-header"><div class="page-title">Employee not found</div></div><button class="btn" onclick="goView('employees')">← Back</button>`;
-  const isA=isAdminUser(user);
+  const isA=isAdminUser(user)||isPlatformAdmin;
   const ms=e.rate*22;
   const months=COMPANY.salaryMultiplier||13;
   const computedPA=+(e.rate*22*months).toFixed(2);
