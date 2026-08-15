@@ -103,6 +103,26 @@
   // (that's the only way a valid token exists), this just recovers who they are.
   window.getSessionIdentity=function(){return token?decodeToken(token):null;};
 
+  // ── God Admin entering/exiting a real client's own session (Enter Portal) ──
+  // Distinct from a normal login: the God Admin's own session (token/version/last-saved-
+  // snapshot) is parked so it can be restored exactly on exit, rather than requiring the
+  // password of the client being entered.
+  var _parkedSession=null;
+  window.enterImpersonatedSession=function(newToken,newState,newVersion){
+    _parkedSession={token:token,stateVersion:stateVersion,lastSavedPayload:lastSavedPayload};
+    if(window.resetEnterpriseState)window.resetEnterpriseState();
+    if(window.resetPayrollGovernanceState)window.resetPayrollGovernanceState();
+    token=newToken;stateVersion=newVersion||0;sessionStorage.setItem('sproutripple_session',token);
+    if(newState)hydrate(newState);
+    lastSavedPayload=JSON.stringify(snapshot());
+  };
+  window.exitImpersonatedSession=function(){
+    if(!_parkedSession)return;
+    token=_parkedSession.token;stateVersion=_parkedSession.stateVersion;lastSavedPayload=_parkedSession.lastSavedPayload;
+    sessionStorage.setItem('sproutripple_session',token);
+    _parkedSession=null;
+  };
+
   async function saveNow(){
     if(!token)return;
     if(saving){saveAgain=true;return;}
@@ -124,19 +144,26 @@
   window.disconnectDatabaseSession=function(){token='';stateVersion=0;lastSavedPayload='';sessionStorage.removeItem('sproutripple_session');};
 
   var baseRender=render;
-  // Never autosave while a God Admin is browsing a simulated demo client (Platform > Clients,
-  // any client other than id 1 / the real company). That view swaps the live USERS/ATT/etc.
-  // arrays to that demo client's own (often empty) sample data purely for in-browser display —
-  // it was never wired to real per-tenant storage, and this deployment has exactly one real
-  // database row. Autosaving from inside that swapped, fake state would silently overwrite the
-  // real company's actual data the moment a render fires (this is what happened once already:
-  // entering a demo client with no seeded employees replaced the live USERS array with an empty
-  // one, which the very next render then saved for real). Only the real company's own session
-  // (activeClientId null or 1) is ever allowed to persist.
+  // Never autosave while a God Admin is browsing a pre-seeded sample/demo client that has no
+  // backend tenant of its own (Platform > Clients, any client other than id 1 / the real
+  // company, with no tenantKey). That view swaps the live USERS/ATT/etc. arrays to that demo
+  // client's own (often empty) sample data purely for in-browser display — it was never wired
+  // to real per-tenant storage. Autosaving from inside that swapped, fake state would silently
+  // overwrite the real company's actual data the moment a render fires (this is what happened
+  // once already: entering a demo client with no seeded employees replaced the live USERS
+  // array with an empty one, which the very next render then saved for real).
+  //
+  // A REAL client (tenantKey set) is different: entering one (enterImpersonatedSession) swaps
+  // the active session token to that tenant's own, so an autosave here correctly lands on
+  // THAT tenant's own app_state row, not the real company's — this is exactly what should
+  // happen while editing a real client's data on their behalf.
   render=function(){
     baseRender();
-    var browsingDemoClient=typeof activeClientId!=='undefined'&&activeClientId&&activeClientId!==1;
-    if(user&&token&&!browsingDemoClient)window.queueDatabaseSave();
+    var activeClient=(typeof activeClientId!=='undefined'&&activeClientId&&activeClientId!==1&&typeof PLATFORM_CLIENTS!=='undefined')
+      ?PLATFORM_CLIENTS.find(function(c){return c.id===activeClientId;})
+      :null;
+    var browsingLocalDemoClient=!!(activeClient&&!activeClient.tenantKey);
+    if(user&&token&&!browsingLocalDemoClient)window.queueDatabaseSave();
   };
 
   // A page refresh previously always dropped back to the login screen even with a

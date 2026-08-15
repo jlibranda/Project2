@@ -1764,6 +1764,19 @@
   window.collectEnterpriseState=function(){
     return {resolutionCases:RESOLUTION_CASES,performanceGoals:PERFORMANCE_GOALS,jobRequisitions:JOB_REQUISITIONS,aiHistory:AI_HISTORY};
   };
+  // applyEnterpriseState's `if(!saved)return` guard is deliberate for its normal callers (an
+  // older save predating one of these fields shouldn't wipe data the page already has loaded)
+  // — but that same behavior is wrong when switching into a DIFFERENT tenant's session (e.g.
+  // God Admin entering a real client): without this, whichever tenant's resolution
+  // cases/performance goals/job requisitions/AI history happened to be in memory would leak
+  // into the next tenant's view. Callers doing a tenant switch should call this first, then
+  // applyEnterpriseState(saved) as normal — a real save applies cleanly on top either way.
+  window.resetEnterpriseState=function(){
+    RESOLUTION_CASES=[];nextCaseId=1;
+    PERFORMANCE_GOALS=[];nextGoalId=1;
+    JOB_REQUISITIONS=[];
+    AI_HISTORY=[];
+  };
   window.applyEnterpriseState=function(saved){
     if(!saved)return;
     if(Array.isArray(saved.resolutionCases)){RESOLUTION_CASES=saved.resolutionCases;nextCaseId=RESOLUTION_CASES.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;}
