@@ -92,7 +92,11 @@ function toPlatformClientJson(row) {
     id: row.id, tenantKey: row.tenant_key, name: row.name, industry: row.industry, plan: row.plan,
     status: row.status, color: row.color, initials: row.initials, contact: row.contact,
     contactTitle: row.contact_title, contactEmail: row.contact_email, contactMobile: row.contact_mobile,
-    adminEmail: row.admin_email, modules: row.modules, createdAt: row.created_at, lastActiveAt: row.last_active_at
+    adminEmail: row.admin_email, modules: row.modules, createdAt: row.created_at, lastActiveAt: row.last_active_at,
+    // Lets the frontend recognize the original real tenant's own directory row and skip it —
+    // its Platform Admin card is the frontend's own richer, already-correct id-1 entry, not
+    // something to merge a second copy of.
+    isSelf: row.tenant_key === TENANT_KEY
   };
 }
 function slugifyTenantKey(name) {
