@@ -2645,10 +2645,12 @@ async function doLogin(){
       if(!_savedAppState){
         _savedAppState={
           users:[...USERS],leaves:[...LEAVES],loans:[...LOANS],
-          att:[...ATT],payrolls:[...PAYROLLS],
+          att:[...ATT],payrolls:[...PAYROLLS],company:cloneCompany(COMPANY),
         };
       }
       activeClientId=c.id;
+      if(!c.company)c.company=demoCompanyFor(c);
+      Object.assign(COMPANY,cloneCompany(c.company));
       USERS.length=0;  USERS.push(...c.employees);
       LEAVES.length=0; LOANS.length=0; ATT.length=0; PAYROLLS.length=0;
       user=emp;
@@ -2664,12 +2666,13 @@ function doLogout(){
   /* If inside a client company, save their data and restore demo state */
   if(activeClientId&&activeClientId!==1&&_savedAppState){
     const c=PLATFORM_CLIENTS.find(x=>x.id===activeClientId);
-    if(c)c.employees=[...USERS]; /* save employees (no synthetic admin in USERS) */
+    if(c){c.employees=[...USERS];c.company=cloneCompany(COMPANY);} /* save employees & branding (no synthetic admin in USERS) */
     USERS.length=0;  USERS.push(..._savedAppState.users);
     LEAVES.length=0; LEAVES.push(..._savedAppState.leaves);
     LOANS.length=0;  LOANS.push(..._savedAppState.loans);
     ATT.length=0;    ATT.push(..._savedAppState.att);
     PAYROLLS.length=0; PAYROLLS.push(..._savedAppState.payrolls);
+    if(_savedAppState.company)Object.assign(COMPANY,_savedAppState.company);
     _savedAppState=null;
   }
   user=null;view='dashboard';modal=null;godAdmin=null;
@@ -2895,6 +2898,14 @@ function renderModuleManagerModal(){
 }
 
 
+function cloneCompany(obj){return JSON.parse(JSON.stringify(obj));}
+function demoCompanyFor(c){
+  return Object.assign(cloneCompany(COMPANY),{
+    name:c.name,initials:c.initials,tagline:c.industry||'',accentHex:c.color||'#4f46e5',
+    registeredName:c.name,logo:null,wallpaper:null,taxIdentificationNo:'',rdo:'',
+    registeredAddress:'',zipCode:'',contactNumber:'',emailAddress:'',
+  });
+}
 function enterClient(clientId){
   const c=PLATFORM_CLIENTS.find(x=>x.id===clientId);
   if(!c)return;
@@ -2911,11 +2922,13 @@ function enterClient(clientId){
     if(!_savedAppState){
       _savedAppState={
         users:[...USERS],leaves:[...LEAVES],loans:[...LOANS],
-        att:[...ATT],payrolls:[...PAYROLLS],
+        att:[...ATT],payrolls:[...PAYROLLS],company:cloneCompany(COMPANY),
       };
     }
     if(!c.employees)c.employees=[];
-    /* Swap to company's employee data — God Admin identity (user) stays unchanged */
+    if(!c.company)c.company=demoCompanyFor(c);
+    /* Swap to company's own branding & employee data — God Admin identity (user) stays unchanged */
+    Object.assign(COMPANY,cloneCompany(c.company));
     USERS.length=0;  USERS.push(...c.employees);
     LEAVES.length=0;
     LOANS.length=0;
@@ -2929,9 +2942,9 @@ function enterClient(clientId){
 
 function exitClientView(){
   if(activeClientId&&activeClientId!==1){
-    /* Save company's employees back (no synthetic admin to filter out) */
+    /* Save company's employees & branding back (no synthetic admin to filter out) */
     const c=PLATFORM_CLIENTS.find(x=>x.id===activeClientId);
-    if(c)c.employees=[...USERS];
+    if(c){c.employees=[...USERS];c.company=cloneCompany(COMPANY);}
     /* Restore demo app state */
     if(_savedAppState){
       USERS.length=0;  USERS.push(..._savedAppState.users);
@@ -2939,6 +2952,7 @@ function exitClientView(){
       LOANS.length=0;  LOANS.push(..._savedAppState.loans);
       ATT.length=0;    ATT.push(..._savedAppState.att);
       PAYROLLS.length=0; PAYROLLS.push(..._savedAppState.payrolls);
+      if(_savedAppState.company)Object.assign(COMPANY,_savedAppState.company);
       _savedAppState=null;
     }
   }
@@ -14956,7 +14970,11 @@ function render(){
   if(COMPANY.darkMode){document.documentElement.setAttribute('data-dark','');}else{document.documentElement.removeAttribute('data-dark');}
   try{
     localStorage.setItem('sr_dark_mode',COMPANY.darkMode?'1':'0');
-    localStorage.setItem('sr_company_brand',JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
+    /* Only cache branding while viewing the real company (id 1) — browsing a demo
+       client's swapped-in COMPANY must never overwrite the real cached brand. */
+    if(!activeClientId||activeClientId===1){
+      localStorage.setItem('sr_company_brand',JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
+    }
   }catch(e){}
   const root=document.getElementById('root');
   if(!user){
