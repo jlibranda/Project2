@@ -881,13 +881,17 @@
       document.getElementById('atin').value, document.getElementById('atout').value, document.getElementById('ast').value,
       parseFloat(document.getElementById('aot').value) || 0, parseFloat(document.getElementById('and').value) || 0,
       document.getElementById('anotes').value.trim(), 'manual');
+    // An admin filing/correcting a record can self-approve it -- but not when it carries
+    // overtime. OT must go through the same approval layers as anyone else's, so an admin
+    // typing hours into this form can't be a silent way to pay OT with no sign-off.
+    var otApproved = isA && !(patch.ot > 0);
     upsertAttendance(eid,date,Object.assign(patch, {
-      approvalStatus:isA ? 'approved' : 'pending',
+      approvalStatus:otApproved ? 'approved' : 'pending',
       filedBy:user.name, filedAt:new Date().toISOString(),
-      reviewedBy:isA ? user.name : '', reviewedAt:isA ? new Date().toISOString() : ''
+      reviewedBy:otApproved ? user.name : '', reviewedAt:otApproved ? new Date().toISOString() : ''
     }));
     queueSync('Attendance');
-    toast(isA ? (duplicate?'Authoritative attendance updated and approved.':'Attendance saved and approved.') : (duplicate?'Attendance update submitted for approval.':'Attendance submitted for approval.'), 'success');
+    toast(otApproved ? (duplicate?'Authoritative attendance updated and approved.':'Attendance saved and approved.') : (isA?'Saved — overtime routed for approval before it can be paid.':(duplicate?'Attendance update submitted for approval.':'Attendance submitted for approval.')), 'success');
     tab = isA ? 2 : 0;
     render();
   };

@@ -1591,7 +1591,9 @@ function applyBulkAttendance(){
     if(emp.active===false){errors.push(rowLabel+': '+emp.name+' is inactive — skipped');return;}
     if(!r.date||!/^\d{4}-\d{2}-\d{2}$/.test(r.date)){errors.push(rowLabel+': invalid date "'+r.date+'" (use YYYY-MM-DD)');return;}
     const patch=computedAttendancePatch(emp.id,r.date,r.tin||'',r.tout||'',r.status||'present',parseFloat(r.ot)||0,parseFloat(r.nd)||0,r.notes||'','bulk-import');
-    upsertAttendance(emp.id,r.date,{...patch,approvalStatus:'approved',reviewedBy:user.name,reviewedAt:new Date().toISOString()});
+    const otApproved=!(patch.ot>0);
+    upsertAttendance(emp.id,r.date,{...patch,approvalStatus:otApproved?'approved':'pending',
+      reviewedBy:otApproved?user.name:'',reviewedAt:otApproved?new Date().toISOString():''});
     applied++;
   });
   if(applied>0)queueSync('Attendance');
@@ -2246,7 +2248,7 @@ async function zkImport(){
     upsertAttendance(g.empId,g.date,{...computed,punches:mergedPunches,
       status:(computed.lwop||computed.incomplete)?'absent':isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),
       notes:[flagged?'ZKTeco import · Outside scheduled shift window — needs confirmation':'ZKTeco import',policyNote].filter(Boolean).join(' · '),
-      source:'zkteco-import',approvalStatus:flagged?'pending':'approved',filedBy:'ZKTeco import'});
+      source:'zkteco-import',approvalStatus:(flagged||computed.ot>0)?'pending':'approved',filedBy:'ZKTeco import'});
     added++;
   });
   try{
@@ -5690,8 +5692,10 @@ function saveEditAttRow(){
   if(!modal||modal.type!=='editAttRow'||!canEditAttendance())return;
   const d=modal.draft;
   const patch=computedAttendancePatch(modal.eid,modal.date,d.tin,d.tout,d.status,parseFloat(d.ot)||0,parseFloat(d.nd)||0,d.notes,'admin-edit');
-  upsertAttendance(modal.eid,modal.date,{...patch,approvalStatus:'approved',reviewedBy:user.name,reviewedAt:new Date().toISOString()});
-  queueSync('Attendance');closeM();toast('Attendance record updated.','success');
+  const otApproved=!(patch.ot>0);
+  upsertAttendance(modal.eid,modal.date,{...patch,approvalStatus:otApproved?'approved':'pending',
+    reviewedBy:otApproved?user.name:'',reviewedAt:otApproved?new Date().toISOString():''});
+  queueSync('Attendance');closeM();toast(otApproved?'Attendance record updated.':'Attendance record updated — overtime routed for approval before it can be paid.','success');
 }
 function openAttHistory(eid,date){
   const rec=attendanceRecord(eid,date);if(!rec)return;
@@ -12581,7 +12585,8 @@ async function doBundy(type){
   const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
   upsertAttendance(user.id,today(),{...computed,punches:mergedPunches,
     status:(computed.lwop||computed.incomplete)?'absent':isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),
-    notes:['Web Bundy',policyNote].filter(Boolean).join(' · '),source:'web-bundy',approvalStatus:'approved',filedBy:user.name});
+    notes:['Web Bundy',policyNote].filter(Boolean).join(' · '),source:'web-bundy',
+    approvalStatus:computed.ot>0?'pending':'approved',filedBy:user.name});
   queueSync('Bundy_Logs','Attendance');selfieData=null;
   const zoneNote=entry.withinZone?'\n\u2705 Within office zone':'\n\u26A0 You are outside the office zone';
   alert((type==='in'?'Clocked IN at '+entry.time:'Clocked OUT at '+entry.time)+zoneNote);
