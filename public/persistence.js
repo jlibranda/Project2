@@ -97,6 +97,11 @@
     if(result.state){hydrate(result.state);lastSavedPayload=JSON.stringify(snapshot());}
     else if(result.persistence)await saveNow();
   };
+  // A real client's company-admin identity (platform_clients.admin_email) has no matching
+  // USERS[] record — only real employees do — so callers that only know how to look someone
+  // up by scanning USERS need this as a fallback: the backend already authenticated them
+  // (that's the only way a valid token exists), this just recovers who they are.
+  window.getSessionIdentity=function(){return token?decodeToken(token):null;};
 
   async function saveNow(){
     if(!token)return;
@@ -162,10 +167,18 @@
         view='platform';
       }else{
         var match=USERS.find(function(u){return u.email===payload.sub;});
-        if(!match){sessionRestoring=false;render();return;} // identity no longer resolvable — fall back to the login screen
-        user=match;view='dashboard';
-        if(typeof checkOffboarding==='function')checkOffboarding();
-        if(typeof window.autoRunLeaveAccrual==='function')window.autoRunLeaveAccrual();
+        if(match){
+          user=match;view='dashboard';
+          if(typeof checkOffboarding==='function')checkOffboarding();
+          if(typeof window.autoRunLeaveAccrual==='function')window.autoRunLeaveAccrual();
+        }else if(payload.role==='admin'){
+          // A real client's own company-admin login — no USERS[] record to match (that's only
+          // for actual employees), but the token proves the backend already authenticated them.
+          user={id:0,name:(COMPANY.name||'Company')+' Admin',email:payload.sub,role:'admin',initials:(COMPANY.initials||'A')};
+          view='dashboard';
+        }else{
+          sessionRestoring=false;render();return; // identity no longer resolvable — fall back to the login screen
+        }
       }
       tab=0;modal=null;
       sessionRestoring=false;
