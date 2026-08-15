@@ -81,6 +81,23 @@ function requireAuth(req, res, next) {
     res.status(401).json({ error: 'Invalid session.' });
   }
 }
+function requirePlatformAdmin(req, res, next) {
+  requireAuth(req, res, () => {
+    if (req.session.role !== 'platform') return res.status(403).json({ error: 'Platform admin access required.' });
+    next();
+  });
+}
+function toPlatformClientJson(row) {
+  return {
+    id: row.id, tenantKey: row.tenant_key, name: row.name, industry: row.industry, plan: row.plan,
+    status: row.status, color: row.color, initials: row.initials, contact: row.contact,
+    contactTitle: row.contact_title, contactEmail: row.contact_email, contactMobile: row.contact_mobile,
+    adminEmail: row.admin_email, modules: row.modules, createdAt: row.created_at, lastActiveAt: row.last_active_at
+  };
+}
+function slugifyTenantKey(name) {
+  return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'client';
+}
 async function initializeDatabase() {
   if (!pool) return;
   await pool.query(`
@@ -100,7 +117,49 @@ async function initializeDatabase() {
       PRIMARY KEY (tenant_key, serial)
     );
     ALTER TABLE zk_devices ADD COLUMN IF NOT EXISTS commands JSONB NOT NULL DEFAULT '[]';
+    -- Directory of every real, backend-tracked company (Platform Admin's client list).
+    -- Step 1 of moving off the old design where every client past the one real tenant
+    -- was pure browser-memory demo data with no actual row of its own. This table is the
+    -- source of truth for which tenants exist; app_state (keyed by tenant_key) still holds
+    -- each tenant's actual application data, one row per tenant_key as it already did.
+    CREATE TABLE IF NOT EXISTS platform_clients (
+      id SERIAL PRIMARY KEY,
+      tenant_key TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      industry TEXT NOT NULL DEFAULT '',
+      plan TEXT NOT NULL DEFAULT 'Starter',
+      status TEXT NOT NULL DEFAULT 'active',
+      color TEXT NOT NULL DEFAULT '#4f46e5',
+      initials TEXT NOT NULL DEFAULT '',
+      contact TEXT NOT NULL DEFAULT '',
+      contact_title TEXT NOT NULL DEFAULT '',
+      contact_email TEXT NOT NULL DEFAULT '',
+      contact_mobile TEXT NOT NULL DEFAULT '',
+      admin_email TEXT NOT NULL UNIQUE,
+      admin_pass TEXT NOT NULL,
+      modules JSONB NOT NULL DEFAULT '[]',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    -- Defensive: adds the constraint if platform_clients already existed without it
+    -- (e.g. from an earlier version of this migration) instead of silently staying unenforced.
+    DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'platform_clients_admin_email_key'
+      ) THEN
+        ALTER TABLE platform_clients ADD CONSTRAINT platform_clients_admin_email_key UNIQUE (admin_email);
+      END IF;
+    END $$;
   `);
+  // Migrate the one existing real tenant into the directory, exactly once. Purely additive —
+  // its tenant_key and app_state row are untouched, so this can never affect the live login
+  // or data flow for the real company.
+  await pool.query(
+    `INSERT INTO platform_clients (tenant_key, name, industry, plan, status, color, initials, admin_email, admin_pass, modules)
+     VALUES ($1, 'SproutRipple PH', 'HR Technology', 'Internal', 'active', '#4f46e5', 'S', $2, $3, '[]')
+     ON CONFLICT (tenant_key) DO NOTHING`,
+    [TENANT_KEY, process.env.BOOTSTRAP_ADMIN_EMAIL || 'admin@ph.com', process.env.BOOTSTRAP_ADMIN_PASSWORD || 'admin123']
+  );
 }
 async function readState() {
   if (!pool) return null;
@@ -294,6 +353,56 @@ app.put('/api/state', requireAuth, async (req, res) => {
     res.json({ ok: true, version, updatedAt: result.rows[0].updated_at });
   } catch (error) {
     res.status(500).json({ error: 'Unable to save application data.', detail: error.message });
+  }
+});
+
+/* ── Platform client directory (Step 1 of real multi-tenancy) ──
+   This lists/creates real, backend-tracked companies. It does NOT yet touch login or
+   app_state resolution for these clients — that's a later step, kept separate so this
+   piece can be verified in isolation without risking the existing real tenant's flow. */
+app.get('/api/platform/clients', requirePlatformAdmin, async (_req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  try {
+    const result = await pool.query('SELECT * FROM platform_clients ORDER BY id ASC');
+    res.json({ clients: result.rows.map(toPlatformClientJson) });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to load clients.', detail: error.message });
+  }
+});
+app.post('/api/platform/clients', requirePlatformAdmin, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const name = String(req.body.name || '').trim();
+  const adminEmail = String(req.body.adminEmail || '').trim().toLowerCase();
+  const adminPass = String(req.body.adminPass || '');
+  if (!name) return res.status(400).json({ error: 'Company name is required.' });
+  if (!adminEmail || !adminPass) return res.status(400).json({ error: 'Admin email and password are required.' });
+  const industry = String(req.body.industry || '');
+  const plan = String(req.body.plan || 'Starter');
+  const color = String(req.body.color || '#4f46e5');
+  const initials = String(req.body.initials || name.split(' ').map(w => w[0] || '').join('').slice(0, 2).toUpperCase() || '??');
+  const contact = String(req.body.contact || 'Admin');
+  const modules = Array.isArray(req.body.modules) ? req.body.modules : [];
+  try {
+    const base = slugifyTenantKey(name);
+    let tenantKey = base;
+    let attempt = 0;
+    // Retry with a numeric suffix on the rare unique-key collision (two clients slugifying
+    // to the same name) instead of failing the whole request.
+    for (;;) {
+      const existing = await pool.query('SELECT 1 FROM platform_clients WHERE tenant_key = $1', [tenantKey]);
+      if (!existing.rowCount) break;
+      attempt += 1;
+      tenantKey = `${base}-${attempt}`;
+    }
+    const result = await pool.query(
+      `INSERT INTO platform_clients (tenant_key, name, industry, plan, status, color, initials, contact, admin_email, admin_pass, modules)
+       VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9, $10) RETURNING *`,
+      [tenantKey, name, industry, plan, color, initials, contact, adminEmail, adminPass, JSON.stringify(modules)]
+    );
+    res.status(201).json({ client: toPlatformClientJson(result.rows[0]) });
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'A client with that admin email or tenant key already exists.' });
+    res.status(500).json({ error: 'Unable to create client.', detail: error.message });
   }
 });
 
