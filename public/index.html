@@ -2814,6 +2814,15 @@ function archiveClient(cid){
   c.status='archived';render();
 }
 function restoreClient(cid){const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;c.status='active';render();}
+function deleteClientPermanently(cid){
+  const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
+  if(cid===1){alert('SproutRipple PH is the real connected company and can never be permanently deleted.');return;}
+  if(c.status!=='archived'){alert('Archive '+c.name+' first before deleting it permanently.');return;}
+  if(!confirm('Permanently delete '+c.name+'?\n\nThis cannot be undone — all of this demo company\'s data will be gone for good, unlike Archive which can be restored.'))return;
+  if(prompt('Type the company name to confirm: "'+c.name+'"')!==c.name){alert('Name did not match — deletion cancelled.');return;}
+  PLATFORM_CLIENTS.splice(PLATFORM_CLIENTS.indexOf(c),1);
+  toast(c.name+' permanently deleted.','success');render();
+}
 
 /* ── Platform admin password reset ── */
 function openPlatformPasswordReset(cid){modal={type:'platformPasswordReset',clientId:cid,newPass:''};render();}
@@ -3128,6 +3137,11 @@ function pgPlatformAdmin(){
               style="background:#134e4a;color:#2dd4bf;border:1px solid #0d9488;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">
               Restore
             </button>
+            ${c.id!==1?`<button onclick="deleteClientPermanently(${c.id})"
+              style="background:#450a0a;color:#f87171;border:1px solid #7f1d1d;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap"
+              title="Permanently delete — cannot be undone">
+              Delete permanently
+            </button>`:''}
           </div>`).join('')}
         </div>
       </div>`:''}
