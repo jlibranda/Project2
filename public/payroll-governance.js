@@ -369,6 +369,13 @@
 
   window.collectPayrollGovernanceState=function(){return {rulebook:PAYROLL_RULEBOOK,ruleAudit:PAYROLL_RULE_AUDIT,retro:PAYROLL_RETRO,workflow:PAYROLL_WORKFLOW};};
   window.applyPayrollGovernanceState=function(saved){if(!saved)return;replace(PAYROLL_RULEBOOK,saved.rulebook);replace(PAYROLL_RULE_AUDIT,saved.ruleAudit);replace(PAYROLL_RETRO,saved.retro);replace(PAYROLL_WORKFLOW,saved.workflow);nextRuleId=PAYROLL_RULEBOOK.reduce(function(max,rule){return Math.max(max,rule.id||0);},0)+1;};
+  // See resetEnterpriseState in enterprise.js for why this exists — switching into a
+  // different tenant's session needs a clean slate before layering that tenant's own saved
+  // governance data on top, or the previous tenant's rulebook/audit/retro/workflow leaks in.
+  window.resetPayrollGovernanceState=function(){
+    PAYROLL_RULEBOOK.length=0;PAYROLL_RULE_AUDIT.length=0;PAYROLL_RETRO.length=0;PAYROLL_WORKFLOW.length=0;
+    nextRuleId=1;
+  };
   function replace(target,value){if(!Array.isArray(value))return;target.length=0;target.push.apply(target,value);}
   render();
 }());

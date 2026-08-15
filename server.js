@@ -133,7 +133,9 @@ function defaultTenantState(client) {
     },
     employeeNumberConfig: { prefix: 'EMP', separator: '-', digits: 3, nextSeq: 1, manual: false },
     payPeriods: [], payrollAdjustments: [], finalPayList: [], payrollAudit: [], securityAudit: [],
-    zk: { userMapping: {}, realtimeEnabled: false, connectionOverride: { address: '', port: '', https: false }, punchBuffer: { beforeMinutes: 120, afterMinutes: 480 } }
+    zk: { userMapping: {}, realtimeEnabled: false, connectionOverride: { address: '', port: '', https: false }, punchBuffer: { beforeMinutes: 120, afterMinutes: 480 } },
+    enterprise: { resolutionCases: [], performanceGoals: [], jobRequisitions: [], aiHistory: [] },
+    payrollGovernance: { rulebook: [], ruleAudit: [], retro: [], workflow: [] }
   };
 }
 async function initializeDatabase() {
