@@ -9711,6 +9711,23 @@ function renderModal(){
       ">✓ Save POC</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
+  }else if(modal.type==='lookupBulkAdd'){
+    const preview=parseLookupBulkText(document.getElementById('lookup-bulk-text')?.value||modal.text||'',modal.hasCode);
+    inner=`<div class="modal-title">⇅ Bulk Add — <strong>${esc(modal.label)}</strong>
+      <button class="close-x" onclick="closeM()">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:10px">
+      One row per line.${modal.hasCode?` Format: <strong>Code, Label</strong> — separate with a comma, tab, or pipe (a straight paste from an Excel column works too).<br/>Example: <span style="font-family:'JetBrains Mono',monospace">L10, Principal Engineer</span>`:` Just the name, one per line.<br/>Example: <span style="font-family:'JetBrains Mono',monospace">Alpha</span>`}
+      Duplicate ${modal.hasCode?'codes':'names'} already in the table are skipped automatically.
+    </div>
+    <textarea id="lookup-bulk-text" rows="10" class="finput" style="font-family:'JetBrains Mono',monospace;font-size:12px;resize:vertical"
+      placeholder="${modal.hasCode?'L10, Principal Engineer\nL11, Distinguished Engineer':'Alpha\nBeta'}"
+      oninput="modal.text=this.value;updateLookupBulkPreview()">${esc(modal.text||'')}</textarea>
+    <div id="lookup-bulk-count" style="font-size:12px;color:var(--txt3);margin-top:6px">${preview.length} row${preview.length!==1?'s':''} ready to add</div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button id="lookup-bulk-submit" class="btn btn-primary" onclick="applyLookupBulkAdd()" ${preview.length?'':'disabled'}>✓ Add ${preview.length} Row${preview.length!==1?'s':''}</button>
+      <button class="btn" onclick="closeM()">Cancel</button>
+    </div>`;
   }else if(modal.type==='godSettings'){
     const settingTab=modal.settingTab||'security';
     const tabs2=[{k:'security',l:'🔐 Security'},{k:'audit',l:'🧾 Impersonation Audit'},{k:'plans',l:'📦 Plan Defaults'},{k:'passwords',l:'🔑 All Passwords'},{k:'branding',l:'🎨 Branding'}];
@@ -12295,7 +12312,10 @@ function pgLookupSetup(){
   ${sections.map(s=>`<div class="card">
     <div class="card-hd">
       <div><div class="card-title">${s.label}</div><div class="card-sub">${s.desc}</div></div>
-      <button class="btn btn-sm btn-primary" onclick="addLookup('${s.key}',${s.hasCode})">+ Add</button>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn btn-sm" onclick="openLookupBulkAdd('${s.key}',${s.hasCode},'${esc(s.label)}')" title="Paste multiple rows at once">⇅ Bulk Add</button>
+        <button class="btn btn-sm btn-primary" onclick="addLookup('${s.key}',${s.hasCode})">+ Add</button>
+      </div>
     </div>
     <table><thead><tr>${s.cols.map(c=>`<th>${c}</th>`).join('')}<th></th></tr></thead>
     <tbody>${rows(s.key,s.hasCode)}</tbody></table>
@@ -12322,6 +12342,53 @@ function delLookup(key,idx){
   const label=item.name||item.label||item.code;
   if(!confirm(`Delete "${label}" from ${key}?`))return;
   LOOKUPS[key].splice(idx,1);render();
+}
+
+/* ── Bulk Add for Lookup Tables — paste multiple rows at once instead of
+   one "+ Add" prompt() per row. Accepts comma, tab, or pipe as the
+   code/label separator so a straight paste from an Excel column works too. */
+function parseLookupBulkText(text,hasCode){
+  const lines=(text||'').split('\n').map(l=>l.trim()).filter(Boolean);
+  return lines.map(line=>{
+    if(!hasCode)return{name:line};
+    const parts=line.split(/\t|\||,/).map(p=>p.trim()).filter(Boolean);
+    if(parts.length<2)return null; /* needs both a code and a label */
+    return{code:parts[0],label:parts.slice(1).join(', ')};
+  }).filter(Boolean);
+}
+function openLookupBulkAdd(key,hasCode,label){
+  modal={type:'lookupBulkAdd',key,hasCode,label,text:''};
+  render();
+}
+/* Updates just the row count + submit button, not the whole page — a full
+   render() would rebuild the textarea and drop focus/cursor on every keystroke. */
+function updateLookupBulkPreview(){
+  const preview=parseLookupBulkText(modal.text,modal.hasCode);
+  const countEl=document.getElementById('lookup-bulk-count');
+  const submitBtn=document.getElementById('lookup-bulk-submit');
+  if(countEl)countEl.textContent=`${preview.length} row${preview.length!==1?'s':''} ready to add`;
+  if(submitBtn){
+    submitBtn.disabled=!preview.length;
+    submitBtn.textContent=`✓ Add ${preview.length} Row${preview.length!==1?'s':''}`;
+  }
+}
+function applyLookupBulkAdd(){
+  const{key,hasCode}=modal;
+  const text=document.getElementById('lookup-bulk-text')?.value||'';
+  const parsed=parseLookupBulkText(text,hasCode);
+  if(!parsed.length){toast('No valid rows to add.','warning');return;}
+  const existing=new Set(LOOKUPS[key].map(x=>(x.code||x.name||'').toLowerCase()));
+  let added=0,skipped=0;
+  parsed.forEach(row=>{
+    const key2=(row.code||row.name||'').toLowerCase();
+    if(existing.has(key2)){skipped++;return;}
+    existing.add(key2);
+    LOOKUPS[key].push(hasCode?{id:nLookup[key]++,code:row.code,label:row.label}:{id:nLookup[key]++,name:row.name});
+    added++;
+  });
+  closeM();
+  toast(`Added ${added} row${added!==1?'s':''}${skipped?`, skipped ${skipped} duplicate${skipped!==1?'s':''}`:''}.`,'success');
+  render();
 }
 
 /* ========== ACCESS & PERMISSIONS SETUP ========== */
