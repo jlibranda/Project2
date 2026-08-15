@@ -8227,7 +8227,7 @@ function pgGovernment(){
         </div>
         <div style="display:flex;align-items:center;gap:8px">
           <span class="badge b-pending">pending</span>
-          <button class="btn btn-sm btn-primary" onclick="toast('${r.name} filing — coming soon','info')">File Now</button>
+          <button class="btn btn-sm btn-primary" title="Generate the filing worksheet/PDF in Payroll > Reports" onclick="goView('payroll');tab=5;window._rptSub=2;render()">File Now →</button>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:${r.ec?'1fr 1fr 1fr 1fr 1.2fr':'1fr 1fr 1.2fr'};gap:8px;font-size:12px;background:var(--bg);border-radius:8px;padding:.75rem">
