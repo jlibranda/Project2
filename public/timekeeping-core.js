@@ -147,9 +147,13 @@
     });
   }
 
+  // Tolerates HH:MM:SS the same way timeToMinutes() below does — some device firmware reports
+  // seconds in ATTLOG timestamps, and a stricter parts.length!==2 check here used to silently
+  // return null for those, zeroing out periodSummary's lateMinutes/undertimeMinutes totals (the
+  // Excel Summary sheet) even when the per-record fields it falls back to were computed fine.
   function minutes(value) {
     var parts = String(value || '').split(':');
-    if (parts.length !== 2) return null;
+    if (parts.length < 2) return null;
     var hour = Number(parts[0]);
     var minute = Number(parts[1]);
     return Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : null;
@@ -259,6 +263,25 @@
     var hour = Number(parts[0]);
     var minute = Number(parts[1]);
     return Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : null;
+  }
+
+  // A native <input type="time"> always returns a clean 24-hour "HH:MM" value with no separate
+  // AM/PM to lose -- so a shift saved with End="06:00" really did have its AM/PM segment left on
+  // AM at the moment it was set, most often because it was meant to be 6:00 PM (18:00) for a
+  // same-day shift. Rather than silently treating every End <= Start as an overnight shift (the
+  // old behavior), catch the specific case where reinterpreting a morning End time as its PM
+  // equivalent produces a sane same-day shift length, and return the corrected value -- otherwise
+  // (End is already PM, or the PM reinterpretation doesn't fit before Start) return null,
+  // leaving a genuine overnight shift like 22:00-06:00 untouched.
+  function autoCorrectShiftEndAmPm(start, end) {
+    var startMin = timeToMinutes(start), endMin = timeToMinutes(end);
+    if (startMin == null || endMin == null || endMin > startMin) return null;
+    if (endMin >= 12 * 60) return null;
+    var pmEndMin = endMin + 12 * 60;
+    var pmSpan = pmEndMin - startMin;
+    if (pmSpan <= 0 || pmSpan > 16 * 60) return null;
+    var hh = Math.floor(pmEndMin / 60), mm = pmEndMin % 60;
+    return (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
   }
 
   function addDaysToDateStr(dateStr, days) {
@@ -476,7 +499,10 @@
       var shiftOut = schedule && minutes(schedule.end);
       var calculatedLate = actualIn != null && shiftIn != null ? Math.max(0, actualIn - shiftIn - Number(schedule.graceMinutes || 0)) : 0;
       var calculatedUndertime = actualOut != null && shiftOut != null ? Math.max(0, shiftOut - actualOut) : 0;
-      summary.lateMinutes += Number(record.lateMinutes != null ? record.lateMinutes : calculatedLate);
+      // Max of stored vs. recomputed, same as undertime below -- a record can carry an explicit
+      // lateMinutes:0 that predates this engine and was simply never computed, which a plain
+      // "use it if it's not null" check can't distinguish from a real zero.
+      summary.lateMinutes += Math.max(Number(record.lateMinutes || 0), calculatedLate);
       summary.undertimeMinutes += Math.max(Number(record.undertimeMinutes || 0), calculatedUndertime);
     });
     Object.keys(summary).forEach(function (key) {
@@ -498,6 +524,7 @@
     mergePunches: mergePunches,
     computeFromPunches: computeFromPunches,
     applyAttendancePolicy: applyAttendancePolicy,
+    autoCorrectShiftEndAmPm: autoCorrectShiftEndAmPm,
     validateLinkedRecord: validateLinkedRecord,
     scheduleForDate: scheduleForDate,
     normalizeShift: normalizeShift,
