@@ -2834,22 +2834,48 @@ async function saveNewCompany(){
     modal.saving=false;render();
   }
 }
-function toggleClientStatus(cid){
-  const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
-  c.status=c.status==='active'?'paused':'active';render();
+/* Real clients (tenantKey set) sync status changes to their actual directory row;
+   pre-seeded demo entries just update the local object as before. */
+async function patchClientStatus(c,newStatus){
+  if(c.tenantKey&&c.remoteId&&window.apiRequest){
+    try{
+      await window.apiRequest('/platform/clients/'+c.remoteId,{method:'PATCH',body:JSON.stringify({status:newStatus})});
+    }catch(e){
+      alert('Could not update status: '+(e.message||'Unknown error'));
+      return false;
+    }
+  }
+  c.status=newStatus;
+  return true;
 }
-function archiveClient(cid){
+async function toggleClientStatus(cid){
+  const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
+  if(await patchClientStatus(c,c.status==='active'?'paused':'active'))render();
+}
+async function archiveClient(cid){
   const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
   if(!confirm('Archive '+c.name+'?\n\nHidden from console but data is preserved. Can be restored anytime.'))return;
-  c.status='archived';render();
+  if(await patchClientStatus(c,'archived'))render();
 }
-function restoreClient(cid){const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;c.status='active';render();}
-function deleteClientPermanently(cid){
+async function restoreClient(cid){
+  const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
+  if(await patchClientStatus(c,'active'))render();
+}
+async function deleteClientPermanently(cid){
   const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
   if(cid===1){alert('SproutRipple PH is the real connected company and can never be permanently deleted.');return;}
   if(c.status!=='archived'){alert('Archive '+c.name+' first before deleting it permanently.');return;}
-  if(!confirm('Permanently delete '+c.name+'?\n\nThis cannot be undone — all of this demo company\'s data will be gone for good, unlike Archive which can be restored.'))return;
+  const dataWarning=c.tenantKey?'this company\'s real data will be gone for good':'all of this demo company\'s data will be gone for good';
+  if(!confirm('Permanently delete '+c.name+'?\n\nThis cannot be undone — '+dataWarning+', unlike Archive which can be restored.'))return;
   if(prompt('Type the company name to confirm: "'+c.name+'"')!==c.name){alert('Name did not match — deletion cancelled.');return;}
+  if(c.tenantKey&&c.remoteId&&window.apiRequest){
+    try{
+      await window.apiRequest('/platform/clients/'+c.remoteId,{method:'DELETE'});
+    }catch(e){
+      alert('Could not delete company: '+(e.message||'Unknown error'));
+      return;
+    }
+  }
   PLATFORM_CLIENTS.splice(PLATFORM_CLIENTS.indexOf(c),1);
   toast(c.name+' permanently deleted.','success');render();
 }
@@ -2986,6 +3012,8 @@ function ensureClientDefaults(c){
   c.accessLevels=JSON.parse(JSON.stringify(ACCESS_LEVELS));
   c.gs=freshGS();
   c.zk=freshZK();
+  c.enterprise={resolutionCases:[],performanceGoals:[],jobRequisitions:[],aiHistory:[]};
+  c.payrollGovernance={rulebook:[],ruleAudit:[],retro:[],workflow:[]};
 }
 /* Snapshot every per-client global as it currently stands (used both to save the
    real company's live state before swapping to a demo client, and to save a demo
@@ -3010,6 +3038,8 @@ function snapshotAppState(){
     finalPayList:[...FINAL_PAY_LIST],securityAudit:[...SECURITY_AUDIT],payrollAudit:[...PAYROLL_AUDIT],
     accessLevels:[...ACCESS_LEVELS],
     gs:JSON.parse(JSON.stringify(GS)),zk:JSON.parse(JSON.stringify(ZK)),
+    enterprise:window.collectEnterpriseState?window.collectEnterpriseState():null,
+    payrollGovernance:window.collectPayrollGovernanceState?window.collectPayrollGovernanceState():null,
   };
 }
 /* Load a previously-saved snapshot (real company's own state, or a demo client's
@@ -3046,24 +3076,48 @@ function applyAppState(s){
   ACCESS_LEVELS.length=0;ACCESS_LEVELS.push(...s.accessLevels);
   Object.assign(GS,JSON.parse(JSON.stringify(s.gs)));
   Object.assign(ZK,JSON.parse(JSON.stringify(s.zk)));
+  if(window.resetEnterpriseState)window.resetEnterpriseState();
+  if(window.applyEnterpriseState)window.applyEnterpriseState(s.enterprise);
+  if(window.resetPayrollGovernanceState)window.resetPayrollGovernanceState();
+  if(window.applyPayrollGovernanceState)window.applyPayrollGovernanceState(s.payrollGovernance);
 }
 
-function enterClient(clientId){
+async function enterClient(clientId){
   const c=PLATFORM_CLIENTS.find(x=>x.id===clientId);
   if(!c)return;
-  // Saving is suspended for the whole time you're inside a demo client's view (see
-  // persistence.js), but the confirmation stays as a clear signal this is a demo sandbox, not a
-  // second real company you can safely leave open.
-  if(clientId!==1&&!confirm('"'+c.name+'" is sample/demo data, not a real connected company — this deployment only has one real database. Entering it swaps in demo data for browsing; nothing will be saved while you\'re inside it, and your real data returns when you exit. Continue?'))return;
-  activeClientId=clientId;
-
-  if(clientId!==1){
-    if(!_savedAppState)_savedAppState=snapshotAppState(); /* the real company's own state */
-    ensureClientDefaults(c);
-    const{employees,...rest}=c;
-    applyAppState({...rest,users:employees}); /* swap in this client's own isolated state */
+  if(clientId===1){
+    activeClientId=clientId;
+    view='dashboard';tab=0;modal=null;
+    render();
+    return;
   }
-  /* God Admin retains their platform identity — no synthetic admin created */
+
+  if(c.tenantKey&&c.remoteId){
+    // A real, backend-tracked client — open its actual live data via impersonation, not a
+    // browser-memory swap. Edits made here are real and will be saved for this company.
+    if(!confirm('Enter "'+c.name+'" as their admin?\n\nThis opens their real, live data. Changes you make will be saved for them, just as if they made them.'))return;
+    if(!window.apiRequest||!window.enterImpersonatedSession){alert('Not connected to the data service — cannot enter a real client right now.');return;}
+    try{
+      const res=await window.apiRequest('/platform/clients/'+c.remoteId+'/session',{method:'POST'});
+      if(!_savedAppState)_savedAppState=snapshotAppState(); /* God Admin's own state */
+      window.enterImpersonatedSession(res.token,res.state,res.version);
+      activeClientId=clientId;
+      view='dashboard';tab=0;modal=null;
+      render();
+    }catch(e){
+      alert('Could not enter this client: '+(e.message||'Unknown error'));
+    }
+    return;
+  }
+
+  // A pre-seeded sample/demo entry with no backend tenant of its own — the old in-browser
+  // simulation. Saving is suspended for the whole time you're inside it (see persistence.js).
+  if(!confirm('"'+c.name+'" is sample/demo data, not a real connected company. Entering it swaps in demo data for browsing; nothing will be saved while you\'re inside it, and your real data returns when you exit. Continue?'))return;
+  activeClientId=clientId;
+  if(!_savedAppState)_savedAppState=snapshotAppState(); /* the real company's own state */
+  ensureClientDefaults(c);
+  const{employees,...rest}=c;
+  applyAppState({...rest,users:employees}); /* swap in this client's own isolated state */
   view='dashboard';tab=0;modal=null;
   render();
 }
@@ -3071,10 +3125,15 @@ function enterClient(clientId){
 function exitClientView(){
   if(activeClientId&&activeClientId!==1){
     const c=PLATFORM_CLIENTS.find(x=>x.id===activeClientId);
-    if(c){
+    if(c&&c.tenantKey&&c.remoteId){
+      // Real client — its data already saved itself along the way via the normal autosave
+      // flow (queueDatabaseSave), scoped to its own tenant by the impersonation token. Just
+      // hand God Admin's own session back.
+      if(window.exitImpersonatedSession)window.exitImpersonatedSession();
+    }else if(c){
       const{users,...rest}=snapshotAppState();
       c.employees=users;
-      Object.assign(c,rest); /* save this client's edits back onto its own record */
+      Object.assign(c,rest); /* save this demo client's edits back onto its own record */
     }
     if(_savedAppState){applyAppState(_savedAppState);_savedAppState=null;} /* restore the real company */
   }
