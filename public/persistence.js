@@ -106,21 +106,40 @@
   // ── God Admin entering/exiting a real client's own session (Enter Portal) ──
   // Distinct from a normal login: the God Admin's own session (token/version/last-saved-
   // snapshot) is parked so it can be restored exactly on exit, rather than requiring the
-  // password of the client being entered.
+  // password of the client being entered. Also mirrored into sessionStorage (not just this
+  // in-memory var) because a page reload while impersonating must still be able to find its
+  // way back — restoreSession() below reads this same key to recover from exactly that case.
   var _parkedSession=null;
+  var PARKED_SESSION_KEY='sproutripple_parked_session';
   window.enterImpersonatedSession=function(newToken,newState,newVersion){
     _parkedSession={token:token,stateVersion:stateVersion,lastSavedPayload:lastSavedPayload};
+    try{sessionStorage.setItem(PARKED_SESSION_KEY,JSON.stringify(_parkedSession));}catch(e){}
     if(window.resetEnterpriseState)window.resetEnterpriseState();
     if(window.resetPayrollGovernanceState)window.resetPayrollGovernanceState();
     token=newToken;stateVersion=newVersion||0;sessionStorage.setItem('sproutripple_session',token);
     if(newState)hydrate(newState);
     lastSavedPayload=JSON.stringify(snapshot());
   };
-  window.exitImpersonatedSession=function(){
-    if(!_parkedSession)return;
+  // Restores God Admin's own session and re-fetches its state fresh from the server, rather
+  // than trusting index.html's in-memory _savedAppState snapshot — that plain JS variable does
+  // not survive a page reload, but exiting has to work identically whether or not the page
+  // reloaded while impersonating. Returns false if there was no parked session to restore
+  // (e.g. exiting a local-only demo client, which never parks one).
+  window.exitImpersonatedSession=async function(){
+    if(!_parkedSession){
+      try{var stored=sessionStorage.getItem(PARKED_SESSION_KEY);if(stored)_parkedSession=JSON.parse(stored);}catch(e){}
+    }
+    if(!_parkedSession)return false;
     token=_parkedSession.token;stateVersion=_parkedSession.stateVersion;lastSavedPayload=_parkedSession.lastSavedPayload;
     sessionStorage.setItem('sproutripple_session',token);
+    try{sessionStorage.removeItem(PARKED_SESSION_KEY);}catch(e){}
     _parkedSession=null;
+    try{
+      var result=await request('/state');
+      stateVersion=result.version||0;
+      if(result.state){hydrate(result.state);lastSavedPayload=JSON.stringify(snapshot());}
+    }catch(e){}
+    return true;
   };
 
   async function saveNow(){
@@ -193,6 +212,31 @@
         user={id:0,name:'God Admin',email:payload.sub,role:'platform',initials:'GA'};
         view='platform';
         if(typeof window.loadRealPlatformClients==='function')window.loadRealPlatformClients();
+      }else if(payload.role==='admin'&&payload.impersonatedBy){
+        // God Admin's Enter Portal, still active across a page reload. Without this branch a
+        // reload here looks identical to this client's own admin logging in directly (the
+        // token shape is the same) — isPlatformAdmin silently resets to false and activeClientId
+        // is never set, so the "← All Clients" banner (the only way back to the client list)
+        // just disappears, stranding God Admin inside the client with no visible way out.
+        isPlatformAdmin=true;
+        user={id:0,name:(COMPANY.name||'Company')+' Admin',email:payload.sub,role:'admin',initials:(COMPANY.initials||'A')};
+        view='dashboard';
+        var parkedRaw=null;
+        try{parkedRaw=sessionStorage.getItem(PARKED_SESSION_KEY);}catch(e){}
+        if(parkedRaw&&typeof window.loadRealPlatformClients==='function'){
+          try{
+            var parked=JSON.parse(parkedRaw);
+            // PLATFORM_CLIENTS was just replaced by THIS tenant's own hydrated copy above —
+            // borrow the parked God Admin token just long enough to re-merge the real client
+            // directory back in, so activeClientId below resolves to a real, collision-checked id.
+            var curToken=token,curVersion=stateVersion,curPayload=lastSavedPayload;
+            token=parked.token;
+            await window.loadRealPlatformClients();
+            token=curToken;stateVersion=curVersion;lastSavedPayload=curPayload;
+            var clientMatch=PLATFORM_CLIENTS.find(function(c){return c.tenantKey===payload.tenantKey;});
+            if(clientMatch)activeClientId=clientMatch.id;
+          }catch(e){}
+        }
       }else{
         var match=USERS.find(function(u){return u.email===payload.sub;});
         if(match){
