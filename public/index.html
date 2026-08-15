@@ -2951,11 +2951,12 @@ function exitClientView(){
 
 function pgPlatformAdmin(){
   const all=PLATFORM_CLIENTS;
+  const enrolled=all.filter(c=>c.status!=='archived');
   const q=(platformSearch||'').toLowerCase();
-  const filtered=q?all.filter(c=>c.name.toLowerCase().includes(q)||c.industry.toLowerCase().includes(q)||c.plan.toLowerCase().includes(q)):all;
-  const totalEmps=all.reduce((s,c)=>s+c.emps,0);
-  const active=all.filter(c=>c.status==='active').length;
-  const enterprise=all.filter(c=>c.plan==='Enterprise').length;
+  const filtered=q?enrolled.filter(c=>c.name.toLowerCase().includes(q)||c.industry.toLowerCase().includes(q)||c.plan.toLowerCase().includes(q)):enrolled;
+  const totalEmps=enrolled.reduce((s,c)=>s+c.emps,0);
+  const active=enrolled.filter(c=>c.status==='active').length;
+  const enterprise=enrolled.filter(c=>c.plan==='Enterprise').length;
   const planColors={Enterprise:'#4f46e5',Professional:'#059669',Starter:'#0891b2',Internal:'#64748b'};
   const statusDot={active:'#22c55e',paused:'#f59e0b',inactive:'#ef4444'};
 
@@ -3002,9 +3003,9 @@ function pgPlatformAdmin(){
       <!-- Stats row -->
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.75rem">
         ${[
-          {l:'Enrolled Clients', v:all.length,      icon:'🏢', sub:`${active} active · ${all.length-active} paused`,  bg:'#1e293b',bdr:'#334155',vc:'#818cf8'},
-          {l:'Total Employees',  v:totalEmps.toLocaleString(),icon:'👥', sub:'across all companies',                    bg:'#1e293b',bdr:'#334155',vc:'#34d399'},
-          {l:'Enterprise Plans', v:enterprise,       icon:'⭐', sub:`${all.filter(c=>c.plan==='Professional').length} Professional · ${all.filter(c=>c.plan==='Starter').length} Starter`, bg:'#1e293b',bdr:'#334155',vc:'#fbbf24'},
+          {l:'Enrolled Clients', v:enrolled.length,  icon:'🏢', sub:`${active} active · ${enrolled.length-active} paused`,  bg:'#1e293b',bdr:'#334155',vc:'#818cf8'},
+          {l:'Total Employees',  v:totalEmps.toLocaleString(),icon:'👥', sub:'across all enrolled companies',            bg:'#1e293b',bdr:'#334155',vc:'#34d399'},
+          {l:'Enterprise Plans', v:enterprise,       icon:'⭐', sub:`${enrolled.filter(c=>c.plan==='Professional').length} Professional · ${enrolled.filter(c=>c.plan==='Starter').length} Starter`, bg:'#1e293b',bdr:'#334155',vc:'#fbbf24'},
           {l:'Total Modules',    v:ALL_MODULES.length,icon:'🧩',sub:'configurable per client',                          bg:'#1e293b',bdr:'#334155',vc:'#f472b6'},
         ].map(s=>`<div style="background:${s.bg};border:1px solid ${s.bdr};border-radius:12px;padding:1.1rem 1.25rem;display:flex;gap:12px;align-items:flex-start">
           <div style="font-size:24px;line-height:1;margin-top:2px">${s.icon}</div>
@@ -3026,7 +3027,7 @@ function pgPlatformAdmin(){
             oninput="filterPlatform(this.value)"
             onfocus="this.style.borderColor='#4f46e5'" onblur="this.style.borderColor='#334155'"/>
         </div>
-        <div id="plat-ct" style="font-size:12px;color:#64748b;white-space:nowrap">${filtered.length} / ${all.filter(c=>c.status!=='archived').length} clients</div>
+        <div id="plat-ct" style="font-size:12px;color:#64748b;white-space:nowrap">${filtered.length} / ${enrolled.length} clients</div>
       </div>
 
       <!-- Client cards -->
