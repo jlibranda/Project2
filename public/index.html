@@ -570,7 +570,7 @@ const PERM_DEFS=[
   {grp:'Time & Attendance',   k:'leave_apply',        l:'Apply for Own Leave',              desc:'Submit personal leave requests (VL, SL, EL, etc.)',                                   sub:true},
   {grp:'Time & Attendance',   k:'leave_approve',      l:'Approve / Reject Leave',           desc:'Review and act on leave requests from other employees',                                sub:true},
   {grp:'Time & Attendance',   k:'leave_credits',      l:'Manage Leave Credits',             desc:'Adjust, grant, or forfeit leave credit balances per employee',                        sub:true},
-  {grp:'Time & Attendance',   k:'bundyadmin',         l:'Bundy Admin Logs',                 desc:'View all company-wide clock-in/out raw logs',                                         sub:false},
+  {grp:'Time & Attendance',   k:'bundyadmin',         l:'Web Bundy Monitor',                desc:'View live company-wide clock-in status and manage office geofence zones',             sub:false},
 
   /* ── PAYROLL ──────────────────────────────────────────────── */
   {grp:'Payroll',             k:'payroll',            l:'View & Process Payroll',           desc:'Access the payroll module and process computation',                                    sub:false},
@@ -2690,7 +2690,7 @@ const ALL_MODULES=[
   {k:'attendance',  l:'Attendance',          grp:'Time & Attendance'},
   {k:'leave',       l:'Leave Management',    grp:'Time & Attendance'},
   {k:'webbundy',    l:'Web Bundy (GPS)',      grp:'Time & Attendance'},
-  {k:'bundyadmin',  l:'Bundy Admin Logs',    grp:'Time & Attendance'},
+  {k:'bundyadmin',  l:'Web Bundy Monitor',   grp:'Time & Attendance'},
   {k:'payroll',     l:'Payroll',             grp:'Payroll'},
   {k:'government',  l:'Gov\'t Remittances',  grp:'Payroll'},
   {k:'myslips',     l:'My Payslips',         grp:'Payroll'},
@@ -3362,7 +3362,7 @@ function sidebarSections(){
       ...(has('webbundy')?[{v:'webbundy',k:'clock',l:'Web Bundy 📍'}]:[]),
       ...(has('attendance')?[{v:'attendance',k:'clock',l:'Attendance',badge:isA?attendanceRecords().filter(a=>a.approvalStatus==='pending').length:0}]:[]),
       ...(has('leave')?[{v:'leave',k:'leave',l:'Leave',badge:isA?pendingLeaves():0}]:[]),
-      ...(has('bundyadmin')?[{v:'bundyadmin',k:'chart',l:'Bundy Logs'}]:[]),
+      ...(has('bundyadmin')?[{v:'bundyadmin',k:'chart',l:'Web Bundy Monitor'}]:[]),
     ]},
     {title:'Payroll',items:[
       ...(has('payroll')?[{v:'payroll',k:'peso',l:'Payroll'}]:[]),
@@ -12697,7 +12697,7 @@ function pgWebBundy(){
 
 function pgBundyAdmin(){
   const isA=isAdminUser(user);
-  const tabs=isA?['Today\'s Status','All Logs','Office Zones']:['My Logs'];
+  const tabs=isA?['Today\'s Status','Office Zones']:['My Logs'];
   const todayAll=BUNDY_LOGS.filter(b=>b.date===today());
   let body='';
 
@@ -12709,7 +12709,10 @@ function pgBundyAdmin(){
       const lo=[...logs].reverse().find(b=>b.type==='out');
       return li&&(!lo||li.datetime>lo.datetime);
     }).length;
-    body=`<div class="metrics" style="margin-bottom:1rem">
+    body=`<div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:.75rem">
+      <button class="btn btn-sm" onclick="goView('attendance');tab=2;render()">📋 Browse full punch history →</button>
+    </div>
+    <div class="metrics" style="margin-bottom:1rem">
       <div class="metric"><div class="metric-label">Clocked in now</div><div class="metric-val green">${inCount}</div></div>
       <div class="metric"><div class="metric-label">Total punches today</div><div class="metric-val">${todayAll.length}</div></div>
       <div class="metric"><div class="metric-label">Outside zone</div><div class="metric-val amber">${todayAll.filter(b=>!b.withinZone).length}</div></div>
@@ -12738,8 +12741,8 @@ function pgBundyAdmin(){
       }).join('')}
     </div>`;
   }
-  else if((isA&&tab===1)||(!isA&&tab===0)){
-    const logs=isA?[...BUNDY_LOGS].reverse():BUNDY_LOGS.filter(b=>b.eid===user.id).reverse();
+  else if(!isA&&tab===0){
+    const logs=BUNDY_LOGS.filter(b=>b.eid===user.id).reverse();
     body=`<div style="overflow-x:auto"><table style="min-width:700px"><thead><tr><th>Employee</th><th>Date</th><th>Type</th><th>Time</th><th>Location</th><th>Zone</th><th>Selfie</th></tr></thead>
     <tbody>${logs.length?logs.map(b=>`<tr>
       <td><div class="emp-cell"><div class="avatar sm">${ini(b.empName)}</div>${b.empName}</div></td>
@@ -12759,7 +12762,7 @@ function pgBundyAdmin(){
       '<span style="color:var(--txt3);font-size:11px">—</span>'}</td>
     </tr>`).join(''):`<tr><td colspan="7" class="empty-state">No bundy logs yet</td></tr>`}</tbody></table></div>`;
   }
-  else if(isA&&tab===2){
+  else if(isA&&tab===1){
     body=`<div style="display:flex;justify-content:flex-end;margin-bottom:10px">
       <button class="btn btn-primary btn-sm" onclick="addZone()">+ Add Office Zone</button>
     </div>
@@ -12783,7 +12786,7 @@ function pgBundyAdmin(){
     </div>`;
   }
 
-  return`<div class="page-header"><div class="page-title">Bundy Logs</div></div>
+  return`<div class="page-header"><div class="page-title">Web Bundy Monitor</div></div>
   <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
   <div class="card">${body}</div>`;
 }
@@ -14979,7 +14982,7 @@ function render(){
     else if(view==='profilechanges')pg=gate('profilechanges','Profile Changes',pgProfileChanges);
     else if(view==='zksetup')pg=gate('zksetup','ZKTeco Device',pgZKSetup);
     else if(view==='webbundy')pg=gate('webbundy','Web Bundy',pgWebBundy);
-    else if(view==='bundyadmin')pg=gate('bundyadmin','Bundy Logs',pgBundyAdmin);
+    else if(view==='bundyadmin')pg=gate('bundyadmin','Web Bundy Monitor',pgBundyAdmin);
     else if(view==='company')pg=gate('company','Company Settings',pgCompanySettings);
     else if(view==='gsheets')pg=gate('gsheets','Google Sheets Sync',pgGoogleSheets);
     else if(view==='fieldconfig')pg=gate('fieldconfig','Field Configuration',pgFieldConfig);
