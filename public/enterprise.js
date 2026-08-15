@@ -127,13 +127,29 @@
     if(!notes.trim()){toast('Resolution notes are required for the audit trail.','warning');return;}
     c.status=decision==='resolved'?'resolved':'rejected';
     c.resolution=notes.trim();c.resolvedBy=user.name;c.resolvedAt=new Date().toISOString();
+    // A resolved case establishes that the request is legitimate (eligible, within policy) --
+    // it is not itself the record's full approval sign-off. The linked attendance record(s)
+    // still go through applyAttendanceDecision() so multi-layer approval chains (Company
+    // Settings > Approval Layers) are honored the same way regular attendance is, instead of
+    // one Resolution Center reviewer silently fully-approving pay-impacting hours.
+    var routedToNextLayer=false;
+    function applyResolutionDecision(row){
+      // The row may already be sitting at 'approved' from an earlier cycle (e.g. the base
+      // clock-in/out was approved before this Undertime/OT/etc. request amended it) --
+      // restart the chain from Layer 1 so the amended record gets a fresh full approval
+      // pass instead of silently keeping a stale 'approved' status or resuming mid-chain.
+      row.approvalStatus='pending';row.approvalLayer=1;
+      var result=applyAttendanceDecision(row,'approved');
+      if(result.decision==='approved'&&result.message.indexOf('Routed to Layer')>=0)routedToNextLayer=true;
+      return result;
+    }
     if(decision==='resolved'){
       if(c.attendanceRequestType==='time_correction'){
         var linkedCorrection=TimekeepingCore.validateLinkedRecord(ATT,c);
         var corrected=upsertAttendance(c.employeeId,c.requestDate,linkedCorrection?{}:{tin:'',tout:'',status:'present',ot:0,nd:0,notes:'Approved '+c.subject,source:'attendance-correction'});
         if(c.punchType==='time_out')corrected.tout=c.correctedTime;
         else corrected.tin=c.correctedTime;
-        corrected.approvalStatus='approved';corrected.reviewedBy=user.name;corrected.reviewedAt=c.resolvedAt;
+        applyResolutionDecision(corrected);
         c.linkedType='attendance';c.linkedId=corrected.id;
         queueSync('Attendance');
       }else if(c.attendanceRequestType==='official_business'){
@@ -141,15 +157,16 @@
         requestDates(c.requestDate,c.requestEndDate).forEach(function(d){
           var current=attendanceRecord(c.employeeId,d);
           var ob=upsertAttendance(c.employeeId,d,{tin:c.requestedStart,tout:c.requestedEnd,status:'present',ot:current&&current.ot||0,nd:current&&current.nd||0,notes:(current&&current.notes?current.notes+' · ':'')+'Approved Official Business',source:'official-business'});
-          ob.approvalStatus='approved';ob.reviewedBy=user.name;ob.reviewedAt=c.resolvedAt;obRecords.push(ob.id);
+          applyResolutionDecision(ob);obRecords.push(ob.id);
         });
         c.attendanceRecordIds=obRecords;queueSync('Attendance');
       }else if(c.attendanceRequestType==='work_from_home'){
         var wfhRecords=[];
         requestDates(c.requestDate,c.requestEndDate).forEach(function(d){
           var wfh=actualLogForDate(c.employeeId,d);
-          wfh.status='present';wfh.approvalStatus='approved';wfh.reviewedBy=user.name;wfh.reviewedAt=c.resolvedAt;
-          wfh.notes=(wfh.notes?wfh.notes+' · ':'')+'Approved Work From Home';wfhRecords.push(wfh.id);
+          wfh.status='present';
+          wfh.notes=(wfh.notes?wfh.notes+' · ':'')+'Approved Work From Home';
+          applyResolutionDecision(wfh);wfhRecords.push(wfh.id);
         });
         c.attendanceRecordIds=wfhRecords;queueSync('Attendance');
       }else if(c.attendanceRequestType==='schedule_adjustment'){
@@ -162,8 +179,8 @@
       }else if(c.attendanceRequestType==='undertime'){
         var undertime=actualLogForDate(c.employeeId,c.requestDate);
         undertime.undertimeMinutes=Math.max(Number(undertime.undertimeMinutes||0),Number(c.requestedMinutes||0));
-        undertime.approvalStatus='approved';undertime.reviewedBy=user.name;undertime.reviewedAt=c.resolvedAt;
         undertime.notes=(undertime.notes?undertime.notes+' · ':'')+'Approved undertime: '+undertime.undertimeMinutes+' minute(s)';
+        applyResolutionDecision(undertime);
         c.linkedType='attendance';c.linkedId=undertime.id;queueSync('Attendance');
       }else if(c.attendanceRequestType==='overtime'){
         // Re-run through otTypeEligibility (not just calculateEligibleHours) so approval also
@@ -176,8 +193,8 @@
         c.actualTimeIn=actual&&actual.tin||'';
         c.actualTimeOut=actual&&actual.tout||'';
         if(actual){
-          actual.approvalStatus='approved';actual.reviewedBy=user.name;actual.reviewedAt=c.resolvedAt;
           actual.ot=otResult.hours;
+          applyResolutionDecision(actual);
           c.linkedType='attendance';c.linkedId=actual.id;
           queueSync('Attendance');
         }
@@ -192,20 +209,20 @@
         c.actualTimeIn=rdhLogActual&&rdhLogActual.tin||'';
         c.actualTimeOut=rdhLogActual&&rdhLogActual.tout||'';
         if(rdhLogActual){
-          rdhLogActual.approvalStatus='approved';rdhLogActual.reviewedBy=user.name;rdhLogActual.reviewedAt=c.resolvedAt;
           rdhLogActual.restDayHolidayHours=rdhResult.hours;
+          applyResolutionDecision(rdhLogActual);
           c.linkedType='attendance';c.linkedId=rdhLogActual.id;
           queueSync('Attendance');
         }
       }else if(c.linkedType==='attendance'){
         var a=TimekeepingCore.validateLinkedRecord(ATT,c);
-        if(a){a.approvalStatus='approved';a.reviewedBy=user.name;a.reviewedAt=c.resolvedAt;}
+        if(a)applyResolutionDecision(a);
       }else if(c.linkedType==='leave'){
         var l=LEAVES.find(function(x){return x.id===c.linkedId;});
         if(l)l.status='approved';
       }
     }
-    toast(c.caseNo+' '+(decision==='resolved'?'resolved':'closed without change')+'.',decision==='resolved'?'success':'warning');render();
+    toast(c.caseNo+' '+(decision==='resolved'?(routedToNextLayer?'resolved — routed to the next approval layer before it counts toward payroll':'resolved'):'closed without change')+'.',decision==='resolved'?'success':'warning');render();
   };
 
   // Lets an employee withdraw their own request while it's still awaiting action — covers
