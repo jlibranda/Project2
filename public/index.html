@@ -2642,20 +2642,11 @@ async function doLogin(){
       }
       /* Load this company's data and log in as this employee */
       isPlatformAdmin=false;
-      if(!_savedAppState){
-        _savedAppState={
-          users:[...USERS],leaves:[...LEAVES],loans:[...LOANS],
-          att:[...ATT],payrolls:[...PAYROLLS],company:cloneCompany(COMPANY),
-          org:JSON.parse(JSON.stringify(ORG)),
-        };
-      }
+      if(!_savedAppState)_savedAppState=snapshotAppState(); /* the real company's own state */
       activeClientId=c.id;
-      if(!c.company)c.company=demoCompanyFor(c);
-      if(!c.org)c.org=[];
-      Object.assign(COMPANY,cloneCompany(c.company));
-      ORG.length=0;  ORG.push(...JSON.parse(JSON.stringify(c.org)));
-      USERS.length=0;  USERS.push(...c.employees);
-      LEAVES.length=0; LOANS.length=0; ATT.length=0; PAYROLLS.length=0;
+      ensureClientDefaults(c);
+      const{employees,...rest}=c;
+      applyAppState({...rest,users:employees});
       user=emp;
       view='dashboard';tab=0;modal=null;
       checkOffboarding();if(window.autoRunLeaveAccrual)window.autoRunLeaveAccrual();render();return;
@@ -2669,14 +2660,12 @@ function doLogout(){
   /* If inside a client company, save their data and restore demo state */
   if(activeClientId&&activeClientId!==1&&_savedAppState){
     const c=PLATFORM_CLIENTS.find(x=>x.id===activeClientId);
-    if(c){c.employees=[...USERS];c.company=cloneCompany(COMPANY);c.org=JSON.parse(JSON.stringify(ORG));} /* save employees, branding & org (no synthetic admin in USERS) */
-    USERS.length=0;  USERS.push(..._savedAppState.users);
-    LEAVES.length=0; LEAVES.push(..._savedAppState.leaves);
-    LOANS.length=0;  LOANS.push(..._savedAppState.loans);
-    ATT.length=0;    ATT.push(..._savedAppState.att);
-    PAYROLLS.length=0; PAYROLLS.push(..._savedAppState.payrolls);
-    if(_savedAppState.company)Object.assign(COMPANY,_savedAppState.company);
-    if(_savedAppState.org){ORG.length=0;ORG.push(...JSON.parse(JSON.stringify(_savedAppState.org)));}
+    if(c){
+      const{users,...rest}=snapshotAppState();
+      c.employees=users; /* no synthetic admin in USERS, so this is exactly the client's own list */
+      Object.assign(c,rest);
+    }
+    applyAppState(_savedAppState); /* restore the real company */
     _savedAppState=null;
   }
   user=null;view='dashboard';modal=null;godAdmin=null;
@@ -2910,37 +2899,135 @@ function demoCompanyFor(c){
     registeredAddress:'',zipCode:'',contactNumber:'',emailAddress:'',
   });
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PER-CLIENT STATE ISOLATION
+   Every client here except id 1 (the real company) is sample/demo data — this
+   deployment only has one real database behind it. Everything an admin can
+   actually configure or accumulate (org chart, lookups/job levels, employees,
+   attendance/leave/loan/payroll records, recruitment/performance/onboarding,
+   ZKTeco biometric device mapping, Google Sheets sync, audit logs, etc.) is
+   swapped in and out per client so a new company starts on a truly blank
+   slate instead of inheriting the real company's accumulated business data.
+
+   Regulatory/functional templates (access roles, the DOLE overtime rate
+   table, statutory deduction items, default attendance policy, standard
+   income/deduction types) are the one exception: a new client still gets a
+   working starter copy of these, because a fresh company that can't compute
+   OT pay or has nobody with access isn't "fresh," it's broken. Each client
+   gets its own independent copy, so editing one never affects another.
+   ═══════════════════════════════════════════════════════════════════════════ */
+function freshLookups(){
+  return{bandLevels:[],costCenters:[],pods:[],disciplines:[],employmentTypes:[],
+    terminationTypes:[],attritionCodes:[],payTypes:[],currencies:[],entityNames:[]};
+}
+function freshGS(){
+  return{url:'',status:'disconnected',statusMsg:'',lastSync:null,autoSync:false,log:[],
+    pushing:false,syncing:false,syncIndicator:'',pushProgress:{total:0,done:0,current:'',failed:0,items:[]}};
+}
+function freshZK(){
+  return{devices:[],deviceUsers:[],userMapping:{},pulledRecords:[],importPreview:[],
+    realtimeEnabled:false,lastSync:null,loading:false,
+    connectionOverride:{address:'',port:'',https:false},
+    punchBuffer:{beforeMinutes:120,afterMinutes:480}};
+}
+/* Give a client its own independent starter state the first time it's entered. */
+function ensureClientDefaults(c){
+  if(c.company)return; /* already initialized on an earlier visit — don't reset live edits */
+  c.employees=[];c.leaves=[];c.loans=[];c.att=[];c.payrolls=[];
+  c.company=demoCompanyFor(c);
+  c.org=[];
+  c.lookups=freshLookups();
+  c.candidates=[];c.perf=[];c.onboard=[];c.changeRequests=[];c.bundyLogs=[];c.officeZones=[];
+  c.empNumConfig={prefix:'EMP',separator:'-',digits:3,nextSeq:1,manual:false};
+  c.statutoryConfig=JSON.parse(JSON.stringify(STATUTORY_CONFIG));
+  c.approvalConfig={maxLayers:APPROVAL_CONFIG.maxLayers,defaultLayers:APPROVAL_CONFIG.defaultLayers,perEmployee:{}};
+  c.fieldConfig=JSON.parse(JSON.stringify(FIELD_CONFIG));
+  c.incomeTypes=JSON.parse(JSON.stringify(INCOME_TYPES));
+  c.attendanceAdj=JSON.parse(JSON.stringify(ATTENDANCE_ADJ));
+  c.attendancePolicy=JSON.parse(JSON.stringify(ATTENDANCE_POLICY));
+  c.otRates=JSON.parse(JSON.stringify(OT_RATES));
+  c.payrollGroups=JSON.parse(JSON.stringify(PAYROLL_GROUPS));
+  c.payPeriods=[];c.payrollAdj=[];c.finalPayList=[];c.securityAudit=[];c.payrollAudit=[];
+  c.accessLevels=JSON.parse(JSON.stringify(ACCESS_LEVELS));
+  c.gs=freshGS();
+  c.zk=freshZK();
+}
+/* Snapshot every per-client global as it currently stands (used both to save the
+   real company's live state before swapping to a demo client, and to save a demo
+   client's edits back onto its own PLATFORM_CLIENTS record on exit). */
+function snapshotAppState(){
+  return{
+    users:[...USERS],leaves:[...LEAVES],loans:[...LOANS],att:[...ATT],payrolls:[...PAYROLLS],
+    company:cloneCompany(COMPANY),org:JSON.parse(JSON.stringify(ORG)),
+    lookups:JSON.parse(JSON.stringify(LOOKUPS)),
+    candidates:[...CANDIDATES],perf:[...PERF],onboard:[...ONBOARD],
+    changeRequests:[...CHANGE_REQUESTS],bundyLogs:[...BUNDY_LOGS],
+    officeZones:JSON.parse(JSON.stringify(OFFICE_ZONES)),
+    empNumConfig:JSON.parse(JSON.stringify(EMP_NUM_CONFIG)),
+    statutoryConfig:JSON.parse(JSON.stringify(STATUTORY_CONFIG)),
+    approvalConfig:JSON.parse(JSON.stringify(APPROVAL_CONFIG)),
+    fieldConfig:JSON.parse(JSON.stringify(FIELD_CONFIG)),
+    incomeTypes:[...INCOME_TYPES],
+    attendanceAdj:JSON.parse(JSON.stringify(ATTENDANCE_ADJ)),
+    attendancePolicy:JSON.parse(JSON.stringify(ATTENDANCE_POLICY)),
+    otRates:[...OT_RATES],
+    payrollGroups:[...PAYROLL_GROUPS],payPeriods:[...PAY_PERIODS],payrollAdj:[...PAYROLL_ADJ],
+    finalPayList:[...FINAL_PAY_LIST],securityAudit:[...SECURITY_AUDIT],payrollAudit:[...PAYROLL_AUDIT],
+    accessLevels:[...ACCESS_LEVELS],
+    gs:JSON.parse(JSON.stringify(GS)),zk:JSON.parse(JSON.stringify(ZK)),
+  };
+}
+/* Load a previously-saved snapshot (real company's own state, or a demo client's
+   own state) back into the live globals every page actually reads from. */
+function applyAppState(s){
+  USERS.length=0;USERS.push(...s.users);
+  LEAVES.length=0;LEAVES.push(...s.leaves);
+  LOANS.length=0;LOANS.push(...s.loans);
+  ATT.length=0;ATT.push(...s.att);
+  PAYROLLS.length=0;PAYROLLS.push(...s.payrolls);
+  Object.assign(COMPANY,cloneCompany(s.company));
+  ORG.length=0;ORG.push(...JSON.parse(JSON.stringify(s.org)));
+  Object.assign(LOOKUPS,JSON.parse(JSON.stringify(s.lookups)));
+  CANDIDATES.length=0;CANDIDATES.push(...s.candidates);
+  PERF.length=0;PERF.push(...s.perf);
+  ONBOARD.length=0;ONBOARD.push(...s.onboard);
+  CHANGE_REQUESTS.length=0;CHANGE_REQUESTS.push(...s.changeRequests);
+  BUNDY_LOGS.length=0;BUNDY_LOGS.push(...s.bundyLogs);
+  OFFICE_ZONES.length=0;OFFICE_ZONES.push(...JSON.parse(JSON.stringify(s.officeZones)));
+  Object.assign(EMP_NUM_CONFIG,JSON.parse(JSON.stringify(s.empNumConfig)));
+  Object.assign(STATUTORY_CONFIG,JSON.parse(JSON.stringify(s.statutoryConfig)));
+  Object.assign(APPROVAL_CONFIG,JSON.parse(JSON.stringify(s.approvalConfig)));
+  Object.assign(FIELD_CONFIG,JSON.parse(JSON.stringify(s.fieldConfig)));
+  INCOME_TYPES.length=0;INCOME_TYPES.push(...s.incomeTypes);
+  Object.assign(ATTENDANCE_ADJ,JSON.parse(JSON.stringify(s.attendanceAdj)));
+  Object.assign(ATTENDANCE_POLICY,JSON.parse(JSON.stringify(s.attendancePolicy)));
+  OT_RATES.length=0;OT_RATES.push(...s.otRates);
+  PAYROLL_GROUPS.length=0;PAYROLL_GROUPS.push(...s.payrollGroups);
+  PAY_PERIODS.length=0;PAY_PERIODS.push(...s.payPeriods);
+  PAYROLL_ADJ.length=0;PAYROLL_ADJ.push(...s.payrollAdj);
+  FINAL_PAY_LIST.length=0;FINAL_PAY_LIST.push(...s.finalPayList);
+  SECURITY_AUDIT.length=0;SECURITY_AUDIT.push(...s.securityAudit);
+  PAYROLL_AUDIT.length=0;PAYROLL_AUDIT.push(...s.payrollAudit);
+  ACCESS_LEVELS.length=0;ACCESS_LEVELS.push(...s.accessLevels);
+  Object.assign(GS,JSON.parse(JSON.stringify(s.gs)));
+  Object.assign(ZK,JSON.parse(JSON.stringify(s.zk)));
+}
+
 function enterClient(clientId){
   const c=PLATFORM_CLIENTS.find(x=>x.id===clientId);
   if(!c)return;
-  // Every client here except id 1 (the real company) is sample/demo data for showing what a
-  // multi-tenant platform view would look like — this deployment only has one real database
-  // behind it. Saving is suspended for the whole time you're inside a demo client's view (see
+  // Saving is suspended for the whole time you're inside a demo client's view (see
   // persistence.js), but the confirmation stays as a clear signal this is a demo sandbox, not a
   // second real company you can safely leave open.
   if(clientId!==1&&!confirm('"'+c.name+'" is sample/demo data, not a real connected company — this deployment only has one real database. Entering it swaps in demo data for browsing; nothing will be saved while you\'re inside it, and your real data returns when you exit. Continue?'))return;
   activeClientId=clientId;
 
   if(clientId!==1){
-    /* Save demo app state */
-    if(!_savedAppState){
-      _savedAppState={
-        users:[...USERS],leaves:[...LEAVES],loans:[...LOANS],
-        att:[...ATT],payrolls:[...PAYROLLS],company:cloneCompany(COMPANY),
-        org:JSON.parse(JSON.stringify(ORG)),
-      };
-    }
-    if(!c.employees)c.employees=[];
-    if(!c.company)c.company=demoCompanyFor(c);
-    if(!c.org)c.org=[]; /* new/demo clients start with a blank org structure, not the real one's */
-    /* Swap to company's own branding, org structure & employee data — God Admin identity (user) stays unchanged */
-    Object.assign(COMPANY,cloneCompany(c.company));
-    ORG.length=0;  ORG.push(...JSON.parse(JSON.stringify(c.org)));
-    USERS.length=0;  USERS.push(...c.employees);
-    LEAVES.length=0;
-    LOANS.length=0;
-    ATT.length=0;
-    PAYROLLS.length=0;
+    if(!_savedAppState)_savedAppState=snapshotAppState(); /* the real company's own state */
+    ensureClientDefaults(c);
+    const{employees,...rest}=c;
+    applyAppState({...rest,users:employees}); /* swap in this client's own isolated state */
   }
   /* God Admin retains their platform identity — no synthetic admin created */
   view='dashboard';tab=0;modal=null;
@@ -2949,20 +3036,13 @@ function enterClient(clientId){
 
 function exitClientView(){
   if(activeClientId&&activeClientId!==1){
-    /* Save company's employees, branding & org structure back (no synthetic admin to filter out) */
     const c=PLATFORM_CLIENTS.find(x=>x.id===activeClientId);
-    if(c){c.employees=[...USERS];c.company=cloneCompany(COMPANY);c.org=JSON.parse(JSON.stringify(ORG));}
-    /* Restore demo app state */
-    if(_savedAppState){
-      USERS.length=0;  USERS.push(..._savedAppState.users);
-      LEAVES.length=0; LEAVES.push(..._savedAppState.leaves);
-      LOANS.length=0;  LOANS.push(..._savedAppState.loans);
-      ATT.length=0;    ATT.push(..._savedAppState.att);
-      PAYROLLS.length=0; PAYROLLS.push(..._savedAppState.payrolls);
-      if(_savedAppState.company)Object.assign(COMPANY,_savedAppState.company);
-      if(_savedAppState.org){ORG.length=0;ORG.push(...JSON.parse(JSON.stringify(_savedAppState.org)));}
-      _savedAppState=null;
+    if(c){
+      const{users,...rest}=snapshotAppState();
+      c.employees=users;
+      Object.assign(c,rest); /* save this client's edits back onto its own record */
     }
+    if(_savedAppState){applyAppState(_savedAppState);_savedAppState=null;} /* restore the real company */
   }
   /* No USERS cleanup needed — synthetic admin was never added to USERS */
   activeClientId=null;
