@@ -708,6 +708,25 @@ let nBundy=1,nZone=10;
 let geoSt={loading:false,lat:null,lng:null,accuracy:null,address:'',zoneResult:null};
 let selfieData=null,camStream=null,clockTmr=null;
 
+/* The pre-login/pre-hydrate "quick paint" branding cache (read below, written in render())
+   used to live under one flat localStorage key shared by every tenant on this browser — so
+   whichever client's admin logged in here most recently silently overwrote it for everyone
+   else, and the renderLoading() screen shown on a page refresh could paint the WRONG client's
+   logo/name for a moment (or the wrong one permanently, for an impersonated real client, which
+   never got cached at all under the old flat-key guard). Keying by the current session token's
+   own tenantKey keeps each real client's cached branding distinct and correctly restored,
+   whether logged in directly or entered via God Admin's Enter Portal. */
+function sessionBrandCacheKey(){
+  try{
+    var t=sessionStorage.getItem('sproutripple_session');
+    if(!t)return'sr_company_brand';
+    var b64=t.split('.')[0].replace(/-/g,'+').replace(/_/g,'/');
+    while(b64.length%4)b64+='=';
+    var payload=JSON.parse(decodeURIComponent(atob(b64).split('').map(function(c){return'%'+('00'+c.charCodeAt(0).toString(16)).slice(-2);}).join('')));
+    return payload&&payload.tenantKey?'sr_company_brand_'+payload.tenantKey:'sr_company_brand';
+  }catch(e){return'sr_company_brand';}
+}
+
 /* ---- COMPANY SETTINGS ---- */
 let COMPANY={
   name:'SproutRipple PH',
@@ -744,7 +763,7 @@ let COMPANY={
 };
 try{if(localStorage.getItem('sr_dark_mode')==='1')COMPANY.darkMode=true;}catch(e){}
 try{
-  var _cachedBrand=JSON.parse(localStorage.getItem('sr_company_brand')||'null');
+  var _cachedBrand=JSON.parse(localStorage.getItem(sessionBrandCacheKey())||'null');
   if(_cachedBrand){
     if(_cachedBrand.logo)COMPANY.logo=_cachedBrand.logo;
     if(_cachedBrand.name)COMPANY.name=_cachedBrand.name;
@@ -2745,6 +2764,17 @@ const PLATFORM_CLIENTS=[
 
 let platformSearch='';
 let nPlatformClient=13;
+/* PLATFORM_CLIENTS — including each real client's locally-assigned id — is part of God Admin's
+   own persisted app-state snapshot (see snapshot()/hydrate() in persistence.js). A real client
+   discovered in an earlier session can already sit in the hydrated array with an id this fresh
+   session's own nPlatformClient counter (which always restarts at 13) knows nothing about,
+   letting a brand-new push below collide with it — two different clients sharing one id means
+   Enter Portal/archive/delete on one can silently act on the other instead. Called before every
+   new id assignment so the counter always clears every id already in use. */
+function ensurePlatformClientIdCounterAhead(){
+  const maxId=PLATFORM_CLIENTS.reduce((m,c)=>Math.max(m,c.id||0),0);
+  if(nPlatformClient<=maxId)nPlatformClient=maxId+1;
+}
 
 /* ── Platform search: filter cards without full re-render (preserves typing) ── */
 function filterPlatform(v){
@@ -2818,6 +2848,7 @@ async function loadRealPlatformClients(){
         Object.assign(existing,{name:rc.name,industry:rc.industry,plan:rc.plan,status:rc.status,
           color:rc.color,initials:rc.initials,contact:rc.contact,remoteId:rc.id,modules:rc.modules});
       }else{
+        ensurePlatformClientIdCounterAhead();
         PLATFORM_CLIENTS.push({id:nPlatformClient++,remoteId:rc.id,tenantKey:rc.tenantKey,
           name:rc.name,industry:rc.industry||'—',plan:rc.plan,emps:0,status:rc.status,
           lastActive:(rc.lastActiveAt||'').slice(0,10)||today(),color:rc.color,initials:rc.initials,
@@ -2846,6 +2877,7 @@ async function saveNewCompany(){
       modules:[...PLAN_MODULES[d.plan||'Starter']],
     })});
     const rc=res.client;
+    ensurePlatformClientIdCounterAhead();
     PLATFORM_CLIENTS.push({
       id:nPlatformClient++,remoteId:rc.id,tenantKey:rc.tenantKey,
       name:rc.name,industry:rc.industry||'—',plan:rc.plan,emps:0,status:rc.status,lastActive:today(),
@@ -15251,10 +15283,14 @@ function render(){
   if(COMPANY.darkMode){document.documentElement.setAttribute('data-dark','');}else{document.documentElement.removeAttribute('data-dark');}
   try{
     localStorage.setItem('sr_dark_mode',COMPANY.darkMode?'1':'0');
-    /* Only cache branding while viewing the real company (id 1) — browsing a demo
-       client's swapped-in COMPANY must never overwrite the real cached brand. */
-    if(!activeClientId||activeClientId===1){
-      localStorage.setItem('sr_company_brand',JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
+    /* Cache branding per-tenant (see sessionBrandCacheKey()) so a page refresh always paints
+       THIS session's own client, not whichever client last logged in on this browser. Still
+       skipped while merely browsing a local-only demo client (no tenantKey, no real session
+       swap) — COMPANY there is fake preview data, not this session's own real branding. */
+    const _browsingLocalDemoClient=!!(activeClientId&&activeClientId!==1&&
+      !(PLATFORM_CLIENTS.find(c=>c.id===activeClientId)||{}).tenantKey);
+    if(!_browsingLocalDemoClient){
+      localStorage.setItem(sessionBrandCacheKey(),JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
     }
   }catch(e){}
   const root=document.getElementById('root');
