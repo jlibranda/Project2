@@ -2954,7 +2954,8 @@ function pgPlatformAdmin(){
   const enrolled=all.filter(c=>c.status!=='archived');
   const q=(platformSearch||'').toLowerCase();
   const filtered=q?enrolled.filter(c=>c.name.toLowerCase().includes(q)||c.industry.toLowerCase().includes(q)||c.plan.toLowerCase().includes(q)):enrolled;
-  const totalEmps=enrolled.reduce((s,c)=>s+c.emps,0);
+  const empCount=c=>c.id===1?USERS.filter(u=>u.role==='employee').length:c.emps;
+  const totalEmps=enrolled.reduce((s,c)=>s+empCount(c),0);
   const active=enrolled.filter(c=>c.status==='active').length;
   const enterprise=enrolled.filter(c=>c.plan==='Enterprise').length;
   const planColors={Enterprise:'#4f46e5',Professional:'#059669',Starter:'#0891b2',Internal:'#64748b'};
