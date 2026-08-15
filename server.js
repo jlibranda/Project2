@@ -133,7 +133,9 @@ function defaultTenantState(client) {
     },
     employeeNumberConfig: { prefix: 'EMP', separator: '-', digits: 3, nextSeq: 1, manual: false },
     payPeriods: [], payrollAdjustments: [], finalPayList: [], payrollAudit: [], securityAudit: [],
-    zk: { userMapping: {}, realtimeEnabled: false, connectionOverride: { address: '', port: '', https: false }, punchBuffer: { beforeMinutes: 120, afterMinutes: 480 } }
+    zk: { userMapping: {}, realtimeEnabled: false, connectionOverride: { address: '', port: '', https: false }, punchBuffer: { beforeMinutes: 120, afterMinutes: 480 } },
+    enterprise: { resolutionCases: [], performanceGoals: [], jobRequisitions: [], aiHistory: [] },
+    payrollGovernance: { rulebook: [], ruleAudit: [], retro: [], workflow: [] }
   };
 }
 async function initializeDatabase() {
@@ -485,6 +487,72 @@ app.post('/api/platform/clients', requirePlatformAdmin, async (req, res) => {
   } catch (error) {
     if (error.code === '23505') return res.status(409).json({ error: 'A client with that admin email or tenant key already exists.' });
     res.status(500).json({ error: 'Unable to create client.', detail: error.message });
+  }
+});
+// Lets a God Admin open a real client's own data without ever seeing or replaying that
+// client's actual password (GET /api/platform/clients deliberately never returns admin_pass).
+// Issues a token scoped to that tenant, exactly like a normal login would, marked with
+// impersonatedBy so it's distinguishable from the tenant's own admin logging in directly.
+app.post('/api/platform/clients/:id/session', requirePlatformAdmin, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'A valid client id is required.' });
+  try {
+    const clientRow = await pool.query('SELECT tenant_key, admin_email, status FROM platform_clients WHERE id = $1', [id]);
+    if (!clientRow.rowCount) return res.status(404).json({ error: 'Client not found.' });
+    const client = clientRow.rows[0];
+    if (client.status === 'archived') return res.status(409).json({ error: 'This client is archived. Restore it before entering.' });
+    const record = await readState(client.tenant_key);
+    const token = sign({
+      sub: client.admin_email, role: 'admin', tenantKey: client.tenant_key,
+      impersonatedBy: req.session.sub, exp: Date.now() + 8 * 60 * 60 * 1000
+    });
+    await pool.query('UPDATE platform_clients SET last_active_at = NOW() WHERE id = $1', [id]);
+    res.json({ token, state: record?.state || null, version: Number(record?.version || 0), persistence: Boolean(pool) });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to open this client.', detail: error.message });
+  }
+});
+const PLATFORM_CLIENT_STATUSES = new Set(['active', 'paused', 'archived']);
+app.patch('/api/platform/clients/:id', requirePlatformAdmin, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'A valid client id is required.' });
+  const status = req.body.status;
+  if (status !== undefined && !PLATFORM_CLIENT_STATUSES.has(status)) {
+    return res.status(400).json({ error: 'Status must be one of: active, paused, archived.' });
+  }
+  try {
+    const result = await pool.query(
+      'UPDATE platform_clients SET status = COALESCE($1, status) WHERE id = $2 RETURNING *',
+      [status || null, id]
+    );
+    if (!result.rowCount) return res.status(404).json({ error: 'Client not found.' });
+    res.json({ client: toPlatformClientJson(result.rows[0]) });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to update client.', detail: error.message });
+  }
+});
+// The one real original tenant (its directory row's tenant_key matches the fixed TENANT_KEY
+// constant) can never be deleted through this — same rule the frontend already enforces for
+// PLATFORM_CLIENTS id 1, kept here too since this is now a real, independent code path.
+app.delete('/api/platform/clients/:id', requirePlatformAdmin, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'A valid client id is required.' });
+  try {
+    const clientRow = await pool.query('SELECT tenant_key, status FROM platform_clients WHERE id = $1', [id]);
+    if (!clientRow.rowCount) return res.status(404).json({ error: 'Client not found.' });
+    const client = clientRow.rows[0];
+    if (client.tenant_key === TENANT_KEY) return res.status(403).json({ error: 'The real connected company can never be permanently deleted.' });
+    if (client.status !== 'archived') return res.status(409).json({ error: 'Archive this client before deleting it permanently.' });
+    await pool.query('DELETE FROM platform_clients WHERE id = $1', [id]);
+    await pool.query('DELETE FROM app_state WHERE tenant_key = $1', [client.tenant_key]);
+    await pool.query('DELETE FROM app_state_audit WHERE tenant_key = $1', [client.tenant_key]);
+    await pool.query('DELETE FROM zk_devices WHERE tenant_key = $1', [client.tenant_key]);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to delete client.', detail: error.message });
   }
 });
 
