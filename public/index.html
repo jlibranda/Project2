@@ -252,7 +252,7 @@ tr:hover td{background:var(--accent-bg) !important}
 </head>
 <body>
 <div id="root"></div>
-<script src="/timekeeping-core.js?v=20260810-personal-schedule"></script>
+<script src="/timekeeping-core.js?v=20260814-summary-total-late-fix"></script>
 <script src="/payroll-rule-engine.js?v=20260803-four-decimal-divisor-engine"></script>
 <script>
 /* ========== DATA ========== */
@@ -467,7 +467,7 @@ let ATT=[
 function attendanceRecord(eid,date){return TimekeepingCore.canonicalRecord(ATT,eid,date);}
 function attendanceRecords(){return TimekeepingCore.canonicalRecords(ATT);}
 function upsertAttendance(eid,date,patch){return TimekeepingCore.upsert(ATT,eid,date,patch,function(){return nAtt++;},user&&user.name);}
-function attendancePeriodSummary(emp,from,to){return TimekeepingCore.periodSummary(ATT,emp,from,to,typeof SHIFT_DEFINITIONS==='undefined'?[]:SHIFT_DEFINITIONS);}
+function attendancePeriodSummary(emp,from,to){return TimekeepingCore.periodSummary(ATT,emp,from,to,COMPANY.shifts||[]);}
 function myFlaggedAttendance(){
   if(!user)return[];
   return attendanceRecords().filter(a=>a.eid===user.id&&a.approvalStatus==='pending'&&/Outside scheduled shift window/.test(a.notes||''));
@@ -570,7 +570,7 @@ const PERM_DEFS=[
   {grp:'Time & Attendance',   k:'leave_apply',        l:'Apply for Own Leave',              desc:'Submit personal leave requests (VL, SL, EL, etc.)',                                   sub:true},
   {grp:'Time & Attendance',   k:'leave_approve',      l:'Approve / Reject Leave',           desc:'Review and act on leave requests from other employees',                                sub:true},
   {grp:'Time & Attendance',   k:'leave_credits',      l:'Manage Leave Credits',             desc:'Adjust, grant, or forfeit leave credit balances per employee',                        sub:true},
-  {grp:'Time & Attendance',   k:'bundyadmin',         l:'Bundy Admin Logs',                 desc:'View all company-wide clock-in/out raw logs',                                         sub:false},
+  {grp:'Time & Attendance',   k:'bundyadmin',         l:'Web Bundy Monitor',                desc:'View live company-wide clock-in status and manage office geofence zones',             sub:false},
 
   /* ── PAYROLL ──────────────────────────────────────────────── */
   {grp:'Payroll',             k:'payroll',            l:'View & Process Payroll',           desc:'Access the payroll module and process computation',                                    sub:false},
@@ -708,6 +708,25 @@ let nBundy=1,nZone=10;
 let geoSt={loading:false,lat:null,lng:null,accuracy:null,address:'',zoneResult:null};
 let selfieData=null,camStream=null,clockTmr=null;
 
+/* The pre-login/pre-hydrate "quick paint" branding cache (read below, written in render())
+   used to live under one flat localStorage key shared by every tenant on this browser — so
+   whichever client's admin logged in here most recently silently overwrote it for everyone
+   else, and the renderLoading() screen shown on a page refresh could paint the WRONG client's
+   logo/name for a moment (or the wrong one permanently, for an impersonated real client, which
+   never got cached at all under the old flat-key guard). Keying by the current session token's
+   own tenantKey keeps each real client's cached branding distinct and correctly restored,
+   whether logged in directly or entered via God Admin's Enter Portal. */
+function sessionBrandCacheKey(){
+  try{
+    var t=sessionStorage.getItem('sproutripple_session');
+    if(!t)return'sr_company_brand';
+    var b64=t.split('.')[0].replace(/-/g,'+').replace(/_/g,'/');
+    while(b64.length%4)b64+='=';
+    var payload=JSON.parse(decodeURIComponent(atob(b64).split('').map(function(c){return'%'+('00'+c.charCodeAt(0).toString(16)).slice(-2);}).join('')));
+    return payload&&payload.tenantKey?'sr_company_brand_'+payload.tenantKey:'sr_company_brand';
+  }catch(e){return'sr_company_brand';}
+}
+
 /* ---- COMPANY SETTINGS ---- */
 let COMPANY={
   name:'SproutRipple PH',
@@ -744,7 +763,7 @@ let COMPANY={
 };
 try{if(localStorage.getItem('sr_dark_mode')==='1')COMPANY.darkMode=true;}catch(e){}
 try{
-  var _cachedBrand=JSON.parse(localStorage.getItem('sr_company_brand')||'null');
+  var _cachedBrand=JSON.parse(localStorage.getItem(sessionBrandCacheKey())||'null');
   if(_cachedBrand){
     if(_cachedBrand.logo)COMPANY.logo=_cachedBrand.logo;
     if(_cachedBrand.name)COMPANY.name=_cachedBrand.name;
@@ -1156,6 +1175,15 @@ let ATTENDANCE_ADJ={
   late:{code:'LATE',basis:'Hourly Rate',formula:'(Daily Rate ÷ 8 hours ÷ 60) × Late Minutes',divisor:480,active:true},
   undertime:{code:'UNDERTIME',basis:'Hourly Rate',formula:'(Daily Rate ÷ 8 hours ÷ 60) × Undertime Minutes',divisor:480,active:true},
 };
+// Employer-configurable rules layered on top of the raw punch-derived facts (see
+// TimekeepingCore.applyAttendancePolicy) — turned on by default at commonly-used PH values,
+// editable from Payroll → Configuration → Attendance Formula and Overtime Table.
+let ATTENDANCE_POLICY={
+  active:true,
+  lateHalfDayMinutes:120,
+  minHoursFullDay:4,
+  deductLateFromOT:true,
+};
 let OT_RATES=[
   /* ── Regular Day ─────────────────────────────────────────────────────── */
   {id:1, grp:'Regular Day',               code:'REG_8',        name:'Regular Day — First 8 Hours',                           rate:100,   formula:'HR × 1.00',                  rateNote:'Regular hourly rate (base)',                active:true,builtIn:true},
@@ -1358,7 +1386,7 @@ function resetLeaveBalanceHistory(empId,typeId){
 
 /* ---- Bulk Leave Balance Import (mid-year migration for a new client) ---- */
 function openBulkLeaveBalance(){
-  if(!isAdminUser(user))return;
+  if(!isAdminUser(user)&&!isPlatformAdmin)return;
   modal={type:'bulkLeaveBalance',rows:[{eid:'',code:'',balance:'',reason:'Migration balance'}]};
   render();
 }
@@ -1483,7 +1511,7 @@ function applyBulkLeaveBalances(){
 }
 /* ---- Bulk Attendance / Time Log Import ---- */
 function openBulkAttendance(){
-  if(!isAdminUser(user))return;
+  if(!isAdminUser(user)&&!isPlatformAdmin)return;
   modal={type:'bulkAttendance',rows:[{eid:'',date:today(),tin:'',tout:'',status:'present',ot:'',nd:'',notes:''}]};
   render();
 }
@@ -1581,7 +1609,10 @@ function applyBulkAttendance(){
     if(!emp){errors.push(rowLabel+': employee EID "'+r.eid+'" not found');return;}
     if(emp.active===false){errors.push(rowLabel+': '+emp.name+' is inactive — skipped');return;}
     if(!r.date||!/^\d{4}-\d{2}-\d{2}$/.test(r.date)){errors.push(rowLabel+': invalid date "'+r.date+'" (use YYYY-MM-DD)');return;}
-    upsertAttendance(emp.id,r.date,{tin:r.tin||'',tout:r.tout||'',status:r.status||'present',ot:parseFloat(r.ot)||0,nd:parseFloat(r.nd)||0,notes:r.notes||'',source:'bulk-import',approvalStatus:'approved',reviewedBy:user.name,reviewedAt:new Date().toISOString()});
+    const patch=computedAttendancePatch(emp.id,r.date,r.tin||'',r.tout||'',r.status||'present',parseFloat(r.ot)||0,parseFloat(r.nd)||0,r.notes||'','bulk-import');
+    const otApproved=!(patch.ot>0);
+    upsertAttendance(emp.id,r.date,{...patch,approvalStatus:otApproved?'approved':'pending',
+      reviewedBy:otApproved?user.name:'',reviewedAt:otApproved?new Date().toISOString():''});
     applied++;
   });
   if(applied>0)queueSync('Attendance');
@@ -2032,8 +2063,26 @@ async function zkRefreshStatus(){
     ZK.devices=d.devices||[];
     ZK.deviceUsers=d.deviceUsers||[];
     if(d.userMapping&&!Object.keys(ZK.userMapping).length)ZK.userMapping=d.userMapping;
+    zkAutoApplyBiometricMatches();
   }catch(e){/* surfaced via the page's own empty/error states */}
   ZK.loading=false;render();
+}
+// Silent background counterpart used by the realtime poll (startRealtime) so newly-enrolled
+// device users (pushed via OPERLOG) show up without needing a manual "Refresh device users"
+// click — previously only punches (ATTLOG) were auto-polled, not the user list. No loading
+// spinner and no render() while the admin is mid-typing elsewhere, matching zkPullAttendance's
+// existing guard against clobbering an in-progress form.
+async function zkPollDeviceUsers(){
+  try{
+    const d=await zkApi('/status');
+    ZK.devices=d.devices||[];
+    ZK.deviceUsers=d.deviceUsers||[];
+    if(d.userMapping&&!Object.keys(ZK.userMapping).length)ZK.userMapping=d.userMapping;
+    zkAutoApplyBiometricMatches();
+  }catch(e){return;}
+  const active=document.activeElement;
+  const isEditing=active&&(active.tagName==='INPUT'||active.tagName==='TEXTAREA'||active.tagName==='SELECT');
+  if(!isEditing)render();
 }
 function zkSaveConnectionOverride(){
   const address=(document.getElementById('zk-conn-address').value||'').trim();
@@ -2056,7 +2105,7 @@ function zkSavePunchBuffer(){
   render();
   alert('Saved. New punches will use this window going forward.');
 }
-const ZK_COMMAND_LABELS={reboot:'Restart device',resync:'Resync attendance log',clearlog:'Clear attendance log'};
+const ZK_COMMAND_LABELS={reboot:'Restart device',resync:'Resync attendance log',resyncusers:'Resync user list',clearlog:'Clear attendance log'};
 async function zkSendCommand(serial,action,confirmMsg){
   if(confirmMsg&&!confirm(confirmMsg))return;
   try{
@@ -2145,6 +2194,29 @@ function zkSaveMapping(){
   render();
   alert('User mapping saved!');
 }
+// Automatically COMMITS a mapping (straight into ZK.userMapping, no "Save mapping" click
+// needed) for any still-unmapped device user whose ID exactly matches exactly one active
+// employee's Biometric Number (Employee Detail → Employment tab). Skips ambiguous cases —
+// two employees sharing the same Biometric Number by data-entry mistake — rather than
+// guessing, and never touches a device user that already has a mapping (manual or
+// previously auto-applied). Called automatically whenever the device reports its user list
+// (zkRefreshStatus) or an employee's Biometric Number is saved (applyEmpSave), plus
+// available as an on-demand recheck from the User Mapping tab.
+function zkAutoApplyBiometricMatches(){
+  let applied=0;
+  zkMappableUsers().forEach(du=>{
+    if(ZK.userMapping[du.userId])return;
+    const matches=USERS.filter(u=>u.role==='employee'&&u.active!==false&&u.biometricNo&&String(u.biometricNo).trim()===String(du.userId).trim());
+    if(matches.length===1){ZK.userMapping[du.userId]=matches[0].id;applied++;}
+  });
+  return applied;
+}
+function zkRunAutoMatchNow(){
+  const applied=zkAutoApplyBiometricMatches();
+  render();
+  if(applied)toast(applied+' device user'+(applied!==1?'s':'')+' mapped automatically by Biometric Number.','success');
+  else toast('No new matches found. Make sure Biometric Number is set on the Employment tab of each employee\'s 201 file, and matches the device user ID exactly.','info');
+}
 // Mirrors server.js's zkPunchKind/zkPickInOut: trust the device's own in/out toggle
 // (ATTLOG status code) when any punch that day has one, otherwise fall back to
 // earliest-in/latest-out.
@@ -2162,33 +2234,40 @@ function zkPickInOut(entries){
 }
 async function zkImport(){
   const toImport=ZK.importPreview.filter(r=>r.mapped&&!r.duplicate&&r.date);
-  // Group by empId+shift-day (not raw device date) → merge with any already-imported
-  // tin/tout for that day, then pick in/out using the device's own toggle where available.
+  // Group by empId+shift-day (not raw device date). Every raw punch is folded permanently into
+  // that day's record.punches (never overwritten — see TimekeepingCore.mergePunches), and
+  // tin/tout/late/undertime/OT/night-differential/rest-day-holiday hours are all re-derived
+  // from the complete punch log via TimekeepingCore.computeFromPunches instead of being reduced
+  // to a bare tin/tout with OT and ND left at 0 for a human to fill in by hand.
   const grouped={};
   const outOfBufferKeys=new Set();
+  const receivedAt=new Date().toISOString();
   toImport.forEach(r=>{
     const emp=USERS.find(u=>u.id===r.empId);
     const hasShift=!!(emp&&emp.shiftId!=null);
     const resolvedDate=hasShift?TimekeepingCore.resolveShiftDay(emp,r.date,r.time,COMPANY.shifts||[],ZK.punchBuffer.beforeMinutes,ZK.punchBuffer.afterMinutes):r.date;
     const finalDate=resolvedDate||r.date;
     const key=`${r.empId}_${finalDate}`;
-    if(!grouped[key]){
-      const existing=attendanceRecord(r.empId,finalDate);
-      grouped[key]={empId:r.empId,date:finalDate,entries:[
-        existing&&existing.tin?{time:existing.tin,kind:'in'}:null,
-        existing&&existing.tout?{time:existing.tout,kind:'out'}:null
-      ].filter(Boolean)};
-    }
-    if(r.time)grouped[key].entries.push({time:r.time,kind:zkPunchKind(r.statusCode)});
+    if(!grouped[key])grouped[key]={empId:r.empId,date:finalDate,punches:[]};
+    if(r.time)grouped[key].punches.push({time:r.time,kind:zkPunchKind(r.statusCode),statusCode:r.statusCode,serial:r.serial,source:'zkteco-import',receivedAt});
     if(hasShift&&!resolvedDate)outOfBufferKeys.add(key);
   });
   let added=0,flaggedCount=0;
   Object.values(grouped).forEach(g=>{
-    const{tin,tout}=zkPickInOut(g.entries);
-    const isLate=tin>='08:30';
+    const emp=USERS.find(u=>u.id===g.empId);
+    const existing=attendanceRecord(g.empId,g.date);
+    const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,g.punches);
+    const schedule=emp?TimekeepingCore.scheduleForDate(emp,g.date,COMPANY.shifts||[]):null;
+    const isRest=emp?TimekeepingCore.isRestDay(emp,g.date,COMPANY.shifts||[]):false;
+    const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest)||{};
+    const computed=isRest?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
     const flagged=outOfBufferKeys.has(`${g.empId}_${g.date}`);
     if(flagged)flaggedCount++;
-    upsertAttendance(g.empId,g.date,{tin,tout,status:isLate?'late':'present',ot:0,nd:0,notes:flagged?'ZKTeco import · Outside scheduled shift window — needs confirmation':'ZKTeco import',source:'zkteco-import',approvalStatus:flagged?'pending':'approved',filedBy:'ZKTeco import'});
+    const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
+    upsertAttendance(g.empId,g.date,{...computed,punches:mergedPunches,
+      status:(computed.lwop||computed.incomplete)?'absent':isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),
+      notes:[flagged?'ZKTeco import · Outside scheduled shift window — needs confirmation':'ZKTeco import',policyNote].filter(Boolean).join(' · '),
+      source:'zkteco-import',approvalStatus:(flagged||computed.ot>0)?'pending':'approved',filedBy:'ZKTeco import'});
     added++;
   });
   try{
@@ -2560,7 +2639,9 @@ async function doLogin(){
     isPlatformAdmin=true;
     user={id:0,name:'God Admin',email:e,role:'platform',initials:'GA'};
     view='platform';tab=0;modal=null;
-    render();return;
+    render();
+    loadRealPlatformClients();
+    return;
   }
 
   /* ── Regular USERS login (demo company id=1) ── */
@@ -2582,19 +2663,27 @@ async function doLogin(){
       }
       /* Load this company's data and log in as this employee */
       isPlatformAdmin=false;
-      if(!_savedAppState){
-        _savedAppState={
-          users:[...USERS],leaves:[...LEAVES],loans:[...LOANS],
-          att:[...ATT],payrolls:[...PAYROLLS],
-        };
-      }
+      if(!_savedAppState)_savedAppState=snapshotAppState(); /* the real company's own state */
       activeClientId=c.id;
-      USERS.length=0;  USERS.push(...c.employees);
-      LEAVES.length=0; LOANS.length=0; ATT.length=0; PAYROLLS.length=0;
+      ensureClientDefaults(c);
+      const{employees,...rest}=c;
+      applyAppState({...rest,users:employees});
       user=emp;
       view='dashboard';tab=0;modal=null;
       checkOffboarding();if(window.autoRunLeaveAccrual)window.autoRunLeaveAccrual();render();return;
     }
+  }
+
+  /* ── A real client's own company-admin login (platform_clients.admin_email) ──
+     No USERS[] record to match — that's only for actual employees — but a valid session
+     token here means the backend already authenticated them; connectDatabaseAfterLogin
+     already hydrated their tenant's own isolated state above. */
+  const identity=window.getSessionIdentity&&window.getSessionIdentity();
+  if(identity&&identity.sub===e&&identity.role==='admin'){
+    isPlatformAdmin=false;
+    user={id:0,name:(COMPANY.name||'Company')+' Admin',email:e,role:'admin',initials:(COMPANY.initials||'A')};
+    view='dashboard';tab=0;modal=null;
+    render();return;
   }
 
   errEl.textContent='Invalid email or password.';errEl.style.display='block';
@@ -2604,12 +2693,12 @@ function doLogout(){
   /* If inside a client company, save their data and restore demo state */
   if(activeClientId&&activeClientId!==1&&_savedAppState){
     const c=PLATFORM_CLIENTS.find(x=>x.id===activeClientId);
-    if(c)c.employees=[...USERS]; /* save employees (no synthetic admin in USERS) */
-    USERS.length=0;  USERS.push(..._savedAppState.users);
-    LEAVES.length=0; LEAVES.push(..._savedAppState.leaves);
-    LOANS.length=0;  LOANS.push(..._savedAppState.loans);
-    ATT.length=0;    ATT.push(..._savedAppState.att);
-    PAYROLLS.length=0; PAYROLLS.push(..._savedAppState.payrolls);
+    if(c){
+      const{users,...rest}=snapshotAppState();
+      c.employees=users; /* no synthetic admin in USERS, so this is exactly the client's own list */
+      Object.assign(c,rest);
+    }
+    applyAppState(_savedAppState); /* restore the real company */
     _savedAppState=null;
   }
   user=null;view='dashboard';modal=null;godAdmin=null;
@@ -2632,7 +2721,7 @@ const ALL_MODULES=[
   {k:'attendance',  l:'Attendance',          grp:'Time & Attendance'},
   {k:'leave',       l:'Leave Management',    grp:'Time & Attendance'},
   {k:'webbundy',    l:'Web Bundy (GPS)',      grp:'Time & Attendance'},
-  {k:'bundyadmin',  l:'Bundy Admin Logs',    grp:'Time & Attendance'},
+  {k:'bundyadmin',  l:'Web Bundy Monitor',   grp:'Time & Attendance'},
   {k:'payroll',     l:'Payroll',             grp:'Payroll'},
   {k:'government',  l:'Gov\'t Remittances',  grp:'Payroll'},
   {k:'myslips',     l:'My Payslips',         grp:'Payroll'},
@@ -2675,6 +2764,17 @@ const PLATFORM_CLIENTS=[
 
 let platformSearch='';
 let nPlatformClient=13;
+/* PLATFORM_CLIENTS — including each real client's locally-assigned id — is part of God Admin's
+   own persisted app-state snapshot (see snapshot()/hydrate() in persistence.js). A real client
+   discovered in an earlier session can already sit in the hydrated array with an id this fresh
+   session's own nPlatformClient counter (which always restarts at 13) knows nothing about,
+   letting a brand-new push below collide with it — two different clients sharing one id means
+   Enter Portal/archive/delete on one can silently act on the other instead. Called before every
+   new id assignment so the counter always clears every id already in use. */
+function ensurePlatformClientIdCounterAhead(){
+  const maxId=PLATFORM_CLIENTS.reduce((m,c)=>Math.max(m,c.id||0),0);
+  if(nPlatformClient<=maxId)nPlatformClient=maxId+1;
+}
 
 /* ── Platform search: filter cards without full re-render (preserves typing) ── */
 function filterPlatform(v){
@@ -2733,27 +2833,110 @@ function resetClientToPlan(cid,plan){
 
 /* ── Company CRUD ── */
 function openAddCompany(){modal={type:'addCompany',data:{name:'',industry:'',plan:'Starter',contact:'',email:'',pass:'',color:'#4f46e5',initials:''}};render();}
-function saveNewCompany(){
+// Merges the backend directory (the real source of truth for real clients) into
+// PLATFORM_CLIENTS — called on God Admin login/session-restore, and available as a manual
+// refresh, so a real client created from a different tab/session still shows up here instead
+// of only ever being visible to the tab that created it.
+async function loadRealPlatformClients(){
+  if(!window.apiRequest)return;
+  try{
+    const res=await window.apiRequest('/platform/clients');
+    (res.clients||[]).forEach(rc=>{
+      if(rc.isSelf)return; /* id 1's own card is the frontend's richer, already-correct entry */
+      const existing=PLATFORM_CLIENTS.find(x=>x.tenantKey===rc.tenantKey);
+      if(existing){
+        Object.assign(existing,{name:rc.name,industry:rc.industry,plan:rc.plan,status:rc.status,
+          color:rc.color,initials:rc.initials,contact:rc.contact,remoteId:rc.id,modules:rc.modules});
+      }else{
+        ensurePlatformClientIdCounterAhead();
+        PLATFORM_CLIENTS.push({id:nPlatformClient++,remoteId:rc.id,tenantKey:rc.tenantKey,
+          name:rc.name,industry:rc.industry||'—',plan:rc.plan,emps:0,status:rc.status,
+          lastActive:(rc.lastActiveAt||'').slice(0,10)||today(),color:rc.color,initials:rc.initials,
+          contact:rc.contact,admin:{email:rc.adminEmail,pass:''},modules:rc.modules&&rc.modules.length?rc.modules:[]});
+      }
+    });
+    render();
+  }catch(e){/* silent — the console still works with whatever's already loaded */}
+}
+// Creates a genuine, backend-persisted client with its own isolated database row (see
+// POST /api/platform/clients on the server) — not the old browser-memory-only demo entry.
+// The client's own id/tenantKey come from the backend; the local `id` still comes from
+// nPlatformClient so it stays distinct from every pre-existing seeded demo client's id.
+async function saveNewCompany(){
   const d=modal?.data;
   if(!d?.name?.trim()){alert('Company name is required.');return;}
   if(!d?.email?.trim()||!d?.pass?.trim()){alert('Admin email and password are required.');return;}
+  if(d.pass.trim().length<6){alert('Admin password must be at least 6 characters.');return;}
+  if(!window.apiRequest){alert('Not connected to the data service — cannot create a company right now.');return;}
   const init=d.initials||d.name.split(' ').map(w=>w[0]||'').join('').substring(0,2).toUpperCase()||'??';
-  PLATFORM_CLIENTS.push({id:nPlatformClient++,name:d.name.trim(),industry:d.industry||'—',plan:d.plan||'Starter',
-    emps:0,status:'active',lastActive:today(),color:d.color||'#4f46e5',initials:init,
-    admin:{email:d.email.trim(),pass:d.pass.trim()},contact:d.contact||'Admin',
-    modules:[...PLAN_MODULES[d.plan||'Starter']]});
-  closeM();render();
+  modal.saving=true;render();
+  try{
+    const res=await window.apiRequest('/platform/clients',{method:'POST',body:JSON.stringify({
+      name:d.name.trim(),industry:d.industry||'',plan:d.plan||'Starter',color:d.color||'#4f46e5',
+      initials:init,contact:d.contact||'Admin',adminEmail:d.email.trim(),adminPass:d.pass.trim(),
+      modules:[...PLAN_MODULES[d.plan||'Starter']],
+    })});
+    const rc=res.client;
+    ensurePlatformClientIdCounterAhead();
+    PLATFORM_CLIENTS.push({
+      id:nPlatformClient++,remoteId:rc.id,tenantKey:rc.tenantKey,
+      name:rc.name,industry:rc.industry||'—',plan:rc.plan,emps:0,status:rc.status,lastActive:today(),
+      color:rc.color,initials:rc.initials,contact:rc.contact,
+      admin:{email:rc.adminEmail,pass:d.pass.trim()}, /* kept locally for display — the backend never echoes it back */
+      modules:rc.modules&&rc.modules.length?rc.modules:[...PLAN_MODULES[d.plan||'Starter']],
+    });
+    closeM();render();
+    toast(rc.name+' created — a real, backend-connected company.','success');
+  }catch(e){
+    alert('Could not create company: '+(e.message||'Unknown error'));
+    modal.saving=false;render();
+  }
 }
-function toggleClientStatus(cid){
+/* Real clients (tenantKey set) sync status changes to their actual directory row;
+   pre-seeded demo entries just update the local object as before. */
+async function patchClientStatus(c,newStatus){
+  if(c.tenantKey&&c.remoteId&&window.apiRequest){
+    try{
+      await window.apiRequest('/platform/clients/'+c.remoteId,{method:'PATCH',body:JSON.stringify({status:newStatus})});
+    }catch(e){
+      alert('Could not update status: '+(e.message||'Unknown error'));
+      return false;
+    }
+  }
+  c.status=newStatus;
+  return true;
+}
+async function toggleClientStatus(cid){
   const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
-  c.status=c.status==='active'?'paused':'active';render();
+  if(await patchClientStatus(c,c.status==='active'?'paused':'active'))render();
 }
-function archiveClient(cid){
+async function archiveClient(cid){
   const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
   if(!confirm('Archive '+c.name+'?\n\nHidden from console but data is preserved. Can be restored anytime.'))return;
-  c.status='archived';render();
+  if(await patchClientStatus(c,'archived'))render();
 }
-function restoreClient(cid){const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;c.status='active';render();}
+async function restoreClient(cid){
+  const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
+  if(await patchClientStatus(c,'active'))render();
+}
+async function deleteClientPermanently(cid){
+  const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
+  if(cid===1){alert('SproutRipple PH is the real connected company and can never be permanently deleted.');return;}
+  if(c.status!=='archived'){alert('Archive '+c.name+' first before deleting it permanently.');return;}
+  const dataWarning=c.tenantKey?'this company\'s real data will be gone for good':'all of this demo company\'s data will be gone for good';
+  if(!confirm('Permanently delete '+c.name+'?\n\nThis cannot be undone — '+dataWarning+', unlike Archive which can be restored.'))return;
+  if(prompt('Type the company name to confirm: "'+c.name+'"')!==c.name){alert('Name did not match — deletion cancelled.');return;}
+  if(c.tenantKey&&c.remoteId&&window.apiRequest){
+    try{
+      await window.apiRequest('/platform/clients/'+c.remoteId,{method:'DELETE'});
+    }catch(e){
+      alert('Could not delete company: '+(e.message||'Unknown error'));
+      return;
+    }
+  }
+  PLATFORM_CLIENTS.splice(PLATFORM_CLIENTS.indexOf(c),1);
+  toast(c.name+' permanently deleted.','success');render();
+}
 
 /* ── Platform admin password reset ── */
 function openPlatformPasswordReset(cid){modal={type:'platformPasswordReset',clientId:cid,newPass:''};render();}
@@ -2826,46 +3009,191 @@ function renderModuleManagerModal(){
 }
 
 
-function enterClient(clientId){
+function cloneCompany(obj){return JSON.parse(JSON.stringify(obj));}
+function demoCompanyFor(c){
+  return Object.assign(cloneCompany(COMPANY),{
+    name:c.name,initials:c.initials,tagline:c.industry||'',accentHex:c.color||'#4f46e5',
+    registeredName:c.name,logo:null,wallpaper:null,taxIdentificationNo:'',rdo:'',
+    registeredAddress:'',zipCode:'',contactNumber:'',emailAddress:'',
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PER-CLIENT STATE ISOLATION
+   Every client here except id 1 (the real company) is sample/demo data — this
+   deployment only has one real database behind it. Everything an admin can
+   actually configure or accumulate (org chart, lookups/job levels, employees,
+   attendance/leave/loan/payroll records, recruitment/performance/onboarding,
+   ZKTeco biometric device mapping, Google Sheets sync, audit logs, etc.) is
+   swapped in and out per client so a new company starts on a truly blank
+   slate instead of inheriting the real company's accumulated business data.
+
+   Regulatory/functional templates (access roles, the DOLE overtime rate
+   table, statutory deduction items, default attendance policy, standard
+   income/deduction types) are the one exception: a new client still gets a
+   working starter copy of these, because a fresh company that can't compute
+   OT pay or has nobody with access isn't "fresh," it's broken. Each client
+   gets its own independent copy, so editing one never affects another.
+   ═══════════════════════════════════════════════════════════════════════════ */
+function freshLookups(){
+  return{bandLevels:[],costCenters:[],pods:[],disciplines:[],employmentTypes:[],
+    terminationTypes:[],attritionCodes:[],payTypes:[],currencies:[],entityNames:[]};
+}
+function freshGS(){
+  return{url:'',status:'disconnected',statusMsg:'',lastSync:null,autoSync:false,log:[],
+    pushing:false,syncing:false,syncIndicator:'',pushProgress:{total:0,done:0,current:'',failed:0,items:[]}};
+}
+function freshZK(){
+  return{devices:[],deviceUsers:[],userMapping:{},pulledRecords:[],importPreview:[],
+    realtimeEnabled:false,lastSync:null,loading:false,
+    connectionOverride:{address:'',port:'',https:false},
+    punchBuffer:{beforeMinutes:120,afterMinutes:480}};
+}
+/* Give a client its own independent starter state the first time it's entered. */
+function ensureClientDefaults(c){
+  if(c.company)return; /* already initialized on an earlier visit — don't reset live edits */
+  c.employees=[];c.leaves=[];c.loans=[];c.att=[];c.payrolls=[];
+  c.company=demoCompanyFor(c);
+  c.org=[];
+  c.lookups=freshLookups();
+  c.candidates=[];c.perf=[];c.onboard=[];c.changeRequests=[];c.bundyLogs=[];c.officeZones=[];
+  c.empNumConfig={prefix:'EMP',separator:'-',digits:3,nextSeq:1,manual:false};
+  c.statutoryConfig=JSON.parse(JSON.stringify(STATUTORY_CONFIG));
+  c.approvalConfig={maxLayers:APPROVAL_CONFIG.maxLayers,defaultLayers:APPROVAL_CONFIG.defaultLayers,perEmployee:{}};
+  c.fieldConfig=JSON.parse(JSON.stringify(FIELD_CONFIG));
+  c.incomeTypes=JSON.parse(JSON.stringify(INCOME_TYPES));
+  c.attendanceAdj=JSON.parse(JSON.stringify(ATTENDANCE_ADJ));
+  c.attendancePolicy=JSON.parse(JSON.stringify(ATTENDANCE_POLICY));
+  c.otRates=JSON.parse(JSON.stringify(OT_RATES));
+  c.payrollGroups=JSON.parse(JSON.stringify(PAYROLL_GROUPS));
+  c.payPeriods=[];c.payrollAdj=[];c.finalPayList=[];c.securityAudit=[];c.payrollAudit=[];
+  c.accessLevels=JSON.parse(JSON.stringify(ACCESS_LEVELS));
+  c.gs=freshGS();
+  c.zk=freshZK();
+  c.enterprise={resolutionCases:[],performanceGoals:[],jobRequisitions:[],aiHistory:[]};
+  c.payrollGovernance={rulebook:[],ruleAudit:[],retro:[],workflow:[]};
+}
+/* Snapshot every per-client global as it currently stands (used both to save the
+   real company's live state before swapping to a demo client, and to save a demo
+   client's edits back onto its own PLATFORM_CLIENTS record on exit). */
+function snapshotAppState(){
+  return{
+    users:[...USERS],leaves:[...LEAVES],loans:[...LOANS],att:[...ATT],payrolls:[...PAYROLLS],
+    company:cloneCompany(COMPANY),org:JSON.parse(JSON.stringify(ORG)),
+    lookups:JSON.parse(JSON.stringify(LOOKUPS)),
+    candidates:[...CANDIDATES],perf:[...PERF],onboard:[...ONBOARD],
+    changeRequests:[...CHANGE_REQUESTS],bundyLogs:[...BUNDY_LOGS],
+    officeZones:JSON.parse(JSON.stringify(OFFICE_ZONES)),
+    empNumConfig:JSON.parse(JSON.stringify(EMP_NUM_CONFIG)),
+    statutoryConfig:JSON.parse(JSON.stringify(STATUTORY_CONFIG)),
+    approvalConfig:JSON.parse(JSON.stringify(APPROVAL_CONFIG)),
+    fieldConfig:JSON.parse(JSON.stringify(FIELD_CONFIG)),
+    incomeTypes:[...INCOME_TYPES],
+    attendanceAdj:JSON.parse(JSON.stringify(ATTENDANCE_ADJ)),
+    attendancePolicy:JSON.parse(JSON.stringify(ATTENDANCE_POLICY)),
+    otRates:[...OT_RATES],
+    payrollGroups:[...PAYROLL_GROUPS],payPeriods:[...PAY_PERIODS],payrollAdj:[...PAYROLL_ADJ],
+    finalPayList:[...FINAL_PAY_LIST],securityAudit:[...SECURITY_AUDIT],payrollAudit:[...PAYROLL_AUDIT],
+    accessLevels:[...ACCESS_LEVELS],
+    gs:JSON.parse(JSON.stringify(GS)),zk:JSON.parse(JSON.stringify(ZK)),
+    enterprise:window.collectEnterpriseState?window.collectEnterpriseState():null,
+    payrollGovernance:window.collectPayrollGovernanceState?window.collectPayrollGovernanceState():null,
+  };
+}
+/* Load a previously-saved snapshot (real company's own state, or a demo client's
+   own state) back into the live globals every page actually reads from. */
+function applyAppState(s){
+  USERS.length=0;USERS.push(...s.users);
+  LEAVES.length=0;LEAVES.push(...s.leaves);
+  LOANS.length=0;LOANS.push(...s.loans);
+  ATT.length=0;ATT.push(...s.att);
+  PAYROLLS.length=0;PAYROLLS.push(...s.payrolls);
+  Object.assign(COMPANY,cloneCompany(s.company));
+  ORG.length=0;ORG.push(...JSON.parse(JSON.stringify(s.org)));
+  Object.assign(LOOKUPS,JSON.parse(JSON.stringify(s.lookups)));
+  CANDIDATES.length=0;CANDIDATES.push(...s.candidates);
+  PERF.length=0;PERF.push(...s.perf);
+  ONBOARD.length=0;ONBOARD.push(...s.onboard);
+  CHANGE_REQUESTS.length=0;CHANGE_REQUESTS.push(...s.changeRequests);
+  BUNDY_LOGS.length=0;BUNDY_LOGS.push(...s.bundyLogs);
+  OFFICE_ZONES.length=0;OFFICE_ZONES.push(...JSON.parse(JSON.stringify(s.officeZones)));
+  Object.assign(EMP_NUM_CONFIG,JSON.parse(JSON.stringify(s.empNumConfig)));
+  Object.assign(STATUTORY_CONFIG,JSON.parse(JSON.stringify(s.statutoryConfig)));
+  Object.assign(APPROVAL_CONFIG,JSON.parse(JSON.stringify(s.approvalConfig)));
+  Object.assign(FIELD_CONFIG,JSON.parse(JSON.stringify(s.fieldConfig)));
+  INCOME_TYPES.length=0;INCOME_TYPES.push(...s.incomeTypes);
+  Object.assign(ATTENDANCE_ADJ,JSON.parse(JSON.stringify(s.attendanceAdj)));
+  Object.assign(ATTENDANCE_POLICY,JSON.parse(JSON.stringify(s.attendancePolicy)));
+  OT_RATES.length=0;OT_RATES.push(...s.otRates);
+  PAYROLL_GROUPS.length=0;PAYROLL_GROUPS.push(...s.payrollGroups);
+  PAY_PERIODS.length=0;PAY_PERIODS.push(...s.payPeriods);
+  PAYROLL_ADJ.length=0;PAYROLL_ADJ.push(...s.payrollAdj);
+  FINAL_PAY_LIST.length=0;FINAL_PAY_LIST.push(...s.finalPayList);
+  SECURITY_AUDIT.length=0;SECURITY_AUDIT.push(...s.securityAudit);
+  PAYROLL_AUDIT.length=0;PAYROLL_AUDIT.push(...s.payrollAudit);
+  ACCESS_LEVELS.length=0;ACCESS_LEVELS.push(...s.accessLevels);
+  Object.assign(GS,JSON.parse(JSON.stringify(s.gs)));
+  Object.assign(ZK,JSON.parse(JSON.stringify(s.zk)));
+  if(window.resetEnterpriseState)window.resetEnterpriseState();
+  if(window.applyEnterpriseState)window.applyEnterpriseState(s.enterprise);
+  if(window.resetPayrollGovernanceState)window.resetPayrollGovernanceState();
+  if(window.applyPayrollGovernanceState)window.applyPayrollGovernanceState(s.payrollGovernance);
+}
+
+async function enterClient(clientId){
   const c=PLATFORM_CLIENTS.find(x=>x.id===clientId);
   if(!c)return;
-  activeClientId=clientId;
-
-  if(clientId!==1){
-    /* Save demo app state */
-    if(!_savedAppState){
-      _savedAppState={
-        users:[...USERS],leaves:[...LEAVES],loans:[...LOANS],
-        att:[...ATT],payrolls:[...PAYROLLS],
-      };
-    }
-    if(!c.employees)c.employees=[];
-    /* Swap to company's employee data — God Admin identity (user) stays unchanged */
-    USERS.length=0;  USERS.push(...c.employees);
-    LEAVES.length=0;
-    LOANS.length=0;
-    ATT.length=0;
-    PAYROLLS.length=0;
+  if(clientId===1){
+    activeClientId=clientId;
+    view='dashboard';tab=0;modal=null;
+    render();
+    return;
   }
-  /* God Admin retains their platform identity — no synthetic admin created */
+
+  if(c.tenantKey&&c.remoteId){
+    // A real, backend-tracked client — open its actual live data via impersonation, not a
+    // browser-memory swap. Edits made here are real and will be saved for this company.
+    if(!confirm('Enter "'+c.name+'" as their admin?\n\nThis opens their real, live data. Changes you make will be saved for them, just as if they made them.'))return;
+    if(!window.apiRequest||!window.enterImpersonatedSession){alert('Not connected to the data service — cannot enter a real client right now.');return;}
+    try{
+      const res=await window.apiRequest('/platform/clients/'+c.remoteId+'/session',{method:'POST'});
+      if(!_savedAppState)_savedAppState=snapshotAppState(); /* God Admin's own state */
+      window.enterImpersonatedSession(res.token,res.state,res.version);
+      activeClientId=clientId;
+      view='dashboard';tab=0;modal=null;
+      render();
+    }catch(e){
+      alert('Could not enter this client: '+(e.message||'Unknown error'));
+    }
+    return;
+  }
+
+  // A pre-seeded sample/demo entry with no backend tenant of its own — the old in-browser
+  // simulation. Saving is suspended for the whole time you're inside it (see persistence.js).
+  if(!confirm('"'+c.name+'" is sample/demo data, not a real connected company. Entering it swaps in demo data for browsing; nothing will be saved while you\'re inside it, and your real data returns when you exit. Continue?'))return;
+  activeClientId=clientId;
+  if(!_savedAppState)_savedAppState=snapshotAppState(); /* the real company's own state */
+  ensureClientDefaults(c);
+  const{employees,...rest}=c;
+  applyAppState({...rest,users:employees}); /* swap in this client's own isolated state */
   view='dashboard';tab=0;modal=null;
   render();
 }
 
 function exitClientView(){
   if(activeClientId&&activeClientId!==1){
-    /* Save company's employees back (no synthetic admin to filter out) */
     const c=PLATFORM_CLIENTS.find(x=>x.id===activeClientId);
-    if(c)c.employees=[...USERS];
-    /* Restore demo app state */
-    if(_savedAppState){
-      USERS.length=0;  USERS.push(..._savedAppState.users);
-      LEAVES.length=0; LEAVES.push(..._savedAppState.leaves);
-      LOANS.length=0;  LOANS.push(..._savedAppState.loans);
-      ATT.length=0;    ATT.push(..._savedAppState.att);
-      PAYROLLS.length=0; PAYROLLS.push(..._savedAppState.payrolls);
-      _savedAppState=null;
+    if(c&&c.tenantKey&&c.remoteId){
+      // Real client — its data already saved itself along the way via the normal autosave
+      // flow (queueDatabaseSave), scoped to its own tenant by the impersonation token. Just
+      // hand God Admin's own session back.
+      if(window.exitImpersonatedSession)window.exitImpersonatedSession();
+    }else if(c){
+      const{users,...rest}=snapshotAppState();
+      c.employees=users;
+      Object.assign(c,rest); /* save this demo client's edits back onto its own record */
     }
+    if(_savedAppState){applyAppState(_savedAppState);_savedAppState=null;} /* restore the real company */
   }
   /* No USERS cleanup needed — synthetic admin was never added to USERS */
   activeClientId=null;
@@ -2876,11 +3204,13 @@ function exitClientView(){
 
 function pgPlatformAdmin(){
   const all=PLATFORM_CLIENTS;
+  const enrolled=all.filter(c=>c.status!=='archived');
   const q=(platformSearch||'').toLowerCase();
-  const filtered=q?all.filter(c=>c.name.toLowerCase().includes(q)||c.industry.toLowerCase().includes(q)||c.plan.toLowerCase().includes(q)):all;
-  const totalEmps=all.reduce((s,c)=>s+c.emps,0);
-  const active=all.filter(c=>c.status==='active').length;
-  const enterprise=all.filter(c=>c.plan==='Enterprise').length;
+  const filtered=q?enrolled.filter(c=>c.name.toLowerCase().includes(q)||c.industry.toLowerCase().includes(q)||c.plan.toLowerCase().includes(q)):enrolled;
+  const empCount=c=>c.id===1?USERS.filter(u=>u.role==='employee').length:c.emps;
+  const totalEmps=enrolled.reduce((s,c)=>s+empCount(c),0);
+  const active=enrolled.filter(c=>c.status==='active').length;
+  const enterprise=enrolled.filter(c=>c.plan==='Enterprise').length;
   const planColors={Enterprise:'#4f46e5',Professional:'#059669',Starter:'#0891b2',Internal:'#64748b'};
   const statusDot={active:'#22c55e',paused:'#f59e0b',inactive:'#ef4444'};
 
@@ -2917,19 +3247,26 @@ function pgPlatformAdmin(){
           <div style="font-size:26px;font-weight:800;letter-spacing:-.5px;color:#f1f5f9">Client Management</div>
           <div style="font-size:13px;color:#64748b;margin-top:4px">Manage all enrolled companies, module access, and system credentials.</div>
         </div>
-        <button onclick="openAddCompany()"
-          style="flex-shrink:0;background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;border:none;border-radius:8px;padding:10px 16px;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap"
-          onmouseover="this.style.opacity='.9'" onmouseout="this.style.opacity='1'">
-          ＋ Add Company
-        </button>
+        <div style="display:flex;gap:8px;flex-shrink:0">
+          <button onclick="loadRealPlatformClients()"
+            style="background:transparent;border:1px solid #334155;color:#94a3b8;border-radius:8px;padding:10px 14px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap"
+            title="Reload real clients from the server — picks up anything created from another session">
+            🔄 Refresh
+          </button>
+          <button onclick="openAddCompany()"
+            style="background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;border:none;border-radius:8px;padding:10px 16px;font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;white-space:nowrap"
+            onmouseover="this.style.opacity='.9'" onmouseout="this.style.opacity='1'">
+            ＋ Add Company
+          </button>
+        </div>
       </div>
 
       <!-- Stats row -->
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-bottom:1.75rem">
         ${[
-          {l:'Enrolled Clients', v:all.length,      icon:'🏢', sub:`${active} active · ${all.length-active} paused`,  bg:'#1e293b',bdr:'#334155',vc:'#818cf8'},
-          {l:'Total Employees',  v:totalEmps.toLocaleString(),icon:'👥', sub:'across all companies',                    bg:'#1e293b',bdr:'#334155',vc:'#34d399'},
-          {l:'Enterprise Plans', v:enterprise,       icon:'⭐', sub:`${all.filter(c=>c.plan==='Professional').length} Professional · ${all.filter(c=>c.plan==='Starter').length} Starter`, bg:'#1e293b',bdr:'#334155',vc:'#fbbf24'},
+          {l:'Enrolled Clients', v:enrolled.length,  icon:'🏢', sub:`${active} active · ${enrolled.length-active} paused`,  bg:'#1e293b',bdr:'#334155',vc:'#818cf8'},
+          {l:'Total Employees',  v:totalEmps.toLocaleString(),icon:'👥', sub:'across all enrolled companies',            bg:'#1e293b',bdr:'#334155',vc:'#34d399'},
+          {l:'Enterprise Plans', v:enterprise,       icon:'⭐', sub:`${enrolled.filter(c=>c.plan==='Professional').length} Professional · ${enrolled.filter(c=>c.plan==='Starter').length} Starter`, bg:'#1e293b',bdr:'#334155',vc:'#fbbf24'},
           {l:'Total Modules',    v:ALL_MODULES.length,icon:'🧩',sub:'configurable per client',                          bg:'#1e293b',bdr:'#334155',vc:'#f472b6'},
         ].map(s=>`<div style="background:${s.bg};border:1px solid ${s.bdr};border-radius:12px;padding:1.1rem 1.25rem;display:flex;gap:12px;align-items:flex-start">
           <div style="font-size:24px;line-height:1;margin-top:2px">${s.icon}</div>
@@ -2951,7 +3288,7 @@ function pgPlatformAdmin(){
             oninput="filterPlatform(this.value)"
             onfocus="this.style.borderColor='#4f46e5'" onblur="this.style.borderColor='#334155'"/>
         </div>
-        <div id="plat-ct" style="font-size:12px;color:#64748b;white-space:nowrap">${filtered.length} / ${all.filter(c=>c.status!=='archived').length} clients</div>
+        <div id="plat-ct" style="font-size:12px;color:#64748b;white-space:nowrap">${filtered.length} / ${enrolled.length} clients</div>
       </div>
 
       <!-- Client cards -->
@@ -3062,6 +3399,11 @@ function pgPlatformAdmin(){
               style="background:#134e4a;color:#2dd4bf;border:1px solid #0d9488;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap">
               Restore
             </button>
+            ${c.id!==1?`<button onclick="deleteClientPermanently(${c.id})"
+              style="background:#450a0a;color:#f87171;border:1px solid #7f1d1d;border-radius:6px;padding:4px 8px;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap"
+              title="Permanently delete — cannot be undone">
+              Delete permanently
+            </button>`:''}
           </div>`).join('')}
         </div>
       </div>`:''}
@@ -3278,12 +3620,7 @@ function doGuestBundy(){
 const SIDEBAR_SECTION_ICON={Overview:'dashboard',People:'people','Time & Attendance':'clock',Payroll:'peso',Talent:'recruit',Setup:'settings',Tools:'chart'};
 function sidebarSections(){
   const isA=isAdminUser(user)||isPlatformAdmin;
-  /* God Admin inside a company: all modules EXCEPT leave (not a company employee) */
-  const godInCompany=isPlatformAdmin&&activeClientId;
-  const has=v=>{
-    if(godInCompany&&v==='leave')return false; /* God Admin is not an employee — no leave */
-    return(isA||canAccess(v))&&clientHasModule(v);
-  };
+  const has=v=>(isA||canAccess(v))&&clientHasModule(v);
   const pendingCR=CHANGE_REQUESTS.filter(r=>r.status==='pending').length;
   const sections=[
     {title:'Overview',items:[{v:'dashboard',k:'dashboard',l:'Dashboard'}]},
@@ -3298,7 +3635,7 @@ function sidebarSections(){
       ...(has('webbundy')?[{v:'webbundy',k:'clock',l:'Web Bundy 📍'}]:[]),
       ...(has('attendance')?[{v:'attendance',k:'clock',l:'Attendance',badge:isA?attendanceRecords().filter(a=>a.approvalStatus==='pending').length:0}]:[]),
       ...(has('leave')?[{v:'leave',k:'leave',l:'Leave',badge:isA?pendingLeaves():0}]:[]),
-      ...(has('bundyadmin')?[{v:'bundyadmin',k:'chart',l:'Bundy Logs'}]:[]),
+      ...(has('bundyadmin')?[{v:'bundyadmin',k:'chart',l:'Web Bundy Monitor'}]:[]),
     ]},
     {title:'Payroll',items:[
       ...(has('payroll')?[{v:'payroll',k:'peso',l:'Payroll'}]:[]),
@@ -3454,7 +3791,7 @@ function dashboardQuickActions(){
   </div>`;
 }
 function pgDashboard(){
-  const isA=isAdminUser(user);
+  const isA=isAdminUser(user)||isPlatformAdmin;
   const myA=attendanceRecords().filter(a=>a.eid===user.id);
   const pr=myA.filter(a=>a.status==='present').length;
   const la=myA.filter(a=>a.status==='late').length;
@@ -5543,11 +5880,11 @@ function pgAttendance(){
   let body='';
   if(tab===0){
     const mine=attendanceRecords().filter(a=>a.eid===user.id).slice().reverse();
-    body=`<table><thead><tr><th>Date</th><th>Time In</th><th>Time Out</th><th>Status</th><th>OT Hrs</th><th>ND Hrs</th><th>Notes</th></tr></thead>
-    <tbody>${mine.length?mine.map(a=>`<tr><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td style="text-align:center;color:${a.ot>0?'var(--accent)':'var(--txt3)'}">${a.ot||'—'}</td><td style="text-align:center;color:${a.nd>0?'var(--purple)':'var(--txt3)'}">${a.nd||'—'}</td><td style="color:var(--txt3)">${a.notes||'—'}</td></tr>`).join(''):'<tr><td colspan="7" class="empty-state">No records</td></tr>'}</tbody></table>`;
+    body=`<table><thead><tr><th>Date</th><th>Time In</th><th>Time Out</th><th>Status</th><th>OT Hrs</th><th>ND Hrs</th><th>Notes</th><th>Logs</th></tr></thead>
+    <tbody>${mine.length?mine.map(a=>`<tr><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td style="text-align:center;color:${a.ot>0?'var(--accent)':'var(--txt3)'}">${a.ot||'—'}</td><td style="text-align:center;color:${a.nd>0?'var(--purple)':'var(--txt3)'}">${a.nd||'—'}</td><td style="color:var(--txt3)">${a.notes||'—'}</td><td><span class="badge b-info" style="cursor:pointer" onclick="openAttHistory(${a.eid},'${a.date}')" title="View raw time logs and edit history">🕘 ${(a.punches||[]).length}</span></td></tr>`).join(''):'<tr><td colspan="8" class="empty-state">No records</td></tr>'}</tbody></table>`;
   }else if(isA&&tab===1){
-    body=`<table><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th>Status</th><th>OT</th><th>ND</th></tr></thead>
-    <tbody>${attendanceRecords().slice().reverse().map(a=>{const emp=USERS.find(u=>u.id===a.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td>${a.ot?`<span style="color:var(--accent);font-weight:600">${a.ot}h</span>`:'—'}</td><td>${a.nd?`<span style="color:var(--purple);font-weight:600">${a.nd}h</span>`:'—'}</td></tr>`;}).join('')}</tbody></table>`;
+    body=`<table><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th>Status</th><th>OT</th><th>ND</th><th>Logs</th></tr></thead>
+    <tbody>${attendanceRecords().slice().reverse().map(a=>{const emp=USERS.find(u=>u.id===a.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td>${a.ot?`<span style="color:var(--accent);font-weight:600">${a.ot}h</span>`:'—'}</td><td>${a.nd?`<span style="color:var(--purple);font-weight:600">${a.nd}h</span>`:'—'}</td><td><span class="badge b-info" style="cursor:pointer" onclick="openAttHistory(${a.eid},'${a.date}')" title="View raw time logs and edit history">🕘 ${(a.punches||[]).length}</span></td></tr>`;}).join('')}</tbody></table>`;
   }else{
     body=`${isA?`<div class="field"><label>Employee</label><select id="ae">${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}</select></div>`:''}
     <div class="form-row"><div class="field"><label>Date</label><input type="date" id="adate" value="${today()}"/></div><div class="field"><label>Status</label><select id="ast"><option value="present">Present</option><option value="late">Late</option><option value="absent">Absent</option><option value="leave">On Leave</option></select></div></div>
@@ -5559,12 +5896,55 @@ function pgAttendance(){
   return`<div class="page-header"><div class="page-title">Attendance</div>${tab<(isA?2:1)?'':''}
   </div><div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div><div class="card">${body}</div>`;
 }
+// Shared by every MANUAL attendance entry point (File Attendance form, Edit Attendance Row,
+// Bulk Import) so filing or correcting a record by hand gets the same intelligent late/
+// undertime/OT/ND/attendance-policy computation the automatic sources (biometric, Web Bundy)
+// already get — instead of requiring late/undertime/OT/ND to be worked out and typed in by
+// hand. The entered tin/tout is folded into the record's permanent punches log too, same as
+// any other source. 'leave' status is left alone (nothing time-based to compute against); a
+// non-zero OT/ND the admin typed themselves is treated as an explicit override and wins over
+// the computed figure (e.g. pre-authorized OT that doesn't match strict schedule math).
+function computedAttendancePatch(empId,date,tin,tout,manualStatus,manualOt,manualNd,notes,source){
+  const base={tin,tout,status:manualStatus,ot:manualOt,nd:manualNd,notes,source};
+  const emp=USERS.find(u=>u.id===empId);
+  if(!emp||manualStatus==='leave')return base;
+  const existing=attendanceRecord(empId,date);
+  const receivedAt=new Date().toISOString();
+  // Exactly one of tin/tout given (the other left blank) is an incomplete log, not a valid day —
+  // capture whichever punch was entered permanently, but mark the day Absent rather than
+  // computing a Late/Present from the half that's actually there. Both blank falls through to
+  // `base` below unchanged (a deliberate no-times filing, e.g. an explicit Absent/manual status).
+  if((tin&&!tout)||(tout&&!tin)){
+    const newPunches=[];
+    if(tin)newPunches.push({time:tin,kind:'in',source,receivedAt});
+    if(tout)newPunches.push({time:tout,kind:'out',source,receivedAt});
+    const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,newPunches);
+    return{tin,tout,status:'absent',ot:0,nd:0,punches:mergedPunches,
+      notes:[notes,'Incomplete time log (missing '+(tin?'Time Out':'Time In')+') — marked Absent'].filter(Boolean).join(' · '),source};
+  }
+  if(!(tin&&tout))return base;
+  const newPunches=[{time:tin,kind:'in',source,receivedAt},{time:tout,kind:'out',source,receivedAt}];
+  const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,newPunches);
+  const schedule=TimekeepingCore.scheduleForDate(emp,date,COMPANY.shifts||[]);
+  const isRest=TimekeepingCore.isRestDay(emp,date,COMPANY.shifts||[]);
+  const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest)||{};
+  const computed=isRest?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
+  const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
+  return{...computed,punches:mergedPunches,
+    status:(computed.lwop||computed.incomplete)?'absent':(isRest?manualStatus:(computed.lateMinutes>0?'late':'present')),
+    ot:manualOt>0?manualOt:computed.ot,nd:manualNd>0?manualNd:computed.nd,
+    notes:[notes,policyNote].filter(Boolean).join(' · '),source};
+}
 function submitAtt(isA){
   const eid=isA?parseInt(document.getElementById('ae').value):user.id;
   const date=document.getElementById('adate').value;
   if(!date){alert('Select a date.');return;}
   const existing=attendanceRecord(eid,date);
-  upsertAttendance(eid,date,{tin:document.getElementById('atin').value,tout:document.getElementById('atout').value,status:document.getElementById('ast').value,ot:parseFloat(document.getElementById('aot').value)||0,nd:parseFloat(document.getElementById('and').value)||0,notes:document.getElementById('anotes').value,source:isA?'admin-entry':'employee-entry'});
+  const patch=computedAttendancePatch(eid,date,
+    document.getElementById('atin').value,document.getElementById('atout').value,document.getElementById('ast').value,
+    parseFloat(document.getElementById('aot').value)||0,parseFloat(document.getElementById('and').value)||0,
+    document.getElementById('anotes').value,isA?'admin-entry':'employee-entry');
+  upsertAttendance(eid,date,patch);
   queueSync('Attendance');alert(existing?'Attendance updated. The employee now has one authoritative record for this date.':'Attendance filed!');goTab(0);
 }
 // Attendance-record editing is admin/att_edit-gated and modal-based (not tab navigation) so it
@@ -5582,8 +5962,11 @@ function openEditAttRow(eid,date){
 function saveEditAttRow(){
   if(!modal||modal.type!=='editAttRow'||!canEditAttendance())return;
   const d=modal.draft;
-  upsertAttendance(modal.eid,modal.date,{tin:d.tin,tout:d.tout,status:d.status,ot:parseFloat(d.ot)||0,nd:parseFloat(d.nd)||0,notes:d.notes,approvalStatus:'approved',reviewedBy:user.name,reviewedAt:new Date().toISOString(),source:'admin-edit'});
-  queueSync('Attendance');closeM();toast('Attendance record updated.','success');
+  const patch=computedAttendancePatch(modal.eid,modal.date,d.tin,d.tout,d.status,parseFloat(d.ot)||0,parseFloat(d.nd)||0,d.notes,'admin-edit');
+  const otApproved=!(patch.ot>0);
+  upsertAttendance(modal.eid,modal.date,{...patch,approvalStatus:otApproved?'approved':'pending',
+    reviewedBy:otApproved?user.name:'',reviewedAt:otApproved?new Date().toISOString():''});
+  queueSync('Attendance');closeM();toast(otApproved?'Attendance record updated.':'Attendance record updated — overtime routed for approval before it can be paid.','success');
 }
 function openAttHistory(eid,date){
   const rec=attendanceRecord(eid,date);if(!rec)return;
@@ -5696,7 +6079,7 @@ function myLeaveRequestsTable(){
   <tbody>${mine.length?mine.map(l=>`<tr><td>${l.type}</td><td>${l.s}</td><td>${l.e}</td><td style="text-align:center">${leaveDaysCell(l)}</td><td>${l.reason}</td><td><span class="badge b-${l.status}">${l.status}</span></td><td>${l.status==='pending'?`<button class="btn btn-sm btn-danger" onclick="cancelLeaveRequest(${l.id})">Cancel</button>`:''}</td></tr>`).join(''):'<tr><td colspan="7" class="empty-state">No leave requests yet</td></tr>'}</tbody></table></div>`;
 }
 function pgLeave(){
-  const isA=isAdminUser(user);
+  const isA=isAdminUser(user)||isPlatformAdmin;
   const tabs=isA?['Pending Approval','My Leaves','All Requests','File Leave']:['My Leaves','File Leave'];
   let body='';
   if(isA&&tab===0){
@@ -6006,8 +6389,8 @@ function setPayrollSelection(mode,groupId){
 
 function pgPayroll(){
   ensureAnnualizedTaxConfig();
-  const tabs=['Dashboard','Compute','Adjustments','13th Month','Final Pay','Reports','Configuration'];
-  const tabIcons=['analytics','peso','edit','file','file','chart','settings'];
+  const tabs=['Dashboard','Compute','Adjustments','13th Month','Final Pay','Reports','Rulebook','Settings'];
+  const tabIcons=['analytics','peso','edit','file','file','chart','shield','settings'];
   let body='';
 
   /* ── TAB 0: DASHBOARD ─────────────────────────────────────────────────── */
@@ -6449,8 +6832,8 @@ function pgPayroll(){
     ${subTab===0?renderPayrollRegister():subTab===1?renderPayslipsList():subTab===2?renderGovtReports():renderBankFile()}`;
   }
 
-  /* ── TAB 6: CONFIGURATION ───────────────────────────────────────────── */
-  else if(tab===6){
+  /* ── TAB 7: SETTINGS (Payroll Groups, Pay Calendar, Income/Deduction Types, Attendance Formula/Policy) ── */
+  else if(tab===7){
     const cfgTab=window._cfgSub||0;
     const cfgTabs=['Payroll Groups','Pay Calendar','Income / Deduction Types','Attendance Formula and Overtime Table'];
     const catLabels={earnings:'Earnings',bonuses:'Bonuses',deminimis:'De Minimis',allowance:'Allowances',deductions:'Deductions',statutory:'Statutory',attendance:'Attendance'};
@@ -6604,6 +6987,45 @@ function pgPayroll(){
 
     /* ── TAB 3: ATTENDANCE ADJUSTMENTS ── */
     :cfgTab===3?`
+
+    <!-- ── Attendance Policy Rules ── -->
+    <div class="section-header" style="margin-bottom:.75rem">Attendance Policy Rules</div>
+    <div class="card" style="margin-bottom:1.5rem;padding:.875rem;border-top:3px solid var(--accent)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <span style="font-size:18px">📋</span>
+        <div><div style="font-weight:700;font-size:14px">Automatic attendance rules</div>
+          <div style="font-size:11px;color:var(--txt3)">Applied automatically as time logs come in (biometric device, Web Bundy) — no manual review needed for these cases.</div></div>
+        <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer">
+          <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ATTENDANCE_POLICY.active?'checked':''}
+            onchange="ATTENDANCE_POLICY.active=this.checked;render()"/> Active
+        </label>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.875rem">
+        <div class="field"><label>Late threshold for automatic Half Day</label>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="number" class="finput" min="0" step="5" value="${ATTENDANCE_POLICY.lateHalfDayMinutes}" style="font-size:13px;font-weight:700"
+              onchange="ATTENDANCE_POLICY.lateHalfDayMinutes=parseInt(this.value)||0"/>
+            <span style="font-size:11px;color:var(--txt3)">minutes</span>
+          </div>
+          <div style="font-size:10px;color:var(--txt3);margin-top:4px">e.g. 120 = 2 hours late auto-marks the day Half Day and deducts half the shift's hours.</div>
+        </div>
+        <div class="field"><label>Minimum hours worked for a Full Day</label>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="number" class="finput" min="0" step="0.5" value="${ATTENDANCE_POLICY.minHoursFullDay}" style="font-size:13px;font-weight:700"
+              onchange="ATTENDANCE_POLICY.minHoursFullDay=parseFloat(this.value)||0"/>
+            <span style="font-size:11px;color:var(--txt3)">hours</span>
+          </div>
+          <div style="font-size:10px;color:var(--txt3);margin-top:4px">Below this, the day is automatically marked LWOP (Leave Without Pay / Absent).</div>
+        </div>
+        <div class="field"><label>Deduct late minutes from OT</label>
+          <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;margin-top:2px">
+            <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ATTENDANCE_POLICY.deductLateFromOT?'checked':''}
+              onchange="ATTENDANCE_POLICY.deductLateFromOT=this.checked;render()"/>
+            <span style="font-size:12px">If an employee was late on a day they also worked OT, subtract the late minutes from that day's OT hours.</span>
+          </label>
+        </div>
+      </div>
+    </div>
 
     <!-- ── Deduction Section ── -->
     <div class="section-header" style="margin-bottom:.75rem">Deduction Adjustments</div>
@@ -8080,7 +8502,7 @@ function pgGovernment(){
         </div>
         <div style="display:flex;align-items:center;gap:8px">
           <span class="badge b-pending">pending</span>
-          <button class="btn btn-sm btn-primary" onclick="toast('${r.name} filing — coming soon','info')">File Now</button>
+          <button class="btn btn-sm btn-primary" title="Generate the filing worksheet/PDF in Payroll > Reports" onclick="goView('payroll');tab=5;window._rptSub=2;render()">File Now →</button>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:${r.ec?'1fr 1fr 1fr 1fr 1.2fr':'1fr 1fr 1.2fr'};gap:8px;font-size:12px;background:var(--bg);border-radius:8px;padding:.75rem">
@@ -8300,7 +8722,7 @@ function pgMySlips(){
 function openSlip(rid){const run=PAYROLLS.find(r=>r.id===rid);const item=run.items.find(i=>i.eid===user.id);modal={type:'slip',run,item};render();}
 
 function pgLoans(){
-  const isA=isAdminUser(user);
+  const isA=isAdminUser(user)||isPlatformAdmin;
   const myLoans=isA?LOANS:LOANS.filter(l=>l.eid===user.id);
   return`<div class="page-header"><div><div class="page-title">Loans</div><div class="page-sub">${isA?'All employee loans':'My active loans'}</div></div>
   ${isA?`<button class="btn btn-primary" onclick="modal={type:'addLoan'};render()">${ico('loan',14)} Add Loan</button>`:''}</div>
@@ -9447,6 +9869,23 @@ function renderModal(){
       ">✓ Save POC</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
+  }else if(modal.type==='lookupBulkAdd'){
+    const preview=parseLookupBulkText(document.getElementById('lookup-bulk-text')?.value||modal.text||'',modal.hasCode);
+    inner=`<div class="modal-title">⇅ Bulk Add — <strong>${esc(modal.label)}</strong>
+      <button class="close-x" onclick="closeM()">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:10px">
+      One row per line.${modal.hasCode?` Format: <strong>Code, Label</strong> — separate with a comma, tab, or pipe (a straight paste from an Excel column works too).<br/>Example: <span style="font-family:'JetBrains Mono',monospace">L10, Principal Engineer</span>`:` Just the name, one per line.<br/>Example: <span style="font-family:'JetBrains Mono',monospace">Alpha</span>`}
+      Duplicate ${modal.hasCode?'codes':'names'} already in the table are skipped automatically.
+    </div>
+    <textarea id="lookup-bulk-text" rows="10" class="finput" style="font-family:'JetBrains Mono',monospace;font-size:12px;resize:vertical"
+      placeholder="${modal.hasCode?'L10, Principal Engineer\nL11, Distinguished Engineer':'Alpha\nBeta'}"
+      oninput="modal.text=this.value;updateLookupBulkPreview()">${esc(modal.text||'')}</textarea>
+    <div id="lookup-bulk-count" style="font-size:12px;color:var(--txt3);margin-top:6px">${preview.length} row${preview.length!==1?'s':''} ready to add</div>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button id="lookup-bulk-submit" class="btn btn-primary" onclick="applyLookupBulkAdd()" ${preview.length?'':'disabled'}>✓ Add ${preview.length} Row${preview.length!==1?'s':''}</button>
+      <button class="btn" onclick="closeM()">Cancel</button>
+    </div>`;
   }else if(modal.type==='godSettings'){
     const settingTab=modal.settingTab||'security';
     const tabs2=[{k:'security',l:'🔐 Security'},{k:'audit',l:'🧾 Impersonation Audit'},{k:'plans',l:'📦 Plan Defaults'},{k:'passwords',l:'🔑 All Passwords'},{k:'branding',l:'🎨 Branding'}];
@@ -9944,7 +10383,7 @@ function renderModal(){
     <div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">This change is saved to the record's edit history — who edited it, when, and what changed.</div>
     <div style="display:flex;gap:8px"><button class="btn" onclick="closeM()">Cancel</button><button class="btn btn-primary" onclick="saveEditAttRow()">Save Changes</button></div>`;
   }else if(modal.type==='attReportDetail'){
-    const emp=modal.emp,s=modal.summary,badgeClass=st=>({Present:'b-present',Late:'b-late',Absent:'b-absent','On Leave':'b-leave','Rest Day':'b-info','No Record':'b-info'})[st]||'b-info';
+    const emp=modal.emp,s=modal.summary,badgeClass=st=>({Present:'b-present',Late:'b-late',Absent:'b-absent','On Leave':'b-leave','Rest Day':'b-info','No Record':'b-info','LWOP (no log)':'b-absent'})[st]||'b-info';
     const approvalClass=a=>({Approved:'b-approved',Pending:'b-pending',Rejected:'b-rejected'})[a]||'';
     inner=`<div class="modal-title">Detailed Attendance
       <div style="display:flex;align-items:center;gap:4px">
@@ -9956,13 +10395,20 @@ function renderModal(){
       <div style="font-weight:700;font-size:15px">${esc(emp.name||'')} <span style="font-weight:400;color:var(--txt3);font-size:12px">(${esc(emp.eid||'—')})</span></div>
       <div style="font-size:12px;color:var(--txt3)">${esc(emp.dept||'—')} · ${esc(emp.pos||'—')} · ${modal.range.from} to ${modal.range.to}${modal.range.label?' ('+esc(modal.range.label)+')':''}</div>
     </div>
+    ${s.noSchedule?`<div style="padding:10px 12px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;color:var(--red-txt);font-size:12px;margin-bottom:12px"><strong>⚠ No shift/schedule assigned to this employee for the whole selected range.</strong> Late and Undertime can't be computed without one — there's no "on time" to measure against, so both will read 0 no matter how late the actual punches were. Assign a shift on this employee's 201 File → Employment tab, then re-open this report.</div>`:''}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:14px">
       ${[['Days Present',s.presentDays],['Days Absent',s.absentDays],['Late (min)',s.lateMinutes],['Undertime (min)',s.undertimeMinutes],['OT (hrs)',s.otHours],['ND (hrs)',s.ndHours],['Rest Day/Holiday (hrs)',s.restDayHolidayHours],['Hours Worked',s.hoursWorked]]
         .map(([label,val])=>`<div style="padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:8px"><div style="font-size:10px;color:var(--txt3)">${label}</div><div style="font-weight:700;font-size:15px">${val}</div></div>`).join('')}
+      ${[['Half Day Count',s.halfDayCount,'var(--amber)','var(--amber-bg)','var(--amber-txt)','2+ hours late, auto-marked Half Day by Attendance Policy'],
+         ['LWOP — Insufficient Hours',s.lwopInsufficientHoursCount,'var(--red)','var(--red-bg)','var(--red-txt)','Worked below the minimum hours for a full day, auto-marked LWOP by Attendance Policy'],
+         ['LWOP — Missing Log',s.missingLogDays,'var(--red)','var(--red-bg)','var(--red-txt)','No time log at all for a scheduled work day — already counted inside Days Absent above'],
+         ['Incomplete Log Count',s.incompleteLogCount,'var(--red)','var(--red-bg)','var(--red-txt)','Only Time In or only Time Out on record — auto-marked Absent, already counted inside Days Absent above']]
+        .filter(([,val])=>val)
+        .map(([label,val,border,bg,txt,title])=>`<div style="padding:8px 10px;background:${bg};border:1px solid ${border};border-radius:8px" title="${esc(title)}"><div style="font-size:10px;color:${txt}">${label}</div><div style="font-weight:700;font-size:15px;color:${txt}">${val}</div></div>`).join('')}
     </div>
     <div style="max-height:${modal.maximized?'calc(85vh - 220px)':'420px'};overflow-y:auto">
-    <table><thead><tr style="position:sticky;top:0;z-index:1">${['Date','Day','Shift','Time In','Time Out','Status','Approval','OT','ND','Notes'].map(h=>`<th style="position:sticky;top:0;background:var(--surface2);box-shadow:0 1px 0 var(--border)">${h}</th>`).join('')}</tr></thead><tbody>
-      ${modal.days.map(d=>`<tr><td class="mono" style="font-size:12px">${d.date}</td><td style="font-size:12px">${d.dow}</td><td style="font-size:11px;color:var(--txt3)">${esc(d.shift)}</td><td class="mono">${d.tin}</td><td class="mono">${d.tout}</td><td><span class="badge ${badgeClass(d.status)}">${esc(d.status)}</span></td><td>${d.approval?`<span class="badge ${approvalClass(d.approval)}">${esc(d.approval)}</span>`:'—'}</td><td style="text-align:center;color:${d.ot>0?'var(--accent)':'var(--txt3)'}">${d.ot||'—'}</td><td style="text-align:center;color:${d.nd>0?'var(--purple)':'var(--txt3)'}">${d.nd||'—'}</td><td style="font-size:11px;color:var(--txt3)">${esc(d.notes||'—')}</td></tr>`).join('')}
+    <table><thead><tr style="position:sticky;top:0;z-index:1">${['Date','Day','Shift','Time In','Time Out','Status','Approval','Late','Undertime','OT','ND','Notes'].map(h=>`<th style="position:sticky;top:0;background:var(--surface2);box-shadow:0 1px 0 var(--border)">${h}</th>`).join('')}</tr></thead><tbody>
+      ${modal.days.map(d=>`<tr><td class="mono" style="font-size:12px">${d.date}</td><td style="font-size:12px">${d.dow}</td><td style="font-size:11px;color:var(--txt3)">${esc(d.shift)}</td><td class="mono">${d.tin}</td><td class="mono">${d.tout}</td><td><span class="badge ${badgeClass(d.status)}">${esc(d.status)}</span></td><td>${d.approval?`<span class="badge ${approvalClass(d.approval)}">${esc(d.approval)}</span>`:'—'}</td><td style="text-align:center;color:${d.late>0?'var(--amber-txt)':'var(--txt3)'}">${d.late?d.late+'m':'—'}</td><td style="text-align:center;color:${d.undertime>0?'var(--orange)':'var(--txt3)'}">${d.undertime?d.undertime+'m':'—'}</td><td style="text-align:center;color:${d.ot>0?'var(--accent)':'var(--txt3)'}">${d.ot||'—'}</td><td style="text-align:center;color:${d.nd>0?'var(--purple)':'var(--txt3)'}">${d.nd||'—'}</td><td style="font-size:11px;color:var(--txt3)">${esc(d.notes||'—')}</td></tr>`).join('')}
     </tbody></table>
     </div>
     <div style="display:flex;gap:8px;margin-top:1rem">
@@ -9971,15 +10417,26 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='attHistory'){
     const emp=USERS.find(u=>u.id===modal.eid);
-    const edits=modal.rec.edits||[];
+    const liveRec=attendanceRecord(modal.eid,modal.date)||modal.rec;
+    const edits=liveRec.edits||[];
+    const punches=(liveRec.punches||[]).slice().sort((a,b)=>a.time<b.time?-1:a.time>b.time?1:0);
+    const sourceLabel={'zkteco-realtime':'📡 Biometric (realtime)','zkteco-import':'📡 Biometric (import)','web-bundy':'📱 Web Bundy'};
     const fieldLabel={tin:'Time In',tout:'Time Out',status:'Status',ot:'OT Hours',nd:'ND Hours',undertimeMinutes:'Undertime (min)',restDayHolidayHours:'Rest Day/Holiday Hours'};
     inner=`<div class="modal-title">Attendance Edit History
       <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">${esc(emp?.name||'')} · ${esc(modal.date)}</div>
-    <div style="max-height:360px;overflow-y:auto">
+    <div class="card-title" style="margin-bottom:.4rem;font-size:12px">Raw Time Logs (${punches.length})</div>
+    <div style="font-size:11px;color:var(--txt3);margin-bottom:8px">Every punch ever captured for this day, from every source — permanent, never deleted or replaced. Time In/Out and computed hours above are re-derived from this full log.</div>
+    <div style="max-height:160px;overflow-y:auto;margin-bottom:14px">
+    <table><thead><tr><th>Time</th><th>Kind</th><th>Source</th></tr></thead><tbody>
+      ${punches.length?punches.map(p=>`<tr><td class="mono" style="font-size:12px">${esc(p.time)}</td><td>${p.kind?`<span class="badge ${p.kind==='in'?'b-approved':'b-info'}">${p.kind}</span>`:'<span style="color:var(--txt3)">—</span>'}</td><td style="font-size:12px">${sourceLabel[p.source]||esc(p.source||'—')}</td></tr>`).join(''):'<tr><td colspan="3" class="empty-state">No device/app punches captured for this day — this record was filed or edited manually.</td></tr>'}
+    </tbody></table>
+    </div>
+    <div class="card-title" style="margin-bottom:.4rem;font-size:12px">Edit History</div>
+    <div style="max-height:240px;overflow-y:auto">
     <table><thead><tr><th>When</th><th>By</th><th>Changes</th></tr></thead><tbody>
-      ${edits.length?edits.map(e=>`<tr><td style="font-size:11px;color:var(--txt3)">${new Date(e.at).toLocaleString('en-PH')}</td><td style="font-size:12px">${esc(e.by||'—')}</td><td style="font-size:12px">${Object.keys(e.changes||{}).map(k=>`<div><strong>${fieldLabel[k]||k}:</strong> ${esc(String(e.changes[k].from||'—'))} → ${esc(String(e.changes[k].to||'—'))}</div>`).join('')}</td></tr>`).join(''):'<tr><td colspan="3" class="empty-state">No edits recorded yet.</td></tr>'}
+      ${edits.length?edits.map(e=>`<tr><td style="font-size:11px;color:var(--txt3)">${new Date(e.at).toLocaleString('en-PH')}</td><td style="font-size:12px">${esc(e.by||'—')}</td><td style="font-size:12px">${Object.keys(e.changes||{}).map(k=>`<div><strong>${fieldLabel[k]||k}:</strong> ${esc(String(e.changes[k].from||'—'))} → ${esc(String(e.changes[k].to||'—'))}</div>`).join('')}</td></tr>`).join(''):'<tr><td colspan="3" class="empty-state">No manual edits recorded yet.</td></tr>'}
     </tbody></table>
     </div>
     <div style="margin-top:1rem"><button class="btn" onclick="closeM()">Close</button></div>`;
@@ -11075,8 +11532,8 @@ function renderModal(){
           oninput="modal.data.pass=this.value"/></div>
     </div>
     <div style="display:flex;gap:8px;margin-top:4px">
-      <button class="btn btn-primary" onclick="saveNewCompany()">＋ Add Company</button>
-      <button class="btn" onclick="closeM()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveNewCompany()" ${modal.saving?'disabled':''}>${modal.saving?'Creating…':'＋ Add Company'}</button>
+      <button class="btn" onclick="closeM()" ${modal.saving?'disabled':''}>Cancel</button>
     </div>`;
   }else if(modal.type==='platformPasswordReset'){
     const c=PLATFORM_CLIENTS.find(x=>x.id===modal.clientId);
@@ -11639,6 +12096,11 @@ function pgZKSetup(){
 
   /* ── Tab 1: User Mapping ── */
   else if(tab===1){
+    // Catches any match a biometric number/device user could satisfy that wasn't already
+    // caught by the automatic triggers (zkRefreshStatus, applyEmpSave) — e.g. bulk-imported
+    // employees whose Biometric Number already matched a device user seen earlier. Cheap and
+    // idempotent, so it's safe to run on every render of this tab.
+    zkAutoApplyBiometricMatches();
     const mappableUsers=zkMappableUsers();
     const empUseCount={};
     Object.values(ZK.userMapping).forEach(empId=>{if(empId)empUseCount[empId]=(empUseCount[empId]||0)+1;});
@@ -11646,9 +12108,10 @@ function pgZKSetup(){
     const unmappedEmployees=USERS.filter(u=>u.role==='employee'&&u.active!==false&&!mappedEmpIds.has(u.id));
     body=`
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.875rem">
-      <div style="font-size:13px;color:var(--txt2)">Map each ZKTeco user ID to an employee. This is a one-time setup.</div>
-      <div style="display:flex;gap:6px">
+      <div style="font-size:13px;color:var(--txt2)">Set an employee's <strong>Biometric Number</strong> (201 File → Employment tab) to their device user ID and they're mapped automatically — no need to pick from the list below unless a device user has no matching Biometric Number on file.</div>
+      <div style="display:flex;gap:6px;flex-shrink:0">
         <button class="btn btn-sm" onclick="zkRefreshStatus()" ${ZK.loading?'disabled':''}>↻ Refresh device users</button>
+        <button class="btn btn-sm" onclick="zkRunAutoMatchNow()">🔗 Recheck Biometric matches</button>
         <button class="btn btn-sm btn-primary" onclick="zkSaveMapping()">Save mapping</button>
       </div>
     </div>
@@ -11656,14 +12119,15 @@ function pgZKSetup(){
     <tbody>${mappableUsers.map(du=>{
       const mapped=ZK.userMapping[du.userId]?USERS.find(u=>u.id===ZK.userMapping[du.userId]):null;
       const isDuplicate=mapped&&empUseCount[mapped.id]>1;
+      const autoMatched=mapped&&mapped.biometricNo&&String(mapped.biometricNo).trim()===String(du.userId).trim();
       return`<tr>
         <td class="mono" style="font-size:12px">${du.userId}</td>
         <td>${du.name||(du.fromPunchesOnly?'<span style="color:var(--txt3);font-style:italic">seen in punches only</span>':'—')}</td>
         <td class="mono" style="font-size:11px">${du.cardNo||'—'}</td>
         <td><select id="zkmap-${du.userId}" class="finput" style="font-size:12px">
           <option value="">— Unmapped —</option>
-          ${USERS.filter(u=>u.role==='employee').map(e=>`<option value="${e.id}" ${ZK.userMapping[du.userId]===e.id?'selected':''}>${e.name} (${e.eid})</option>`).join('')}
-        </select></td>
+          ${USERS.filter(u=>u.role==='employee').map(e=>`<option value="${e.id}" ${mapped&&mapped.id===e.id?'selected':''}>${e.name} (${e.eid})</option>`).join('')}
+        </select>${autoMatched?`<div style="font-size:10px;color:var(--green-txt);margin-top:3px">🔗 Auto-matched via Biometric No.</div>`:''}</td>
         <td>${mapped?`<span class="badge b-approved">${mapped.name}</span>`:`<span class="badge b-absent">Unmapped</span>`}${isDuplicate?` <span class="badge b-late" title="This employee is also mapped to another device user ID — their punches from all mapped IDs will be merged into one attendance record.">⚠ Already mapped elsewhere</span>`:''}</td>
       </tr>`;}).join('')}</tbody></table>`
     :`<div class="empty-state"><div class="ei">👆</div>No device users seen yet. Users appear here automatically as they're enrolled on the device or as punches come in, or click "Refresh device users".</div>`}
@@ -11728,7 +12192,7 @@ function pgZKSetup(){
   else if(tab===3){body=`
     <div class="card" style="margin-bottom:1rem">
       <div class="card-title" style="margin-bottom:.875rem">Live Punch Monitor</div>
-      <p style="font-size:13px;color:var(--txt2);margin-bottom:1rem">ADMS devices push punches to the server as they happen — there's nothing to "enable" on the device side. Turn this on to auto-refresh the pending list here every 20 seconds while you're on this page; you still choose when to import (Pull &amp; Import tab).</p>
+      <p style="font-size:13px;color:var(--txt2);margin-bottom:1rem">ADMS devices push punches and newly-enrolled users to the server as they happen — there's nothing to "enable" on the device side. Turn this on to auto-refresh the pending punch list <em>and</em> the device user list (User Mapping tab) every 20 seconds while you're on this page; you still choose when to import (Pull &amp; Import tab).</p>
       <div style="display:flex;align-items:center;gap:14px">
         <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px">
           <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ZK.realtimeEnabled?'checked':''} onchange="ZK.realtimeEnabled=this.checked;if(ZK.realtimeEnabled)startRealtime();else stopRealtime();render()"/>
@@ -11755,6 +12219,7 @@ function pgZKSetup(){
           <div style="display:flex;gap:6px;flex-wrap:wrap">
             <button class="btn btn-sm" onclick="zkSendCommand('${esc(d.serial)}','reboot')">🔄 Restart device</button>
             <button class="btn btn-sm" onclick="zkSendCommand('${esc(d.serial)}','resync')">📡 Resync attendance log</button>
+            <button class="btn btn-sm" onclick="zkSendCommand('${esc(d.serial)}','resyncusers')">👤 Resync user list</button>
             <button class="btn btn-sm" style="color:var(--red)" onclick="zkSendCommand('${esc(d.serial)}','clearlog','⚠ This permanently deletes the attendance log stored on the device itself. Any punches the server hasn\\'t received yet will be lost. Continue?')">🗑️ Clear attendance log</button>
           </div>
         </div>
@@ -11786,6 +12251,7 @@ function startRealtime(){
   realtimeTimer=setInterval(async()=>{
     if(!ZK.realtimeEnabled)return;
     await zkPullAttendance();
+    await zkPollDeviceUsers();
   },20000);
 }
 function stopRealtime(){if(realtimeTimer){clearInterval(realtimeTimer);realtimeTimer=null;}}
@@ -11907,10 +12373,10 @@ function pgApprovalSetup(){
 
 
 function pgOrgSetup(){
-  function subHtml(bu,d,t){return t.subteams.map((s,si)=>`<span style="display:inline-flex;align-items:center;gap:4px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:5px;padding:2px 7px;font-size:11px;margin:2px">${s}<button onclick="editSubteam(${bu.id},${d.id},${t.id},${si})" style="background:none;border:none;cursor:pointer;color:#94a3b8;font-size:11px;padding:0 1px">✎</button><button onclick="delSubteam(${bu.id},${d.id},${t.id},${si})" style="background:none;border:none;cursor:pointer;color:#f87171;font-size:11px;padding:0 1px">✕</button></span>`).join('');}
+  function subHtml(bu,d,t){return t.subteams.map((s,si)=>`<span style="display:inline-flex;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);color:var(--txt);border-radius:5px;padding:2px 7px;font-size:11px;margin:2px">${s}<button onclick="editSubteam(${bu.id},${d.id},${t.id},${si})" style="background:none;border:none;cursor:pointer;color:var(--txt3);font-size:11px;padding:0 1px">✎</button><button onclick="delSubteam(${bu.id},${d.id},${t.id},${si})" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:11px;padding:0 1px">✕</button></span>`).join('');}
   function teamHtml(bu,d){return d.teams.map(t=>`<div style="margin-left:2rem;padding:8px 10px;border-left:3px solid var(--border);margin-bottom:5px;border-radius:0 6px 6px 0">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-      <div style="font-size:13px;font-weight:500">${t.name} <span style="font-size:10px;font-weight:400;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:4px">Team · ${t.subteams.length} subteams</span></div>
+      <div style="font-size:13px;font-weight:500;color:var(--txt)">${t.name} <span style="font-size:10px;font-weight:400;color:var(--txt2);background:var(--surface2);padding:1px 6px;border-radius:4px">Team · ${t.subteams.length} subteams</span></div>
       <div style="display:flex;gap:4px">
         <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" onclick="editTeam(${bu.id},${d.id},${t.id})">✎</button>
         <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" onclick="addSubteam(${bu.id},${d.id},${t.id})">+ Sub</button>
@@ -11921,7 +12387,7 @@ function pgOrgSetup(){
   </div>`).join('');}
   function deptHtml(bu){return bu.depts.map(d=>`<div style="margin:6px 0 6px 1rem;border:1px solid var(--border);border-radius:8px;padding:10px 12px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
-      <div style="font-weight:600">${d.name} <span style="font-size:10px;font-weight:400;background:#e0e7ff;color:#3730a3;padding:1px 7px;border-radius:4px">Dept</span> <span style="font-size:11px;color:var(--txt3)">${d.teams.length} team${d.teams.length!==1?'s':''}</span></div>
+      <div style="font-weight:600;color:var(--txt)">${d.name} <span style="font-size:10px;font-weight:400;background:var(--accent-bg);color:var(--accent-txt);padding:1px 7px;border-radius:4px">Dept</span> <span style="font-size:11px;color:var(--txt3)">${d.teams.length} team${d.teams.length!==1?'s':''}</span></div>
       <div style="display:flex;gap:4px">
         <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" onclick="editDept(${bu.id},${d.id})">✎ Rename</button>
         <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" onclick="addTeam(${bu.id},${d.id})">+ Team</button>
@@ -12004,7 +12470,10 @@ function pgLookupSetup(){
   ${sections.map(s=>`<div class="card">
     <div class="card-hd">
       <div><div class="card-title">${s.label}</div><div class="card-sub">${s.desc}</div></div>
-      <button class="btn btn-sm btn-primary" onclick="addLookup('${s.key}',${s.hasCode})">+ Add</button>
+      <div style="display:flex;gap:6px;flex-shrink:0">
+        <button class="btn btn-sm" onclick="openLookupBulkAdd('${s.key}',${s.hasCode},'${esc(s.label)}')" title="Paste multiple rows at once">⇅ Bulk Add</button>
+        <button class="btn btn-sm btn-primary" onclick="addLookup('${s.key}',${s.hasCode})">+ Add</button>
+      </div>
     </div>
     <table><thead><tr>${s.cols.map(c=>`<th>${c}</th>`).join('')}<th></th></tr></thead>
     <tbody>${rows(s.key,s.hasCode)}</tbody></table>
@@ -12031,6 +12500,53 @@ function delLookup(key,idx){
   const label=item.name||item.label||item.code;
   if(!confirm(`Delete "${label}" from ${key}?`))return;
   LOOKUPS[key].splice(idx,1);render();
+}
+
+/* ── Bulk Add for Lookup Tables — paste multiple rows at once instead of
+   one "+ Add" prompt() per row. Accepts comma, tab, or pipe as the
+   code/label separator so a straight paste from an Excel column works too. */
+function parseLookupBulkText(text,hasCode){
+  const lines=(text||'').split('\n').map(l=>l.trim()).filter(Boolean);
+  return lines.map(line=>{
+    if(!hasCode)return{name:line};
+    const parts=line.split(/\t|\||,/).map(p=>p.trim()).filter(Boolean);
+    if(parts.length<2)return null; /* needs both a code and a label */
+    return{code:parts[0],label:parts.slice(1).join(', ')};
+  }).filter(Boolean);
+}
+function openLookupBulkAdd(key,hasCode,label){
+  modal={type:'lookupBulkAdd',key,hasCode,label,text:''};
+  render();
+}
+/* Updates just the row count + submit button, not the whole page — a full
+   render() would rebuild the textarea and drop focus/cursor on every keystroke. */
+function updateLookupBulkPreview(){
+  const preview=parseLookupBulkText(modal.text,modal.hasCode);
+  const countEl=document.getElementById('lookup-bulk-count');
+  const submitBtn=document.getElementById('lookup-bulk-submit');
+  if(countEl)countEl.textContent=`${preview.length} row${preview.length!==1?'s':''} ready to add`;
+  if(submitBtn){
+    submitBtn.disabled=!preview.length;
+    submitBtn.textContent=`✓ Add ${preview.length} Row${preview.length!==1?'s':''}`;
+  }
+}
+function applyLookupBulkAdd(){
+  const{key,hasCode}=modal;
+  const text=document.getElementById('lookup-bulk-text')?.value||'';
+  const parsed=parseLookupBulkText(text,hasCode);
+  if(!parsed.length){toast('No valid rows to add.','warning');return;}
+  const existing=new Set(LOOKUPS[key].map(x=>(x.code||x.name||'').toLowerCase()));
+  let added=0,skipped=0;
+  parsed.forEach(row=>{
+    const key2=(row.code||row.name||'').toLowerCase();
+    if(existing.has(key2)){skipped++;return;}
+    existing.add(key2);
+    LOOKUPS[key].push(hasCode?{id:nLookup[key]++,code:row.code,label:row.label}:{id:nLookup[key]++,name:row.name});
+    added++;
+  });
+  closeM();
+  toast(`Added ${added} row${added!==1?'s':''}${skipped?`, skipped ${skipped} duplicate${skipped!==1?'s':''}`:''}.`,'success');
+  render();
 }
 
 /* ========== ACCESS & PERMISSIONS SETUP ========== */
@@ -12392,13 +12908,23 @@ async function doBundy(type){
     address:geoSt.address,zoneResult:geoSt.zoneResult,
     withinZone:geoSt.zoneResult?.within||false,selfie:selfieData};
   BUNDY_LOGS.push(entry);
-  /* Sync to attendance */
+  /* Sync to attendance — fold in every one of today's bundy punches (not just the very first
+     in/out of the day), permanently, so a break clock-out/in or a corrected re-clock is
+     captured and reflected in the computed hours instead of being ignored after the first one.
+     Late/OT/ND are derived from the employee's actual shift schedule instead of a flat 08:30
+     threshold with OT/ND always left at 0. */
   const existing=attendanceRecord(user.id,today());
-  if(type==='in'&&!existing){
-    const late=now.getHours()>8||(now.getHours()===8&&now.getMinutes()>=30);
-    upsertAttendance(user.id,today(),{tin:entry.time,tout:'',status:late?'late':'present',ot:0,nd:0,notes:'Web Bundy',source:'web-bundy',approvalStatus:'approved',filedBy:user.name});
-  }else if(type==='in'&&existing&&!existing.tin){upsertAttendance(user.id,today(),{tin:entry.time,source:'web-bundy',approvalStatus:'approved',filedBy:user.name});
-  }else if(type==='out'&&existing&&!existing.tout){upsertAttendance(user.id,today(),{tout:entry.time,source:'web-bundy',approvalStatus:'approved',filedBy:user.name});}
+  const todaysPunches=[...todayLogs,entry].map(b=>({time:b.time,kind:b.type,source:'web-bundy',receivedAt:b.datetime}));
+  const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,todaysPunches);
+  const schedule=TimekeepingCore.scheduleForDate(user,today(),COMPANY.shifts||[]);
+  const isRest=TimekeepingCore.isRestDay(user,today(),COMPANY.shifts||[]);
+  const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest)||{};
+  const computed=isRest?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
+  const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
+  upsertAttendance(user.id,today(),{...computed,punches:mergedPunches,
+    status:(computed.lwop||computed.incomplete)?'absent':isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),
+    notes:['Web Bundy',policyNote].filter(Boolean).join(' · '),source:'web-bundy',
+    approvalStatus:computed.ot>0?'pending':'approved',filedBy:user.name});
   queueSync('Bundy_Logs','Attendance');selfieData=null;
   const zoneNote=entry.withinZone?'\n\u2705 Within office zone':'\n\u26A0 You are outside the office zone';
   alert((type==='in'?'Clocked IN at '+entry.time:'Clocked OUT at '+entry.time)+zoneNote);
@@ -12513,8 +13039,8 @@ function pgWebBundy(){
 }
 
 function pgBundyAdmin(){
-  const isA=isAdminUser(user);
-  const tabs=isA?['Today\'s Status','All Logs','Office Zones']:['My Logs'];
+  const isA=isAdminUser(user)||isPlatformAdmin;
+  const tabs=isA?['Today\'s Status','Office Zones']:['My Logs'];
   const todayAll=BUNDY_LOGS.filter(b=>b.date===today());
   let body='';
 
@@ -12526,7 +13052,10 @@ function pgBundyAdmin(){
       const lo=[...logs].reverse().find(b=>b.type==='out');
       return li&&(!lo||li.datetime>lo.datetime);
     }).length;
-    body=`<div class="metrics" style="margin-bottom:1rem">
+    body=`<div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:.75rem">
+      <button class="btn btn-sm" onclick="goView('attendance');tab=2;render()">📋 Browse full punch history →</button>
+    </div>
+    <div class="metrics" style="margin-bottom:1rem">
       <div class="metric"><div class="metric-label">Clocked in now</div><div class="metric-val green">${inCount}</div></div>
       <div class="metric"><div class="metric-label">Total punches today</div><div class="metric-val">${todayAll.length}</div></div>
       <div class="metric"><div class="metric-label">Outside zone</div><div class="metric-val amber">${todayAll.filter(b=>!b.withinZone).length}</div></div>
@@ -12555,8 +13084,8 @@ function pgBundyAdmin(){
       }).join('')}
     </div>`;
   }
-  else if((isA&&tab===1)||(!isA&&tab===0)){
-    const logs=isA?[...BUNDY_LOGS].reverse():BUNDY_LOGS.filter(b=>b.eid===user.id).reverse();
+  else if(!isA&&tab===0){
+    const logs=BUNDY_LOGS.filter(b=>b.eid===user.id).reverse();
     body=`<div style="overflow-x:auto"><table style="min-width:700px"><thead><tr><th>Employee</th><th>Date</th><th>Type</th><th>Time</th><th>Location</th><th>Zone</th><th>Selfie</th></tr></thead>
     <tbody>${logs.length?logs.map(b=>`<tr>
       <td><div class="emp-cell"><div class="avatar sm">${ini(b.empName)}</div>${b.empName}</div></td>
@@ -12576,7 +13105,7 @@ function pgBundyAdmin(){
       '<span style="color:var(--txt3);font-size:11px">—</span>'}</td>
     </tr>`).join(''):`<tr><td colspan="7" class="empty-state">No bundy logs yet</td></tr>`}</tbody></table></div>`;
   }
-  else if(isA&&tab===2){
+  else if(isA&&tab===1){
     body=`<div style="display:flex;justify-content:flex-end;margin-bottom:10px">
       <button class="btn btn-primary btn-sm" onclick="addZone()">+ Add Office Zone</button>
     </div>
@@ -12600,7 +13129,7 @@ function pgBundyAdmin(){
     </div>`;
   }
 
-  return`<div class="page-header"><div class="page-title">Bundy Logs</div></div>
+  return`<div class="page-header"><div class="page-title">Web Bundy Monitor</div></div>
   <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
   <div class="card">${body}</div>`;
 }
@@ -13587,7 +14116,7 @@ function pgEmpDetail(){
   ensureAnnualizedTaxConfig();
   const e=USERS.find(u=>u.id===detailEmpId);
   if(!e)return`<div class="page-header"><div class="page-title">Employee not found</div></div><button class="btn" onclick="goView('employees')">← Back</button>`;
-  const isA=isAdminUser(user);
+  const isA=isAdminUser(user)||isPlatformAdmin;
   const ms=e.rate*22;
   const months=COMPANY.salaryMultiplier||13;
   const computedPA=+(e.rate*22*months).toFixed(2);
@@ -14440,6 +14969,7 @@ function applyEmpSave(reason){
       toast(e.name+' moved from "'+(oldGrp?.name||'no group')+'" to "'+(newGrp?.name||'no group')+'" — '+changedField+' updated.','info');
     }
   }
+  if('biometricNo' in draftToApply)zkAutoApplyBiometricMatches();
   render();queueSync('Employees');
 }
 
@@ -14753,7 +15283,15 @@ function render(){
   if(COMPANY.darkMode){document.documentElement.setAttribute('data-dark','');}else{document.documentElement.removeAttribute('data-dark');}
   try{
     localStorage.setItem('sr_dark_mode',COMPANY.darkMode?'1':'0');
-    localStorage.setItem('sr_company_brand',JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
+    /* Cache branding per-tenant (see sessionBrandCacheKey()) so a page refresh always paints
+       THIS session's own client, not whichever client last logged in on this browser. Still
+       skipped while merely browsing a local-only demo client (no tenantKey, no real session
+       swap) — COMPANY there is fake preview data, not this session's own real branding. */
+    const _browsingLocalDemoClient=!!(activeClientId&&activeClientId!==1&&
+      !(PLATFORM_CLIENTS.find(c=>c.id===activeClientId)||{}).tenantKey);
+    if(!_browsingLocalDemoClient){
+      localStorage.setItem(sessionBrandCacheKey(),JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
+    }
   }catch(e){}
   const root=document.getElementById('root');
   if(!user){
@@ -14795,7 +15333,7 @@ function render(){
     else if(view==='profilechanges')pg=gate('profilechanges','Profile Changes',pgProfileChanges);
     else if(view==='zksetup')pg=gate('zksetup','ZKTeco Device',pgZKSetup);
     else if(view==='webbundy')pg=gate('webbundy','Web Bundy',pgWebBundy);
-    else if(view==='bundyadmin')pg=gate('bundyadmin','Bundy Logs',pgBundyAdmin);
+    else if(view==='bundyadmin')pg=gate('bundyadmin','Web Bundy Monitor',pgBundyAdmin);
     else if(view==='company')pg=gate('company','Company Settings',pgCompanySettings);
     else if(view==='gsheets')pg=gate('gsheets','Google Sheets Sync',pgGoogleSheets);
     else if(view==='fieldconfig')pg=gate('fieldconfig','Field Configuration',pgFieldConfig);
@@ -15147,9 +15685,9 @@ render = function() {
 <script src="/bir-2316-pdf.js?v=20260804-official-form-overlay"></script>
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
-<script src="/compliance.js?v=20260810-bulk-pschedule"></script>
-<script src="/enterprise.js?v=20260810-bulk-pschedule"></script>
+<script src="/compliance.js?v=20260814-summary-total-late-fix"></script>
+<script src="/enterprise.js?v=20260814-summary-total-late-fix"></script>
 <script src="/payroll-governance.js?v=20260804-annualized-tax"></script>
-<script src="/persistence.js?v=20260804-impersonation-audit"></script>
+<script src="/persistence.js?v=20260814-summary-total-late-fix"></script>
 </body>
 </html>

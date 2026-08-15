@@ -74,7 +74,7 @@
 
   window.openResolutionForm=function(category,linkedType,linkedId) {
     window._resolutionForm={category:category||'Attendance',linkedType:linkedType||'',linkedId:linkedId||null};
-    view='resolution';tab=isAdminUser(user)?0:1;render();
+    view='resolution';tab=(isAdminUser(user)||isPlatformAdmin)?0:1;render();
   };
 
   window.submitResolutionCase=function() {
@@ -127,13 +127,29 @@
     if(!notes.trim()){toast('Resolution notes are required for the audit trail.','warning');return;}
     c.status=decision==='resolved'?'resolved':'rejected';
     c.resolution=notes.trim();c.resolvedBy=user.name;c.resolvedAt=new Date().toISOString();
+    // A resolved case establishes that the request is legitimate (eligible, within policy) --
+    // it is not itself the record's full approval sign-off. The linked attendance record(s)
+    // still go through applyAttendanceDecision() so multi-layer approval chains (Company
+    // Settings > Approval Layers) are honored the same way regular attendance is, instead of
+    // one Resolution Center reviewer silently fully-approving pay-impacting hours.
+    var routedToNextLayer=false;
+    function applyResolutionDecision(row){
+      // The row may already be sitting at 'approved' from an earlier cycle (e.g. the base
+      // clock-in/out was approved before this Undertime/OT/etc. request amended it) --
+      // restart the chain from Layer 1 so the amended record gets a fresh full approval
+      // pass instead of silently keeping a stale 'approved' status or resuming mid-chain.
+      row.approvalStatus='pending';row.approvalLayer=1;
+      var result=applyAttendanceDecision(row,'approved');
+      if(result.decision==='approved'&&result.message.indexOf('Routed to Layer')>=0)routedToNextLayer=true;
+      return result;
+    }
     if(decision==='resolved'){
       if(c.attendanceRequestType==='time_correction'){
         var linkedCorrection=TimekeepingCore.validateLinkedRecord(ATT,c);
         var corrected=upsertAttendance(c.employeeId,c.requestDate,linkedCorrection?{}:{tin:'',tout:'',status:'present',ot:0,nd:0,notes:'Approved '+c.subject,source:'attendance-correction'});
         if(c.punchType==='time_out')corrected.tout=c.correctedTime;
         else corrected.tin=c.correctedTime;
-        corrected.approvalStatus='approved';corrected.reviewedBy=user.name;corrected.reviewedAt=c.resolvedAt;
+        applyResolutionDecision(corrected);
         c.linkedType='attendance';c.linkedId=corrected.id;
         queueSync('Attendance');
       }else if(c.attendanceRequestType==='official_business'){
@@ -141,15 +157,16 @@
         requestDates(c.requestDate,c.requestEndDate).forEach(function(d){
           var current=attendanceRecord(c.employeeId,d);
           var ob=upsertAttendance(c.employeeId,d,{tin:c.requestedStart,tout:c.requestedEnd,status:'present',ot:current&&current.ot||0,nd:current&&current.nd||0,notes:(current&&current.notes?current.notes+' · ':'')+'Approved Official Business',source:'official-business'});
-          ob.approvalStatus='approved';ob.reviewedBy=user.name;ob.reviewedAt=c.resolvedAt;obRecords.push(ob.id);
+          applyResolutionDecision(ob);obRecords.push(ob.id);
         });
         c.attendanceRecordIds=obRecords;queueSync('Attendance');
       }else if(c.attendanceRequestType==='work_from_home'){
         var wfhRecords=[];
         requestDates(c.requestDate,c.requestEndDate).forEach(function(d){
           var wfh=actualLogForDate(c.employeeId,d);
-          wfh.status='present';wfh.approvalStatus='approved';wfh.reviewedBy=user.name;wfh.reviewedAt=c.resolvedAt;
-          wfh.notes=(wfh.notes?wfh.notes+' · ':'')+'Approved Work From Home';wfhRecords.push(wfh.id);
+          wfh.status='present';
+          wfh.notes=(wfh.notes?wfh.notes+' · ':'')+'Approved Work From Home';
+          applyResolutionDecision(wfh);wfhRecords.push(wfh.id);
         });
         c.attendanceRecordIds=wfhRecords;queueSync('Attendance');
       }else if(c.attendanceRequestType==='schedule_adjustment'){
@@ -162,8 +179,8 @@
       }else if(c.attendanceRequestType==='undertime'){
         var undertime=actualLogForDate(c.employeeId,c.requestDate);
         undertime.undertimeMinutes=Math.max(Number(undertime.undertimeMinutes||0),Number(c.requestedMinutes||0));
-        undertime.approvalStatus='approved';undertime.reviewedBy=user.name;undertime.reviewedAt=c.resolvedAt;
         undertime.notes=(undertime.notes?undertime.notes+' · ':'')+'Approved undertime: '+undertime.undertimeMinutes+' minute(s)';
+        applyResolutionDecision(undertime);
         c.linkedType='attendance';c.linkedId=undertime.id;queueSync('Attendance');
       }else if(c.attendanceRequestType==='overtime'){
         // Re-run through otTypeEligibility (not just calculateEligibleHours) so approval also
@@ -176,8 +193,8 @@
         c.actualTimeIn=actual&&actual.tin||'';
         c.actualTimeOut=actual&&actual.tout||'';
         if(actual){
-          actual.approvalStatus='approved';actual.reviewedBy=user.name;actual.reviewedAt=c.resolvedAt;
           actual.ot=otResult.hours;
+          applyResolutionDecision(actual);
           c.linkedType='attendance';c.linkedId=actual.id;
           queueSync('Attendance');
         }
@@ -192,20 +209,20 @@
         c.actualTimeIn=rdhLogActual&&rdhLogActual.tin||'';
         c.actualTimeOut=rdhLogActual&&rdhLogActual.tout||'';
         if(rdhLogActual){
-          rdhLogActual.approvalStatus='approved';rdhLogActual.reviewedBy=user.name;rdhLogActual.reviewedAt=c.resolvedAt;
           rdhLogActual.restDayHolidayHours=rdhResult.hours;
+          applyResolutionDecision(rdhLogActual);
           c.linkedType='attendance';c.linkedId=rdhLogActual.id;
           queueSync('Attendance');
         }
       }else if(c.linkedType==='attendance'){
         var a=TimekeepingCore.validateLinkedRecord(ATT,c);
-        if(a){a.approvalStatus='approved';a.reviewedBy=user.name;a.reviewedAt=c.resolvedAt;}
+        if(a)applyResolutionDecision(a);
       }else if(c.linkedType==='leave'){
         var l=LEAVES.find(function(x){return x.id===c.linkedId;});
         if(l)l.status='approved';
       }
     }
-    toast(c.caseNo+' '+(decision==='resolved'?'resolved':'closed without change')+'.',decision==='resolved'?'success':'warning');render();
+    toast(c.caseNo+' '+(decision==='resolved'?(routedToNextLayer?'resolved — routed to the next approval layer before it counts toward payroll':'resolved'):'closed without change')+'.',decision==='resolved'?'success':'warning');render();
   };
 
   // Lets an employee withdraw their own request while it's still awaiting action — covers
@@ -529,6 +546,7 @@
     if(!(isAdminUser(user)||isPlatformAdmin))return;
     var d=modal.draft;
     if(!d.name||!d.name.trim()){toast('Shift name is required.','warning');return;}
+    var amPmFixes=[];
     for(var i=0;i<SHIFT_DAY_KEYS.length;i++){
       var k=SHIFT_DAY_KEYS[i],day=d.schedule[k];
       // A rest day never keeps leftover times underneath — whether from an old save made
@@ -538,6 +556,13 @@
       if(!validShiftTime(day.start)||!validShiftTime(day.end)){toast('Enter valid start/end times for '+SHIFT_DAY_LABELS[k]+', or mark it as a rest day.','warning');return;}
       if(day.breakStart&&!validShiftTime(day.breakStart)){toast('Enter a valid break start time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
       if(day.breakEnd&&!validShiftTime(day.breakEnd)){toast('Enter a valid break end time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
+      // An End Time in the AM half that doesn't make sense before Start on the same day is
+      // almost always the time-picker's AM/PM segment left on AM by mistake (e.g. 06:00 typed
+      // meaning 6:00 PM) rather than an intentional overnight shift — reinterpreting it as PM
+      // and checking the resulting same-day length is sane catches that specific mistake
+      // automatically, without touching a genuine overnight shift like 22:00–06:00.
+      var corrected=TimekeepingCore.autoCorrectShiftEndAmPm(day.start,day.end);
+      if(corrected){amPmFixes.push(SHIFT_DAY_LABELS[k]+': '+day.end+' → '+corrected);day.end=corrected;}
     }
     var graceMinutes=parseInt(d.graceMinutes,10);
     if(isNaN(graceMinutes)||graceMinutes<0){toast('Enter a valid grace period.','warning');return;}
@@ -548,7 +573,9 @@
     }else{
       SHIFT_DEFINITIONS.push({id:nextShiftId++,name:d.name.trim(),graceMinutes:graceMinutes,active:true,schedule:d.schedule});
     }
-    saveShiftConfig();closeM();toast('Shift saved.','success');
+    saveShiftConfig();closeM();
+    if(amPmFixes.length)toast('Shift saved. Auto-corrected a likely AM/PM mix-up — '+amPmFixes.join(', ')+'. If any of these was meant to be an overnight shift, reopen and re-enter that End Time.','info',7000);
+    else toast('Shift saved.','success');
   };
 
   window.toggleShift=function(id){
@@ -612,6 +639,7 @@
     var employee=USERS.find(function(e){return e.id===modal.employeeId;});
     if(!employee)return;
     var d=modal.draft;
+    var amPmFixes=[];
     for(var i=0;i<SHIFT_DAY_KEYS.length;i++){
       var k=SHIFT_DAY_KEYS[i],day=d[k];
       // A rest day never keeps leftover times underneath — whether from an old save made
@@ -621,6 +649,8 @@
       if(!validShiftTime(day.start)||!validShiftTime(day.end)){toast('Enter valid start/end times for '+SHIFT_DAY_LABELS[k]+', or mark it as a rest day.','warning');return;}
       if(day.breakStart&&!validShiftTime(day.breakStart)){toast('Enter a valid break start time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
       if(day.breakEnd&&!validShiftTime(day.breakEnd)){toast('Enter a valid break end time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
+      var corrected=TimekeepingCore.autoCorrectShiftEndAmPm(day.start,day.end);
+      if(corrected){amPmFixes.push(SHIFT_DAY_LABELS[k]+': '+day.end+' → '+corrected);day.end=corrected;}
     }
     // Refuse a week that's entirely rest days — almost certainly a mistake (every field left
     // unedited from a rest-day-heavy starting point), not a deliberate "never works" schedule.
@@ -628,7 +658,8 @@
     employee.personalSchedule=d;
     queueSync('Employees','Personal_Schedules');
     closeM();
-    toast('Personal schedule saved for '+employee.name+'.','success');
+    if(amPmFixes.length)toast('Personal schedule saved for '+employee.name+'. Auto-corrected a likely AM/PM mix-up — '+amPmFixes.join(', ')+'.','info',7000);
+    else toast('Personal schedule saved for '+employee.name+'.','success');
   };
 
   window.removePersonalSchedule=function(employeeId){
@@ -1732,6 +1763,19 @@
 
   window.collectEnterpriseState=function(){
     return {resolutionCases:RESOLUTION_CASES,performanceGoals:PERFORMANCE_GOALS,jobRequisitions:JOB_REQUISITIONS,aiHistory:AI_HISTORY};
+  };
+  // applyEnterpriseState's `if(!saved)return` guard is deliberate for its normal callers (an
+  // older save predating one of these fields shouldn't wipe data the page already has loaded)
+  // — but that same behavior is wrong when switching into a DIFFERENT tenant's session (e.g.
+  // God Admin entering a real client): without this, whichever tenant's resolution
+  // cases/performance goals/job requisitions/AI history happened to be in memory would leak
+  // into the next tenant's view. Callers doing a tenant switch should call this first, then
+  // applyEnterpriseState(saved) as normal — a real save applies cleanly on top either way.
+  window.resetEnterpriseState=function(){
+    RESOLUTION_CASES=[];nextCaseId=1;
+    PERFORMANCE_GOALS=[];nextGoalId=1;
+    JOB_REQUISITIONS=[];
+    AI_HISTORY=[];
   };
   window.applyEnterpriseState=function(saved){
     if(!saved)return;

@@ -26,7 +26,7 @@
       candidates:CANDIDATES,performance:PERF,onboarding:ONBOARD,accessLevels:ACCESS_LEVELS,
       changeRequests:CHANGE_REQUESTS,bundyLogs:BUNDY_LOGS,officeZones:OFFICE_ZONES,company:COMPANY,
       employeeNumberConfig:EMP_NUM_CONFIG,statutoryConfig:STATUTORY_CONFIG,approvalConfig:APPROVAL_CONFIG,
-      fieldConfig:FIELD_CONFIG,incomeTypes:INCOME_TYPES,attendanceAdjustments:ATTENDANCE_ADJ,
+      fieldConfig:FIELD_CONFIG,incomeTypes:INCOME_TYPES,attendanceAdjustments:ATTENDANCE_ADJ,attendancePolicy:ATTENDANCE_POLICY,
       overtimeRates:OT_RATES,payrollGroups:PAYROLL_GROUPS,payPeriods:PAY_PERIODS,
       payrollAdjustments:PAYROLL_ADJ,finalPayList:FINAL_PAY_LIST,payrollAudit:PAYROLL_AUDIT,securityAudit:SECURITY_AUDIT,
       governmentRates:GOVT_RATES,birTaxVersions:BIR_TAX_VERSIONS,platformClients:PLATFORM_CLIENTS,
@@ -53,6 +53,7 @@
     if(saved.employeeNumberConfig)EMP_NUM_CONFIG=saved.employeeNumberConfig;if(saved.statutoryConfig)STATUTORY_CONFIG=saved.statutoryConfig;
     if(saved.approvalConfig)APPROVAL_CONFIG=saved.approvalConfig;if(saved.fieldConfig)FIELD_CONFIG=saved.fieldConfig;
     replaceArray(INCOME_TYPES,saved.incomeTypes);if(saved.attendanceAdjustments)ATTENDANCE_ADJ=saved.attendanceAdjustments;
+    if(saved.attendancePolicy)Object.assign(ATTENDANCE_POLICY,saved.attendancePolicy);
     replaceArray(OT_RATES,saved.overtimeRates);replaceArray(PAYROLL_GROUPS,saved.payrollGroups);replaceArray(PAY_PERIODS,saved.payPeriods);
     replaceArray(PAYROLL_ADJ,saved.payrollAdjustments);replaceArray(FINAL_PAY_LIST,saved.finalPayList);replaceArray(PAYROLL_AUDIT,saved.payrollAudit);replaceArray(SECURITY_AUDIT,saved.securityAudit);
     if(saved.governmentRates)GOVT_RATES=saved.governmentRates;replaceArray(BIR_TAX_VERSIONS,saved.birTaxVersions);replaceArray(PLATFORM_CLIENTS,saved.platformClients);
@@ -96,6 +97,31 @@
     if(result.state){hydrate(result.state);lastSavedPayload=JSON.stringify(snapshot());}
     else if(result.persistence)await saveNow();
   };
+  // A real client's company-admin identity (platform_clients.admin_email) has no matching
+  // USERS[] record — only real employees do — so callers that only know how to look someone
+  // up by scanning USERS need this as a fallback: the backend already authenticated them
+  // (that's the only way a valid token exists), this just recovers who they are.
+  window.getSessionIdentity=function(){return token?decodeToken(token):null;};
+
+  // ── God Admin entering/exiting a real client's own session (Enter Portal) ──
+  // Distinct from a normal login: the God Admin's own session (token/version/last-saved-
+  // snapshot) is parked so it can be restored exactly on exit, rather than requiring the
+  // password of the client being entered.
+  var _parkedSession=null;
+  window.enterImpersonatedSession=function(newToken,newState,newVersion){
+    _parkedSession={token:token,stateVersion:stateVersion,lastSavedPayload:lastSavedPayload};
+    if(window.resetEnterpriseState)window.resetEnterpriseState();
+    if(window.resetPayrollGovernanceState)window.resetPayrollGovernanceState();
+    token=newToken;stateVersion=newVersion||0;sessionStorage.setItem('sproutripple_session',token);
+    if(newState)hydrate(newState);
+    lastSavedPayload=JSON.stringify(snapshot());
+  };
+  window.exitImpersonatedSession=function(){
+    if(!_parkedSession)return;
+    token=_parkedSession.token;stateVersion=_parkedSession.stateVersion;lastSavedPayload=_parkedSession.lastSavedPayload;
+    sessionStorage.setItem('sproutripple_session',token);
+    _parkedSession=null;
+  };
 
   async function saveNow(){
     if(!token)return;
@@ -118,7 +144,27 @@
   window.disconnectDatabaseSession=function(){token='';stateVersion=0;lastSavedPayload='';sessionStorage.removeItem('sproutripple_session');};
 
   var baseRender=render;
-  render=function(){baseRender();if(user&&token)window.queueDatabaseSave();};
+  // Never autosave while a God Admin is browsing a pre-seeded sample/demo client that has no
+  // backend tenant of its own (Platform > Clients, any client other than id 1 / the real
+  // company, with no tenantKey). That view swaps the live USERS/ATT/etc. arrays to that demo
+  // client's own (often empty) sample data purely for in-browser display — it was never wired
+  // to real per-tenant storage. Autosaving from inside that swapped, fake state would silently
+  // overwrite the real company's actual data the moment a render fires (this is what happened
+  // once already: entering a demo client with no seeded employees replaced the live USERS
+  // array with an empty one, which the very next render then saved for real).
+  //
+  // A REAL client (tenantKey set) is different: entering one (enterImpersonatedSession) swaps
+  // the active session token to that tenant's own, so an autosave here correctly lands on
+  // THAT tenant's own app_state row, not the real company's — this is exactly what should
+  // happen while editing a real client's data on their behalf.
+  render=function(){
+    baseRender();
+    var activeClient=(typeof activeClientId!=='undefined'&&activeClientId&&activeClientId!==1&&typeof PLATFORM_CLIENTS!=='undefined')
+      ?PLATFORM_CLIENTS.find(function(c){return c.id===activeClientId;})
+      :null;
+    var browsingLocalDemoClient=!!(activeClient&&!activeClient.tenantKey);
+    if(user&&token&&!browsingLocalDemoClient)window.queueDatabaseSave();
+  };
 
   // A page refresh previously always dropped back to the login screen even with a
   // still-valid session token sitting in sessionStorage. Decode the token (it's just
@@ -146,12 +192,21 @@
         isPlatformAdmin=true;
         user={id:0,name:'God Admin',email:payload.sub,role:'platform',initials:'GA'};
         view='platform';
+        if(typeof window.loadRealPlatformClients==='function')window.loadRealPlatformClients();
       }else{
         var match=USERS.find(function(u){return u.email===payload.sub;});
-        if(!match){sessionRestoring=false;render();return;} // identity no longer resolvable — fall back to the login screen
-        user=match;view='dashboard';
-        if(typeof checkOffboarding==='function')checkOffboarding();
-        if(typeof window.autoRunLeaveAccrual==='function')window.autoRunLeaveAccrual();
+        if(match){
+          user=match;view='dashboard';
+          if(typeof checkOffboarding==='function')checkOffboarding();
+          if(typeof window.autoRunLeaveAccrual==='function')window.autoRunLeaveAccrual();
+        }else if(payload.role==='admin'){
+          // A real client's own company-admin login — no USERS[] record to match (that's only
+          // for actual employees), but the token proves the backend already authenticated them.
+          user={id:0,name:(COMPANY.name||'Company')+' Admin',email:payload.sub,role:'admin',initials:(COMPANY.initials||'A')};
+          view='dashboard';
+        }else{
+          sessionRestoring=false;render();return; // identity no longer resolvable — fall back to the login screen
+        }
       }
       tab=0;modal=null;
       sessionRestoring=false;
