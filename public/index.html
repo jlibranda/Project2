@@ -2646,11 +2646,14 @@ async function doLogin(){
         _savedAppState={
           users:[...USERS],leaves:[...LEAVES],loans:[...LOANS],
           att:[...ATT],payrolls:[...PAYROLLS],company:cloneCompany(COMPANY),
+          org:JSON.parse(JSON.stringify(ORG)),
         };
       }
       activeClientId=c.id;
       if(!c.company)c.company=demoCompanyFor(c);
+      if(!c.org)c.org=[];
       Object.assign(COMPANY,cloneCompany(c.company));
+      ORG.length=0;  ORG.push(...JSON.parse(JSON.stringify(c.org)));
       USERS.length=0;  USERS.push(...c.employees);
       LEAVES.length=0; LOANS.length=0; ATT.length=0; PAYROLLS.length=0;
       user=emp;
@@ -2666,13 +2669,14 @@ function doLogout(){
   /* If inside a client company, save their data and restore demo state */
   if(activeClientId&&activeClientId!==1&&_savedAppState){
     const c=PLATFORM_CLIENTS.find(x=>x.id===activeClientId);
-    if(c){c.employees=[...USERS];c.company=cloneCompany(COMPANY);} /* save employees & branding (no synthetic admin in USERS) */
+    if(c){c.employees=[...USERS];c.company=cloneCompany(COMPANY);c.org=JSON.parse(JSON.stringify(ORG));} /* save employees, branding & org (no synthetic admin in USERS) */
     USERS.length=0;  USERS.push(..._savedAppState.users);
     LEAVES.length=0; LEAVES.push(..._savedAppState.leaves);
     LOANS.length=0;  LOANS.push(..._savedAppState.loans);
     ATT.length=0;    ATT.push(..._savedAppState.att);
     PAYROLLS.length=0; PAYROLLS.push(..._savedAppState.payrolls);
     if(_savedAppState.company)Object.assign(COMPANY,_savedAppState.company);
+    if(_savedAppState.org){ORG.length=0;ORG.push(...JSON.parse(JSON.stringify(_savedAppState.org)));}
     _savedAppState=null;
   }
   user=null;view='dashboard';modal=null;godAdmin=null;
@@ -2923,12 +2927,15 @@ function enterClient(clientId){
       _savedAppState={
         users:[...USERS],leaves:[...LEAVES],loans:[...LOANS],
         att:[...ATT],payrolls:[...PAYROLLS],company:cloneCompany(COMPANY),
+        org:JSON.parse(JSON.stringify(ORG)),
       };
     }
     if(!c.employees)c.employees=[];
     if(!c.company)c.company=demoCompanyFor(c);
-    /* Swap to company's own branding & employee data — God Admin identity (user) stays unchanged */
+    if(!c.org)c.org=[]; /* new/demo clients start with a blank org structure, not the real one's */
+    /* Swap to company's own branding, org structure & employee data — God Admin identity (user) stays unchanged */
     Object.assign(COMPANY,cloneCompany(c.company));
+    ORG.length=0;  ORG.push(...JSON.parse(JSON.stringify(c.org)));
     USERS.length=0;  USERS.push(...c.employees);
     LEAVES.length=0;
     LOANS.length=0;
@@ -2942,9 +2949,9 @@ function enterClient(clientId){
 
 function exitClientView(){
   if(activeClientId&&activeClientId!==1){
-    /* Save company's employees & branding back (no synthetic admin to filter out) */
+    /* Save company's employees, branding & org structure back (no synthetic admin to filter out) */
     const c=PLATFORM_CLIENTS.find(x=>x.id===activeClientId);
-    if(c){c.employees=[...USERS];c.company=cloneCompany(COMPANY);}
+    if(c){c.employees=[...USERS];c.company=cloneCompany(COMPANY);c.org=JSON.parse(JSON.stringify(ORG));}
     /* Restore demo app state */
     if(_savedAppState){
       USERS.length=0;  USERS.push(..._savedAppState.users);
@@ -2953,6 +2960,7 @@ function exitClientView(){
       ATT.length=0;    ATT.push(..._savedAppState.att);
       PAYROLLS.length=0; PAYROLLS.push(..._savedAppState.payrolls);
       if(_savedAppState.company)Object.assign(COMPANY,_savedAppState.company);
+      if(_savedAppState.org){ORG.length=0;ORG.push(...JSON.parse(JSON.stringify(_savedAppState.org)));}
       _savedAppState=null;
     }
   }
@@ -12110,10 +12118,10 @@ function pgApprovalSetup(){
 
 
 function pgOrgSetup(){
-  function subHtml(bu,d,t){return t.subteams.map((s,si)=>`<span style="display:inline-flex;align-items:center;gap:4px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:5px;padding:2px 7px;font-size:11px;margin:2px">${s}<button onclick="editSubteam(${bu.id},${d.id},${t.id},${si})" style="background:none;border:none;cursor:pointer;color:#94a3b8;font-size:11px;padding:0 1px">✎</button><button onclick="delSubteam(${bu.id},${d.id},${t.id},${si})" style="background:none;border:none;cursor:pointer;color:#f87171;font-size:11px;padding:0 1px">✕</button></span>`).join('');}
+  function subHtml(bu,d,t){return t.subteams.map((s,si)=>`<span style="display:inline-flex;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);color:var(--txt);border-radius:5px;padding:2px 7px;font-size:11px;margin:2px">${s}<button onclick="editSubteam(${bu.id},${d.id},${t.id},${si})" style="background:none;border:none;cursor:pointer;color:var(--txt3);font-size:11px;padding:0 1px">✎</button><button onclick="delSubteam(${bu.id},${d.id},${t.id},${si})" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:11px;padding:0 1px">✕</button></span>`).join('');}
   function teamHtml(bu,d){return d.teams.map(t=>`<div style="margin-left:2rem;padding:8px 10px;border-left:3px solid var(--border);margin-bottom:5px;border-radius:0 6px 6px 0">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-      <div style="font-size:13px;font-weight:500">${t.name} <span style="font-size:10px;font-weight:400;color:#6b7280;background:#f3f4f6;padding:1px 6px;border-radius:4px">Team · ${t.subteams.length} subteams</span></div>
+      <div style="font-size:13px;font-weight:500;color:var(--txt)">${t.name} <span style="font-size:10px;font-weight:400;color:var(--txt2);background:var(--surface2);padding:1px 6px;border-radius:4px">Team · ${t.subteams.length} subteams</span></div>
       <div style="display:flex;gap:4px">
         <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" onclick="editTeam(${bu.id},${d.id},${t.id})">✎</button>
         <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" onclick="addSubteam(${bu.id},${d.id},${t.id})">+ Sub</button>
@@ -12124,7 +12132,7 @@ function pgOrgSetup(){
   </div>`).join('');}
   function deptHtml(bu){return bu.depts.map(d=>`<div style="margin:6px 0 6px 1rem;border:1px solid var(--border);border-radius:8px;padding:10px 12px">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:5px">
-      <div style="font-weight:600">${d.name} <span style="font-size:10px;font-weight:400;background:#e0e7ff;color:#3730a3;padding:1px 7px;border-radius:4px">Dept</span> <span style="font-size:11px;color:var(--txt3)">${d.teams.length} team${d.teams.length!==1?'s':''}</span></div>
+      <div style="font-weight:600;color:var(--txt)">${d.name} <span style="font-size:10px;font-weight:400;background:var(--accent-bg);color:var(--accent-txt);padding:1px 7px;border-radius:4px">Dept</span> <span style="font-size:11px;color:var(--txt3)">${d.teams.length} team${d.teams.length!==1?'s':''}</span></div>
       <div style="display:flex;gap:4px">
         <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" onclick="editDept(${bu.id},${d.id})">✎ Rename</button>
         <button class="btn btn-sm" style="font-size:10px;padding:3px 8px" onclick="addTeam(${bu.id},${d.id})">+ Team</button>
