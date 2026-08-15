@@ -105,8 +105,15 @@
 
   window.resolveCase=function(id,decision) {
     var c=RESOLUTION_CASES.find(function(x){return x.id===id;});if(!c)return;
-    if(decision==='resolved'&&(c.attendanceRequestType==='overtime'||c.attendanceRequestType==='rest_day_holiday')&&!actualLogForDate(c.employeeId,c.requestDate)){
-      toast('A completed actual Time In and Time Out log is required before approval.','warning');return;
+    if(decision==='resolved'&&c.attendanceRequestType==='overtime'){
+      var otEmployee=USERS.find(function(u){return u.id===c.employeeId;});
+      var otApprovalCheck=otTypeEligibility(otEmployee,c.requestDate,c.otType,c.requestedStart,c.requestedEnd);
+      if(!otApprovalCheck.ok){toast('No longer eligible: '+otApprovalCheck.html.replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim(),'warning',7000);return;}
+    }
+    if(decision==='resolved'&&c.attendanceRequestType==='rest_day_holiday'){
+      var rdhEmployee=USERS.find(function(u){return u.id===c.employeeId;});
+      var rdhApprovalCheck=rdhEligibility(rdhEmployee,c.requestDate,c.rdhType,c.requestedStart,c.requestedEnd);
+      if(!rdhApprovalCheck.ok){toast('No longer eligible: '+rdhApprovalCheck.html.replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim(),'warning',7000);return;}
     }
     if(decision==='resolved'&&c.attendanceRequestType==='undertime'&&!actualLogForDate(c.employeeId,c.requestDate)){
       toast('A completed actual Time In and Time Out log is required before approving undertime.','warning');return;
@@ -120,13 +127,29 @@
     if(!notes.trim()){toast('Resolution notes are required for the audit trail.','warning');return;}
     c.status=decision==='resolved'?'resolved':'rejected';
     c.resolution=notes.trim();c.resolvedBy=user.name;c.resolvedAt=new Date().toISOString();
+    // A resolved case establishes that the request is legitimate (eligible, within policy) --
+    // it is not itself the record's full approval sign-off. The linked attendance record(s)
+    // still go through applyAttendanceDecision() so multi-layer approval chains (Company
+    // Settings > Approval Layers) are honored the same way regular attendance is, instead of
+    // one Resolution Center reviewer silently fully-approving pay-impacting hours.
+    var routedToNextLayer=false;
+    function applyResolutionDecision(row){
+      // The row may already be sitting at 'approved' from an earlier cycle (e.g. the base
+      // clock-in/out was approved before this Undertime/OT/etc. request amended it) --
+      // restart the chain from Layer 1 so the amended record gets a fresh full approval
+      // pass instead of silently keeping a stale 'approved' status or resuming mid-chain.
+      row.approvalStatus='pending';row.approvalLayer=1;
+      var result=applyAttendanceDecision(row,'approved');
+      if(result.decision==='approved'&&result.message.indexOf('Routed to Layer')>=0)routedToNextLayer=true;
+      return result;
+    }
     if(decision==='resolved'){
       if(c.attendanceRequestType==='time_correction'){
         var linkedCorrection=TimekeepingCore.validateLinkedRecord(ATT,c);
         var corrected=upsertAttendance(c.employeeId,c.requestDate,linkedCorrection?{}:{tin:'',tout:'',status:'present',ot:0,nd:0,notes:'Approved '+c.subject,source:'attendance-correction'});
         if(c.punchType==='time_out')corrected.tout=c.correctedTime;
         else corrected.tin=c.correctedTime;
-        corrected.approvalStatus='approved';corrected.reviewedBy=user.name;corrected.reviewedAt=c.resolvedAt;
+        applyResolutionDecision(corrected);
         c.linkedType='attendance';c.linkedId=corrected.id;
         queueSync('Attendance');
       }else if(c.attendanceRequestType==='official_business'){
@@ -134,52 +157,72 @@
         requestDates(c.requestDate,c.requestEndDate).forEach(function(d){
           var current=attendanceRecord(c.employeeId,d);
           var ob=upsertAttendance(c.employeeId,d,{tin:c.requestedStart,tout:c.requestedEnd,status:'present',ot:current&&current.ot||0,nd:current&&current.nd||0,notes:(current&&current.notes?current.notes+' · ':'')+'Approved Official Business',source:'official-business'});
-          ob.approvalStatus='approved';ob.reviewedBy=user.name;ob.reviewedAt=c.resolvedAt;obRecords.push(ob.id);
+          applyResolutionDecision(ob);obRecords.push(ob.id);
         });
         c.attendanceRecordIds=obRecords;queueSync('Attendance');
       }else if(c.attendanceRequestType==='work_from_home'){
         var wfhRecords=[];
         requestDates(c.requestDate,c.requestEndDate).forEach(function(d){
           var wfh=actualLogForDate(c.employeeId,d);
-          wfh.status='present';wfh.approvalStatus='approved';wfh.reviewedBy=user.name;wfh.reviewedAt=c.resolvedAt;
-          wfh.notes=(wfh.notes?wfh.notes+' · ':'')+'Approved Work From Home';wfhRecords.push(wfh.id);
+          wfh.status='present';
+          wfh.notes=(wfh.notes?wfh.notes+' · ':'')+'Approved Work From Home';
+          applyResolutionDecision(wfh);wfhRecords.push(wfh.id);
         });
         c.attendanceRecordIds=wfhRecords;queueSync('Attendance');
       }else if(c.attendanceRequestType==='schedule_adjustment'){
         var scheduleEmployee=USERS.find(function(e){return e.id===c.employeeId;});
         if(scheduleEmployee){
           if(!scheduleEmployee.scheduleAdjustments)scheduleEmployee.scheduleAdjustments=[];
-          scheduleEmployee.scheduleAdjustments.push({id:c.id,from:c.requestDate,to:c.requestEndDate,start:c.requestedStart,end:c.requestedEnd,status:'approved',approvedBy:user.name,approvedAt:c.resolvedAt});
+          scheduleEmployee.scheduleAdjustments.push({id:c.id,from:c.requestDate,to:c.requestEndDate,days:c.scheduleDays||null,status:'approved',approvedBy:user.name,approvedAt:c.resolvedAt});
           queueSync('Employees','Schedule_Adjustments');
         }
       }else if(c.attendanceRequestType==='undertime'){
         var undertime=actualLogForDate(c.employeeId,c.requestDate);
         undertime.undertimeMinutes=Math.max(Number(undertime.undertimeMinutes||0),Number(c.requestedMinutes||0));
-        undertime.approvalStatus='approved';undertime.reviewedBy=user.name;undertime.reviewedAt=c.resolvedAt;
         undertime.notes=(undertime.notes?undertime.notes+' · ':'')+'Approved undertime: '+undertime.undertimeMinutes+' minute(s)';
+        applyResolutionDecision(undertime);
         c.linkedType='attendance';c.linkedId=undertime.id;queueSync('Attendance');
-      }else if(c.attendanceRequestType==='overtime'||c.attendanceRequestType==='rest_day_holiday'){
-        var eligible=calculateEligibleHours(c.employeeId,c.requestDate,c.requestedStart,c.requestedEnd);
-        var actual=eligible.log;
-        c.eligibleHours=eligible.hours;
+      }else if(c.attendanceRequestType==='overtime'){
+        // Re-run through otTypeEligibility (not just calculateEligibleHours) so approval also
+        // re-validates the Before/After Shift boundary against the schedule at approval time —
+        // the pre-check above already blocked approval if it's no longer eligible, so ok here.
+        var otApprovalEmployee=USERS.find(function(u){return u.id===c.employeeId;});
+        var otResult=otTypeEligibility(otApprovalEmployee,c.requestDate,c.otType,c.requestedStart,c.requestedEnd);
+        var actual=actualLogForDate(c.employeeId,c.requestDate);
+        c.eligibleHours=otResult.hours;
         c.actualTimeIn=actual&&actual.tin||'';
         c.actualTimeOut=actual&&actual.tout||'';
         if(actual){
-          actual.approvalStatus='approved';actual.reviewedBy=user.name;actual.reviewedAt=c.resolvedAt;
-          if(c.attendanceRequestType==='overtime')actual.ot=eligible.hours;
-          else actual.restDayHolidayHours=eligible.hours;
+          actual.ot=otResult.hours;
+          applyResolutionDecision(actual);
           c.linkedType='attendance';c.linkedId=actual.id;
+          queueSync('Attendance');
+        }
+      }else if(c.attendanceRequestType==='rest_day_holiday'){
+        // Recomputed from the LATEST actual log rather than trusting c.eligibleHours from filing
+        // time — the pre-check above already re-ran rdhEligibility and blocked approval if it's
+        // no longer eligible, so this is guaranteed ok here.
+        var rdhEmp=USERS.find(function(u){return u.id===c.employeeId;});
+        var rdhResult=rdhEligibility(rdhEmp,c.requestDate,c.rdhType,c.requestedStart,c.requestedEnd);
+        var rdhLogActual=actualLogForDate(c.employeeId,c.requestDate);
+        c.eligibleHours=rdhResult.hours;
+        c.actualTimeIn=rdhLogActual&&rdhLogActual.tin||'';
+        c.actualTimeOut=rdhLogActual&&rdhLogActual.tout||'';
+        if(rdhLogActual){
+          rdhLogActual.restDayHolidayHours=rdhResult.hours;
+          applyResolutionDecision(rdhLogActual);
+          c.linkedType='attendance';c.linkedId=rdhLogActual.id;
           queueSync('Attendance');
         }
       }else if(c.linkedType==='attendance'){
         var a=TimekeepingCore.validateLinkedRecord(ATT,c);
-        if(a){a.approvalStatus='approved';a.reviewedBy=user.name;a.reviewedAt=c.resolvedAt;}
+        if(a)applyResolutionDecision(a);
       }else if(c.linkedType==='leave'){
         var l=LEAVES.find(function(x){return x.id===c.linkedId;});
         if(l)l.status='approved';
       }
     }
-    toast(c.caseNo+' '+(decision==='resolved'?'resolved':'closed without change')+'.',decision==='resolved'?'success':'warning');render();
+    toast(c.caseNo+' '+(decision==='resolved'?(routedToNextLayer?'resolved — routed to the next approval layer before it counts toward payroll':'resolved'):'closed without change')+'.',decision==='resolved'?'success':'warning');render();
   };
 
   // Lets an employee withdraw their own request while it's still awaiting action — covers
@@ -241,19 +284,12 @@
       '<div class="tabs">'+tabs.map(function(t,i){return '<div class="tab'+(tab===i?' active':'')+'" onclick="window._resolutionForm=null;goTab('+i+')">'+t+'</div>';}).join('')+'</div><div class="card">'+body+'</div>';
   };
 
-  var baseSidebar=renderSidebar;
-  window.renderSidebar=renderSidebar=function(){
-    var html=baseSidebar();
+  window.sidebarExtraSections=function(){
+    if(!canAccess('resolution'))return[];
     var pending=RESOLUTION_CASES.filter(function(c){return c.status==='open'||c.status==='in_review';}).length;
-    html=html.replace(/(<div class="sidebar-label"><span>Workspace<\/span><span>)(\d+)( modules<\/span>)/,function(_,before,count,after){return before+(Number(count)+1)+after;});
-    var expanded=view==='resolution'||sidebarSectionState['Service Desk']!==false;
-    var link='<div class="nav-section-block" data-nav-section="Service Desk">'+
-      '<div class="nav-section'+(expanded?'':' collapsed')+'" onclick="toggleNavSection(\'Service Desk\')" role="button" aria-expanded="'+expanded+'"><span>Service Desk</span><span class="nav-section-chevron">⌄</span></div>'+
-      '<div class="nav-items'+(expanded?'':' collapsed')+'"><div class="nav-items-inner">'+
-      '<div class="nav-link'+(view==='resolution'?' active':'')+'" data-nav-label="resolution center service desk" onclick="goView(\'resolution\')" title="Resolution Center">'+ico('file',17)+'<span>Resolution Center</span>'+(pending?'<span class="nav-badge">'+pending+'</span>':'')+'</div>'+
-      '</div></div></div>';
-    var payroll='<div class="nav-section-block" data-nav-section="Payroll">';
-    return html.replace(payroll,link+payroll);
+    return [{title:'Service Desk',items:[
+      {v:'resolution',k:'file',l:'Resolution Center',badge:pending}
+    ]}];
   };
 
   var baseMySlips=pgMySlips;
@@ -510,12 +546,23 @@
     if(!(isAdminUser(user)||isPlatformAdmin))return;
     var d=modal.draft;
     if(!d.name||!d.name.trim()){toast('Shift name is required.','warning');return;}
+    var amPmFixes=[];
     for(var i=0;i<SHIFT_DAY_KEYS.length;i++){
       var k=SHIFT_DAY_KEYS[i],day=d.schedule[k];
-      if(day.restDay)continue;
+      // A rest day never keeps leftover times underneath — whether from an old save made
+      // before this was enforced, or from a row toggled to Rest Day and back — so nothing
+      // downstream (reports, exports) can read stale hours off a day marked Rest Day.
+      if(day.restDay){day.start='';day.end='';day.breakStart='';day.breakEnd='';continue;}
       if(!validShiftTime(day.start)||!validShiftTime(day.end)){toast('Enter valid start/end times for '+SHIFT_DAY_LABELS[k]+', or mark it as a rest day.','warning');return;}
       if(day.breakStart&&!validShiftTime(day.breakStart)){toast('Enter a valid break start time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
       if(day.breakEnd&&!validShiftTime(day.breakEnd)){toast('Enter a valid break end time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
+      // An End Time in the AM half that doesn't make sense before Start on the same day is
+      // almost always the time-picker's AM/PM segment left on AM by mistake (e.g. 06:00 typed
+      // meaning 6:00 PM) rather than an intentional overnight shift — reinterpreting it as PM
+      // and checking the resulting same-day length is sane catches that specific mistake
+      // automatically, without touching a genuine overnight shift like 22:00–06:00.
+      var corrected=TimekeepingCore.autoCorrectShiftEndAmPm(day.start,day.end);
+      if(corrected){amPmFixes.push(SHIFT_DAY_LABELS[k]+': '+day.end+' → '+corrected);day.end=corrected;}
     }
     var graceMinutes=parseInt(d.graceMinutes,10);
     if(isNaN(graceMinutes)||graceMinutes<0){toast('Enter a valid grace period.','warning');return;}
@@ -526,7 +573,9 @@
     }else{
       SHIFT_DEFINITIONS.push({id:nextShiftId++,name:d.name.trim(),graceMinutes:graceMinutes,active:true,schedule:d.schedule});
     }
-    saveShiftConfig();closeM();toast('Shift saved.','success');
+    saveShiftConfig();closeM();
+    if(amPmFixes.length)toast('Shift saved. Auto-corrected a likely AM/PM mix-up — '+amPmFixes.join(', ')+'. If any of these was meant to be an overnight shift, reopen and re-enter that End Time.','info',7000);
+    else toast('Shift saved.','success');
   };
 
   window.toggleShift=function(id){
@@ -551,8 +600,82 @@
     employee.shiftId=shiftId;queueSync('Employees','Employee_Shifts');toast(shift.name+' assigned to '+employee.name+'.','success');render();
   };
 
+  // Personal Schedule: an optional, permanent per-employee override of the shared shift
+  // template's weekly pattern (same day-by-day shape as a shift), for the one employee whose
+  // hours or rest day genuinely differ from everyone else on the same shift — without forking
+  // a new shared template just for them. TimekeepingCore checks this before falling back to
+  // the assigned shift; an approved Schedule Adjustment still overrides both.
+  window.openPersonalScheduleEditor=function(employeeId){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var employee=USERS.find(function(e){return e.id===employeeId;});
+    if(!employee)return;
+    var isNew=!employee.personalSchedule;
+    var baseSchedule;
+    if(!isNew){
+      baseSchedule=JSON.parse(JSON.stringify(employee.personalSchedule));
+    }else{
+      // Intelligent default: start from whatever this employee currently actually follows
+      // (their assigned shift's pattern) so the admin only has to change the day(s) that
+      // need to be different, instead of re-entering a whole week from scratch.
+      var assignedShift=SHIFT_DEFINITIONS.find(function(s){return s.id===employee.shiftId;});
+      baseSchedule=assignedShift?JSON.parse(JSON.stringify(TimekeepingCore.normalizeShift(assignedShift).schedule)):defaultShiftSchedule();
+    }
+    modal={type:'personalScheduleEditor',employeeId:employeeId,draft:baseSchedule,isNew:isNew};
+    render();
+  };
+
+  window.personalScheduleApplyToAll=function(dayKey){
+    if(!modal||modal.type!=='personalScheduleEditor')return;
+    var src=modal.draft[dayKey];
+    SHIFT_DAY_KEYS.forEach(function(k){
+      if(k===dayKey||modal.draft[k].restDay)return;
+      modal.draft[k]=Object.assign({},src,{restDay:false});
+    });
+    render();
+  };
+
+  window.savePersonalSchedule=function(){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var employee=USERS.find(function(e){return e.id===modal.employeeId;});
+    if(!employee)return;
+    var d=modal.draft;
+    var amPmFixes=[];
+    for(var i=0;i<SHIFT_DAY_KEYS.length;i++){
+      var k=SHIFT_DAY_KEYS[i],day=d[k];
+      // A rest day never keeps leftover times underneath — whether from an old save made
+      // before this was enforced, or from a row toggled to Rest Day and back — so nothing
+      // downstream (reports, exports) can read stale hours off a day marked Rest Day.
+      if(day.restDay){day.start='';day.end='';day.breakStart='';day.breakEnd='';continue;}
+      if(!validShiftTime(day.start)||!validShiftTime(day.end)){toast('Enter valid start/end times for '+SHIFT_DAY_LABELS[k]+', or mark it as a rest day.','warning');return;}
+      if(day.breakStart&&!validShiftTime(day.breakStart)){toast('Enter a valid break start time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
+      if(day.breakEnd&&!validShiftTime(day.breakEnd)){toast('Enter a valid break end time for '+SHIFT_DAY_LABELS[k]+'.','warning');return;}
+      var corrected=TimekeepingCore.autoCorrectShiftEndAmPm(day.start,day.end);
+      if(corrected){amPmFixes.push(SHIFT_DAY_LABELS[k]+': '+day.end+' → '+corrected);day.end=corrected;}
+    }
+    // Refuse a week that's entirely rest days — almost certainly a mistake (every field left
+    // unedited from a rest-day-heavy starting point), not a deliberate "never works" schedule.
+    if(SHIFT_DAY_KEYS.every(function(k){return d[k].restDay;})){toast('Every day is marked Rest Day — mark at least one working day, or remove the personal schedule instead.','warning');return;}
+    employee.personalSchedule=d;
+    queueSync('Employees','Personal_Schedules');
+    closeM();
+    if(amPmFixes.length)toast('Personal schedule saved for '+employee.name+'. Auto-corrected a likely AM/PM mix-up — '+amPmFixes.join(', ')+'.','info',7000);
+    else toast('Personal schedule saved for '+employee.name+'.','success');
+  };
+
+  window.removePersonalSchedule=function(employeeId){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var employee=USERS.find(function(e){return e.id===employeeId;});
+    if(!employee||!employee.personalSchedule)return;
+    if(!confirm(employee.name+' will go back to following the assigned shift template. Continue?'))return;
+    delete employee.personalSchedule;
+    queueSync('Employees','Personal_Schedules');
+    toast('Personal schedule removed — now following the assigned shift template.','success');
+    render();
+  };
+
   function renderShiftManager(){
-    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Shift Setup</div><div class="card-sub">Set a start/end and break per day of the week, with rest days, and assign from each employee profile</div></div><button class="btn btn-primary btn-sm" onclick="openShiftEditor()">+ Add Shift</button></div>'+
+    var personalCount=USERS.filter(function(e){return e.role==='employee'&&e.personalSchedule;}).length;
+    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Shift Setup</div><div class="card-sub">Set a start/end and break per day of the week, with rest days, and assign from each employee profile'+(personalCount?' · '+personalCount+' employee(s) currently on a Personal Schedule override':'')+'</div></div><div class="action-row"><button class="btn btn-sm" onclick="openBulkPersonalSchedule()">📋 Bulk Import Personal Schedules</button><button class="btn btn-primary btn-sm" onclick="openShiftEditor()">+ Add Shift</button></div></div>'+
       '<div style="overflow-x:auto"><table><thead><tr><th>Shift</th><th>Weekly Pattern</th><th>Grace</th><th>Employees</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
       SHIFT_DEFINITIONS.map(function(s){var count=USERS.filter(function(e){return e.role==='employee'&&e.shiftId===s.id;}).length;return '<tr><td style="font-weight:700">'+esc(s.name)+'</td><td class="mono" style="font-size:12px">'+esc(describeShiftPattern(s))+'</td><td>'+s.graceMinutes+' min</td><td>'+count+'</td><td><span class="badge '+(s.active?'b-approved':'b-rejected')+'">'+(s.active?'Active':'Inactive')+'</span></td><td><div class="action-row"><button class="btn btn-sm" onclick="openShiftEditor('+s.id+')">Edit</button><button class="btn btn-sm" onclick="toggleShift('+s.id+')">'+(s.active?'Deactivate':'Activate')+'</button><button class="btn btn-sm btn-danger" onclick="deleteShift('+s.id+')">Delete</button></div></td></tr>';}).join('')+
       '</tbody></table></div></div>';
@@ -670,10 +793,16 @@
   }
 
   // Default (policy-based) eligibility for a leave type — gender, regularization status,
-  // minimum tenure, and employment type all have to match. An explicit per-employee override
-  // (Stage 2, stored on employee.leaveOverrides[typeId]) always takes precedence when present.
+  // minimum tenure, and employment type all have to match. A newly-created type
+  // (requiresAssignment:true) never gets policy-based eligibility at all — it only becomes
+  // available once an admin explicitly assigns it (per-employee, or via "Assign to All"),
+  // so adding a new leave type doesn't silently hand it to the whole company. The original
+  // seed types predate this flag and keep working exactly as before. An explicit
+  // per-employee override (Stage 2, employee.leaveOverrides[typeId]) always takes precedence
+  // over both when present.
   function leaveTypePolicyEligible(employee,leaveType){
     if(!employee||!leaveType)return false;
+    if(leaveType.requiresAssignment)return false;
     if(leaveType.genderRestriction&&employee.gender&&employee.gender.toLowerCase()!==leaveType.genderRestriction)return false;
     if(!leaveEligibilityStartDate(employee,leaveType))return false; /* covers the regularization gate */
     if(tenureMonths(employee)<(leaveType.minTenureMonths||0))return false;
@@ -681,9 +810,38 @@
     return true;
   }
   window.leaveTypeEligible=function(employee,leaveType){
-    var override=employee&&employee.leaveOverrides&&employee.leaveOverrides[leaveType.id];
+    if(!employee||employee.active===false)return false; /* inactive employees are never covered, override or not */
+    var override=employee.leaveOverrides&&employee.leaveOverrides[leaveType.id];
     if(override!==undefined)return !!override;
     return leaveTypePolicyEligible(employee,leaveType);
+  };
+
+  window.assignLeaveTypeToAll=function(typeId){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var t=LEAVE_TYPES.find(function(x){return x.id===typeId;});if(!t)return;
+    if(!confirm('Assign "'+t.name+'" to every active employee, granting their starting balance immediately? Inactive employees are skipped.'))return;
+    var tod=today(),count=0;
+    USERS.filter(function(e){return e.role==='employee'&&e.active!==false;}).forEach(function(e){
+      if(!e.leaveOverrides)e.leaveOverrides={};
+      e.leaveOverrides[typeId]=true;
+      grantLeaveIfDue(e,t,tod);
+      count++;
+    });
+    queueSync('Employees');
+    toast('Assigned '+t.name+' to '+count+' active employee(s) and granted starting balances.','success');render();
+  };
+
+  window.unassignLeaveTypeFromAll=function(typeId){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var t=LEAVE_TYPES.find(function(x){return x.id===typeId;});if(!t)return;
+    if(!confirm('Unassign "'+t.name+'" from every employee? This does not touch their existing balance, just their eligibility.'))return;
+    var count=0;
+    USERS.filter(function(e){return e.role==='employee';}).forEach(function(e){
+      if(!e.leaveOverrides)e.leaveOverrides={};
+      e.leaveOverrides[typeId]=false;count++;
+    });
+    queueSync('Employees');
+    toast('Unassigned '+t.name+' from '+count+' employee(s).','success');render();
   };
 
   window.openLeaveTypeEditor=function(typeId){
@@ -708,6 +866,8 @@
       prorateFirstGrant:d.accrualMethod!=='monthly'&&!!d.prorateFirstGrant,
       carryOver:!!d.carryOver,maxCarryOverDays:d.carryOver?(Number(d.maxCarryOverDays)||0):0,genderRestriction:d.genderRestriction||'',
       minTenureMonths:Number(d.minTenureMonths)||0,employeeTypes:(d.employeeTypes||[]).slice(),active:d.active!==false};
+    if(modal.isNew)payload.requiresAssignment=true; /* new types are opt-in only — never touched again on later edits */
+    else if(d.id){var prior=LEAVE_TYPES.find(function(t){return t.id===d.id;});if(prior)payload.requiresAssignment=!!prior.requiresAssignment;}
     if(d.id){
       Object.assign(LEAVE_TYPES.find(function(t){return t.id===d.id;}),payload);
     }else{
@@ -732,6 +892,7 @@
   };
 
   function describeLeaveEligibility(t){
+    if(t.requiresAssignment)return'Not assigned to anyone yet — needs "Assign to All" or per-employee assignment';
     var parts=[LEAVE_BASIS_LABELS[t.eligibilityBasis||'hire']];
     if(t.accrualMethod==='upfront'&&t.prorateFirstGrant)parts.push('prorated first grant');
     if(t.genderRestriction)parts.push(LEAVE_GENDER_LABELS[t.genderRestriction]);
@@ -762,12 +923,33 @@
     return 12-elapsed;
   }
 
+  // 'YYYY-MM' -> a comparable/subtractable absolute month count.
+  function monthIndex(ym){var p=ym.split('-');return parseInt(p[0],10)*12+parseInt(p[1],10);}
+  function prevYearMonth(ym){
+    var y=parseInt(ym.slice(0,4),10),m=parseInt(ym.slice(5,7),10)-1;
+    if(m<1){m=12;y--;}
+    return y+'-'+(m<10?'0':'')+m;
+  }
+  // Half-month proration rule for a first grant: eligibility starting on the 1st-15th of a
+  // month counts that whole month toward the grant; starting on the 16th-end only counts it as
+  // half a month. Only ever applies once, to the single month eligibility actually began in —
+  // every other month in the grant (before or after) is a normal full month.
+  function halfMonthDiscount(dateStr){
+    return parseInt(dateStr.slice(8,10),10)>=16?0.5:0;
+  }
+  function fiscalYearStartYM(fiscalYearLabel){
+    var m=leaveFiscalYearStartMonth();
+    return fiscalYearLabel+'-'+(m<10?'0':'')+m;
+  }
+
   // Grants leave balances per policy.
   //
-  // 'monthly' types always just tick by annualDays/12 per call, guarded by lastAccrualMonth —
-  // including their very first credit, so proration happens naturally by only starting once
-  // eligible, never as a back-dated lump sum for however long the employee has actually been
-  // eligible.
+  // 'monthly' types tick by annualDays/12 per elapsed calendar month, guarded by
+  // lastAccrualMonth. Since the sweep only runs when someone logs in (not on a fixed monthly
+  // clock), a gap between logins — or an employee's very first sweep long after their
+  // eligibility start date — has to catch up every month in between at once, not just credit a
+  // single month's worth: monthsToCredit counts every month from (lastAccrualMonth, or the
+  // month before eligibility started, for a first grant) through the current month inclusive.
   //
   // 'upfront' types special-case the FIRST grant an employee ever receives (tracked via
   // bucket.firstGrantDate): if the type prorates first grants AND eligibility started within
@@ -781,56 +963,109 @@
   // maxCarryOverDays — the rest is forfeited), guarded by lastAccrualYear. Right before that
   // reset, the outgoing balance is snapshotted into bucket.yearlyClosingBalances so a forfeited
   // or carried-over prior year's balance stays visible (Leave tab > History) even after reset.
+  // Core grant check for one employee + one leave type, as of `tod`. Returns true if a
+  // balance change was made (first grant, a monthly tick, or an annual renewal), false if
+  // nothing was due (not eligible, not yet started, or already credited for this period).
+  // Shared by runLeaveAccrual (bulk/manual), assignment actions (grant immediately instead of
+  // waiting for the next manual run), and the automatic per-login sweep.
+  function grantLeaveIfDue(emp,t,tod){
+    if(!t.active||!leaveTypeEligible(emp,t))return false;
+    var startDate=leaveEligibilityStartDate(emp,t);
+    if(!startDate||startDate>tod)return false; /* not yet regularized / not yet hired */
+    var fiscalYear=leaveFiscalYear(tod),yearMonth=tod.slice(0,7);
+    if(!emp.leaveBalances)emp.leaveBalances={};
+    var bucket=emp.leaveBalances[t.id]||{balance:0,adjustments:[]};
+    bucket.adjustments=bucket.adjustments||[];
+    bucket.yearlyClosingBalances=bucket.yearlyClosingBalances||{};
+    var actor=(user&&user.name)||'System';
+    if(t.accrualMethod==='monthly'){
+      if(bucket.lastAccrualMonth===yearMonth)return false;
+      var isFirst=!bucket.firstGrantDate;
+      // Catch-up is capped to the current policy year — same "don't reconstruct prior years"
+      // rule as the upfront branch below. A first grant whose eligibility started in an earlier
+      // fiscal year (a long-tenured employee's very first sweep) only catches up from the start
+      // of THIS fiscal year, not every month since they became eligible; likewise, a stale
+      // lastAccrualMonth left over from a previous fiscal year (employee hasn't logged in since)
+      // doesn't get carried across the year boundary. Set Balance is the tool for a real
+      // historical balance.
+      var currentFYStartYM=fiscalYearStartYM(fiscalYear);
+      var referenceYM,startedThisFY=leaveFiscalYear(startDate)===fiscalYear;
+      if(isFirst){
+        var startYM=startDate.slice(0,7);
+        referenceYM=startedThisFY?prevYearMonth(startYM):prevYearMonth(currentFYStartYM);
+      }else{
+        referenceYM=leaveFiscalYear(bucket.lastAccrualMonth+'-01')===fiscalYear?bucket.lastAccrualMonth:prevYearMonth(currentFYStartYM);
+      }
+      // The month eligibility actually started in only counts as half a month if that start
+      // date falls on the 16th or later — applied once, on a first grant only, regardless of
+      // how many total months are being caught up in this single call. Only meaningful when the
+      // reference point IS that start date (started within this fiscal year); when it's been
+      // clamped to the fiscal year boundary instead (a long-tenured employee's first sweep), the
+      // discount has nothing real to attach to and must not apply.
+      var discount=(isFirst&&startedThisFY)?halfMonthDiscount(startDate):0;
+      var monthsToCredit=monthIndex(yearMonth)-monthIndex(referenceYM)-discount;
+      if(monthsToCredit<=0)return false;
+      var grantAmount=+(t.annualDays/12*monthsToCredit).toFixed(3);
+      bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+((bucket.balance||0)+grantAmount).toFixed(3),
+        reason:(isFirst?'Initial monthly accrual — ':'Monthly accrual — ')+monthsToCredit+' month(s) through '+yearMonth,by:actor});
+      bucket.balance=+((bucket.balance||0)+grantAmount).toFixed(3);
+      bucket.lastAccrualMonth=yearMonth;
+      if(isFirst)bucket.firstGrantDate=tod;
+    }else if(!bucket.firstGrantDate){
+      var startedThisYear=leaveFiscalYear(startDate)===fiscalYear;
+      var monthsRemaining=leaveFiscalMonthsRemaining(startDate)-halfMonthDiscount(startDate);
+      var initialGrant=(t.prorateFirstGrant&&startedThisYear)?+(t.annualDays*monthsRemaining/12).toFixed(3):t.annualDays;
+      bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:initialGrant,
+        reason:'Initial grant ('+(t.eligibilityBasis==='regularization'?'regularization':'hire')+' '+startDate+')'+(t.prorateFirstGrant&&startedThisYear?' — prorated':''),by:actor});
+      bucket.balance=initialGrant;
+      bucket.firstGrantDate=tod;
+      bucket.lastAccrualYear=fiscalYear;
+    }else{
+      if(bucket.lastAccrualYear===fiscalYear)return false;
+      var carry=t.carryOver?Math.min(bucket.balance||0,t.maxCarryOverDays||0):0;
+      var forfeited=Math.max(0,(bucket.balance||0)-carry);
+      bucket.yearlyClosingBalances[bucket.lastAccrualYear]=bucket.balance||0;
+      bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+(carry+t.annualDays).toFixed(3),
+        reason:'Annual accrual '+fiscalYear+(carry?' (+'+carry+' carried over)':'')+(forfeited?' ('+forfeited+' forfeited)':''),by:actor});
+      bucket.balance=+(carry+t.annualDays).toFixed(3);
+      bucket.lastAccrualYear=fiscalYear;
+    }
+    emp.leaveBalances[t.id]=bucket;
+    return true;
+  }
+
+  window.grantLeaveIfDue=grantLeaveIfDue; /* used by assignment actions in index.html so a newly-assigned type grants its balance immediately */
+
+  // Sweeps every active employee x active leave type and grants whatever's due, silently (no
+  // toast/render/queueSync of its own — callers decide whether and how to surface it). Used by
+  // both the manual "Run Leave Accrual" button and the automatic per-login sweep.
+  function sweepLeaveAccrual(employees){
+    var tod=today(),credited=0;
+    (employees||USERS.filter(function(e){return e.role==='employee'&&e.active!==false;})).forEach(function(emp){
+      LEAVE_TYPES.forEach(function(t){if(grantLeaveIfDue(emp,t,tod))credited++;});
+    });
+    return credited;
+  }
+
   window.runLeaveAccrual=function(){
     if(!(isAdminUser(user)||isPlatformAdmin))return;
-    var tod=today(),fiscalYear=leaveFiscalYear(tod),yearMonth=tod.slice(0,7);
-    var eligibleEmps=USERS.filter(function(e){return e.role==='employee'&&e.active!==false;});
-    var credited=0;
-    eligibleEmps.forEach(function(emp){
-      LEAVE_TYPES.filter(function(t){return t.active;}).forEach(function(t){
-        if(!leaveTypeEligible(emp,t))return;
-        var startDate=leaveEligibilityStartDate(emp,t);
-        if(!startDate||startDate>tod)return; /* not yet regularized / not yet hired */
-        if(!emp.leaveBalances)emp.leaveBalances={};
-        var bucket=emp.leaveBalances[t.id]||{balance:0,adjustments:[]};
-        bucket.adjustments=bucket.adjustments||[];
-        bucket.yearlyClosingBalances=bucket.yearlyClosingBalances||{};
-        if(t.accrualMethod==='monthly'){
-          if(bucket.lastAccrualMonth===yearMonth)return;
-          var isFirst=!bucket.firstGrantDate;
-          var monthlyGrant=+(t.annualDays/12).toFixed(3);
-          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+((bucket.balance||0)+monthlyGrant).toFixed(3),
-            reason:(isFirst?'Initial monthly accrual ':'Monthly accrual ')+yearMonth,by:user.name});
-          bucket.balance=+((bucket.balance||0)+monthlyGrant).toFixed(3);
-          bucket.lastAccrualMonth=yearMonth;
-          if(isFirst)bucket.firstGrantDate=tod;
-          credited++;
-        }else if(!bucket.firstGrantDate){
-          var startedThisYear=leaveFiscalYear(startDate)===fiscalYear;
-          var initialGrant=(t.prorateFirstGrant&&startedThisYear)?+(t.annualDays*leaveFiscalMonthsRemaining(startDate)/12).toFixed(3):t.annualDays;
-          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:initialGrant,
-            reason:'Initial grant ('+(t.eligibilityBasis==='regularization'?'regularization':'hire')+' '+startDate+')'+(t.prorateFirstGrant&&startedThisYear?' — prorated':''),by:user.name});
-          bucket.balance=initialGrant;
-          bucket.firstGrantDate=tod;
-          bucket.lastAccrualYear=fiscalYear;
-          credited++;
-        }else{
-          if(bucket.lastAccrualYear===fiscalYear)return;
-          var carry=t.carryOver?Math.min(bucket.balance||0,t.maxCarryOverDays||0):0;
-          var forfeited=Math.max(0,(bucket.balance||0)-carry);
-          bucket.yearlyClosingBalances[bucket.lastAccrualYear]=bucket.balance||0;
-          bucket.adjustments.unshift({id:Date.now()+Math.random(),date:tod,from:bucket.balance||0,to:+(carry+t.annualDays).toFixed(3),
-            reason:'Annual accrual '+fiscalYear+(carry?' (+'+carry+' carried over)':'')+(forfeited?' ('+forfeited+' forfeited)':''),by:user.name});
-          bucket.balance=+(carry+t.annualDays).toFixed(3);
-          bucket.lastAccrualYear=fiscalYear;
-          credited++;
-        }
-        emp.leaveBalances[t.id]=bucket;
-      });
-    });
+    var credited=sweepLeaveAccrual();
     queueSync('Employees');
     toast('Leave accrual applied: '+credited+' balance(s) updated.','success');
     render();
+  };
+
+  // Runs automatically on every login (see checkOffboarding's caller in index.html) instead of
+  // requiring an admin to remember to click "Run Leave Accrual" — answers "is there a trigger
+  // once regularized": yes, the very next time anyone logs in. A plain employee only sweeps
+  // their own record (self-service, no special permission needed); an admin sweeps every active
+  // employee, so the whole company stays current as long as an admin logs in periodically.
+  // Silent by design — no toast, since this fires unconditionally on every login.
+  window.autoRunLeaveAccrual=function(){
+    if(!user)return;
+    var scope=(isAdminUser(user)||isPlatformAdmin)?undefined:[user];
+    var credited=sweepLeaveAccrual(scope);
+    if(credited>0)queueSync('Employees');
   };
 
   var LEAVE_MONTH_NAMES=['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -852,16 +1087,16 @@
   }
   function renderLeavePolicyManager(){
     return renderLeaveFiscalYearCard()+
-      '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Leave Policy</div><div class="card-sub">Define leave types, entitlement, accrual, and eligibility — used for balance tracking and the File Leave form</div></div><div class="action-row"><button class="btn btn-sm" onclick="if(confirm(\'Grant leave accrual to every eligible active employee? Upfront types are credited once per policy year, monthly types once per month — already-credited employees for this period are skipped.\'))runLeaveAccrual()">Run Leave Accrual</button><button class="btn btn-primary btn-sm" onclick="openLeaveTypeEditor()">+ Add Leave Type</button></div></div>'+
+      '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Leave Policy</div><div class="card-sub">Define leave types, entitlement, accrual, and eligibility — used for balance tracking and the File Leave form. Accrual also runs automatically whenever anyone logs in, so this button is only needed to force an immediate update.</div></div><div class="action-row"><button class="btn btn-sm" onclick="openBulkLeaveBalance()">📋 Bulk Import Balances</button><button class="btn btn-sm" onclick="if(confirm(\'Grant leave accrual to every eligible active employee right now? Upfront types are credited once per policy year, monthly types once per month — already-credited employees for this period are skipped.\'))runLeaveAccrual()">Run Leave Accrual</button><button class="btn btn-primary btn-sm" onclick="openLeaveTypeEditor()">+ Add Leave Type</button></div></div>'+
       '<div style="overflow-x:auto"><table><thead><tr><th>Type</th><th>Paid</th><th>Annual Days</th><th>Accrual</th><th>Carry-over</th><th>Eligibility</th><th>Status</th><th>Actions</th></tr></thead><tbody>'+
       (LEAVE_TYPES.length?LEAVE_TYPES.map(function(t){
         return '<tr><td style="font-weight:700">'+esc(t.name)+' <span class="badge" style="font-size:10px">'+esc(t.code)+'</span></td>'+
           '<td>'+(t.paid?'Paid':'Unpaid')+'</td><td style="text-align:center">'+t.annualDays+'</td>'+
           '<td style="font-size:12px">'+LEAVE_ACCRUAL_LABELS[t.accrualMethod]+'</td>'+
           '<td style="font-size:12px">'+(t.carryOver?'Up to '+t.maxCarryOverDays+' days':'No carry-over')+'</td>'+
-          '<td style="font-size:11px;color:var(--txt3)">'+esc(describeLeaveEligibility(t))+'</td>'+
+          '<td style="font-size:11px;color:'+(t.requiresAssignment?'var(--amber-txt)':'var(--txt3)')+'">'+esc(describeLeaveEligibility(t))+'</td>'+
           '<td><span class="badge '+(t.active?'b-approved':'b-rejected')+'">'+(t.active?'Active':'Inactive')+'</span></td>'+
-          '<td><div class="action-row"><button class="btn btn-sm" onclick="openLeaveTypeEditor('+t.id+')">Edit</button><button class="btn btn-sm" onclick="toggleLeaveType('+t.id+')">'+(t.active?'Deactivate':'Activate')+'</button><button class="btn btn-sm btn-danger" onclick="deleteLeaveType('+t.id+')">Delete</button></div></td></tr>';
+          '<td><div class="action-row"><button class="btn btn-sm" onclick="openLeaveTypeEditor('+t.id+')">Edit</button>'+(t.requiresAssignment?'<button class="btn btn-sm btn-primary" onclick="assignLeaveTypeToAll('+t.id+')">Assign to All</button>':'')+'<button class="btn btn-sm" onclick="unassignLeaveTypeFromAll('+t.id+')">Unassign from All</button><button class="btn btn-sm" onclick="toggleLeaveType('+t.id+')">'+(t.active?'Deactivate':'Activate')+'</button><button class="btn btn-sm btn-danger" onclick="deleteLeaveType('+t.id+')">Delete</button></div></td></tr>';
       }).join(''):'<tr><td colspan="8" style="text-align:center;color:var(--txt3);padding:2rem">No leave types configured yet.</td></tr>')+
       '</tbody></table></div></div>';
   }
@@ -872,7 +1107,7 @@
     {key:'overtime',label:'Overtime Request',short:'OT',description:'Request an OT interval; payable hours are capped by actual logs.',kind:'interval',visible:true},
     {key:'official_business',label:'Official Business / Field Work',short:'OB',description:'Enter the OB Time In and Time Out; approval automatically tags attendance as Present.',kind:'ob',visible:true},
     {key:'work_from_home',label:'Work From Home',short:'WFH',description:'Request remote work; completed actual Time In and Time Out logs are still required.',kind:'wfh',visible:true},
-    {key:'rest_day_holiday',label:'Rest Day / Holiday Work',short:'RD',description:'Request a work interval; payable hours are capped by actual logs.',kind:'interval',visible:true},
+    {key:'rest_day_holiday',label:'Rest Day / Holiday Overtime',short:'RD',description:'Claim overtime pay for hours worked beyond 8 on a rest day or holiday — checked against your schedule and actual time logs.',kind:'rdh_ot',visible:true},
     {key:'undertime',label:'Undertime Request',short:'UT',description:'Declare an early departure or reduced work schedule.',kind:'minutes',visible:true}
   ];
   if(COMPANY.attendanceForms&&COMPANY.attendanceForms.length){
@@ -948,19 +1183,204 @@
     return {hours:Math.round(eligible/60*100)/100,minutes:eligible,log:log};
   }
 
-  window.previewEligibleHours=function(){
-    var box=document.getElementById('att-eligible-preview');if(!box)return;
+  var RDH_BREAK_MINUTES=60,RDH_REGULAR_MINUTES=480; // 1-hour unpaid break, 8 regular hours
+  function minutesToTimeStr(mins){
+    mins=((Math.round(mins)%1440)+1440)%1440;
+    var h=Math.floor(mins/60),m=mins%60;
+    return (h<10?'0':'')+h+':'+(m<10?'0':'')+m;
+  }
+  // Rest Day/Holiday Overtime: the employee still types the OT interval they're claiming
+  // (like Overtime does), but this validates it against the classification (Rest Day/Holiday),
+  // the actual completed time log for that date, and a fixed 1-hour break — only the portion of
+  // the requested interval that falls after 8 worked hours + the break, AND actually overlaps the
+  // real logged Time In/Out, is ever eligible. Passing reqStart/reqEnd as null (before the
+  // employee has typed anything) returns eligibility info without evaluating a specific claim.
+  // Shared between the live preview and the submit/approval-time checks so they can never disagree.
+  function rdhEligibility(employee,date,type,reqStart,reqEnd){
+    if(!date)return {ok:false,html:'Select a request date.'};
+    if(!type)return {ok:false,html:'Select whether this is a <strong>Rest Day</strong>, <strong>Holiday</strong>, or <strong>Rest Day on a Holiday</strong> claim.'};
+    var isRest=TimekeepingCore.isRestDay(employee,date,SHIFT_DEFINITIONS);
+    var holiday=HOLIDAYS.find(function(h){return h.date===date;});
+    if(type==='rest_day'&&!isRest){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ This date isn\'t tagged as your Rest Day.</strong><br>Please check your attendance and file a Schedule Adjustment first if your schedule needs correcting.'};
+    }
+    if(type==='holiday'&&!holiday){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ This date isn\'t configured as a holiday.</strong><br>Please contact your System Administrator.'};
+    }
+    if(type==='both'){
+      var bothMissing=[];
+      if(!isRest)bothMissing.push('your Rest Day');
+      if(!holiday)bothMissing.push('a configured Holiday');
+      if(bothMissing.length){
+        return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ This date isn\'t '+bothMissing.join(' or ')+'.</strong><br>'+(!isRest?'Check your attendance/Schedule Adjustment for the Rest Day side. ':'')+(!holiday?'Contact your System Administrator for the Holiday side.':'')};
+      }
+    }
+    var log=actualLogForDate(employee.id,date);
+    if(!log){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ No completed attendance log found for this date yet.</strong><br>File this request once your Time In and Time Out for that day are recorded.'};
+    }
+    var tinM=minutesFromTime(log.tin),toutM=minutesFromTime(log.tout);
+    // tinM===toutM (not just null) is the actual signature of an in-progress punch that never
+    // got a real Time Out recorded — treating that as a same-time-next-day overnight shift is
+    // exactly the bug that produced a bogus "24 hrs worked" claim from a Time-In-only log.
+    if(tinM===null||toutM===null||tinM===toutM){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ Your attendance log for this date isn\'t complete yet.</strong><br>Make sure both a valid Time In and Time Out are recorded before filing this claim.'};
+    }
+    if(toutM<=tinM)toutM+=1440;
+    var rawMinutes=toutM-tinM;
+    var workedMinutes=Math.max(0,rawMinutes-RDH_BREAK_MINUTES);
+    var otWindowStart=tinM+RDH_REGULAR_MINUTES+RDH_BREAK_MINUTES; // 8 worked hrs + 1-hr break, elapsed from Time In
+    var label=type==='holiday'?(HOLIDAY_TYPE_LABELS[holiday.type]||'Holiday')+' — '+esc(holiday.name):
+      type==='both'?'Rest Day + '+(HOLIDAY_TYPE_LABELS[holiday.type]||'Holiday')+' — '+esc(holiday.name):
+      'Rest Day';
+    var logSummary='Logged: '+esc(log.tin)+' – '+esc(log.tout)+' ('+(workedMinutes/60).toFixed(2)+' hrs worked, net of a 1-hr break)';
+    if(workedMinutes<=RDH_REGULAR_MINUTES){
+      return {ok:false,html:'<strong>'+label+'</strong> confirmed for this date, but '+logSummary.toLowerCase()+" don't exceed 8 — there's no overtime to claim on this form."};
+    }
+    if(!reqStart||!reqEnd){
+      var maxOt=Math.round((workedMinutes-RDH_REGULAR_MINUTES)/60*100)/100;
+      return {ok:false,html:'<strong style="color:var(--green)">✓ '+label+'</strong><br>'+logSummary+'<br>Enter your OT Start and End Time — it must start on or after <strong>'+minutesToTimeStr(otWindowStart)+'</strong> (8 hrs + 1-hr break from your Time In). Up to <strong>'+maxOt.toFixed(2)+' hrs</strong> available to claim.'};
+    }
+    var reqStartM=minutesFromTime(reqStart),reqEndM=minutesFromTime(reqEnd);
+    if(reqStartM===null||reqEndM===null)return {ok:false,html:'Enter both a valid Requested Start Time and End Time.'};
+    if(reqEndM<=reqStartM)reqEndM+=1440;
+    if(reqStartM<otWindowStart){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ Your OT Start Time must be on or after '+minutesToTimeStr(otWindowStart)+'.</strong><br>That\'s 8 regular hours plus a 1-hour break from your actual Time In ('+esc(log.tin)+').'};
+    }
+    var overlapStart=Math.max(reqStartM,otWindowStart),overlapEnd=Math.min(reqEndM,toutM);
+    var otMinutes=Math.max(0,overlapEnd-overlapStart);
+    var otHours=Math.round(otMinutes/60*100)/100;
+    if(otHours<=0){
+      return {ok:false,html:'The requested interval doesn\'t overlap with logged overtime hours (after '+minutesToTimeStr(otWindowStart)+', up to your actual Time Out '+esc(log.tout)+').'};
+    }
+    return {ok:true,hours:otHours,html:'<strong style="color:var(--green)">✓ '+label+'</strong><br>'+logSummary+'<br>Eligible Rest Day/Holiday overtime: <strong>'+otHours.toFixed(2)+' hrs</strong> (capped by your actual Time Out).'};
+  }
+  window.previewRdhEligibility=function(){
+    var box=document.getElementById('att-rdh-info');if(!box)return;
     var value=function(id){return ((document.getElementById(id)||{}).value||'').trim();};
-    var result=calculateEligibleHours(user.id,value('att-form-date'),value('att-form-in'),value('att-form-out'));
-    box.innerHTML=result.log?
-      '<strong>Actual log: '+esc(result.log.tin)+' – '+esc(result.log.tout)+'</strong><br>Estimated eligible hours: <strong>'+result.hours.toFixed(2)+'</strong>. The approved value will be recalculated from the latest actual log.':
-      '<strong>No completed actual log found for this date.</strong><br>Estimated eligible hours: <strong>0.00</strong>. HR will recalculate when a completed actual log is available.';
+    var check=rdhEligibility(user,value('att-form-date'),value('att-form-rdh-type'),value('att-form-in')||null,value('att-form-out')||null);
+    box.innerHTML=check.html;
+    box.style.borderColor=check.ok?'var(--green)':'var(--amber)';
+    updateAttSubmitButton();
+  };
+
+  // Regular Overtime (kind:'interval') claims time worked outside the assigned shift on an
+  // otherwise-normal workday — Before Shift (early login) or After Shift (stayed late). Rest
+  // day/holiday work has its own dedicated form with its own premium rules, so this one requires
+  // an actual scheduled shift to measure "before"/"after" against.
+  function otTypeEligibility(employee,date,type,reqStart,reqEnd){
+    if(!date)return {ok:false,html:'Select a request date.'};
+    if(!type)return {ok:false,html:'Select whether this is <strong>Before Shift</strong> or <strong>After Shift</strong> overtime.'};
+    var sched=TimekeepingCore.scheduleForDate(employee,date,SHIFT_DEFINITIONS);
+    if(!sched){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ No regular shift is scheduled for this date.</strong><br>If you worked a rest day or holiday, file that through Rest Day/Holiday Overtime instead.'};
+    }
+    var shiftStartM=minutesFromTime(sched.start),shiftEndM=minutesFromTime(sched.end);
+    var label=type==='before'?'Before Shift':'After Shift';
+    var boundaryText=type==='before'?('on or before your shift start ('+esc(sched.start)+')'):('on or after your shift end ('+esc(sched.end)+')');
+    var schedSummary='Scheduled shift: <strong>'+esc(sched.start)+' – '+esc(sched.end)+'</strong>';
+    if(!reqStart||!reqEnd){
+      return {ok:false,html:'<strong>'+label+' Overtime</strong><br>'+schedSummary+'<br>Enter your OT Start and End Time — both must fall '+boundaryText+'.'};
+    }
+    var reqStartM=minutesFromTime(reqStart),reqEndM=minutesFromTime(reqEnd);
+    if(reqStartM===null||reqEndM===null)return {ok:false,html:'Enter both a valid Requested Start Time and End Time.'};
+    var reqEndAdj=reqEndM<=reqStartM?reqEndM+1440:reqEndM;
+    if(type==='before'&&reqEndAdj>shiftStartM){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ Before Shift OT must end on or before your shift start ('+esc(sched.start)+').</strong>'};
+    }
+    if(type==='after'&&reqStartM<shiftEndM){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ After Shift OT must start on or after your shift end ('+esc(sched.end)+').</strong>'};
+    }
+    var eligible=calculateEligibleHours(employee.id,date,reqStart,reqEnd);
+    if(!eligible.log){
+      return {ok:false,html:'<strong style="color:var(--amber-txt)">⚠ No completed attendance log found for this date yet.</strong><br>File this request once your Time In and Time Out for that day are recorded.'};
+    }
+    if(eligible.hours<=0){
+      return {ok:false,html:'The requested interval doesn\'t overlap with your actual logged hours ('+esc(eligible.log.tin)+' – '+esc(eligible.log.tout)+').'};
+    }
+    return {ok:true,hours:eligible.hours,html:'<strong style="color:var(--green)">✓ '+label+' Overtime</strong><br>'+schedSummary+'<br>Actual log: '+esc(eligible.log.tin)+' – '+esc(eligible.log.tout)+'<br>Eligible overtime: <strong>'+eligible.hours.toFixed(2)+' hrs</strong> (capped by your actual log).'};
+  }
+  window.previewOtEligibility=function(){
+    var box=document.getElementById('att-ot-info');if(!box)return;
+    var value=function(id){return ((document.getElementById(id)||{}).value||'').trim();};
+    var check=otTypeEligibility(user,value('att-form-date'),value('att-form-ot-type'),value('att-form-in')||null,value('att-form-out')||null);
+    box.innerHTML=check.html;
+    box.style.borderColor=check.ok?'var(--green)':'var(--amber)';
+    updateAttSubmitButton();
+  };
+
+  // The realtime ZK biometric poll (see index.html's zkPullAttendance, every 20s) calls render()
+  // unconditionally whenever no input/textarea/select currently has focus — which still leaves a
+  // real gap: a field the user already filled in but isn't actively focused on RIGHT NOW (e.g.
+  // they just tabbed away, or paused to think) gets silently reset to blank on the next
+  // background render, because none of these fields' values were ever stored anywhere except the
+  // DOM itself. Mirrors the same fix already applied to Add Employee/File Leave for the same bug
+  // class: every field syncs its value into this draft on each keystroke, and the HTML this form
+  // renders always reads its value FROM here — so a render triggered by anything other than this
+  // form's own actions reconstructs the exact same values instead of wiping them.
+  window.attFormSync=function(id){
+    var el=document.getElementById(id);
+    if(el)(window._attFormDraft=window._attFormDraft||{})[id]=el.value;
+  };
+  function attFieldVal(id,fallback){
+    var draft=window._attFormDraft;
+    return (draft&&draft[id]!=null)?draft[id]:fallback;
+  }
+
+  // Single source of truth for whether the current Attendance Forms draft is complete enough to
+  // submit — mirrors the exact same checks submitAttendanceFormRequest() runs before filing, just
+  // returning a boolean instead of toasting, so the Submit button can be grayed out live instead
+  // of letting someone click it and get bounced by a warning toast.
+  function attendanceFormValid(form){
+    var reason=attFieldVal('att-form-reason','').trim();
+    if(!reason)return false;
+    if(form.kind==='punch'){
+      var corrections=window._correctionRows||[];
+      return corrections.length>0&&corrections.every(function(r){return r.date&&r.punchType&&r.correctedTime;});
+    }
+    if(form.kind==='schedule'){
+      var schedRows=window._scheduleAdjRows||[];
+      if(!schedRows.length)return false;
+      return !schedRows.some(function(r){return !r.isRestDay&&(!r.start||!r.end);});
+    }
+    if(form.kind==='rdh_ot'){
+      var rdhReqStart=attFieldVal('att-form-in',''),rdhReqEnd=attFieldVal('att-form-out','');
+      if(!rdhReqStart||!rdhReqEnd)return false;
+      return rdhEligibility(user,attFieldVal('att-form-date',''),attFieldVal('att-form-rdh-type',''),rdhReqStart,rdhReqEnd).ok;
+    }
+    if(form.kind==='interval'){
+      var otReqStart=attFieldVal('att-form-in',''),otReqEnd=attFieldVal('att-form-out','');
+      if(!otReqStart||!otReqEnd)return false;
+      return otTypeEligibility(user,attFieldVal('att-form-date',''),attFieldVal('att-form-ot-type',''),otReqStart,otReqEnd).ok;
+    }
+    var date=attFieldVal('att-form-date','');
+    if(!date)return false;
+    var tin=attFieldVal('att-form-in',''),tout=attFieldVal('att-form-out','');
+    if(form.kind==='ob'&&(!tin||!tout))return false;
+    if(form.kind==='minutes'&&Number(attFieldVal('att-form-minutes',''))<=0)return false;
+    var endDate=attFieldVal('att-form-end','');
+    if(endDate&&endDate<date)return false;
+    return true;
+  }
+
+  // Called on every field edit that doesn't already trigger a full render() (most fields do, via
+  // attFormSync's callers) so the Submit button's disabled state stays live without needing to
+  // re-render the whole form and risk losing focus mid-edit.
+  window.updateAttSubmitButton=function(){
+    var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===window._attendanceFormKey&&f.visible;});
+    var btn=document.getElementById('att-submit-btn');
+    if(!btn||!form)return;
+    var ok=attendanceFormValid(form);
+    btn.disabled=!ok;
+    btn.title=ok?'':'Complete the required fields above before submitting.';
   };
 
   window.openAttendanceForm=function(key){
     var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===key&&f.visible;});
     if(!form){toast('This attendance form is not currently available.','warning');return;}
-    if(key==='time_correction')window._correctionRows=[{date:today(),punchType:'time_in',correctedTime:''}];
+    window._attFormDraft={};
+    if(key==='time_correction')window._correctionRows=[{date:'',punchType:'',correctedTime:''}];
+    if(key==='schedule_adjustment'){window._scheduleAdjRows=null;window._scheduleAdjFrom=null;window._scheduleAdjTo=null;window._scheduleAdjShiftEndTouched=false;}
     window._attendanceFormKey=key;
     tab=(isAdminUser(user)||isPlatformAdmin)?3:1; /* "Attendance Forms" sits at index 3 in the admin tab layout, index 1 otherwise */
     render();
@@ -968,7 +1388,7 @@
 
   window.addCorrectionRow=function(){
     if(!window._correctionRows)window._correctionRows=[];
-    window._correctionRows.push({date:today(),punchType:'time_in',correctedTime:''});render();
+    window._correctionRows.push({date:'',punchType:'',correctedTime:''});render();
   };
   window.removeCorrectionRow=function(index){
     if(!window._correctionRows||window._correctionRows.length<=1){toast('At least one correction row is required.','warning');return;}
@@ -979,34 +1399,166 @@
   };
 
   function correctionRowsFields(){
-    var rows=window._correctionRows||[{date:today(),punchType:'time_in',correctedTime:''}];
+    var rows=window._correctionRows||[{date:'',punchType:'',correctedTime:''}];
     window._correctionRows=rows;
     return '<div class="card-sub" style="margin-bottom:8px">Add as many Time In or Time Out corrections as needed. Each row becomes a separate approval item.</div>'+
-      '<div style="display:grid;gap:8px">'+rows.map(function(row,i){return '<div class="correction-row"><div class="field"><label>Date</label><input type="date" value="'+esc(row.date)+'" onchange="updateCorrectionRow('+i+',\'date\',this.value)"></div>'+
-        '<div class="field"><label>Punch</label><select onchange="updateCorrectionRow('+i+',\'punchType\',this.value)"><option value="time_in" '+(row.punchType==='time_in'?'selected':'')+'>Time In</option><option value="time_out" '+(row.punchType==='time_out'?'selected':'')+'>Time Out</option></select></div>'+
-        '<div class="field"><label>Correct Time</label><input type="time" value="'+esc(row.correctedTime)+'" onchange="updateCorrectionRow('+i+',\'correctedTime\',this.value)"></div>'+
+      '<div style="display:grid;gap:8px">'+rows.map(function(row,i){return '<div class="correction-row"><div class="field"><label>Date</label><input type="date" value="'+esc(row.date)+'" onchange="updateCorrectionRow('+i+',\'date\',this.value);updateAttSubmitButton()"></div>'+
+        '<div class="field"><label>Punch</label><select onchange="updateCorrectionRow('+i+',\'punchType\',this.value);updateAttSubmitButton()"><option value="" '+(row.punchType?'':'selected')+'>Select…</option><option value="time_in" '+(row.punchType==='time_in'?'selected':'')+'>Time In</option><option value="time_out" '+(row.punchType==='time_out'?'selected':'')+'>Time Out</option></select></div>'+
+        '<div class="field"><label>Correct Time</label><input type="time" value="'+esc(row.correctedTime)+'" onchange="updateCorrectionRow('+i+',\'correctedTime\',this.value);updateAttSubmitButton()"></div>'+
         '<button class="btn btn-sm btn-danger" style="align-self:end;margin-bottom:10px" onclick="removeCorrectionRow('+i+')">Remove</button></div>';}).join('')+'</div>'+
       '<button class="btn btn-sm" type="button" onclick="addCorrectionRow()">+ Add another correction</button>';
   }
 
   function assignedShiftText(shiftId){
     var s=SHIFT_DEFINITIONS.find(function(x){return x.id===shiftId;});
-    return s?s.name+' · '+s.start+' – '+s.end:'No shift assigned';
+    return s?s.name+' · '+describeShiftPattern(s):'No shift assigned';
   }
 
   function attendanceFormFields(form){
     var punchFields=(form.kind==='punch')?correctionRowsFields():'';
-    var intervalFields=(form.kind==='interval')?'<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" oninput="previewEligibleHours()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" oninput="previewEligibleHours()"></div></div><div id="att-eligible-preview" style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px"><strong>Enter a start and end time.</strong><br>Eligible hours will be limited to the employee’s actual Time In and Time Out.</div>':'';
-    var minuteFields=(form.kind==='minutes')?'<div class="field"><label>Undertime Minutes</label><input type="number" id="att-form-minutes" min="1" max="480" step="1" value="30"></div>':'';
-    var rangeFields=(form.kind==='range'||form.kind==='ob'||form.kind==='wfh'||form.kind==='schedule')?'<div class="form-row"><div class="field"><label>End Date</label><input type="date" id="att-form-end" value="'+today()+'"></div><div class="field"><label>'+(form.kind==='schedule'?'Adjustment Type':'Work Location')+'</label>'+(form.kind==='schedule'?'<select id="att-form-location"><option>Temporary shift change</option><option>Flexible schedule</option><option>Compressed schedule</option><option>Swap schedule</option></select>':'<input id="att-form-location" placeholder="Client site, home, or field location">')+'</div></div>':'';
-    var obFields=(form.kind==='ob')?'<div class="form-row"><div class="field"><label>OB Time In</label><input type="time" id="att-form-in"></div><div class="field"><label>OB Time Out</label><input type="time" id="att-form-out"></div></div><div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">Once approved, these OB times will create or update a Present attendance record for every covered date.</div>':'';
+    var otTypeVal=attFieldVal('att-form-ot-type','');
+    var intervalFields=(form.kind==='interval')?
+      '<div class="field"><label>Type</label><select id="att-form-ot-type" onchange="attFormSync(\'att-form-ot-type\');previewOtEligibility()"><option value="" '+(otTypeVal===''?'selected':'')+'>Select…</option><option value="before" '+(otTypeVal==='before'?'selected':'')+'>Before Shift</option><option value="after" '+(otTypeVal==='after'?'selected':'')+'>After Shift</option></select></div>'+
+      '<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" value="'+esc(attFieldVal('att-form-in',''))+'" oninput="attFormSync(\'att-form-in\');previewOtEligibility()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" value="'+esc(attFieldVal('att-form-out',''))+'" oninput="attFormSync(\'att-form-out\');previewOtEligibility()"></div></div>'+
+      '<div id="att-ot-info" style="padding:10px 12px;background:var(--bg);border:1.5px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px">Select a Type above to check eligibility for this date.</div>'
+      :'';
+    var rdhTypeVal=attFieldVal('att-form-rdh-type','');
+    var rdhFields=(form.kind==='rdh_ot')?
+      '<div class="field"><label>Type</label><select id="att-form-rdh-type" onchange="attFormSync(\'att-form-rdh-type\');previewRdhEligibility()"><option value="" '+(rdhTypeVal===''?'selected':'')+'>Select…</option><option value="rest_day" '+(rdhTypeVal==='rest_day'?'selected':'')+'>Rest Day</option><option value="holiday" '+(rdhTypeVal==='holiday'?'selected':'')+'>Holiday</option><option value="both" '+(rdhTypeVal==='both'?'selected':'')+'>Rest Day on a Holiday</option></select></div>'+
+      '<div class="form-row"><div class="field"><label>Requested Start Time</label><input type="time" id="att-form-in" value="'+esc(attFieldVal('att-form-in',''))+'" oninput="attFormSync(\'att-form-in\');previewRdhEligibility()"></div><div class="field"><label>Requested End Time</label><input type="time" id="att-form-out" value="'+esc(attFieldVal('att-form-out',''))+'" oninput="attFormSync(\'att-form-out\');previewRdhEligibility()"></div></div>'+
+      '<div id="att-rdh-info" style="padding:10px 12px;background:var(--bg);border:1.5px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;line-height:1.5;margin-bottom:12px">Select a Type above to check eligibility for this date.</div>'
+      :'';
+    var minuteFields=(form.kind==='minutes')?'<div class="field"><label>Undertime Minutes</label><input type="number" id="att-form-minutes" min="1" max="480" step="1" placeholder="e.g. 30" value="'+esc(attFieldVal('att-form-minutes',''))+'" oninput="attFormSync(\'att-form-minutes\');updateAttSubmitButton()"></div>':'';
+    var isRange=(form.kind==='range'||form.kind==='ob'||form.kind==='wfh');
+    var rangeFields=isRange?'<div class="field"><label>Work Location</label><input id="att-form-location" value="'+esc(attFieldVal('att-form-location',''))+'" placeholder="Client site, home, or field location" oninput="attFormSync(\'att-form-location\')"></div>':'';
+    var obFields=(form.kind==='ob')?'<div class="form-row"><div class="field"><label>OB Time In</label><input type="time" id="att-form-in" value="'+esc(attFieldVal('att-form-in',''))+'" oninput="attFormSync(\'att-form-in\');updateAttSubmitButton()"></div><div class="field"><label>OB Time Out</label><input type="time" id="att-form-out" value="'+esc(attFieldVal('att-form-out',''))+'" oninput="attFormSync(\'att-form-out\');updateAttSubmitButton()"></div></div><div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">Once approved, these OB times will create or update a Present attendance record for every covered date.</div>':'';
     var wfhNotice=(form.kind==='wfh')?'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--txt2);font-size:12px;margin-bottom:12px"><strong>Bundy is still required.</strong> You must have completed actual Time In and Time Out logs for every covered WFH date before HR can approve this request.</div>':'';
-    var assigned=SHIFT_DEFINITIONS.find(function(s){return s.id===user.shiftId;});
-    var scheduleFields=(form.kind==='schedule')?'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;margin-bottom:12px">Current assigned shift: <strong>'+esc(assignedShiftText(user.shiftId))+'</strong></div><div class="form-row"><div class="field"><label>Requested Shift Start</label><input type="time" id="att-form-in" value="'+(assigned?assigned.start:'08:00')+'"></div><div class="field"><label>Requested Shift End</label><input type="time" id="att-form-out" value="'+(assigned?assigned.end:'17:00')+'"></div></div>':'';
-    var header=form.kind==='punch'?'<div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div>':'<div class="form-row"><div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+today()+'" '+(form.kind==='interval'?'oninput="previewEligibleHours()"':'')+'></div><div class="field"><label>Form Type</label><input value="'+esc(form.label)+'" disabled></div></div>';
-    return header+rangeFields+punchFields+intervalFields+obFields+wfhNotice+scheduleFields+minuteFields+
-      '<div class="field"><label>Reason and supporting details</label><textarea id="att-form-reason" rows="4" placeholder="Explain the request and include the expected correction or approval."></textarea></div>';
+    var scheduleFields=(form.kind==='schedule')?renderScheduleAdjBuilder():'';
+    var header=(form.kind==='punch'||form.kind==='schedule')?'':
+      isRange?'<div class="form-row"><div class="field"><label>From</label><input type="date" id="att-form-date" value="'+esc(attFieldVal('att-form-date',''))+'" oninput="attFormSync(\'att-form-date\');updateAttSubmitButton()"></div><div class="field"><label>To</label><input type="date" id="att-form-end" value="'+esc(attFieldVal('att-form-end',''))+'" oninput="attFormSync(\'att-form-end\');updateAttSubmitButton()"></div></div>':
+      '<div class="field"><label>Request Date</label><input type="date" id="att-form-date" value="'+esc(attFieldVal('att-form-date',''))+'" oninput="attFormSync(\'att-form-date\');'+(form.kind==='interval'?'previewOtEligibility()':form.kind==='rdh_ot'?'previewRdhEligibility()':'updateAttSubmitButton()')+'"></div>';
+    return header+rangeFields+punchFields+intervalFields+rdhFields+obFields+wfhNotice+scheduleFields+minuteFields+
+      '<div class="field"><label>Reason and supporting details</label><textarea id="att-form-reason" oninput="attFormSync(\'att-form-reason\');updateAttSubmitButton()" rows="4" placeholder="Explain the request and include the expected correction or approval.">'+esc(attFieldVal('att-form-reason',''))+'</textarea></div>';
   }
+
+  // Schedule Adjustment: an "Effectivity Date" range plus a master Shift Start/Break Start/
+  // Break End/Shift End, used to generate one editable row per calendar date via Generate
+  // Dates. Each row can be independently retimed, marked a rest day (locking its time inputs),
+  // marked no-break, copied to every other non-rest-day row ("fill down" — the fast path for a
+  // schedule that repeats Mon-Fri), or dropped entirely. Regenerating after edits preserves any
+  // date already in the table and only adds/removes what the new range actually changed.
+  function renderScheduleAdjBuilder(){
+    var rows=window._scheduleAdjRows||[];
+    // Shift Start/End are left blank rather than pre-filled from the assigned shift — the info
+    // box below already shows the current assignment for reference. Once the admin types a Shift
+    // Start, scheduleAdjAutoBreak() fills in Break Start/End and Shift End automatically.
+    return '<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;margin-bottom:12px">Current assigned shift: <strong>'+esc(assignedShiftText(user.shiftId))+'</strong></div>'+
+      '<div class="form-row"><div class="field"><label>Effectivity From</label><input type="date" id="satt-from" value="'+esc(attFieldVal('satt-from',''))+'" oninput="attFormSync(\'satt-from\')"></div><div class="field"><label>Effectivity To</label><input type="date" id="satt-to" value="'+esc(attFieldVal('satt-to',''))+'" oninput="attFormSync(\'satt-to\')"></div></div>'+
+      '<div class="form-row"><div class="field"><label>Shift Start</label><input type="time" id="satt-shift-start" value="'+esc(attFieldVal('satt-shift-start',''))+'" oninput="attFormSync(\'satt-shift-start\')" onchange="scheduleAdjAutoBreak()"></div><div class="field"><label>Break Start</label><input type="time" id="satt-break-start" value="'+esc(attFieldVal('satt-break-start',''))+'" oninput="attFormSync(\'satt-break-start\')"></div><div class="field"><label>Break End</label><input type="time" id="satt-break-end" value="'+esc(attFieldVal('satt-break-end',''))+'" oninput="attFormSync(\'satt-break-end\')"></div><div class="field"><label>Shift End</label><input type="time" id="satt-shift-end" value="'+esc(attFieldVal('satt-shift-end',''))+'" oninput="attFormSync(\'satt-shift-end\');window._scheduleAdjShiftEndTouched=true"></div></div>'+
+      '<div style="margin-bottom:14px"><button type="button" class="btn btn-sm btn-primary" onclick="scheduleAdjGenerateDates()">Generate Dates</button></div>'+
+      (rows.length?renderScheduleAdjTable(rows):'<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--txt3);margin-bottom:12px">Set an effectivity range above and click Generate Dates to build the day-by-day schedule.</div>');
+  }
+  var SCHED_ADJ_DOW=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  function renderScheduleAdjTable(rows){
+    return '<div style="overflow-x:auto"><table><thead><tr><th>Day</th><th>Date</th><th>Holiday</th><th>Shift Start</th><th>Break Start</th><th>Break End</th><th>Shift End</th><th>Rest Day</th><th></th></tr></thead><tbody>'+
+      rows.map(function(r){
+        var timeDisabled=r.isRestDay?'disabled':'';
+        // No separate "No Break" toggle — an empty Break Start/End on a working day IS "no
+        // break" (one way to say it instead of two that could disagree with each other).
+        var holidayBadge=r.holiday?'<span class="badge b-info" title="'+esc(HOLIDAY_TYPE_LABELS[r.holiday.type]||r.holiday.type)+'">'+esc(r.holiday.name)+'</span>':'—';
+        return '<tr'+(r.isRestDay?' style="opacity:.65"':'')+'>'+
+          '<td>'+r.dow+'</td><td class="mono">'+r.date+'</td>'+
+          '<td style="font-size:11px">'+holidayBadge+'</td>'+
+          '<td><input type="time" '+timeDisabled+' value="'+(r.isRestDay?'':(r.start||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'start\',this.value)"></td>'+
+          '<td><input type="time" '+timeDisabled+' value="'+(r.isRestDay?'':(r.breakStart||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'breakStart\',this.value)"></td>'+
+          '<td><input type="time" '+timeDisabled+' value="'+(r.isRestDay?'':(r.breakEnd||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'breakEnd\',this.value)"></td>'+
+          '<td><input type="time" '+timeDisabled+' value="'+(r.isRestDay?'':(r.end||''))+'" onblur="scheduleAdjUpdateRow(\''+r.date+'\',\'end\',this.value)"></td>'+
+          '<td style="text-align:center"><input type="checkbox" style="width:auto;accent-color:var(--accent)" '+(r.isRestDay?'checked':'')+' onchange="scheduleAdjToggleRestDay(\''+r.date+'\')" title="No expected work hours this date"></td>'+
+          '<td style="white-space:nowrap"><button type="button" class="btn btn-sm" onclick="scheduleAdjCopyRow(\''+r.date+'\')" title="Copy this schedule to every other non-rest-day row">⧉</button> <button type="button" class="btn btn-sm btn-danger" onclick="scheduleAdjDeleteRow(\''+r.date+'\')" title="Remove this date from the request">🗑</button></td>'+
+        '</tr>';
+      }).join('')+'</tbody></table></div>';
+  }
+  // Auto-suggests Break Start/End (3 hours after Shift Start, a 1-hour break) and Shift End (9
+  // hours after Shift Start — 8 worked hours plus that same 1-hour break) the moment Shift Start
+  // is entered — still fully editable. Break Start/End only fill in while both are blank. Shift
+  // End always starts with a sensible default (so it can't be "blank" to key off of) and instead
+  // tracks a "touched" flag: it keeps following Shift Start until the admin edits it directly.
+  window.scheduleAdjAutoBreak=function(){
+    var startEl=document.getElementById('satt-shift-start'),breakStartEl=document.getElementById('satt-break-start'),breakEndEl=document.getElementById('satt-break-end'),endEl=document.getElementById('satt-shift-end');
+    if(!startEl)return;
+    var startM=minutesFromTime(startEl.value);
+    if(startM==null)return;
+    if(breakStartEl&&breakEndEl&&!breakStartEl.value&&!breakEndEl.value){
+      breakStartEl.value=minutesToTimeStr(startM+180);
+      breakEndEl.value=minutesToTimeStr(startM+240);
+      attFormSync('satt-break-start');attFormSync('satt-break-end');
+    }
+    if(endEl&&!window._scheduleAdjShiftEndTouched){
+      endEl.value=minutesToTimeStr(startM+540);
+      attFormSync('satt-shift-end');
+    }
+  };
+  window.scheduleAdjGenerateDates=function(){
+    var value=function(id){return ((document.getElementById(id)||{}).value||'').trim();};
+    var from=value('satt-from'),to=value('satt-to');
+    if(!from||!to){toast('Set both an effectivity From and To date.','warning');return;}
+    if(to<from){toast('Effectivity To must be on or after From.','warning');return;}
+    if(requestDates(from,to).length>62){toast('Keep the effectivity range to 62 days or fewer.','warning');return;}
+    window._scheduleAdjFrom=from;window._scheduleAdjTo=to;
+    var masterStart=value('satt-shift-start'),masterBreakStart=value('satt-break-start'),masterBreakEnd=value('satt-break-end'),masterEnd=value('satt-shift-end');
+    var existingByDate={};
+    (window._scheduleAdjRows||[]).forEach(function(r){existingByDate[r.date]=r;});
+    // Re-clicking Generate Dates re-applies whatever the master Shift Start/Break Start/Break
+    // End/Shift End fields say RIGHT NOW to every non-rest-day row — editing those fields and
+    // clicking Generate Dates again is how you're meant to retime the whole table at once, so
+    // silently keeping stale per-row values here (as an earlier version of this did) just makes
+    // the button look broken. The one thing carried over from an existing row is its Rest Day
+    // flag, since that's a deliberate per-date override the user made, not part of the template.
+    window._scheduleAdjRows=requestDates(from,to).map(function(date){
+      var existing=existingByDate[date];
+      var holiday=HOLIDAYS.find(function(h){return h.date===date;})||null;
+      // A date locks like a Rest Day if it's explicitly one on the assigned shift's weekly
+      // pattern, if there's simply no shift configured for that date at all, OR if it's a
+      // holiday — no regular shift schedule needs to be plotted for a holiday; if the employee
+      // actually works it, that's claimed through Rest Day/Holiday Overtime, not pre-planned
+      // here. Carried over from an existing row once generated, same as a manual Rest Day
+      // toggle, so unchecking it to force a plotted schedule on a worked holiday sticks across
+      // re-clicking Generate Dates.
+      var isRest=existing?existing.isRestDay:(TimekeepingCore.isRestDay(user,date,SHIFT_DEFINITIONS)||!TimekeepingCore.scheduleForDate(user,date,SHIFT_DEFINITIONS)||!!holiday);
+      return {date:date,dow:SCHED_ADJ_DOW[new Date(date+'T00:00:00Z').getUTCDay()],
+        start:isRest?'':masterStart,end:isRest?'':masterEnd,
+        breakStart:isRest?'':masterBreakStart,breakEnd:isRest?'':masterBreakEnd,
+        isRestDay:isRest,holiday:holiday};
+    });
+    var holidayCount=window._scheduleAdjRows.filter(function(r){return r.holiday;}).length;
+    toast('Schedule generated from the Shift Start/Break/Shift End fields above.'+(holidayCount?' '+holidayCount+' holiday(s) flagged in this range.':''),'success');
+    render();
+  };
+  window.scheduleAdjUpdateRow=function(date,key,val){
+    var row=(window._scheduleAdjRows||[]).find(function(r){return r.date===date;});
+    if(row)row[key]=val;
+    updateAttSubmitButton();
+  };
+  window.scheduleAdjToggleRestDay=function(date){
+    var row=(window._scheduleAdjRows||[]).find(function(r){return r.date===date;});
+    if(row)row.isRestDay=!row.isRestDay;
+    render();
+  };
+  window.scheduleAdjCopyRow=function(date){
+    var rows=window._scheduleAdjRows||[];
+    var source=rows.find(function(r){return r.date===date;});
+    if(!source)return;
+    rows.forEach(function(r){
+      if(r.date===date||r.isRestDay)return;
+      r.start=source.start;r.end=source.end;r.breakStart=source.breakStart;r.breakEnd=source.breakEnd;
+    });
+    toast('Copied to every other non-rest-day row.','success');
+    render();
+  };
+  window.scheduleAdjDeleteRow=function(date){
+    window._scheduleAdjRows=(window._scheduleAdjRows||[]).filter(function(r){return r.date!==date;});
+    render();
+  };
 
   // Employees have no default access to the Resolution Center (no permission key gates it,
   // so canAccess('resolution') is always false for a non-admin) — this is the only place they
@@ -1028,17 +1580,30 @@
   function renderEmployeeAttendanceForms(){
     var selected=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===window._attendanceFormKey&&f.visible;});
     var visible=ATTENDANCE_FORM_CONFIG.filter(function(f){return f.visible;});
+    // Submit starts (and stays) disabled until the form's own required fields all check out —
+    // a toast-on-click warning was too easy to miss/ignore; disabling the button is the clearer
+    // signal that something's still incomplete. Applies to every form kind, not just RDH.
+    var formSubmitOk=selected?attendanceFormValid(selected):true;
     var body=selected?
-      '<div style="max-width:760px"><button class="btn btn-sm" style="margin-bottom:14px" onclick="window._attendanceFormKey=null;render()">Back to forms</button>'+
+      '<div style="max-width:'+(selected.kind==='schedule'?'100%':'760px')+'"><button class="btn btn-sm" style="margin-bottom:14px" onclick="window._attendanceFormKey=null;render()">Back to forms</button>'+
       '<div class="section-header">'+esc(selected.label)+'</div><div class="card-sub" style="margin-bottom:14px">'+esc(selected.description)+'</div>'+
       attendanceFormFields(selected)+'<div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">Your request will be routed to HR Operations for review and will not affect payroll until approved.</div>'+
-      '<div class="action-row"><button class="btn btn-primary" onclick="submitAttendanceFormRequest()">Submit for approval</button><button class="btn" onclick="window._attendanceFormKey=null;render()">Cancel</button></div></div>':
+      '<div class="action-row"><button class="btn btn-primary" id="att-submit-btn" '+(!formSubmitOk?'disabled title="Complete the required fields above before submitting."':'')+' onclick="submitAttendanceFormRequest()">Submit for approval</button><button class="btn" onclick="window._attendanceFormKey=null;render()">Cancel</button></div></div>':
       (visible.length?'<div class="attendance-catalog">'+visible.map(function(f){
         return '<button class="attendance-form-card" onclick="openAttendanceForm(\''+f.key+'\')"><span class="attendance-form-mark">'+f.short+'</span><span><strong>'+esc(f.label)+'</strong><small>'+esc(f.description)+'</small></span><span class="attendance-form-arrow">›</span></button>';
       }).join('')+'</div>':'<div class="empty-state"><div style="font-weight:700;margin-bottom:5px">No attendance forms are currently available.</div>Please contact HR if you need an attendance correction or special request.</div>')+myAttendanceFormRequests();
-    var myRecordsTab=(isAdminUser(user)||isPlatformAdmin)?1:0; /* admin tab layout puts "My Records" at index 1, not 0 */
+    // A staff-admin still needs every other Attendance tab reachable from here (Pending Approval,
+    // All Employees, Attendance Report) — this used to render its own hardcoded 2-tab bar
+    // ("My Records" / "Attendance Forms"), which silently dropped every other tab for a
+    // staff-admin the moment they landed on their own self-service catalog. Mirror the same
+    // full tab layout pgAttendance() itself uses so switching tabs from here works exactly like
+    // switching from anywhere else in Attendance.
+    var admin=isAdminUser(user)||isPlatformAdmin;
+    var tabs=admin?['Pending Approval','My Records','Time Logs','Attendance Forms','Attendance Report']:['My Records','Attendance Forms'];
+    var activeIdx=admin?3:1;
+    var pendingCount=attendanceRecords().filter(function(a){return a.approvalStatus==='pending';}).length;
     return '<div class="page-header"><div><div class="page-title">Attendance</div><div class="page-sub">Employee attendance records and approval-controlled requests</div></div></div>'+
-      '<div class="tabs"><div class="tab" onclick="window._attendanceFormKey=null;goTab('+myRecordsTab+')">My Records</div><div class="tab active">Attendance Forms</div></div><div class="card">'+body+'</div>';
+      '<div class="tabs">'+tabs.map(function(t,i){return '<div class="tab'+(i===activeIdx?' active':'')+'" onclick="window._attendanceFormKey=null;goTab('+i+')">'+t+(i===0&&admin?redBubble(pendingCount):'')+'</div>';}).join('')+'</div><div class="card">'+body+'</div>';
   }
 
   window.submitAttendanceFormRequest=function(){
@@ -1049,7 +1614,7 @@
     if(!reason){toast('Supporting details are required.','warning');return;}
     if(form.kind==='punch'){
       var corrections=window._correctionRows||[];
-      if(!corrections.length||corrections.some(function(r){return !r.date||!r.correctedTime;})){toast('Complete the date and corrected time for every row.','warning');return;}
+      if(!corrections.length||corrections.some(function(r){return !r.date||!r.punchType||!r.correctedTime;})){toast('Complete the date, punch type, and corrected time for every row.','warning');return;}
       var batchId='TC-'+Date.now();
       corrections.forEach(function(row){
         var correctionLinked=attendanceRecord(user.id,row.date);
@@ -1059,11 +1624,55 @@
       window._correctionRows=null;window._attendanceFormKey=null;
       toast(corrections.length+' time correction request(s) submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
     }
+    if(form.kind==='schedule'){
+      var schedRows=window._scheduleAdjRows||[];
+      if(!schedRows.length){toast('Generate at least one date before submitting.','warning');return;}
+      var badRow=schedRows.find(function(r){return !r.isRestDay&&(!r.start||!r.end);});
+      if(badRow){toast('Enter a Shift Start and Shift End for '+badRow.date+', or mark it a rest day.','warning');return;}
+      var fromDate=schedRows[0].date,toDate=schedRows[schedRows.length-1].date;
+      var schedSummary=schedRows.map(function(r){
+        var holidayTag=r.holiday?' [Holiday: '+r.holiday.name+']':'';
+        return (r.isRestDay?(r.date+' ('+r.dow+'): Rest day'):(r.date+' ('+r.dow+'): '+r.start+' – '+r.end+(r.breakStart&&r.breakEnd?' · break '+r.breakStart+'–'+r.breakEnd:' · no break')))+holidayTag;
+      }).join('\n');
+      var schedId=nextCaseId++,schedDue=new Date();schedDue.setDate(schedDue.getDate()+4);
+      RESOLUTION_CASES.push({id:schedId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(schedId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+fromDate+(toDate!==fromDate?' to '+toDate:''),description:'Assigned shift: '+assignedShiftText(user.shiftId)+'\nEffectivity: '+fromDate+' to '+toDate+'\n'+schedSummary+'\nDetails: '+reason,priority:'normal',status:'open',linkedType:'',linkedId:null,attendanceRequestType:form.key,requestDate:fromDate,requestEndDate:toDate,scheduleDays:schedRows,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:schedDue.toISOString().slice(0,10),resolution:''});
+      window._scheduleAdjRows=null;window._scheduleAdjFrom=null;window._scheduleAdjTo=null;window._attendanceFormKey=null;
+      toast('Schedule adjustment submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
+    }
+    if(form.kind==='rdh_ot'){
+      var rdhType=value('att-form-rdh-type');
+      var rdhReqStart=value('att-form-in'),rdhReqEnd=value('att-form-out');
+      if(!rdhReqStart||!rdhReqEnd){toast('Enter both a Requested Start Time and End Time.','warning');return;}
+      var rdhCheck=rdhEligibility(user,date,rdhType,rdhReqStart,rdhReqEnd);
+      if(!rdhCheck.ok){toast(rdhCheck.html.replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim(),'warning',7000);return;}
+      var rdhLog=actualLogForDate(user.id,date);
+      var rdhHoliday=HOLIDAYS.find(function(h){return h.date===date;});
+      var rdhTypeLabel=rdhType==='holiday'?'Holiday':rdhType==='both'?'Rest Day on a Holiday':'Rest Day';
+      var rdhDetails=['Request date: '+date,'Type: '+rdhTypeLabel,'Requested OT: '+rdhReqStart+' – '+rdhReqEnd];
+      if((rdhType==='holiday'||rdhType==='both')&&rdhHoliday)rdhDetails.push('Holiday: '+rdhHoliday.name+' ('+(HOLIDAY_TYPE_LABELS[rdhHoliday.type]||rdhHoliday.type)+')');
+      rdhDetails.push('Actual log: '+rdhLog.tin+' – '+rdhLog.tout,'Eligible Rest Day/Holiday overtime hours (net of 1-hr break): '+rdhCheck.hours.toFixed(2),'Details: '+reason);
+      var rdhId=nextCaseId++,rdhDue=new Date();rdhDue.setDate(rdhDue.getDate()+2);
+      RESOLUTION_CASES.push({id:rdhId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(rdhId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:rdhDetails.join('\n'),priority:'high',status:'open',linkedType:'attendance',linkedId:rdhLog.id,attendanceRequestType:form.key,requestDate:date,requestEndDate:date,requestedStart:rdhReqStart,requestedEnd:rdhReqEnd,rdhType:rdhType,eligibleHours:rdhCheck.hours,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:rdhDue.toISOString().slice(0,10),resolution:''});
+      window._attendanceFormKey=null;
+      toast('Rest Day/Holiday overtime submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
+    }
+    if(form.kind==='interval'){
+      var otType=value('att-form-ot-type');
+      var otReqStart=value('att-form-in'),otReqEnd=value('att-form-out');
+      if(!otReqStart||!otReqEnd){toast('Enter both a Requested Start Time and End Time.','warning');return;}
+      var otCheck=otTypeEligibility(user,date,otType,otReqStart,otReqEnd);
+      if(!otCheck.ok){toast(otCheck.html.replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim(),'warning',7000);return;}
+      var otLog=actualLogForDate(user.id,date);
+      var otTypeLabel=otType==='before'?'Before Shift':'After Shift';
+      var otDetails=['Request date: '+date,'Type: '+otTypeLabel+' Overtime','Requested OT: '+otReqStart+' – '+otReqEnd,'Actual log: '+otLog.tin+' – '+otLog.tout,'Estimated eligible hours: '+otCheck.hours.toFixed(2),'Details: '+reason];
+      var otId=nextCaseId++,otDue=new Date();otDue.setDate(otDue.getDate()+2);
+      RESOLUTION_CASES.push({id:otId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(otId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:otDetails.join('\n'),priority:'high',status:'open',linkedType:'attendance',linkedId:otLog.id,attendanceRequestType:form.key,requestDate:date,requestEndDate:date,requestedStart:otReqStart,requestedEnd:otReqEnd,otType:otType,eligibleHours:otCheck.hours,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:otDue.toISOString().slice(0,10),resolution:''});
+      window._attendanceFormKey=null;
+      toast('Overtime request submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
+    }
     if(!date){toast('Request date is required.','warning');return;}
     var tin=value('att-form-in'),tout=value('att-form-out');
-    if(form.kind==='interval'&&(!tin||!tout)){toast('Start time and end time are required.','warning');return;}
     if(form.kind==='ob'&&(!tin||!tout)){toast('OB Time In and Time Out are required.','warning');return;}
-    if(form.kind==='schedule'&&(!tin||!tout)){toast('Requested shift start and end are required.','warning');return;}
     if(form.kind==='minutes'&&Number(value('att-form-minutes'))<=0){toast('Enter valid undertime minutes.','warning');return;}
     if(value('att-form-end')&&value('att-form-end')<date){toast('End date cannot be earlier than the request date.','warning');return;}
     var linked=actualLogForDate(user.id,date)||attendanceRecord(user.id,date);
@@ -1073,14 +1682,11 @@
       if(tin)details.push((form.kind==='ob'?'OB Time In':'Requested start')+': '+tin);
       if(tout)details.push((form.kind==='ob'?'OB Time Out':'Requested end')+': '+tout);
       if(form.kind==='wfh')details.push('Attendance rule: Completed actual Time In and Time Out logs required for every covered date');
-      if(form.kind==='schedule')details.push('Assigned shift: '+assignedShiftText(user.shiftId),'Requested schedule: '+tin+' – '+tout);
-      var eligibility=form.kind==='interval'?calculateEligibleHours(user.id,date,tin,tout):null;
-      if(eligibility)details.push('Actual log at filing: '+(eligibility.log?(eligibility.log.tin+' – '+eligibility.log.tout):'No completed log'), 'Estimated eligible hours: '+eligibility.hours.toFixed(2));
       if(value('att-form-minutes'))details.push('Minutes: '+value('att-form-minutes'));
       if(value('att-form-location'))details.push('Location: '+value('att-form-location'));
       details.push('Details: '+reason);
-      var id=nextCaseId++,due=new Date();due.setDate(due.getDate()+((form.key==='overtime'||form.key==='rest_day_holiday')?2:4));
-      RESOLUTION_CASES.push({id:id,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(id).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:details.join('\n'),priority:(form.key==='overtime'||form.key==='rest_day_holiday')?'high':'normal',status:'open',linkedType:linked?'attendance':'',linkedId:linked?linked.id:null,attendanceRequestType:form.key,requestDate:date,requestEndDate:value('att-form-end')||date,requestedStart:tin,requestedEnd:tout,requestedMinutes:Number(value('att-form-minutes')||0),punchType:value('att-form-punch'),correctedTime:value('att-form-time'),eligibleHours:eligibility?eligibility.hours:null,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:due.toISOString().slice(0,10),resolution:''});
+      var id=nextCaseId++,due=new Date();due.setDate(due.getDate()+4);
+      RESOLUTION_CASES.push({id:id,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(id).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:details.join('\n'),priority:'normal',status:'open',linkedType:linked?'attendance':'',linkedId:linked?linked.id:null,attendanceRequestType:form.key,requestDate:date,requestEndDate:value('att-form-end')||date,requestedStart:tin,requestedEnd:tout,requestedMinutes:Number(value('att-form-minutes')||0),punchType:value('att-form-punch'),correctedTime:value('att-form-time'),eligibleHours:null,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:due.toISOString().slice(0,10),resolution:''});
     window._attendanceFormKey=null;
     toast(form.label+' submitted for approval.','success');
     tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();
@@ -1104,10 +1710,22 @@
   function renderEmployeeShiftCard(employee){
     var shift=SHIFT_DEFINITIONS.find(function(s){return s.id===employee.shiftId;});
     var adjustments=(employee.scheduleAdjustments||[]).slice().reverse().slice(0,5);
-    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Assigned Work Shift</div><div class="card-sub">Employee profile schedule used for attendance policy and schedule-adjustment requests</div></div><span class="badge '+(shift&&shift.active?'b-approved':'b-pending')+'">'+(shift&&shift.active?'Active shift':'Needs assignment')+'</span></div>'+
-      '<div class="form-row"><div class="field"><label>Shift Assignment</label><select onchange="assignEmployeeShift('+employee.id+',parseInt(this.value,10))">'+SHIFT_DEFINITIONS.filter(function(s){return s.active||s.id===employee.shiftId;}).map(function(s){return '<option value="'+s.id+'" '+(s.id===employee.shiftId?'selected':'')+'>'+esc(s.name)+(s.active?'':' (inactive)')+'</option>';}).join('')+'</select></div>'+
-      '<div style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;align-self:end;margin-bottom:10px">'+(shift?'<strong>'+esc(shift.name)+'</strong><br>'+esc(describeShiftPattern(shift))+' · '+shift.graceMinutes+'-minute grace':'No shift is assigned.')+'</div></div>'+
-      (adjustments.length?'<div class="section-header" style="margin-top:8px">Recent approved schedule adjustments</div>'+adjustments.map(function(a){return '<div class="info-row"><span>'+a.from+(a.to&&a.to!==a.from?' – '+a.to:'')+'</span><strong class="mono">'+a.start+' – '+a.end+'</strong></div>';}).join(''):'')+'</div>';
+    var hasPersonal=!!employee.personalSchedule;
+    var effectivePatternHtml=hasPersonal
+      ?'<strong>Personal Schedule</strong><br>'+esc(describeShiftPattern({schedule:employee.personalSchedule}))
+      :(shift?'<strong>'+esc(shift.name)+'</strong><br>'+esc(describeShiftPattern(shift))+' · '+shift.graceMinutes+'-minute grace':'No shift is assigned.');
+    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Assigned Work Shift</div><div class="card-sub">Employee profile schedule used for attendance policy and schedule-adjustment requests</div></div><span class="badge '+(hasPersonal?'b-info':(shift&&shift.active?'b-approved':'b-pending'))+'">'+(hasPersonal?'Personal schedule':(shift&&shift.active?'Active shift':'Needs assignment'))+'</span></div>'+
+      '<div class="form-row"><div class="field"><label>Shift Assignment</label><select onchange="assignEmployeeShift('+employee.id+',parseInt(this.value,10))">'+SHIFT_DEFINITIONS.filter(function(s){return s.active||s.id===employee.shiftId;}).map(function(s){return '<option value="'+s.id+'" '+(s.id===employee.shiftId?'selected':'')+'>'+esc(s.name)+(s.active?'':' (inactive)')+'</option>';}).join('')+'</select>'+(hasPersonal?'<div style="font-size:11px;color:var(--txt3);margin-top:5px">Used as the fallback if the personal schedule below is removed.</div>':'')+'</div>'+
+      '<div style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;align-self:end;margin-bottom:10px">Currently following: '+effectivePatternHtml+'</div></div>'+
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:12px;border-top:1px solid var(--border)">'+
+      (hasPersonal?
+        '<button class="btn btn-sm" onclick="openPersonalScheduleEditor('+employee.id+')">Edit Personal Schedule</button><button class="btn btn-sm btn-danger" onclick="removePersonalSchedule('+employee.id+')">Remove — follow shift template</button>':
+        '<button class="btn btn-sm" onclick="openPersonalScheduleEditor('+employee.id+')">+ Set Personal Schedule</button><span style="font-size:11px;color:var(--txt3)">For when this one employee\'s hours or rest day need to differ from the shift they\'re assigned to.</span>')+
+      '</div>'+
+      (adjustments.length?'<div class="section-header" style="margin-top:12px">Recent approved schedule adjustments</div>'+adjustments.map(function(a){
+        var summary=a.days?a.days.length+' day(s) individually scheduled':(a.start+' – '+a.end);
+        return '<div class="info-row"><span>'+a.from+(a.to&&a.to!==a.from?' – '+a.to:'')+'</span><strong class="mono">'+summary+'</strong></div>';
+      }).join(''):'')+'</div>';
   }
 
   var baseEmpDetail=window.pgEmpDetail;
@@ -1154,6 +1772,19 @@
     if(Array.isArray(saved.aiHistory))AI_HISTORY=saved.aiHistory;
     SHIFT_DEFINITIONS=(COMPANY.shifts&&COMPANY.shifts.length)?COMPANY.shifts:SHIFT_DEFINITIONS;
     nextShiftId=SHIFT_DEFINITIONS.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
+    // LEAVE_TYPES is seeded once, synchronously, at page load — before hydrate() ever runs,
+    // since that only resolves after an async /state fetch. hydrate() reassigns
+    // COMPANY.leaveTypes to the saved data, but without this, the enterprise.js-local
+    // LEAVE_TYPES variable everything else here actually reads from (the policy manager,
+    // grantLeaveIfDue, etc.) stays pointed at the stale pre-hydration array — on a fresh page
+    // load that's just the hardcoded defaults, so every saved Leave Policy customization
+    // appeared to silently reset back to them on every login/refresh. Same re-sync SHIFT_DEFINITIONS
+    // already gets above.
+    LEAVE_TYPES=(COMPANY.leaveTypes&&COMPANY.leaveTypes.length)?COMPANY.leaveTypes:LEAVE_TYPES;
+    nextLeaveTypeId=LEAVE_TYPES.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
+    // Same stale-reference gap as LEAVE_TYPES above, same fix.
+    HOLIDAYS=(COMPANY.holidays&&COMPANY.holidays.length)?COMPANY.holidays:HOLIDAYS;
+    nextHolidayId=HOLIDAYS.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
     if(COMPANY.attendanceForms){ATTENDANCE_FORM_CONFIG.forEach(function(form){var item=COMPANY.attendanceForms.find(function(savedForm){return savedForm.key===form.key;});if(item)form.visible=item.visible!==false;});}
   };
 
