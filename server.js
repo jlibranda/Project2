@@ -98,6 +98,44 @@ function toPlatformClientJson(row) {
 function slugifyTenantKey(name) {
   return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'client';
 }
+// Fresh starter state for a brand-new real tenant, seeded at creation time so a new
+// client's first login never depends on whatever happens to be sitting in a browser's
+// in-memory frontend state — that was the exact risk this exists to close off.
+//
+// Only genuinely tenant-specific fields are set here: real business data (org chart,
+// lookups/job levels, employees, ZK biometric mapping, everything a company accumulates)
+// starts completely empty, and identity fields (company name/initials) come from the
+// client record. Regulatory/functional templates (access roles, the DOLE OT rate table,
+// statutory items, income types, attendance policy, payroll groups, field visibility) are
+// deliberately OMITTED rather than approximated here — hydrate() in persistence.js only
+// replaces a field when the incoming value is actually present (replaceArray no-ops on
+// undefined, the object fields are behind `if (saved.x)` checks), so omitting them leaves
+// the frontend's own already-correct in-memory defaults (computed from PERM_DEFS etc.) in
+// place on first login, and the very next autosave persists them for that tenant from then
+// on. Duplicating that computed logic here would risk drifting out of sync with the
+// frontend and shipping a new tenant a Super Admin role with no actual permissions.
+function defaultTenantState(client) {
+  return {
+    schemaVersion: 1,
+    org: [], lookups: { bandLevels: [], costCenters: [], pods: [], disciplines: [], employmentTypes: [], terminationTypes: [], attritionCodes: [], payTypes: [], currencies: [], entityNames: [] },
+    users: [], attendance: [], leaves: [], loans: [], payrolls: [], payrollDraft: {},
+    candidates: [], performance: [], onboarding: [], changeRequests: [], bundyLogs: [], officeZones: [],
+    company: {
+      name: client.name, tagline: client.industry || '', initials: client.initials, version: '1.0.0',
+      themeKey: 'indigo', accentHex: client.color || '#4f46e5', logo: null, wallpaper: null,
+      wallpaperOpacity: 0.12, wallpaperVeil: 0.82, wallpaperMode: 'repeat', wallpaperBlend: 'normal',
+      bundySelfie: true, bundyPublicAccess: true, dailyDivisor: 22, hoursPerDay: 8, salaryMultiplier: 13,
+      registeredName: client.name, taxIdentificationNo: '', rdo: '', registeredAddress: '', zipCode: '',
+      contactNumber: '', emailAddress: '', withholdingAgentCategory: 'private', employerType: 'main',
+      authorizedAgent: '', authorizedAgentTitle: '',
+      taxPolicy: { annualizationEnabled: true, autoSuggestDecember: true, requireConfirmedTaxRecord: true, taxTableVersion: 'BIR RR 11-2018 Annex E · 2023 onwards' },
+      darkMode: false
+    },
+    employeeNumberConfig: { prefix: 'EMP', separator: '-', digits: 3, nextSeq: 1, manual: false },
+    payPeriods: [], payrollAdjustments: [], finalPayList: [], payrollAudit: [], securityAudit: [],
+    zk: { userMapping: {}, realtimeEnabled: false, connectionOverride: { address: '', port: '', https: false }, punchBuffer: { beforeMinutes: 120, afterMinutes: 480 } }
+  };
+}
 async function initializeDatabase() {
   if (!pool) return;
   await pool.query(`
@@ -161,9 +199,9 @@ async function initializeDatabase() {
     [TENANT_KEY, process.env.BOOTSTRAP_ADMIN_EMAIL || 'admin@ph.com', process.env.BOOTSTRAP_ADMIN_PASSWORD || 'admin123']
   );
 }
-async function readState() {
+async function readState(tenantKey = TENANT_KEY) {
   if (!pool) return null;
-  const result = await pool.query('SELECT state, version, updated_at FROM app_state WHERE tenant_key = $1', [TENANT_KEY]);
+  const result = await pool.query('SELECT state, version, updated_at FROM app_state WHERE tenant_key = $1', [tenantKey]);
   return result.rows[0] || null;
 }
 
@@ -200,25 +238,25 @@ async function zkAllDevices() {
 
 // Row-level lock on app_state so this can never race the browser's PUT /api/state —
 // Postgres serializes any concurrent writer against the same row automatically.
-async function mutateAppState(mutator, actor) {
+async function mutateAppState(mutator, actor, tenantKey = TENANT_KEY) {
   if (!pool) return null;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const existing = await client.query('SELECT state, version FROM app_state WHERE tenant_key = $1 FOR UPDATE', [TENANT_KEY]);
+    const existing = await client.query('SELECT state, version FROM app_state WHERE tenant_key = $1 FOR UPDATE', [tenantKey]);
     const row = existing.rows[0];
     const state = row ? row.state : {};
     const outcome = mutator(state) || {};
     if (!outcome.changed) { await client.query('ROLLBACK'); return { state, version: row ? Number(row.version) : 0, changed: false }; }
     let version;
     if (row) {
-      const updated = await client.query('UPDATE app_state SET state = $1, version = version + 1, updated_at = NOW(), updated_by = $2 WHERE tenant_key = $3 RETURNING version', [state, actor, TENANT_KEY]);
+      const updated = await client.query('UPDATE app_state SET state = $1, version = version + 1, updated_at = NOW(), updated_by = $2 WHERE tenant_key = $3 RETURNING version', [state, actor, tenantKey]);
       version = Number(updated.rows[0].version);
     } else {
-      const inserted = await client.query('INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3) RETURNING version', [TENANT_KEY, state, actor]);
+      const inserted = await client.query('INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3) RETURNING version', [tenantKey, state, actor]);
       version = Number(inserted.rows[0].version);
     }
-    await client.query('INSERT INTO app_state_audit (tenant_key, version, actor) VALUES ($1, $2, $3)', [TENANT_KEY, version, actor]);
+    await client.query('INSERT INTO app_state_audit (tenant_key, version, actor) VALUES ($1, $2, $3)', [tenantKey, version, actor]);
     await client.query('COMMIT');
     return { state, version, changed: true };
   } catch (error) {
@@ -316,23 +354,60 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     const email = String(req.body.email || '').trim().toLowerCase();
     const password = String(req.body.password || '');
-    const record = await readState();
-    const users = record?.state?.users || [];
-    const matchedUser = users.find(user => String(user.email || '').toLowerCase() === email && user.pass === password && user.active !== false);
-    const bootstrapAdmin = !record && email === (process.env.BOOTSTRAP_ADMIN_EMAIL || 'admin@ph.com').toLowerCase()
-      && password === (process.env.BOOTSTRAP_ADMIN_PASSWORD || 'admin123');
+
+    // Platform God Admin — platform-wide, not scoped to any one tenant. Still returns the
+    // legacy tenant's state exactly as before: the frontend's Platform Admin console reads
+    // its client list from state.platformClients until Step 3 moves it onto
+    // GET /api/platform/clients instead, so this can't change yet without losing visibility
+    // into anything already saved there (archived demo clients, etc.).
     const platformAdmin = email === 'god@sproutripple.com' && password === (process.env.GOD_ADMIN_PASSWORD || 'godmode2026');
-    if (!matchedUser && !bootstrapAdmin && !platformAdmin) return res.status(401).json({ error: 'Invalid email or password.' });
-    const actor = matchedUser?.email || email;
-    const token = sign({ sub: actor, role: matchedUser?.role || (platformAdmin ? 'platform' : 'admin'), exp: Date.now() + 8 * 60 * 60 * 1000 });
+    if (platformAdmin) {
+      const record = await readState(TENANT_KEY);
+      const token = sign({ sub: email, role: 'platform', tenantKey: TENANT_KEY, exp: Date.now() + 8 * 60 * 60 * 1000 });
+      return res.json({ token, state: record?.state || null, version: Number(record?.version || 0), persistence: Boolean(pool) });
+    }
+
+    // 1. The one original real tenant — checked first, on the exact same fixed tenant_key,
+    //    so this deployment's actual working login can never change under this rewrite.
+    const legacyRecord = await readState(TENANT_KEY);
+    const legacyUsers = legacyRecord?.state?.users || [];
+    let matchedUser = legacyUsers.find(u => String(u.email || '').toLowerCase() === email && u.pass === password && u.active !== false);
+    const bootstrapAdmin = !legacyRecord && email === (process.env.BOOTSTRAP_ADMIN_EMAIL || 'admin@ph.com').toLowerCase()
+      && password === (process.env.BOOTSTRAP_ADMIN_PASSWORD || 'admin123');
+    let tenantKey = (matchedUser || bootstrapAdmin) ? TENANT_KEY : null;
+    let record = tenantKey ? legacyRecord : null;
+
+    // 2. A real client's own company-admin account (platform_clients.admin_email/admin_pass).
+    if (!tenantKey && pool) {
+      const clientRow = await pool.query('SELECT tenant_key FROM platform_clients WHERE admin_email = $1 AND admin_pass = $2', [email, password]);
+      if (clientRow.rowCount) tenantKey = clientRow.rows[0].tenant_key;
+    }
+
+    // 3. A regular employee of some other real client — search every tenant's own users array
+    //    directly via JSONB instead of keeping a separate index in sync.
+    if (!tenantKey && pool) {
+      const empRow = await pool.query(
+        `SELECT tenant_key, state, version, u AS matched_user FROM app_state, jsonb_array_elements(state->'users') AS u
+         WHERE u->>'email' = $1 AND u->>'pass' = $2 AND COALESCE((u->>'active')::boolean, true) = true
+         LIMIT 1`,
+        [email, password]
+      );
+      if (empRow.rowCount) { tenantKey = empRow.rows[0].tenant_key; record = empRow.rows[0]; matchedUser = empRow.rows[0].matched_user; }
+    }
+
+    if (!tenantKey) return res.status(401).json({ error: 'Invalid email or password.' });
+    if (!record) record = await readState(tenantKey);
+
+    const role = (matchedUser && matchedUser.role) || 'admin';
+    const token = sign({ sub: email, role, tenantKey, exp: Date.now() + 8 * 60 * 60 * 1000 });
     res.json({ token, state: record?.state || null, version: Number(record?.version || 0), persistence: Boolean(pool) });
   } catch (error) {
     res.status(500).json({ error: 'Unable to sign in to the data service.', detail: error.message });
   }
 });
-app.get('/api/state', requireAuth, async (_req, res) => {
+app.get('/api/state', requireAuth, async (req, res) => {
   try {
-    const record = await readState();
+    const record = await readState(req.session.tenantKey || TENANT_KEY);
     res.json({ state: record?.state || null, version: Number(record?.version || 0), updatedAt: record?.updated_at || null });
   } catch (error) {
     res.status(500).json({ error: 'Unable to load application data.', detail: error.message });
@@ -342,24 +417,24 @@ app.put('/api/state', requireAuth, async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
   const state = req.body.state;
   const expectedVersion = Number(req.body.version || 0);
+  const tenantKey = req.session.tenantKey || TENANT_KEY;
   if (!state || typeof state !== 'object') return res.status(400).json({ error: 'A valid application state is required.' });
   try {
     const result = expectedVersion === 0
-      ? await pool.query('INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3) ON CONFLICT DO NOTHING RETURNING version, updated_at', [TENANT_KEY, state, req.session.sub])
-      : await pool.query('UPDATE app_state SET state = $1, version = version + 1, updated_at = NOW(), updated_by = $2 WHERE tenant_key = $3 AND version = $4 RETURNING version, updated_at', [state, req.session.sub, TENANT_KEY, expectedVersion]);
+      ? await pool.query('INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3) ON CONFLICT DO NOTHING RETURNING version, updated_at', [tenantKey, state, req.session.sub])
+      : await pool.query('UPDATE app_state SET state = $1, version = version + 1, updated_at = NOW(), updated_by = $2 WHERE tenant_key = $3 AND version = $4 RETURNING version, updated_at', [state, req.session.sub, tenantKey, expectedVersion]);
     if (!result.rowCount) return res.status(409).json({ error: 'Newer changes are available. Reload before saving again.' });
     const version = Number(result.rows[0].version);
-    await pool.query('INSERT INTO app_state_audit (tenant_key, version, actor) VALUES ($1, $2, $3)', [TENANT_KEY, version, req.session.sub]);
+    await pool.query('INSERT INTO app_state_audit (tenant_key, version, actor) VALUES ($1, $2, $3)', [tenantKey, version, req.session.sub]);
     res.json({ ok: true, version, updatedAt: result.rows[0].updated_at });
   } catch (error) {
     res.status(500).json({ error: 'Unable to save application data.', detail: error.message });
   }
 });
 
-/* ── Platform client directory (Step 1 of real multi-tenancy) ──
-   This lists/creates real, backend-tracked companies. It does NOT yet touch login or
-   app_state resolution for these clients — that's a later step, kept separate so this
-   piece can be verified in isolation without risking the existing real tenant's flow. */
+/* ── Platform client directory: lists/creates real, backend-tracked companies.
+   Creating one also seeds its own isolated app_state row (defaultTenantState) so it's
+   loggable-into immediately — see /api/auth/login below for how a login resolves to it. */
 app.get('/api/platform/clients', requirePlatformAdmin, async (_req, res) => {
   if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
   try {
@@ -399,7 +474,14 @@ app.post('/api/platform/clients', requirePlatformAdmin, async (req, res) => {
        VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9, $10) RETURNING *`,
       [tenantKey, name, industry, plan, color, initials, contact, adminEmail, adminPass, JSON.stringify(modules)]
     );
-    res.status(201).json({ client: toPlatformClientJson(result.rows[0]) });
+    const client = result.rows[0];
+    // Seed this tenant's own app_state row immediately — a client should never exist in the
+    // directory without somewhere for its data to actually live.
+    await pool.query(
+      'INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3) ON CONFLICT (tenant_key) DO NOTHING',
+      [tenantKey, defaultTenantState(client), req.session.sub]
+    );
+    res.status(201).json({ client: toPlatformClientJson(client) });
   } catch (error) {
     if (error.code === '23505') return res.status(409).json({ error: 'A client with that admin email or tenant key already exists.' });
     res.status(500).json({ error: 'Unable to create client.', detail: error.message });
