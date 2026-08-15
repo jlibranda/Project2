@@ -165,6 +165,7 @@
     row.approvalStatus = 'approved'; row.reviewedBy = actor; row.reviewedAt = new Date().toISOString();
     return { ok: true, message: 'Attendance approved.', decision: 'approved' };
   }
+  window.applyAttendanceDecision = applyAttendanceDecision;
 
   window.actAttendance = function (id, decision) {
     var row = ATT.find(function (a) { return a.id === id; });
