@@ -2653,6 +2653,18 @@ async function doLogin(){
     }
   }
 
+  /* ── A real client's own company-admin login (platform_clients.admin_email) ──
+     No USERS[] record to match — that's only for actual employees — but a valid session
+     token here means the backend already authenticated them; connectDatabaseAfterLogin
+     already hydrated their tenant's own isolated state above. */
+  const identity=window.getSessionIdentity&&window.getSessionIdentity();
+  if(identity&&identity.sub===e&&identity.role==='admin'){
+    isPlatformAdmin=false;
+    user={id:0,name:(COMPANY.name||'Company')+' Admin',email:e,role:'admin',initials:(COMPANY.initials||'A')};
+    view='dashboard';tab=0;modal=null;
+    render();return;
+  }
+
   errEl.textContent='Invalid email or password.';errEl.style.display='block';
 }
 function doLogout(){
@@ -2789,16 +2801,38 @@ function resetClientToPlan(cid,plan){
 
 /* ── Company CRUD ── */
 function openAddCompany(){modal={type:'addCompany',data:{name:'',industry:'',plan:'Starter',contact:'',email:'',pass:'',color:'#4f46e5',initials:''}};render();}
-function saveNewCompany(){
+// Creates a genuine, backend-persisted client with its own isolated database row (see
+// POST /api/platform/clients on the server) — not the old browser-memory-only demo entry.
+// The client's own id/tenantKey come from the backend; the local `id` still comes from
+// nPlatformClient so it stays distinct from every pre-existing seeded demo client's id.
+async function saveNewCompany(){
   const d=modal?.data;
   if(!d?.name?.trim()){alert('Company name is required.');return;}
   if(!d?.email?.trim()||!d?.pass?.trim()){alert('Admin email and password are required.');return;}
+  if(d.pass.trim().length<6){alert('Admin password must be at least 6 characters.');return;}
+  if(!window.apiRequest){alert('Not connected to the data service — cannot create a company right now.');return;}
   const init=d.initials||d.name.split(' ').map(w=>w[0]||'').join('').substring(0,2).toUpperCase()||'??';
-  PLATFORM_CLIENTS.push({id:nPlatformClient++,name:d.name.trim(),industry:d.industry||'—',plan:d.plan||'Starter',
-    emps:0,status:'active',lastActive:today(),color:d.color||'#4f46e5',initials:init,
-    admin:{email:d.email.trim(),pass:d.pass.trim()},contact:d.contact||'Admin',
-    modules:[...PLAN_MODULES[d.plan||'Starter']]});
-  closeM();render();
+  modal.saving=true;render();
+  try{
+    const res=await window.apiRequest('/platform/clients',{method:'POST',body:JSON.stringify({
+      name:d.name.trim(),industry:d.industry||'',plan:d.plan||'Starter',color:d.color||'#4f46e5',
+      initials:init,contact:d.contact||'Admin',adminEmail:d.email.trim(),adminPass:d.pass.trim(),
+      modules:[...PLAN_MODULES[d.plan||'Starter']],
+    })});
+    const rc=res.client;
+    PLATFORM_CLIENTS.push({
+      id:nPlatformClient++,remoteId:rc.id,tenantKey:rc.tenantKey,
+      name:rc.name,industry:rc.industry||'—',plan:rc.plan,emps:0,status:rc.status,lastActive:today(),
+      color:rc.color,initials:rc.initials,contact:rc.contact,
+      admin:{email:rc.adminEmail,pass:d.pass.trim()}, /* kept locally for display — the backend never echoes it back */
+      modules:rc.modules&&rc.modules.length?rc.modules:[...PLAN_MODULES[d.plan||'Starter']],
+    });
+    closeM();render();
+    toast(rc.name+' created — a real, backend-connected company.','success');
+  }catch(e){
+    alert('Could not create company: '+(e.message||'Unknown error'));
+    modal.saving=false;render();
+  }
 }
 function toggleClientStatus(cid){
   const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
@@ -11374,8 +11408,8 @@ function renderModal(){
           oninput="modal.data.pass=this.value"/></div>
     </div>
     <div style="display:flex;gap:8px;margin-top:4px">
-      <button class="btn btn-primary" onclick="saveNewCompany()">＋ Add Company</button>
-      <button class="btn" onclick="closeM()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveNewCompany()" ${modal.saving?'disabled':''}>${modal.saving?'Creating…':'＋ Add Company'}</button>
+      <button class="btn" onclick="closeM()" ${modal.saving?'disabled':''}>Cancel</button>
     </div>`;
   }else if(modal.type==='platformPasswordReset'){
     const c=PLATFORM_CLIENTS.find(x=>x.id===modal.clientId);
