@@ -192,6 +192,7 @@
         isPlatformAdmin=true;
         user={id:0,name:'God Admin',email:payload.sub,role:'platform',initials:'GA'};
         view='platform';
+        if(typeof window.loadRealPlatformClients==='function')window.loadRealPlatformClients();
       }else{
         var match=USERS.find(function(u){return u.email===payload.sub;});
         if(match){
