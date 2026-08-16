@@ -5223,7 +5223,7 @@ function downloadUpdateTemplateXLSX(){
   const refColLetters={emp:'A',bu:'B',dept:'C',team:'D',sub:'E'};
   const employees=USERS.filter(u=>u.role==='employee');
 
-  const instrRow=activeCols.map((_,i)=>i===0?`⚠ BULK UPDATE (${activeCols.length-2} fields): Edit values then upload. Do NOT change Employee ID or Name. A blank cell means "no change" — to clear a field, enter a single dash (-). Fill Effective Date + Reason for Position, Band Level, Org, or Salary changes.`:'');
+  const instrRow=activeCols.map((_,i)=>i===0?`⚠ BULK UPDATE (${activeCols.length-2} fields): Edit values then upload. Do NOT change Employee ID or Name. Fill Effective Date + Reason for Position, Band Level, Org, or Salary changes.`:'');
   const headerRow=activeCols.map(c=>c.l);
 
   /* Data rows — one per employee, pre-filled with selected fields only */
@@ -5321,7 +5321,6 @@ function handleBulkUpdateUpload(evt){
         getUpdateCols().filter(c=>!c.ref&&c.k!=='_effectiveDate'&&c.k!=='_reason').forEach(c=>{
           let newVal=String(row[c.k]??'').trim();
           if(!newVal)return; /* blank = unchanged */
-          if(newVal==='-')newVal=''; /* a lone dash is the explicit "clear this field" marker */
           /* Normalise immediateHeadEid from "EID — Name" (or "EID - Name") format */
           if(c.k==='immediateHeadEid')newVal=extractEidFromRef(newVal);
           /* Normalise Y/N booleans */
