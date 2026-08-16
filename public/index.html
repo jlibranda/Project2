@@ -12090,6 +12090,7 @@ function saveEmp(){
     modal.addTab=3;render();return;
   }
 
+  if(!confirm('Are you sure you want to save this new employee?'))return;
   const newId=Math.max(...USERS.map(u=>u.id))+1;
   const months=COMPANY.salaryMultiplier||13;
   const div=COMPANY.dailyDivisor||22;
@@ -12175,6 +12176,7 @@ function ensureEmployeeShape(u){
 function saveAccessEdit(){
   const e=modal.emp;
   if(!(isPlatformAdmin||canAccess('access_manage'))){toast('You do not have permission to change access levels.','warning');return;}
+  if(!confirm('Are you sure you want to save this access level change?'))return;
   const target=USERS.find(u=>u.id===e.id);
   if(target){
     target.accessLevelId=e.accessLevelId;
@@ -12991,6 +12993,7 @@ function openEditLevel(id){
 
 function saveNewLevel(){
   const d=modal?.data;if(!d?.name?.trim()){alert('Name required.');return;}
+  if(!confirm('Are you sure you want to save this new access level?'))return;
   const newId=nAccess++;
   ACCESS_LEVELS.push({id:newId,name:d.name.trim(),color:d.color||'gray',desc:d.desc||'',
     perms:{...ACCESS_PRESETS['Employee']}});
@@ -13001,6 +13004,7 @@ function saveNewLevel(){
 function saveEditLevel(){
   const d=modal?.data;if(!d)return;
   const al=ACCESS_LEVELS.find(a=>a.id===d.id);if(!al)return;
+  if(!confirm('Are you sure you want to save changes to this access level?'))return;
   al.name=d.name||al.name;al.color=d.color||al.color;al.desc=d.desc??al.desc;
   closeM();render();
   toast('Access level updated.','success');
@@ -14094,6 +14098,7 @@ function applyDarkMode(on){
 }
 
 function saveCompany(){
+  if(!confirm('Are you sure you want to save these settings?'))return;
   COMPANY.name=document.getElementById('co-name')?.value?.trim()||COMPANY.name;
   COMPANY.tagline=document.getElementById('co-tag')?.value?.trim()||COMPANY.tagline;
   COMPANY.initials=(document.getElementById('co-ini')?.value?.trim()||COMPANY.initials).toUpperCase().slice(0,2);
@@ -14192,6 +14197,7 @@ function openApprovalConfig(empId){
 function saveApprovalConfig(){
   const m=modal;if(!m?.draft)return;
   const emp=USERS.find(u=>u.id===m.empId);if(!emp)return;
+  if(!confirm('Are you sure you want to save this approval configuration?'))return;
   if(!APPROVAL_CONFIG.perEmployee)APPROVAL_CONFIG.perEmployee={};
   /* Clean out empty overrides */
   const cleanOverrides={};
@@ -15141,6 +15147,7 @@ function saveEmpEdit(){
     render();return;
   }
   /* No tracked changes — save directly */
+  if(!confirm('Are you sure you want to save these changes?'))return;
   applyEmpSave('');
 }
 
@@ -15458,6 +15465,7 @@ function saveCustomField(){
   const key='custom_'+lbl.toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,'');
   const cfg=FIELD_CONFIG[m.tabKey];
   const isNew=m.idx===null;
+  if(!confirm('Are you sure you want to save this custom field?'))return;
   if(isNew){
     if(cfg.custom.find(f=>f.key===key)){
       alert(`A field with the key "${key}" already exists. Use a different label.`);return;
@@ -15689,8 +15697,31 @@ function render(){
 
 /* ── Toast notifications ── */
 var TOAST_MAX = 3;
+// Short two-tone confirmation chime played whenever a 'success' toast fires (save
+// confirmations). Synthesized via Web Audio instead of an audio file so it stays
+// self-contained and works fully offline; silently no-ops if audio is unavailable/blocked
+// (e.g. before any user gesture) rather than ever breaking the toast itself.
+var _toastAudioCtx = null;
+function playToastSound() {
+  try {
+    if (!_toastAudioCtx) _toastAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    var ctx = _toastAudioCtx;
+    if (ctx.state === 'suspended') ctx.resume();
+    var now = ctx.currentTime;
+    [[880, now, 0.09], [1175, now + 0.09, 0.12]].forEach(function(t) {
+      var osc = ctx.createOscillator(), gain = ctx.createGain();
+      osc.type = 'sine'; osc.frequency.value = t[0];
+      gain.gain.setValueAtTime(0.0001, t[1]);
+      gain.gain.exponentialRampToValueAtTime(0.15, t[1] + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t[1] + t[2]);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(t[1]); osc.stop(t[1] + t[2] + 0.02);
+    });
+  } catch (e) { /* audio unavailable — never let this break the toast itself */ }
+}
 function toast(msg, type, dur) {
   type = type || 'info'; dur = dur || 3500;
+  if (type === 'success') playToastSound();
   var wrap = document.getElementById('toast-wrap');
   if (!wrap) {
     wrap = document.createElement('div');
