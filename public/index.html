@@ -1724,7 +1724,7 @@ function blankPschedDay(){return {restDay:false,start:'',end:'',breakStart:'',br
 function blankPschedWeek(){const w={};BULK_PSCHED_DAY_KEYS.forEach(k=>{w[k]=blankPschedDay();});return w;}
 function openBulkPersonalSchedule(){
   if(!(isAdminUser(user)||isPlatformAdmin))return;
-  modal={type:'bulkPersonalSchedule',mode:'multi',selectedIds:[],search:'',schedule:blankPschedWeek(),rows:[Object.assign({eid:''},blankPschedWeek())]};
+  modal={type:'bulkPersonalSchedule',mode:'multi',selectedIds:[],search:'',schedule:blankPschedWeek(),rows:[Object.assign({eid:''},blankPschedWeek())],rowSearch:'',selectedRowIdx:[]};
   render();
 }
 function setBulkPschedMode(mode){
@@ -1892,6 +1892,43 @@ function addBulkPersonalScheduleRow(){
 function removeBulkPersonalScheduleRow(i){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
   modal.rows.splice(i,1);if(!modal.rows.length)modal.rows.push(Object.assign({eid:''},blankPschedWeek()));render();
+}
+// Row search + bulk-select for the Excel-upload table -- indices are always into the real
+// modal.rows array (never reindexed by filtering), so every existing per-cell handler that
+// references modal.rows[i] by its original index keeps working unchanged.
+function bulkPschedFilteredRowIndices(){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return[];
+  const q=(modal.rowSearch||'').trim().toLowerCase();
+  const all=modal.rows.map((_,i)=>i);
+  if(!q)return all;
+  return all.filter(i=>{
+    const r=modal.rows[i];
+    const emp=USERS.find(u=>u.eid===r.eid);
+    const hay=[r.eid,emp?.name,emp?.pos].filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(q);
+  });
+}
+function toggleBulkPschedRowSelect(i){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  const idx=modal.selectedRowIdx.indexOf(i);
+  if(idx>=0)modal.selectedRowIdx.splice(idx,1);else modal.selectedRowIdx.push(i);
+  render();
+}
+function toggleBulkPschedSelectAllVisible(checked){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  const visible=bulkPschedFilteredRowIndices();
+  if(checked)visible.forEach(i=>{if(!modal.selectedRowIdx.includes(i))modal.selectedRowIdx.push(i);});
+  else modal.selectedRowIdx=modal.selectedRowIdx.filter(i=>!visible.includes(i));
+  render();
+}
+function removeSelectedBulkPschedRows(){
+  if(!modal||modal.type!=='bulkPersonalSchedule'||!modal.selectedRowIdx.length)return;
+  if(!confirm('Remove '+modal.selectedRowIdx.length+' selected row'+(modal.selectedRowIdx.length!==1?'s':'')+'?'))return;
+  const toRemove=new Set(modal.selectedRowIdx);
+  modal.rows=modal.rows.filter((_,i)=>!toRemove.has(i));
+  modal.selectedRowIdx=[];
+  if(!modal.rows.length)modal.rows.push(Object.assign({eid:''},blankPschedWeek()));
+  render();
 }
 function bulkPschedRowToggleRestDay(i,day,checked){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
@@ -10570,39 +10607,60 @@ function renderModal(){
         </label>
         <span style="font-size:11px;color:var(--accent-txt)">Or fill in rows manually below.</span>
       </div>
-      <div style="overflow-x:auto;margin-bottom:12px">
-      <table style="min-width:${260+BULK_PSCHED_DAY_KEYS.length*300}px;font-size:12px;border-collapse:separate;border-spacing:0 4px">
-        <thead><tr style="background:var(--bg)">
-          <th style="width:20px;padding:4px 8px">#</th>
-          <th style="padding:4px 8px;text-align:left">EID <span style="color:var(--red)">*</span></th>
-          ${BULK_PSCHED_DAY_KEYS.map(k=>`<th colspan="5" style="padding:4px 8px;text-align:center;border-left:1px solid var(--border)">${BULK_PSCHED_DAY_LABELS[k]}</th>`).join('')}
-          <th></th>
-        </tr><tr style="background:var(--bg)">
-          <th></th><th></th>
-          ${BULK_PSCHED_DAY_KEYS.map(()=>`<th style="padding:2px 6px;font-size:10px;border-left:1px solid var(--border)">Rest</th><th style="padding:2px 6px;font-size:10px">Start</th><th style="padding:2px 6px;font-size:10px">Break Start</th><th style="padding:2px 6px;font-size:10px">Break End</th><th style="padding:2px 6px;font-size:10px">End</th>`).join('')}
-          <th></th>
-        </tr></thead>
-        <tbody>
-        ${rows.map((r,i)=>{
-          const emp=USERS.find(u=>u.eid===r.eid&&u.role==='employee');
-          const empOk=!!emp,empActive=emp&&emp.active!==false;
-          return`<tr style="background:var(--surface2)">
-            <td style="text-align:center;color:var(--txt3)">${i+1}</td>
-            <td><input class="finput" style="font-size:12px;width:90px;${r.eid&&!empOk?'border-color:var(--red)':r.eid&&!empActive?'border-color:var(--amber)':''}" value="${esc(r.eid)}" placeholder="EID" oninput="modal.rows[${i}].eid=this.value.trim()"/>${r.eid&&!empOk?'<div style="font-size:10px;color:var(--red)">Not found</div>':r.eid&&!empActive?'<div style="font-size:10px;color:var(--amber-txt)">Inactive</div>':''}</td>
-            ${BULK_PSCHED_DAY_KEYS.map(k=>{
-              const day=r[k];
-              return`<td style="border-left:1px solid var(--border)"><input type="checkbox" ${day.restDay?'checked':''} onchange="bulkPschedRowToggleRestDay(${i},'${k}',this.checked)"/></td>
-              <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.start||'')}" onchange="modal.rows[${i}]['${k}'].start=this.value"/></td>
-              <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakStart||'')}" onchange="modal.rows[${i}]['${k}'].breakStart=this.value"/></td>
-              <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakEnd||'')}" onchange="modal.rows[${i}]['${k}'].breakEnd=this.value"/></td>
-              <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.end||'')}" onchange="modal.rows[${i}]['${k}'].end=this.value"/></td>`;
-            }).join('')}
-            <td><button class="btn btn-sm btn-danger" onclick="removeBulkPersonalScheduleRow(${i})" title="Remove row">✕</button></td>
-          </tr>`;
-        }).join('')}
-        </tbody>
-      </table>
-      </div>
+      ${(()=>{
+        const visibleIdx=bulkPschedFilteredRowIndices();
+        const selCount=modal.selectedRowIdx.length;
+        const allVisibleSelected=visibleIdx.length>0&&visibleIdx.every(i=>modal.selectedRowIdx.includes(i));
+        return`<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+          <input class="finput" style="font-size:12px;max-width:280px" placeholder="Search rows by name, EID, or position…" value="${esc(modal.rowSearch||'')}" oninput="modal.rowSearch=this.value;render()"/>
+          ${modal.rowSearch?`<span style="font-size:11px;color:var(--txt3)">${visibleIdx.length} of ${rows.length} row${rows.length!==1?'s':''}</span>`:''}
+          ${selCount?`<button class="btn btn-sm btn-danger" onclick="removeSelectedBulkPschedRows()">✕ Delete ${selCount} Selected</button>`:''}
+        </div>
+        <div style="overflow-x:auto;margin-bottom:12px">
+        <table style="min-width:${300+BULK_PSCHED_DAY_KEYS.length*300}px;font-size:12px;border-collapse:separate;border-spacing:0 4px">
+          <thead><tr style="background:var(--bg)">
+            <th style="width:20px;padding:4px 8px"><input type="checkbox" ${allVisibleSelected?'checked':''} onchange="toggleBulkPschedSelectAllVisible(this.checked)" title="Select all visible rows"/></th>
+            <th style="width:20px;padding:4px 8px">#</th>
+            <th style="padding:4px 8px;text-align:left">Employee <span style="color:var(--red)">*</span></th>
+            ${BULK_PSCHED_DAY_KEYS.map(k=>`<th colspan="5" style="padding:4px 8px;text-align:center;border-left:1px solid var(--border)">${BULK_PSCHED_DAY_LABELS[k]}</th>`).join('')}
+            <th></th>
+          </tr><tr style="background:var(--bg)">
+            <th></th><th></th><th></th>
+            ${BULK_PSCHED_DAY_KEYS.map(()=>`<th style="padding:2px 6px;font-size:10px;border-left:1px solid var(--border)">Rest</th><th style="padding:2px 6px;font-size:10px">Start</th><th style="padding:2px 6px;font-size:10px">Break Start</th><th style="padding:2px 6px;font-size:10px">Break End</th><th style="padding:2px 6px;font-size:10px">End</th>`).join('')}
+            <th></th>
+          </tr></thead>
+          <tbody>
+          ${visibleIdx.length?visibleIdx.map(i=>{
+            const r=rows[i];
+            const emp=USERS.find(u=>u.eid===r.eid&&u.role==='employee');
+            const empOk=!!emp,empActive=emp&&emp.active!==false;
+            const rowSelected=modal.selectedRowIdx.includes(i);
+            return`<tr style="background:${rowSelected?'var(--accent-bg)':'var(--surface2)'}">
+              <td style="text-align:center"><input type="checkbox" ${rowSelected?'checked':''} onchange="toggleBulkPschedRowSelect(${i})"/></td>
+              <td style="text-align:center;color:var(--txt3)">${i+1}</td>
+              <td>${empPickerInput({
+                id:'bulkpsched-emp-picker-'+i,
+                users:USERS.filter(u=>u.role==='employee'),
+                value:r.eid||'',
+                placeholder:'— Select employee —',
+                onchange:"modal.rows["+i+"].eid=v",
+                extraAttrs:'style="font-size:12px;width:170px;'+(r.eid&&!empOk?'border-color:var(--red)':r.eid&&!empActive?'border-color:var(--amber)':'')+'"',
+              })}${r.eid&&!empOk?'<div style="font-size:10px;color:var(--red)">Not found</div>':r.eid&&!empActive?'<div style="font-size:10px;color:var(--amber-txt)">Inactive</div>':''}</td>
+              ${BULK_PSCHED_DAY_KEYS.map(k=>{
+                const day=r[k];
+                return`<td style="border-left:1px solid var(--border)"><input type="checkbox" ${day.restDay?'checked':''} onchange="bulkPschedRowToggleRestDay(${i},'${k}',this.checked)"/></td>
+                <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.start||'')}" onchange="modal.rows[${i}]['${k}'].start=this.value"/></td>
+                <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakStart||'')}" onchange="modal.rows[${i}]['${k}'].breakStart=this.value"/></td>
+                <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakEnd||'')}" onchange="modal.rows[${i}]['${k}'].breakEnd=this.value"/></td>
+                <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.end||'')}" onchange="modal.rows[${i}]['${k}'].end=this.value"/></td>`;
+              }).join('')}
+              <td><button class="btn btn-sm btn-danger" onclick="removeBulkPersonalScheduleRow(${i})" title="Remove row">✕</button></td>
+            </tr>`;
+          }).join(''):`<tr><td colspan="${3+BULK_PSCHED_DAY_KEYS.length*5+1}" class="empty-state">No rows match "${esc(modal.rowSearch||'')}"</td></tr>`}
+          </tbody>
+        </table>
+        </div>`;
+      })()}
       <div style="display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap">
         <button class="btn btn-sm" onclick="addBulkPersonalScheduleRow()">+ Add Row</button>
         <div style="display:flex;gap:8px">
