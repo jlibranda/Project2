@@ -1703,7 +1703,12 @@
     // form, which stays reserved for outsourced/service admins (role:'admin', not staff).
     if(admin&&isStaff&&tab===3)return renderEmployeeAttendanceForms();
     var html=baseAttendance();
-    if(!admin)html=html.replace('File Attendance','Attendance Forms');
+    // Whichever tab position leads to the self-service catalog above — index 1 for a plain
+    // employee, index 3 for a staff-admin — has to carry the same "Attendance Forms" label
+    // there too. Gating this purely on !admin left a staff-admin seeing "File Attendance" on
+    // the tab bar right up until they click it, at which point the exact same tab re-renders
+    // itself "Attendance Forms" — reads like the click landed on the wrong page.
+    if(!admin||isStaff)html=html.replace('File Attendance','Attendance Forms');
     return html;
   };
 
