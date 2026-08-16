@@ -555,6 +555,14 @@ function fmtEmpName(u){
   if(suffix)out+=', '+suffix;
   return out;
 }
+// Sort comparator matching fmtEmpName's convention (last name is the primary sort key, not
+// first) -- used wherever employees are listed alphabetically (Log in as user picker, System
+// Users/Credentials table, Bulk Personal Schedule picker, etc).
+function cmpEmpName(a,b){
+  return (a.lastName||'').localeCompare(b.lastName||'')
+    ||(a.firstName||'').localeCompare(b.firstName||'')
+    ||(a.middleName||'').localeCompare(b.middleName||'');
+}
 let nAtt=20,nLeave=10,nPay=1,nLoan=10,nCand=10,nEmp=6;
 
 /* ---- ACCESS LEVELS ---- */
@@ -5215,7 +5223,7 @@ function downloadUpdateTemplateXLSX(){
   const refColLetters={emp:'A',bu:'B',dept:'C',team:'D',sub:'E'};
   const employees=USERS.filter(u=>u.role==='employee');
 
-  const instrRow=activeCols.map((_,i)=>i===0?`⚠ BULK UPDATE (${activeCols.length-2} fields): Edit values then upload. Do NOT change Employee ID or Name. Fill Effective Date + Reason for Position, Band Level, Org, or Salary changes.`:'');
+  const instrRow=activeCols.map((_,i)=>i===0?`⚠ BULK UPDATE (${activeCols.length-2} fields): Edit values then upload. Do NOT change Employee ID or Name. A blank cell means "no change" — to clear a field, enter a single dash (-). Fill Effective Date + Reason for Position, Band Level, Org, or Salary changes.`:'');
   const headerRow=activeCols.map(c=>c.l);
 
   /* Data rows — one per employee, pre-filled with selected fields only */
@@ -5313,6 +5321,7 @@ function handleBulkUpdateUpload(evt){
         getUpdateCols().filter(c=>!c.ref&&c.k!=='_effectiveDate'&&c.k!=='_reason').forEach(c=>{
           let newVal=String(row[c.k]??'').trim();
           if(!newVal)return; /* blank = unchanged */
+          if(newVal==='-')newVal=''; /* a lone dash is the explicit "clear this field" marker */
           /* Normalise immediateHeadEid from "EID — Name" (or "EID - Name") format */
           if(c.k==='immediateHeadEid')newVal=extractEidFromRef(newVal);
           /* Normalise Y/N booleans */
@@ -9988,12 +9997,16 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='impersonatePicker'){
     const client=PLATFORM_CLIENTS.find(x=>x.id===modal.clientId);
-    const availableUsers=USERS.filter(u=>u.active!==false).sort((a,b)=>a.name.localeCompare(b.name));
+    const pickerSearch=modal.pickerSearch||'';
+    const availableUsers=USERS.filter(u=>u.active!==false).filter(u=>!pickerSearch||[u.name,u.eid,u.email,u.pos].filter(Boolean).join(' ').toLowerCase().includes(pickerSearch.toLowerCase())).sort(cmpEmpName);
     inner=`<div class="modal-title">Log in as user — ${esc(client?.name||COMPANY.name)}
       <button class="close-x" onclick="closeMConfirmed()">×</button></div>
       <div style="padding:9px 11px;background:var(--amber-bg);border:1px solid var(--amber);border-radius:8px;color:var(--amber-txt);font-size:11px;margin-bottom:10px">The selected account's actual permissions will apply. Passwords are not used or revealed, and start/end events are added to the security audit.</div>
+      <input id="picker-search-input" class="finput" placeholder="Search by name, ID, email, or position…"
+        value="${esc(pickerSearch)}" oninput="modal.pickerSearch=this.value;render();refocusSearch('picker-search-input')"
+        style="margin-bottom:10px"/>
       <div style="display:grid;gap:6px;max-height:420px;overflow-y:auto">
-        ${availableUsers.length?availableUsers.map(u=>`<button class="btn" style="display:flex;align-items:center;text-align:left;justify-content:flex-start;padding:9px 10px" onclick="impersonateUser(${u.id})"><span class="avatar sm">${ini(u.name)}</span><span style="flex:1"><strong>${esc(fmtEmpName(u))}</strong><br><span style="font-size:10px;color:var(--txt3)">${esc(u.eid||u.email)} · ${esc(u.role||'employee')}</span></span><span style="font-size:11px;color:var(--accent)">Log in →</span></button>`).join(''):'<div class="empty-state">No active users are available in this company.</div>'}
+        ${availableUsers.length?availableUsers.map(u=>`<button class="btn" style="display:flex;align-items:center;text-align:left;justify-content:flex-start;padding:9px 10px" onclick="impersonateUser(${u.id})"><span class="avatar sm">${ini(u.name)}</span><span style="flex:1"><strong>${esc(fmtEmpName(u))}</strong><br><span style="font-size:10px;color:var(--txt3)">${esc(u.eid||u.email)} · ${esc(u.role||'employee')}</span></span><span style="font-size:11px;color:var(--accent)">Log in →</span></button>`).join(''):`<div class="empty-state">${pickerSearch?'No users match your search.':'No active users are available in this company.'}</div>`}
       </div>`;
   }else if(modal.type==='editPOC'){
     const c=PLATFORM_CLIENTS.find(x=>x.id===modal.clientId);
@@ -10414,7 +10427,7 @@ function renderModal(){
       <div class="tab ${mode==='excel'?'active':''}" onclick="setBulkPschedMode('excel')">Excel Upload — Different per Employee</div>
     </div>`;
     if(mode==='multi'){
-      const activeEmps=USERS.filter(u=>u.role==='employee'&&u.active!==false).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+      const activeEmps=USERS.filter(u=>u.role==='employee'&&u.active!==false).sort(cmpEmpName);
       const q=(modal.search||'').toLowerCase();
       const selectedEmps=activeEmps.filter(e=>modal.selectedIds.includes(e.id));
       inner=`<div class="modal-title" style="position:sticky;top:0;z-index:2;background:var(--surface)">
@@ -12465,7 +12478,7 @@ function pgApprovalSetup(){
     </div>
     <div style="font-size:12px;color:var(--accent-txt);padding:6px 10px;background:var(--accent-bg);border-radius:6px">
       Default for unconfigured employees: <strong>${APPROVAL_CONFIG.defaultLayers||1} layer</strong>
-      <select style="margin-left:8px;font-size:12px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg)"
+      <select style="margin-left:8px;font-size:12px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg);color:var(--txt)"
         onchange="APPROVAL_CONFIG.defaultLayers=parseInt(this.value);queueSync('Approval_Config');render();toast('Default layers updated.','success')">
         ${Array.from({length:maxG},(_,i)=>i+1).map(n=>`<option value="${n}" ${(APPROVAL_CONFIG.defaultLayers||1)===n?'selected':''}>${n}</option>`).join('')}
       </select>
@@ -12860,7 +12873,7 @@ function pgAccessSetup(){
 
 function renderCredRows(filter){
   const alColors={purple:'#7c3aed',blue:'#2563eb',green:'#059669',amber:'#d97706',gray:'#6b7280',red:'#dc2626'};
-  const rows=[...USERS].sort((a,b)=>a.name.localeCompare(b.name)).filter(u=>!filter||(u.name+u.email).toLowerCase().includes(filter.toLowerCase()));
+  const rows=[...USERS].sort(cmpEmpName).filter(u=>!filter||(u.name+u.email).toLowerCase().includes(filter.toLowerCase()));
   return rows.map(u=>{
     const al=ACCESS_LEVELS.find(a=>a.id===u.accessLevelId)||ACCESS_LEVELS[4];
     const c=alColors[al.color]||'#6b7280';
@@ -15156,6 +15169,7 @@ function applyEmpSave(reason){
   }
   closeM();
   detailEdit=false;detailDraft={};
+  toast(e.name+' updated.','success');
   /* Re-sync payroll group membership if any criteria-relevant field changed */
   const criteriaFields=['payType','type','bandLevel','entityName','bu','dept','pos','costCenter','nonMass','status'];
   /* Also include any custom employment fields */
