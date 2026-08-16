@@ -1724,7 +1724,7 @@ function blankPschedDay(){return {restDay:false,start:'',end:'',breakStart:'',br
 function blankPschedWeek(){const w={};BULK_PSCHED_DAY_KEYS.forEach(k=>{w[k]=blankPschedDay();});return w;}
 function openBulkPersonalSchedule(){
   if(!(isAdminUser(user)||isPlatformAdmin))return;
-  modal={type:'bulkPersonalSchedule',mode:'multi',selectedIds:[],search:'',schedule:blankPschedWeek(),rows:[Object.assign({eid:''},blankPschedWeek())]};
+  modal={type:'bulkPersonalSchedule',mode:'multi',selectedIds:[],search:'',schedule:blankPschedWeek(),rows:[Object.assign({eid:''},blankPschedWeek())],rowSearch:'',selectedRowIdx:[]};
   render();
 }
 function setBulkPschedMode(mode){
@@ -1892,6 +1892,43 @@ function addBulkPersonalScheduleRow(){
 function removeBulkPersonalScheduleRow(i){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
   modal.rows.splice(i,1);if(!modal.rows.length)modal.rows.push(Object.assign({eid:''},blankPschedWeek()));render();
+}
+// Row search + bulk-select for the Excel-upload table -- indices are always into the real
+// modal.rows array (never reindexed by filtering), so every existing per-cell handler that
+// references modal.rows[i] by its original index keeps working unchanged.
+function bulkPschedFilteredRowIndices(){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return[];
+  const q=(modal.rowSearch||'').trim().toLowerCase();
+  const all=modal.rows.map((_,i)=>i);
+  if(!q)return all;
+  return all.filter(i=>{
+    const r=modal.rows[i];
+    const emp=USERS.find(u=>u.eid===r.eid);
+    const hay=[r.eid,emp?.name,emp?.pos].filter(Boolean).join(' ').toLowerCase();
+    return hay.includes(q);
+  });
+}
+function toggleBulkPschedRowSelect(i){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  const idx=modal.selectedRowIdx.indexOf(i);
+  if(idx>=0)modal.selectedRowIdx.splice(idx,1);else modal.selectedRowIdx.push(i);
+  render();
+}
+function toggleBulkPschedSelectAllVisible(checked){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  const visible=bulkPschedFilteredRowIndices();
+  if(checked)visible.forEach(i=>{if(!modal.selectedRowIdx.includes(i))modal.selectedRowIdx.push(i);});
+  else modal.selectedRowIdx=modal.selectedRowIdx.filter(i=>!visible.includes(i));
+  render();
+}
+function removeSelectedBulkPschedRows(){
+  if(!modal||modal.type!=='bulkPersonalSchedule'||!modal.selectedRowIdx.length)return;
+  if(!confirm('Remove '+modal.selectedRowIdx.length+' selected row'+(modal.selectedRowIdx.length!==1?'s':'')+'?'))return;
+  const toRemove=new Set(modal.selectedRowIdx);
+  modal.rows=modal.rows.filter((_,i)=>!toRemove.has(i));
+  modal.selectedRowIdx=[];
+  if(!modal.rows.length)modal.rows.push(Object.assign({eid:''},blankPschedWeek()));
+  render();
 }
 function bulkPschedRowToggleRestDay(i,day,checked){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
@@ -6103,7 +6140,18 @@ function pgAttendance(){
     body=`<table><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th>Status</th><th>OT</th><th>ND</th><th>Logs</th></tr></thead>
     <tbody>${attendanceRecords().slice().reverse().map(a=>{const emp=USERS.find(u=>u.id===a.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${fmtEmpName(emp)||'?'}</div></td><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td>${a.ot?`<span style="color:var(--accent);font-weight:600">${a.ot}h</span>`:'—'}</td><td>${a.nd?`<span style="color:var(--purple);font-weight:600">${a.nd}h</span>`:'—'}</td><td><span class="badge b-info" style="cursor:pointer" onclick="openAttHistory(${a.eid},'${a.date}')" title="View raw time logs and edit history">🕘 ${(a.punches||[]).length}</span></td></tr>`;}).join('')}</tbody></table>`;
   }else{
-    body=`${isA?`<div class="field"><label>Employee</label><select id="ae">${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.id}">${fmtEmpName(u)}</option>`).join('')}</select></div>`:''}
+    // Attendance records key off the numeric u.id (not eid), so the picker resolves the
+    // typed/selected name back to an eid and then to u.id via a hidden #ae input that
+    // submitAtt() reads exactly as it always has -- no downstream change needed.
+    const attEmpList=USERS.filter(u=>u.role==='employee').slice().sort(cmpEmpName);
+    const attDefault=attEmpList[0];
+    body=`${isA?`<div class="field"><label>Employee</label>${empPickerInput({
+      id:'att-emp-picker',
+      users:attEmpList,
+      value:attDefault?attDefault.eid:'',
+      placeholder:'— Select employee —',
+      onchange:"var u=USERS.find(function(x){return x.eid===v});document.getElementById('ae').value=u?u.id:'';",
+    })}<input type="hidden" id="ae" value="${attDefault?attDefault.id:''}"/></div>`:''}
     <div class="form-row"><div class="field"><label>Date</label><input type="date" id="adate" value="${today()}"/></div><div class="field"><label>Status</label><select id="ast"><option value="present">Present</option><option value="late">Late</option><option value="absent">Absent</option><option value="leave">On Leave</option></select></div></div>
     <div class="form-row"><div class="field"><label>Time In</label><input type="time" id="atin" value="08:00"/></div><div class="field"><label>Time Out</label><input type="time" id="atout" value="17:00"/></div></div>
     <div class="form-row"><div class="field"><label>Overtime Hours</label><input type="number" id="aot" value="0" min="0" max="12"/></div><div class="field"><label>Night Differential Hours</label><input type="number" id="and" value="0" min="0" max="12"/></div></div>
@@ -9718,7 +9766,7 @@ function renderModal(){
     <div class="form-row"><div class="field"><label>Start Date</label><input type="date" id="ne-start" value="${ae.hired||today()}" oninput="setAeField('hired',this.value)"/></div><div class="field"><label>Probation End Date</label><input type="date" id="ne-prob" value="${ae.probEndDate||''}" oninput="setAeField('probEndDate',this.value)"/></div></div>
     <div class="form-row"><div class="field"><label>Cost Center</label><select id="ne-cc" onchange="setAeField('costCenter',this.value)"><option value="">— Select —</option>${LOOKUPS.costCenters.map(c=>`<option value="${c.code}" ${ae.costCenter===c.code?'selected':''}>${c.label}</option>`).join('')}</select></div></div>
     <div class="form-row"><div class="field"><label>Rehireable</label><select id="ne-reh" onchange="setAeField('rehireable',this.value)"><option value="Y" ${ae.rehireable==='Y'?'selected':''}>Yes</option><option value="N" ${ae.rehireable==='N'?'selected':''}>No</option><option value="" ${!ae.rehireable?'selected':''}>TBD</option></select></div>${fieldVisible('employment','loanEligibility')?`<div class="field"><label>Loan Eligibility</label><select id="ne-loan" onchange="setAeField('loanEligibility',this.value)"><option value="" ${!ae.loanEligibility?'selected':''}>— Select —</option><option value="Y" ${ae.loanEligibility==='Y'?'selected':''}>Yes</option><option value="N" ${ae.loanEligibility==='N'?'selected':''}>No</option></select></div>`:''}</div>
-    <div class="form-row"><div class="field"><label>Manager</label><select id="ne-mgr" onchange="setAeField('managerId',this.value)"><option value="">— None —</option>${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.eid}" ${ae.managerId===u.eid?'selected':''}>${u.eid} — ${fmtEmpName(u)}</option>`).join('')}</select></div><div class="field"><label>Functional Head</label><input id="ne-fh" value="${ae.functionalHead||''}" oninput="setAeField('functionalHead',this.value)"/></div></div>`
+    <div class="form-row"><div class="field"><label>Manager</label>${empPickerInput({id:'ne-mgr-picker',users:USERS.filter(u=>u.role==='employee'),value:ae.managerId||'',placeholder:'— None —',onchange:"setAeField('managerId',v)"})}</div><div class="field"><label>Functional Head</label><input id="ne-fh" value="${ae.functionalHead||''}" oninput="setAeField('functionalHead',this.value)"/></div></div>`
     :(modal.addTab||0)===2?`
     <div class="form-row"><div class="field"><label>Currency</label><select id="ne-curr" onchange="setAeField('currency',this.value);render()"><option ${ae.currency!=='USD'?'selected':''}>PHP</option><option ${ae.currency==='USD'?'selected':''}>USD</option></select></div></div>
     <div class="field"><label>Monthly Rate (${currencySymbol(ae.currency)}) *</label><input type="text" inputmode="decimal" id="ne-ratepm" value="${ae.salaryPM?fmtN(ae.salaryPM):''}" style="${reqBorderStyle(ae.salaryPM)}" oninput="moneyMaskInput(this,'salaryPM');reqBorderLive(this,this.value);recalcSalary();"/></div>
@@ -9888,7 +9936,20 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='addLoan'){
     inner=`<div class="modal-title">Add Loan <button class="close-x" onclick="closeMConfirmed()">×</button></div>
-    <div class="field"><label>Employee</label><select id="ml-emp">${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.id}">${fmtEmpName(u)}</option>`).join('')}</select></div>
+    <div class="field"><label>Employee</label>${(()=>{
+      // LOANS key off the numeric u.id (not eid), so the picker resolves the typed/selected
+      // name back to an eid and then to u.id via a hidden #ml-emp input that addLoan() reads
+      // exactly as it always has -- no downstream change needed.
+      const loanEmpList=USERS.filter(u=>u.role==='employee').slice().sort(cmpEmpName);
+      const loanDefault=loanEmpList[0];
+      return`${empPickerInput({
+        id:'ml-emp-picker',
+        users:loanEmpList,
+        value:loanDefault?loanDefault.eid:'',
+        placeholder:'— Select employee —',
+        onchange:"var u=USERS.find(function(x){return x.eid===v});document.getElementById('ml-emp').value=u?u.id:'';",
+      })}<input type="hidden" id="ml-emp" value="${loanDefault?loanDefault.id:''}"/>`;
+    })()}</div>
     <div class="field"><label>Loan Type</label><select id="ml-type"><option>SSS Salary Loan</option><option>Pag-IBIG MP2 Loan</option><option>Pag-IBIG Housing Loan</option><option>Company Loan</option><option>Emergency Loan</option></select></div>
     <div class="form-row"><div class="field"><label>Loan Amount</label><input type="number" id="ml-amt" placeholder="50000"/></div><div class="field"><label>Monthly Deduction</label><input type="number" id="ml-mo" placeholder="2000"/></div></div>
     <div class="field"><label>Start Date</label><input type="date" id="ml-start" value="${today()}"/></div>
@@ -10546,39 +10607,60 @@ function renderModal(){
         </label>
         <span style="font-size:11px;color:var(--accent-txt)">Or fill in rows manually below.</span>
       </div>
-      <div style="overflow-x:auto;margin-bottom:12px">
-      <table style="min-width:${260+BULK_PSCHED_DAY_KEYS.length*300}px;font-size:12px;border-collapse:separate;border-spacing:0 4px">
-        <thead><tr style="background:var(--bg)">
-          <th style="width:20px;padding:4px 8px">#</th>
-          <th style="padding:4px 8px;text-align:left">EID <span style="color:var(--red)">*</span></th>
-          ${BULK_PSCHED_DAY_KEYS.map(k=>`<th colspan="5" style="padding:4px 8px;text-align:center;border-left:1px solid var(--border)">${BULK_PSCHED_DAY_LABELS[k]}</th>`).join('')}
-          <th></th>
-        </tr><tr style="background:var(--bg)">
-          <th></th><th></th>
-          ${BULK_PSCHED_DAY_KEYS.map(()=>`<th style="padding:2px 6px;font-size:10px;border-left:1px solid var(--border)">Rest</th><th style="padding:2px 6px;font-size:10px">Start</th><th style="padding:2px 6px;font-size:10px">Break Start</th><th style="padding:2px 6px;font-size:10px">Break End</th><th style="padding:2px 6px;font-size:10px">End</th>`).join('')}
-          <th></th>
-        </tr></thead>
-        <tbody>
-        ${rows.map((r,i)=>{
-          const emp=USERS.find(u=>u.eid===r.eid&&u.role==='employee');
-          const empOk=!!emp,empActive=emp&&emp.active!==false;
-          return`<tr style="background:var(--surface2)">
-            <td style="text-align:center;color:var(--txt3)">${i+1}</td>
-            <td><input class="finput" style="font-size:12px;width:90px;${r.eid&&!empOk?'border-color:var(--red)':r.eid&&!empActive?'border-color:var(--amber)':''}" value="${esc(r.eid)}" placeholder="EID" oninput="modal.rows[${i}].eid=this.value.trim()"/>${r.eid&&!empOk?'<div style="font-size:10px;color:var(--red)">Not found</div>':r.eid&&!empActive?'<div style="font-size:10px;color:var(--amber-txt)">Inactive</div>':''}</td>
-            ${BULK_PSCHED_DAY_KEYS.map(k=>{
-              const day=r[k];
-              return`<td style="border-left:1px solid var(--border)"><input type="checkbox" ${day.restDay?'checked':''} onchange="bulkPschedRowToggleRestDay(${i},'${k}',this.checked)"/></td>
-              <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.start||'')}" onchange="modal.rows[${i}]['${k}'].start=this.value"/></td>
-              <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakStart||'')}" onchange="modal.rows[${i}]['${k}'].breakStart=this.value"/></td>
-              <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakEnd||'')}" onchange="modal.rows[${i}]['${k}'].breakEnd=this.value"/></td>
-              <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.end||'')}" onchange="modal.rows[${i}]['${k}'].end=this.value"/></td>`;
-            }).join('')}
-            <td><button class="btn btn-sm btn-danger" onclick="removeBulkPersonalScheduleRow(${i})" title="Remove row">✕</button></td>
-          </tr>`;
-        }).join('')}
-        </tbody>
-      </table>
-      </div>
+      ${(()=>{
+        const visibleIdx=bulkPschedFilteredRowIndices();
+        const selCount=modal.selectedRowIdx.length;
+        const allVisibleSelected=visibleIdx.length>0&&visibleIdx.every(i=>modal.selectedRowIdx.includes(i));
+        return`<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+          <input class="finput" style="font-size:12px;max-width:280px" placeholder="Search rows by name, EID, or position…" value="${esc(modal.rowSearch||'')}" oninput="modal.rowSearch=this.value;render()"/>
+          ${modal.rowSearch?`<span style="font-size:11px;color:var(--txt3)">${visibleIdx.length} of ${rows.length} row${rows.length!==1?'s':''}</span>`:''}
+          ${selCount?`<button class="btn btn-sm btn-danger" onclick="removeSelectedBulkPschedRows()">✕ Delete ${selCount} Selected</button>`:''}
+        </div>
+        <div style="overflow-x:auto;margin-bottom:12px">
+        <table style="min-width:${300+BULK_PSCHED_DAY_KEYS.length*300}px;font-size:12px;border-collapse:separate;border-spacing:0 4px">
+          <thead><tr style="background:var(--bg)">
+            <th style="width:20px;padding:4px 8px"><input type="checkbox" ${allVisibleSelected?'checked':''} onchange="toggleBulkPschedSelectAllVisible(this.checked)" title="Select all visible rows"/></th>
+            <th style="width:20px;padding:4px 8px">#</th>
+            <th style="padding:4px 8px;text-align:left">Employee <span style="color:var(--red)">*</span></th>
+            ${BULK_PSCHED_DAY_KEYS.map(k=>`<th colspan="5" style="padding:4px 8px;text-align:center;border-left:1px solid var(--border)">${BULK_PSCHED_DAY_LABELS[k]}</th>`).join('')}
+            <th></th>
+          </tr><tr style="background:var(--bg)">
+            <th></th><th></th><th></th>
+            ${BULK_PSCHED_DAY_KEYS.map(()=>`<th style="padding:2px 6px;font-size:10px;border-left:1px solid var(--border)">Rest</th><th style="padding:2px 6px;font-size:10px">Start</th><th style="padding:2px 6px;font-size:10px">Break Start</th><th style="padding:2px 6px;font-size:10px">Break End</th><th style="padding:2px 6px;font-size:10px">End</th>`).join('')}
+            <th></th>
+          </tr></thead>
+          <tbody>
+          ${visibleIdx.length?visibleIdx.map(i=>{
+            const r=rows[i];
+            const emp=USERS.find(u=>u.eid===r.eid&&u.role==='employee');
+            const empOk=!!emp,empActive=emp&&emp.active!==false;
+            const rowSelected=modal.selectedRowIdx.includes(i);
+            return`<tr style="background:${rowSelected?'var(--accent-bg)':'var(--surface2)'}">
+              <td style="text-align:center"><input type="checkbox" ${rowSelected?'checked':''} onchange="toggleBulkPschedRowSelect(${i})"/></td>
+              <td style="text-align:center;color:var(--txt3)">${i+1}</td>
+              <td>${empPickerInput({
+                id:'bulkpsched-emp-picker-'+i,
+                users:USERS.filter(u=>u.role==='employee'),
+                value:r.eid||'',
+                placeholder:'— Select employee —',
+                onchange:"modal.rows["+i+"].eid=v",
+                extraAttrs:'style="font-size:12px;width:170px;'+(r.eid&&!empOk?'border-color:var(--red)':r.eid&&!empActive?'border-color:var(--amber)':'')+'"',
+              })}${r.eid&&!empOk?'<div style="font-size:10px;color:var(--red)">Not found</div>':r.eid&&!empActive?'<div style="font-size:10px;color:var(--amber-txt)">Inactive</div>':''}</td>
+              ${BULK_PSCHED_DAY_KEYS.map(k=>{
+                const day=r[k];
+                return`<td style="border-left:1px solid var(--border)"><input type="checkbox" ${day.restDay?'checked':''} onchange="bulkPschedRowToggleRestDay(${i},'${k}',this.checked)"/></td>
+                <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.start||'')}" onchange="modal.rows[${i}]['${k}'].start=this.value"/></td>
+                <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakStart||'')}" onchange="modal.rows[${i}]['${k}'].breakStart=this.value"/></td>
+                <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.breakEnd||'')}" onchange="modal.rows[${i}]['${k}'].breakEnd=this.value"/></td>
+                <td><input type="time" class="finput mono" style="font-size:11px;width:80px" ${day.restDay?'disabled':''} value="${day.restDay?'':esc(day.end||'')}" onchange="modal.rows[${i}]['${k}'].end=this.value"/></td>`;
+              }).join('')}
+              <td><button class="btn btn-sm btn-danger" onclick="removeBulkPersonalScheduleRow(${i})" title="Remove row">✕</button></td>
+            </tr>`;
+          }).join(''):`<tr><td colspan="${3+BULK_PSCHED_DAY_KEYS.length*5+1}" class="empty-state">No rows match "${esc(modal.rowSearch||'')}"</td></tr>`}
+          </tbody>
+        </table>
+        </div>`;
+      })()}
       <div style="display:flex;gap:8px;justify-content:space-between;flex-wrap:wrap">
         <button class="btn btn-sm" onclick="addBulkPersonalScheduleRow()">+ Add Row</button>
         <div style="display:flex;gap:8px">
@@ -10799,11 +10881,14 @@ function renderModal(){
         return`<tr style="background:${bg}">
           <td style="padding:4px 8px;color:var(--txt3);font-size:11px;text-align:center;border-left:3px solid ${border};border-radius:4px 0 0 4px">${i+1}</td>
           <td style="padding:3px 5px">
-            <select class="finput" tabindex="${bi+1}" style="font-size:12px;padding:4px 6px;width:190px"
-              onchange="modal.rows[${i}].eid=this.value">
-              <option value="">— Select —</option>
-              ${emps.map(e=>`<option value="${e.eid}" ${r.eid===e.eid?'selected':''}>${esc(fmtEmpName(e))} (${esc(e.eid)})</option>`).join('')}
-            </select>
+            ${empPickerInput({
+              id:'bulkadj-emp-picker-'+i,
+              users:emps,
+              value:r.eid||'',
+              placeholder:'— Select —',
+              onchange:"modal.rows["+i+"].eid=v",
+              extraAttrs:'tabindex="'+(bi+1)+'" style="font-size:12px;padding:4px 6px;width:190px"',
+            })}
             ${!hasEmp&&r.eid?`<div style="font-size:9px;color:var(--red)">Not found: ${esc(r.eid)}</div>`:''}
           </td>
           <td style="padding:3px 5px">
@@ -10879,10 +10964,13 @@ function renderModal(){
     inner=`<div class="modal-title">📋 New Payroll Adjustment
       <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div class="field"><label>Employee <span style="color:var(--red)">*</span></label>
-      <select id="adj-emp" class="finput">
-        <option value="">— Select Employee —</option>
-        ${emps.map(e=>`<option value="${e.id}">${esc(fmtEmpName(e))} (${esc(e.eid)})</option>`).join('')}
-      </select></div>
+      ${empPickerInput({
+        id:'adj-emp-picker',
+        users:emps,
+        value:'',
+        placeholder:'— Select Employee —',
+        onchange:"var u=USERS.find(function(x){return x.eid===v});document.getElementById('adj-emp').value=u?u.id:'';",
+      })}<input type="hidden" id="adj-emp" value=""/></div>
     <div class="field"><label>Target Open Payroll Period <span style="color:var(--red)">*</span></label>
       <select id="adj-period" class="finput">
         <option value="">— Select payroll period —</option>
@@ -12347,10 +12435,14 @@ function pgZKSetup(){
         <td class="mono" style="font-size:12px">${du.userId}</td>
         <td>${du.name||(du.fromPunchesOnly?'<span style="color:var(--txt3);font-style:italic">seen in punches only</span>':'—')}</td>
         <td class="mono" style="font-size:11px">${du.cardNo||'—'}</td>
-        <td><select id="zkmap-${du.userId}" class="finput" style="font-size:12px">
-          <option value="">— Unmapped —</option>
-          ${USERS.filter(u=>u.role==='employee').map(e=>`<option value="${e.id}" ${mapped&&mapped.id===e.id?'selected':''}>${fmtEmpName(e)} (${e.eid})</option>`).join('')}
-        </select>${autoMatched?`<div style="font-size:10px;color:var(--green-txt);margin-top:3px">🔗 Auto-matched via Biometric No.</div>`:''}</td>
+        <td>${empPickerInput({
+          id:'zkmap-picker-'+du.userId,
+          users:USERS.filter(u=>u.role==='employee'),
+          value:mapped?mapped.eid:'',
+          placeholder:'— Unmapped —',
+          onchange:"var u=USERS.find(function(x){return x.eid===v});document.getElementById('zkmap-"+du.userId+"').value=u?u.id:'';",
+          extraAttrs:'style="font-size:12px"',
+        })}<input type="hidden" id="zkmap-${du.userId}" value="${mapped?mapped.id:''}"/>${autoMatched?`<div style="font-size:10px;color:var(--green-txt);margin-top:3px">🔗 Auto-matched via Biometric No.</div>`:''}</td>
         <td>${mapped?`<span class="badge b-approved">${fmtEmpName(mapped)}</span>`:`<span class="badge b-absent">Unmapped</span>`}${isDuplicate?` <span class="badge b-late" title="This employee is also mapped to another device user ID — their punches from all mapped IDs will be merged into one attendance record.">⚠ Already mapped elsewhere</span>`:''}</td>
       </tr>`;}).join('')}</tbody></table>`
     :`<div class="empty-state"><div class="ei">👆</div>No device users seen yet. Users appear here automatically as they're enrolled on the device or as punches come in, or click "Refresh device users".</div>`}
@@ -14649,7 +14741,6 @@ function pgEmpDetail(){
     <!-- Immediate Head -->
     <div class="section-header" style="margin-bottom:8px">Reporting & Approval</div>
     ${(()=>{
-      const empOpts=[{v:'',l:'— None —'},...USERS.filter(u=>u.id!==detailEmpId).map(u=>({v:u.eid,l:`${u.eid} — ${fmtEmpName(u)} (${u.pos||''})`}))];
       // val() already resolves this correctly for both modes (draft value if edited, even an
       // intentionally-cleared '', else the saved value) -- falling further back to
       // e.immediateHeadEid on top of that meant picking "— None —" (which sets the draft to '')
@@ -14677,9 +14768,14 @@ function pgEmpDetail(){
       return`<div style="display:grid;gap:6px">
         <div style="padding:8px 10px;background:var(--bg);border-radius:8px;border:1px solid var(--border)">
           <div style="font-size:11px;font-weight:700;color:var(--txt3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.3px">Immediate Head <span style="font-weight:400;font-size:10px;text-transform:none">— direct manager</span></div>
-          <select class="finput" style="font-size:13px;width:100%" onchange="detailDraft.immediateHeadEid=this.value;render()">
-            ${empOpts.map(o=>`<option value="${esc(o.v)}" ${ihEid===o.v?'selected':''}>${esc(o.l)}</option>`).join('')}
-          </select>
+          ${empPickerInput({
+            id:'immediate-head-picker',
+            users:USERS.filter(u=>u.id!==detailEmpId),
+            value:ihEid,
+            placeholder:'— None —',
+            onchange:"detailDraft.immediateHeadEid=v;render()",
+            extraAttrs:'style="font-size:13px;width:100%"',
+          })}
           ${ihEmp?`<div style="margin-top:5px;font-size:11px;color:var(--txt3)">Reports to: <strong>${esc(ihEmp.name)}</strong> · ${esc(ihEmp.pos||'')}${ihEmp.dept?' · '+esc(ihEmp.dept):''}</div>`:''}
         </div>
         ${chain.length?`<div style="padding:8px 10px;background:var(--accent-bg);border-radius:7px;border:1px solid var(--accent)">
