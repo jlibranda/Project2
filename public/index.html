@@ -563,6 +563,27 @@ function cmpEmpName(a,b){
     ||(a.firstName||'').localeCompare(b.firstName||'')
     ||(a.middleName||'').localeCompare(b.middleName||'');
 }
+// Label shown in every searchable employee picker below -- name only, no EID, so the picker
+// reads the same as the rest of the UI (fmtEmpName) with position for disambiguation.
+function empPickerLabel(u){
+  return fmtEmpName(u)+(u.pos?' ('+u.pos+')':'');
+}
+// Reusable searchable employee picker: a text <input> backed by a native <datalist>, so it can
+// be clicked to browse the full alphabetical-by-last-name list (same as a <select>) OR typed
+// into to filter live -- something a plain <select> can't do. The EID is carried on each
+// <option>'s data-eid attribute rather than embedded in the visible text, so the picker never
+// shows the employee number the way the old "EID — Name" <select> options did.
+// opts: {id, users, value (an eid or '' ), onchange (JS source using the resolved eid, var `v`),
+//        placeholder, extraAttrs (optional string of extra attributes on the <input>)}
+function empPickerInput(opts){
+  const list=(opts.users||[]).slice().sort(cmpEmpName);
+  const selected=list.find(u=>u.eid===opts.value);
+  const dlId=opts.id+'-dl';
+  return`<input list="${dlId}" id="${esc(opts.id)}" class="finput" placeholder="${esc(opts.placeholder||'Type to search…')}"
+    value="${esc(selected?empPickerLabel(selected):'')}" ${opts.extraAttrs||''}
+    onchange="(function(inp){var m=Array.prototype.find.call(document.getElementById('${dlId}').options,function(o){return o.value===inp.value});var v=m?m.dataset.eid:'';${opts.onchange}})(this)"/>
+  <datalist id="${dlId}">${list.map(u=>`<option value="${esc(empPickerLabel(u))}" data-eid="${esc(u.eid)}"></option>`).join('')}</datalist>`;
+}
 let nAtt=20,nLeave=10,nPay=1,nLoan=10,nCand=10,nEmp=6;
 
 /* ---- ACCESS LEVELS ---- */
@@ -11878,11 +11899,14 @@ function renderModal(){
                 👤 Custom approver
               </button>
             </div>
-            ${inCustomMode?`<select class="finput" style="font-size:12px;width:100%"
-              onchange="modal.draft.overrides['${ln}']=this.value;render()">
-              <option value="">— Select approver —</option>
-              ${USERS.filter(u=>u.id!==modal.empId).map(u=>`<option value="${esc(u.eid)}" ${ovEid===u.eid?'selected':''}>${esc(u.eid+' — '+fmtEmpName(u)+(u.pos?' ('+u.pos+')':''))}</option>`).join('')}
-            </select>`:''}
+            ${inCustomMode?empPickerInput({
+              id:'approver-picker-'+ln,
+              users:USERS.filter(u=>u.id!==modal.empId),
+              value:ovEid,
+              placeholder:'— Select approver —',
+              onchange:"modal.draft.overrides['"+ln+"']=v;render()",
+              extraAttrs:'style="font-size:12px;width:100%"',
+            }):''}
           </div>`;
         }).join('')}
       </div>
