@@ -247,9 +247,20 @@
     } else if (isA && tab === 4) {
       body = renderAttendanceReportTab();
     } else {
-      body = (isA ? '<div class="field"><label>Employee</label><select id="ae">'+USERS.filter(function (u) { return u.role === 'employee'; }).map(function (u) {
-        return '<option value="'+u.id+'">'+esc(fmtEmpName(u))+'</option>';
-      }).join('')+'</select></div>' : '')+
+      body = (isA ? '<div class="field"><label>Employee</label>'+(function () {
+        // Attendance records key off the numeric u.id (not eid), so the picker resolves the
+        // typed/selected name back to an eid and then to u.id via a hidden #ae input that
+        // submitAtt() reads exactly as it always has -- no downstream change needed.
+        var attEmpList = USERS.filter(function (u) { return u.role === 'employee'; }).slice().sort(cmpEmpName);
+        var attDefault = attEmpList[0];
+        return empPickerInput({
+          id: 'att-emp-picker',
+          users: attEmpList,
+          value: attDefault ? attDefault.eid : '',
+          placeholder: '— Select employee —',
+          onchange: "var u=USERS.find(function(x){return x.eid===v});document.getElementById('ae').value=u?u.id:'';",
+        }) + '<input type="hidden" id="ae" value="' + (attDefault ? attDefault.id : '') + '"/>';
+      })() + '</div>' : '')+
         '<div class="form-row"><div class="field"><label>Date</label><input type="date" id="adate" value="'+today()+'"/></div>'+
         '<div class="field"><label>Status</label><select id="ast"><option value="present">Present</option><option value="late">Late</option><option value="absent">Absent</option><option value="leave">On Leave</option></select></div></div>'+
         '<div class="form-row"><div class="field"><label>Time In</label><input type="time" id="atin" value="08:00"/></div><div class="field"><label>Time Out</label><input type="time" id="atout" value="17:00"/></div></div>'+

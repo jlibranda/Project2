@@ -6103,7 +6103,18 @@ function pgAttendance(){
     body=`<table><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th>Status</th><th>OT</th><th>ND</th><th>Logs</th></tr></thead>
     <tbody>${attendanceRecords().slice().reverse().map(a=>{const emp=USERS.find(u=>u.id===a.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${fmtEmpName(emp)||'?'}</div></td><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td>${a.ot?`<span style="color:var(--accent);font-weight:600">${a.ot}h</span>`:'—'}</td><td>${a.nd?`<span style="color:var(--purple);font-weight:600">${a.nd}h</span>`:'—'}</td><td><span class="badge b-info" style="cursor:pointer" onclick="openAttHistory(${a.eid},'${a.date}')" title="View raw time logs and edit history">🕘 ${(a.punches||[]).length}</span></td></tr>`;}).join('')}</tbody></table>`;
   }else{
-    body=`${isA?`<div class="field"><label>Employee</label><select id="ae">${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.id}">${fmtEmpName(u)}</option>`).join('')}</select></div>`:''}
+    // Attendance records key off the numeric u.id (not eid), so the picker resolves the
+    // typed/selected name back to an eid and then to u.id via a hidden #ae input that
+    // submitAtt() reads exactly as it always has -- no downstream change needed.
+    const attEmpList=USERS.filter(u=>u.role==='employee').slice().sort(cmpEmpName);
+    const attDefault=attEmpList[0];
+    body=`${isA?`<div class="field"><label>Employee</label>${empPickerInput({
+      id:'att-emp-picker',
+      users:attEmpList,
+      value:attDefault?attDefault.eid:'',
+      placeholder:'— Select employee —',
+      onchange:"var u=USERS.find(function(x){return x.eid===v});document.getElementById('ae').value=u?u.id:'';",
+    })}<input type="hidden" id="ae" value="${attDefault?attDefault.id:''}"/></div>`:''}
     <div class="form-row"><div class="field"><label>Date</label><input type="date" id="adate" value="${today()}"/></div><div class="field"><label>Status</label><select id="ast"><option value="present">Present</option><option value="late">Late</option><option value="absent">Absent</option><option value="leave">On Leave</option></select></div></div>
     <div class="form-row"><div class="field"><label>Time In</label><input type="time" id="atin" value="08:00"/></div><div class="field"><label>Time Out</label><input type="time" id="atout" value="17:00"/></div></div>
     <div class="form-row"><div class="field"><label>Overtime Hours</label><input type="number" id="aot" value="0" min="0" max="12"/></div><div class="field"><label>Night Differential Hours</label><input type="number" id="and" value="0" min="0" max="12"/></div></div>
@@ -9718,7 +9729,7 @@ function renderModal(){
     <div class="form-row"><div class="field"><label>Start Date</label><input type="date" id="ne-start" value="${ae.hired||today()}" oninput="setAeField('hired',this.value)"/></div><div class="field"><label>Probation End Date</label><input type="date" id="ne-prob" value="${ae.probEndDate||''}" oninput="setAeField('probEndDate',this.value)"/></div></div>
     <div class="form-row"><div class="field"><label>Cost Center</label><select id="ne-cc" onchange="setAeField('costCenter',this.value)"><option value="">— Select —</option>${LOOKUPS.costCenters.map(c=>`<option value="${c.code}" ${ae.costCenter===c.code?'selected':''}>${c.label}</option>`).join('')}</select></div></div>
     <div class="form-row"><div class="field"><label>Rehireable</label><select id="ne-reh" onchange="setAeField('rehireable',this.value)"><option value="Y" ${ae.rehireable==='Y'?'selected':''}>Yes</option><option value="N" ${ae.rehireable==='N'?'selected':''}>No</option><option value="" ${!ae.rehireable?'selected':''}>TBD</option></select></div>${fieldVisible('employment','loanEligibility')?`<div class="field"><label>Loan Eligibility</label><select id="ne-loan" onchange="setAeField('loanEligibility',this.value)"><option value="" ${!ae.loanEligibility?'selected':''}>— Select —</option><option value="Y" ${ae.loanEligibility==='Y'?'selected':''}>Yes</option><option value="N" ${ae.loanEligibility==='N'?'selected':''}>No</option></select></div>`:''}</div>
-    <div class="form-row"><div class="field"><label>Manager</label><select id="ne-mgr" onchange="setAeField('managerId',this.value)"><option value="">— None —</option>${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.eid}" ${ae.managerId===u.eid?'selected':''}>${u.eid} — ${fmtEmpName(u)}</option>`).join('')}</select></div><div class="field"><label>Functional Head</label><input id="ne-fh" value="${ae.functionalHead||''}" oninput="setAeField('functionalHead',this.value)"/></div></div>`
+    <div class="form-row"><div class="field"><label>Manager</label>${empPickerInput({id:'ne-mgr-picker',users:USERS.filter(u=>u.role==='employee'),value:ae.managerId||'',placeholder:'— None —',onchange:"setAeField('managerId',v)"})}</div><div class="field"><label>Functional Head</label><input id="ne-fh" value="${ae.functionalHead||''}" oninput="setAeField('functionalHead',this.value)"/></div></div>`
     :(modal.addTab||0)===2?`
     <div class="form-row"><div class="field"><label>Currency</label><select id="ne-curr" onchange="setAeField('currency',this.value);render()"><option ${ae.currency!=='USD'?'selected':''}>PHP</option><option ${ae.currency==='USD'?'selected':''}>USD</option></select></div></div>
     <div class="field"><label>Monthly Rate (${currencySymbol(ae.currency)}) *</label><input type="text" inputmode="decimal" id="ne-ratepm" value="${ae.salaryPM?fmtN(ae.salaryPM):''}" style="${reqBorderStyle(ae.salaryPM)}" oninput="moneyMaskInput(this,'salaryPM');reqBorderLive(this,this.value);recalcSalary();"/></div>
@@ -9888,7 +9899,20 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='addLoan'){
     inner=`<div class="modal-title">Add Loan <button class="close-x" onclick="closeMConfirmed()">×</button></div>
-    <div class="field"><label>Employee</label><select id="ml-emp">${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.id}">${fmtEmpName(u)}</option>`).join('')}</select></div>
+    <div class="field"><label>Employee</label>${(()=>{
+      // LOANS key off the numeric u.id (not eid), so the picker resolves the typed/selected
+      // name back to an eid and then to u.id via a hidden #ml-emp input that addLoan() reads
+      // exactly as it always has -- no downstream change needed.
+      const loanEmpList=USERS.filter(u=>u.role==='employee').slice().sort(cmpEmpName);
+      const loanDefault=loanEmpList[0];
+      return`${empPickerInput({
+        id:'ml-emp-picker',
+        users:loanEmpList,
+        value:loanDefault?loanDefault.eid:'',
+        placeholder:'— Select employee —',
+        onchange:"var u=USERS.find(function(x){return x.eid===v});document.getElementById('ml-emp').value=u?u.id:'';",
+      })}<input type="hidden" id="ml-emp" value="${loanDefault?loanDefault.id:''}"/>`;
+    })()}</div>
     <div class="field"><label>Loan Type</label><select id="ml-type"><option>SSS Salary Loan</option><option>Pag-IBIG MP2 Loan</option><option>Pag-IBIG Housing Loan</option><option>Company Loan</option><option>Emergency Loan</option></select></div>
     <div class="form-row"><div class="field"><label>Loan Amount</label><input type="number" id="ml-amt" placeholder="50000"/></div><div class="field"><label>Monthly Deduction</label><input type="number" id="ml-mo" placeholder="2000"/></div></div>
     <div class="field"><label>Start Date</label><input type="date" id="ml-start" value="${today()}"/></div>
@@ -10799,11 +10823,14 @@ function renderModal(){
         return`<tr style="background:${bg}">
           <td style="padding:4px 8px;color:var(--txt3);font-size:11px;text-align:center;border-left:3px solid ${border};border-radius:4px 0 0 4px">${i+1}</td>
           <td style="padding:3px 5px">
-            <select class="finput" tabindex="${bi+1}" style="font-size:12px;padding:4px 6px;width:190px"
-              onchange="modal.rows[${i}].eid=this.value">
-              <option value="">— Select —</option>
-              ${emps.map(e=>`<option value="${e.eid}" ${r.eid===e.eid?'selected':''}>${esc(fmtEmpName(e))} (${esc(e.eid)})</option>`).join('')}
-            </select>
+            ${empPickerInput({
+              id:'bulkadj-emp-picker-'+i,
+              users:emps,
+              value:r.eid||'',
+              placeholder:'— Select —',
+              onchange:"modal.rows["+i+"].eid=v",
+              extraAttrs:'tabindex="'+(bi+1)+'" style="font-size:12px;padding:4px 6px;width:190px"',
+            })}
             ${!hasEmp&&r.eid?`<div style="font-size:9px;color:var(--red)">Not found: ${esc(r.eid)}</div>`:''}
           </td>
           <td style="padding:3px 5px">
@@ -10879,10 +10906,13 @@ function renderModal(){
     inner=`<div class="modal-title">📋 New Payroll Adjustment
       <button class="close-x" onclick="closeMConfirmed()">×</button></div>
     <div class="field"><label>Employee <span style="color:var(--red)">*</span></label>
-      <select id="adj-emp" class="finput">
-        <option value="">— Select Employee —</option>
-        ${emps.map(e=>`<option value="${e.id}">${esc(fmtEmpName(e))} (${esc(e.eid)})</option>`).join('')}
-      </select></div>
+      ${empPickerInput({
+        id:'adj-emp-picker',
+        users:emps,
+        value:'',
+        placeholder:'— Select Employee —',
+        onchange:"var u=USERS.find(function(x){return x.eid===v});document.getElementById('adj-emp').value=u?u.id:'';",
+      })}<input type="hidden" id="adj-emp" value=""/></div>
     <div class="field"><label>Target Open Payroll Period <span style="color:var(--red)">*</span></label>
       <select id="adj-period" class="finput">
         <option value="">— Select payroll period —</option>
@@ -12347,10 +12377,14 @@ function pgZKSetup(){
         <td class="mono" style="font-size:12px">${du.userId}</td>
         <td>${du.name||(du.fromPunchesOnly?'<span style="color:var(--txt3);font-style:italic">seen in punches only</span>':'—')}</td>
         <td class="mono" style="font-size:11px">${du.cardNo||'—'}</td>
-        <td><select id="zkmap-${du.userId}" class="finput" style="font-size:12px">
-          <option value="">— Unmapped —</option>
-          ${USERS.filter(u=>u.role==='employee').map(e=>`<option value="${e.id}" ${mapped&&mapped.id===e.id?'selected':''}>${fmtEmpName(e)} (${e.eid})</option>`).join('')}
-        </select>${autoMatched?`<div style="font-size:10px;color:var(--green-txt);margin-top:3px">🔗 Auto-matched via Biometric No.</div>`:''}</td>
+        <td>${empPickerInput({
+          id:'zkmap-picker-'+du.userId,
+          users:USERS.filter(u=>u.role==='employee'),
+          value:mapped?mapped.eid:'',
+          placeholder:'— Unmapped —',
+          onchange:"var u=USERS.find(function(x){return x.eid===v});document.getElementById('zkmap-"+du.userId+"').value=u?u.id:'';",
+          extraAttrs:'style="font-size:12px"',
+        })}<input type="hidden" id="zkmap-${du.userId}" value="${mapped?mapped.id:''}"/>${autoMatched?`<div style="font-size:10px;color:var(--green-txt);margin-top:3px">🔗 Auto-matched via Biometric No.</div>`:''}</td>
         <td>${mapped?`<span class="badge b-approved">${fmtEmpName(mapped)}</span>`:`<span class="badge b-absent">Unmapped</span>`}${isDuplicate?` <span class="badge b-late" title="This employee is also mapped to another device user ID — their punches from all mapped IDs will be merged into one attendance record.">⚠ Already mapped elsewhere</span>`:''}</td>
       </tr>`;}).join('')}</tbody></table>`
     :`<div class="empty-state"><div class="ei">👆</div>No device users seen yet. Users appear here automatically as they're enrolled on the device or as punches come in, or click "Refresh device users".</div>`}
@@ -14649,7 +14683,6 @@ function pgEmpDetail(){
     <!-- Immediate Head -->
     <div class="section-header" style="margin-bottom:8px">Reporting & Approval</div>
     ${(()=>{
-      const empOpts=[{v:'',l:'— None —'},...USERS.filter(u=>u.id!==detailEmpId).map(u=>({v:u.eid,l:`${u.eid} — ${fmtEmpName(u)} (${u.pos||''})`}))];
       // val() already resolves this correctly for both modes (draft value if edited, even an
       // intentionally-cleared '', else the saved value) -- falling further back to
       // e.immediateHeadEid on top of that meant picking "— None —" (which sets the draft to '')
@@ -14677,9 +14710,14 @@ function pgEmpDetail(){
       return`<div style="display:grid;gap:6px">
         <div style="padding:8px 10px;background:var(--bg);border-radius:8px;border:1px solid var(--border)">
           <div style="font-size:11px;font-weight:700;color:var(--txt3);margin-bottom:5px;text-transform:uppercase;letter-spacing:.3px">Immediate Head <span style="font-weight:400;font-size:10px;text-transform:none">— direct manager</span></div>
-          <select class="finput" style="font-size:13px;width:100%" onchange="detailDraft.immediateHeadEid=this.value;render()">
-            ${empOpts.map(o=>`<option value="${esc(o.v)}" ${ihEid===o.v?'selected':''}>${esc(o.l)}</option>`).join('')}
-          </select>
+          ${empPickerInput({
+            id:'immediate-head-picker',
+            users:USERS.filter(u=>u.id!==detailEmpId),
+            value:ihEid,
+            placeholder:'— None —',
+            onchange:"detailDraft.immediateHeadEid=v;render()",
+            extraAttrs:'style="font-size:13px;width:100%"',
+          })}
           ${ihEmp?`<div style="margin-top:5px;font-size:11px;color:var(--txt3)">Reports to: <strong>${esc(ihEmp.name)}</strong> · ${esc(ihEmp.pos||'')}${ihEmp.dept?' · '+esc(ihEmp.dept):''}</div>`:''}
         </div>
         ${chain.length?`<div style="padding:8px 10px;background:var(--accent-bg);border-radius:7px;border:1px solid var(--accent)">

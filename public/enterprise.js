@@ -247,7 +247,20 @@
     if(showForm){
       var preset=window._resolutionForm||{};
       body='<div style="max-width:760px"><div class="section-header">Request details</div>'+
-        (isAdmin?'<div class="field"><label>Employee</label><select id="case-employee">'+USERS.filter(function(u){return u.role==='employee';}).map(function(e){return '<option value="'+e.id+'">'+esc(fmtEmpName(e))+' · '+esc(e.eid)+'</option>';}).join('')+'</select></div>':'')+
+        (isAdmin?'<div class="field"><label>Employee</label>'+(function(){
+          // RESOLUTION_CASES key off the numeric u.id (not eid), so the picker resolves the
+          // typed/selected name back to an eid and then to u.id via a hidden #case-employee
+          // input that submitResolutionCase() reads exactly as it always has.
+          var caseEmpList=USERS.filter(function(u){return u.role==='employee';}).slice().sort(cmpEmpName);
+          var caseDefault=caseEmpList[0];
+          return empPickerInput({
+            id:'case-employee-picker',
+            users:caseEmpList,
+            value:caseDefault?caseDefault.eid:'',
+            placeholder:'— Select employee —',
+            onchange:"var u=USERS.find(function(x){return x.eid===v});document.getElementById('case-employee').value=u?u.id:'';",
+          })+'<input type="hidden" id="case-employee" value="'+(caseDefault?caseDefault.id:'')+'"/>';
+        })()+'</div>':'')+
         '<div class="form-row"><div class="field"><label>Category</label><select id="case-category">'+
         ['Attendance','Leave','Payroll','Payslip','Government Contribution','Employee Record','Policy'].map(function(x){return '<option '+(preset.category===x?'selected':'')+'>'+x+'</option>';}).join('')+
         '</select></div><div class="field"><label>Priority</label><select id="case-priority"><option value="normal">Normal · 4-day SLA</option><option value="low">Low</option><option value="high">High · 2-day SLA</option><option value="urgent">Urgent · 1-day SLA</option></select></div></div>'+
