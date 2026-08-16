@@ -4061,7 +4061,7 @@ function pgEmployees(){
   // being directly viewable via its 201 page, exactly the trap that made one impossible to
   // clean up from this list.
   const allEmps=USERS.filter(u=>u.role==='employee'||!u.role||u.role==='undefined'||u.role==='null');
-  const emps=applyEmpFilters(filterEmps(allEmps,empSearch));
+  const emps=applyEmpFilters(filterEmps(allEmps,empSearch)).sort(cmpEmpName);
   const tabs=['All Employees','Org Chart','Bulk Upload','Bulk Update'];
   if(tab===1){
     const active=allEmps.filter(e=>e.active!==false);
@@ -4551,6 +4551,14 @@ function pgEmployees(){
         <div style="font-size:12px;color:var(--txt3);margin-bottom:.875rem">
           After editing the downloaded file, upload it here. The system compares your changes against current data and shows a full diff before applying anything.
         </div>
+        <label style="display:flex;align-items:flex-start;gap:8px;padding:9px 11px;background:${bulkUpdateClearBlanks?'var(--amber-bg)':'var(--bg)'};border:1px solid ${bulkUpdateClearBlanks?'var(--amber)':'var(--border)'};border-radius:8px;margin-bottom:.875rem;cursor:pointer;font-size:12px">
+          <input type="checkbox" style="width:auto;accent-color:var(--amber);margin-top:2px" ${bulkUpdateClearBlanks?'checked':''}
+            onchange="bulkUpdateClearBlanks=this.checked;if(bulkUpdateResults)handleBulkUpdateReparse();render()"/>
+          <span>
+            <strong style="color:${bulkUpdateClearBlanks?'var(--amber-txt)':'var(--txt)'}">Treat blank cells as clear (not "no change")</strong><br>
+            <span style="color:var(--txt3)">Off by default: a blank cell in any selected column means "leave this field as-is" — only a lone dash (<code>-</code>) clears it. Turn this on before uploading if, for this file, every blank cell in a selected column should actually clear that field. Review the diff carefully before applying either way.</span>
+          </span>
+        </label>
         <!-- Upload zone: label+for approach -->
         <input type="file" id="bu-upload" accept=".xlsx,.xls"
           style="position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;opacity:0"
@@ -5297,6 +5305,61 @@ function extractEidFromRef(raw){
   const m=s.match(/^(.+?)\s+[-—]\s+.+$/);
   return m?m[1].trim():s;
 }
+let _lastBulkUpdateRawRows=null; /* raw parsed rows from the last uploaded file, kept so toggling
+  bulkUpdateClearBlanks can re-run the comparison without asking for a re-upload */
+let bulkUpdateClearBlanks=false; /* off by default: a blank cell means "no change", not "clear" —
+  see the checkbox above the upload zone in pgEmployees()'s Bulk Update tab */
+function buildBulkUpdateResults(rows){
+  /* Parse each row — match to employee by EID */
+  const results=rows.map(row=>{
+    const eid=String(row.eid||'').trim();
+    const emp=USERS.find(u=>u.eid===eid);
+    const errors=[],warnings=[],changes=[],movChanges=[];
+    if(!eid){errors.push('Employee ID is missing');return{emp:null,eid,changes:[],movChanges:[],errors,warnings,effectiveDate:'',reason:''};}
+    if(!emp){errors.push(`Employee ID "${eid}" not found`);return{emp:{name:eid,eid},eid,changes:[],movChanges:[],errors,warnings,effectiveDate:'',reason:''};}
+    /* Extract effective date + reason from the update file */
+    const effectiveDate=normaliseDate(row._effectiveDate||'');
+    const reason=String(row._reason||'').trim();
+    /* Compare each updatable field */
+    getUpdateCols().filter(c=>!c.ref&&c.k!=='_effectiveDate'&&c.k!=='_reason').forEach(c=>{
+      // A column the admin never selected/downloaded has no key on `row` at all -- that must
+      // never be touched regardless of bulkUpdateClearBlanks, which only governs how a BLANK
+      // CELL WITHIN AN INCLUDED COLUMN is interpreted. Without this guard, opting in to "blank
+      // = clear" would wipe every field not even present in the uploaded file.
+      if(!(c.k in row))return;
+      let newVal=String(row[c.k]??'').trim();
+      if(!newVal){
+        if(!bulkUpdateClearBlanks)return; /* blank = unchanged (default) */
+        newVal=''; /* opt-in mode: blank = explicit clear too, same as a dash */
+      }else if(newVal==='-'){
+        newVal=''; /* a lone dash always means "clear this field", regardless of the opt-in mode */
+      }
+      /* Normalise immediateHeadEid from "EID — Name" (or "EID - Name") format */
+      if(c.k==='immediateHeadEid')newVal=extractEidFromRef(newVal);
+      /* Normalise Y/N booleans */
+      if((c.k==='includeInPayroll'||c.k==='includeInTimekeeping')&&(newVal==='true'||newVal==='1'))newVal='Y';
+      if((c.k==='includeInPayroll'||c.k==='includeInTimekeeping')&&(newVal==='false'||newVal==='0'))newVal='N';
+      const oldVal=c.k==='includeInPayroll'||c.k==='includeInTimekeeping'
+        ?(emp[c.k]==='Y'||emp[c.k]===true)?'Y':'N'
+        :String(emp[c.k]??'').trim();
+      if(newVal===oldVal)return;
+      const change={field:c.k,label:c.l,from:oldVal,to:newVal,isMovement:!!c.mov};
+      changes.push(change);
+      if(c.mov)movChanges.push(change);
+    });
+    /* effectiveDate defaults to today if not in file — user can edit in the review table */
+    const parsedDate=effectiveDate||today();
+    /* Warn (not error) if movement fields need date/reason — user fills these in review table */
+    if(movChanges.length){
+      if(!effectiveDate)warnings.push('Fill in Effective Date for movement-tracked changes');
+      if(!reason)warnings.push('Fill in Reason for movement-tracked changes');
+    }
+    return{emp,eid,changes,movChanges,errors,warnings,effectiveDate:parsedDate,reason};
+  }).filter(Boolean);
+  /* Sort: errors first, then rows with changes */
+  results.sort((a,b)=>(b.errors.length-a.errors.length)||(b.changes.length-a.changes.length));
+  return results;
+}
 function handleBulkUpdateUpload(evt){
   const file=evt.target.files[0];if(!file)return;
   evt.target.value='';
@@ -5307,50 +5370,19 @@ function handleBulkUpdateUpload(evt){
       const sheetName=wb.SheetNames.find(n=>!['Reference'].includes(n))||wb.SheetNames[0];
       const rows=parseSheetToRows(wb.Sheets[sheetName]);
       if(!rows.length){alert('No data rows found in the file.');return;}
-      /* Parse each row — match to employee by EID */
-      bulkUpdateResults=rows.map(row=>{
-        const eid=String(row.eid||'').trim();
-        const emp=USERS.find(u=>u.eid===eid);
-        const errors=[],warnings=[],changes=[],movChanges=[];
-        if(!eid){errors.push('Employee ID is missing');return{emp:null,eid,changes:[],movChanges:[],errors,warnings,effectiveDate:'',reason:''};}
-        if(!emp){errors.push(`Employee ID "${eid}" not found`);return{emp:{name:eid,eid},eid,changes:[],movChanges:[],errors,warnings,effectiveDate:'',reason:''};}
-        /* Extract effective date + reason from the update file */
-        const effectiveDate=normaliseDate(row._effectiveDate||'');
-        const reason=String(row._reason||'').trim();
-        /* Compare each updatable field */
-        getUpdateCols().filter(c=>!c.ref&&c.k!=='_effectiveDate'&&c.k!=='_reason').forEach(c=>{
-          let newVal=String(row[c.k]??'').trim();
-          if(!newVal)return; /* blank = unchanged */
-          if(newVal==='-')newVal=''; /* a lone dash is the explicit "clear this field" marker */
-          /* Normalise immediateHeadEid from "EID — Name" (or "EID - Name") format */
-          if(c.k==='immediateHeadEid')newVal=extractEidFromRef(newVal);
-          /* Normalise Y/N booleans */
-          if((c.k==='includeInPayroll'||c.k==='includeInTimekeeping')&&(newVal==='true'||newVal==='1'))newVal='Y';
-          if((c.k==='includeInPayroll'||c.k==='includeInTimekeeping')&&(newVal==='false'||newVal==='0'))newVal='N';
-          const oldVal=c.k==='includeInPayroll'||c.k==='includeInTimekeeping'
-            ?(emp[c.k]==='Y'||emp[c.k]===true)?'Y':'N'
-            :String(emp[c.k]??'').trim();
-          if(newVal===oldVal)return;
-          const change={field:c.k,label:c.l,from:oldVal,to:newVal,isMovement:!!c.mov};
-          changes.push(change);
-          if(c.mov)movChanges.push(change);
-        });
-        /* effectiveDate defaults to today if not in file — user can edit in the review table */
-        const parsedDate=effectiveDate||today();
-        /* Warn (not error) if movement fields need date/reason — user fills these in review table */
-        if(movChanges.length){
-          if(!effectiveDate)warnings.push('Fill in Effective Date for movement-tracked changes');
-          if(!reason)warnings.push('Fill in Reason for movement-tracked changes');
-        }
-        return{emp,eid,changes,movChanges,errors,warnings,effectiveDate:parsedDate,reason};
-      }).filter(Boolean);
-      /* Sort: errors first, then rows with changes */
-      bulkUpdateResults.sort((a,b)=>(b.errors.length-a.errors.length)||(b.changes.length-a.changes.length));
+      _lastBulkUpdateRawRows=rows;
+      bulkUpdateResults=buildBulkUpdateResults(rows);
       render();
       setTimeout(()=>document.querySelector('.card')?.scrollIntoView({behavior:'smooth'}),80);
     };
     reader.readAsArrayBuffer(file);
   });
+}
+/* Re-runs the comparison against the already-uploaded file when bulkUpdateClearBlanks is
+   toggled after a file's already been reviewed, instead of forcing a re-upload. */
+function handleBulkUpdateReparse(){
+  if(!_lastBulkUpdateRawRows)return;
+  bulkUpdateResults=buildBulkUpdateResults(_lastBulkUpdateRawRows);
 }
 
 /* Helper: generates the status cell inner HTML for a bulk-update row, called live from oninput */
