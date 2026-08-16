@@ -537,6 +537,24 @@ USERS.forEach(u=>{
   u.address=u.permanentAddress||u.city||'';
   // dept, pos, sss, ph, pi, tin, bday, contact, hired, rate, type, status all already present
 });
+// Employee-list display format: "LASTNAME, FirstName M.I." (e.g. "LIBRANDA, JAYSON B.").
+// Deliberately a separate function rather than a change to u.name itself -- .name is relied on
+// elsewhere in "FirstName LastName" order (dashboard greeting's .split(' ')[0], avatar-initials
+// fallback, etc.), and reformatting it in place would silently break those. Used at table/list
+// employee-name cells and employee-picker dropdown options; not intended for prose/sentence
+// mentions of a name (greetings, audit-trail narrative) where "LASTNAME, First M.I." reads oddly.
+function fmtEmpName(u){
+  if(!u)return'';
+  const last=(u.lastName||'').trim().toUpperCase();
+  const first=(u.firstName||'').trim().toUpperCase();
+  if(!last&&!first)return u.name||'';
+  const mi=(u.middleName||'').trim().charAt(0).toUpperCase();
+  const suffix=(u.suffix||'').trim().toUpperCase();
+  let out=(last?last+', ':'')+first;
+  if(mi)out+=' '+mi+'.';
+  if(suffix)out+=', '+suffix;
+  return out;
+}
 let nAtt=20,nLeave=10,nPay=1,nLoan=10,nCand=10,nEmp=6;
 
 /* ---- ACCESS LEVELS ---- */
@@ -12470,6 +12488,19 @@ function pgApprovalSetup(){
 
 
 function pgOrgSetup(){
+  // Sorted in place (not just for this render) so every other picker that reads ORG/depts/
+  // teams/subteams directly — Add Employee, Bulk Update dropdowns, etc. — inherits the same
+  // alphabetical order without each needing its own sort. Index-based lookups (editSubteam/
+  // delSubteam use the array position) stay correct because the underlying array itself is
+  // what's sorted, not a display-only copy.
+  ORG.sort((a,b)=>a.name.localeCompare(b.name));
+  ORG.forEach(bu=>{
+    bu.depts.sort((a,b)=>a.name.localeCompare(b.name));
+    bu.depts.forEach(d=>{
+      d.teams.sort((a,b)=>a.name.localeCompare(b.name));
+      d.teams.forEach(t=>t.subteams.sort((a,b)=>a.localeCompare(b)));
+    });
+  });
   function subHtml(bu,d,t){return t.subteams.map((s,si)=>`<span style="display:inline-flex;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);color:var(--txt);border-radius:5px;padding:2px 7px;font-size:11px;margin:2px">${s}<button onclick="editSubteam(${bu.id},${d.id},${t.id},${si})" style="background:none;border:none;cursor:pointer;color:var(--txt3);font-size:11px;padding:0 1px">✎</button><button onclick="delSubteam(${bu.id},${d.id},${t.id},${si})" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:11px;padding:0 1px">✕</button></span>`).join('');}
   function teamHtml(bu,d){return d.teams.map(t=>`<div style="margin-left:2rem;padding:8px 10px;border-left:3px solid var(--border);margin-bottom:5px;border-radius:0 6px 6px 0">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -15562,12 +15593,12 @@ function toast(msg, type, dur) {
   if (!wrap) {
     wrap = document.createElement('div');
     wrap.id = 'toast-wrap';
-    wrap.style.cssText = 'position:fixed;bottom:88px;right:24px;z-index:99999;display:flex;flex-direction:column-reverse;gap:8px;pointer-events:none;max-width:340px';
+    wrap.style.cssText = 'position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:99999;display:flex;flex-direction:column-reverse;align-items:center;gap:8px;pointer-events:none;max-width:340px';
     document.body.appendChild(wrap);
   }
   function dismiss(el) {
     clearTimeout(el._toastTimer);
-    el.style.opacity = '0'; el.style.transform = 'translateX(16px)';
+    el.style.opacity = '0'; el.style.transform = 'translateY(-12px)';
     setTimeout(function() { el.remove(); }, 260);
   }
   // Dedupe: an identical message already showing just gets its timer refreshed instead of stacking again.
@@ -15587,7 +15618,7 @@ function toast(msg, type, dur) {
   }[type] || 'background:var(--bg);border-color:var(--border);color:var(--txt)';
   var el = document.createElement('div');
   el.dataset.toastMsg = msg;
-  el.style.cssText = 'display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-radius:10px;border:1.5px solid;' + clr + ';font-size:13px;font-weight:500;box-shadow:0 4px 20px rgba(0,0,0,.12);pointer-events:auto;opacity:0;transform:translateX(16px);transition:opacity .22s,transform .22s;line-height:1.4';
+  el.style.cssText = 'display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-radius:10px;border:1.5px solid;' + clr + ';font-size:13px;font-weight:500;box-shadow:0 4px 20px rgba(0,0,0,.12);pointer-events:auto;opacity:0;transform:translateY(-12px);transition:opacity .22s,transform .22s;line-height:1.4';
   var closeBtn = document.createElement('span');
   closeBtn.textContent = '×';
   closeBtn.style.cssText = 'cursor:pointer;opacity:.5;font-size:18px;line-height:1;margin-left:4px;flex-shrink:0';
@@ -15611,7 +15642,7 @@ function toast(msg, type, dur) {
     clearTimeout(oldest._toastTimer);
     oldest.remove();
   }
-  requestAnimationFrame(function() { el.style.opacity = '1'; el.style.transform = 'translateX(0)'; });
+  requestAnimationFrame(function() { el.style.opacity = '1'; el.style.transform = 'translateY(0)'; });
   el._toastTimer = setTimeout(function() { dismiss(el); }, dur);
 }
 
