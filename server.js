@@ -462,6 +462,11 @@ app.post('/api/platform/clients', requirePlatformAdmin, async (req, res) => {
   const color = String(req.body.color || '#4f46e5');
   const initials = String(req.body.initials || name.split(' ').map(w => w[0] || '').join('').slice(0, 2).toUpperCase() || '??');
   const contact = String(req.body.contact || 'Admin');
+  // The create form only ever gathers one email address (the admin login), so default the
+  // point-of-contact email to it rather than leaving the client card showing "—" for an
+  // address the admin already typed in. Title/mobile aren't collected here and stay blank
+  // until filled in via Edit Point of Contact.
+  const contactEmail = String(req.body.contactEmail || adminEmail || '');
   const modules = Array.isArray(req.body.modules) ? req.body.modules : [];
   try {
     const base = slugifyTenantKey(name);
@@ -476,9 +481,9 @@ app.post('/api/platform/clients', requirePlatformAdmin, async (req, res) => {
       tenantKey = `${base}-${attempt}`;
     }
     const result = await pool.query(
-      `INSERT INTO platform_clients (tenant_key, name, industry, plan, status, color, initials, contact, admin_email, admin_pass, modules)
-       VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9, $10) RETURNING *`,
-      [tenantKey, name, industry, plan, color, initials, contact, adminEmail, adminPass, JSON.stringify(modules)]
+      `INSERT INTO platform_clients (tenant_key, name, industry, plan, status, color, initials, contact, contact_email, admin_email, admin_pass, modules)
+       VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
+      [tenantKey, name, industry, plan, color, initials, contact, contactEmail, adminEmail, adminPass, JSON.stringify(modules)]
     );
     const client = result.rows[0];
     // Seed this tenant's own app_state row immediately — a client should never exist in the
@@ -526,10 +531,23 @@ app.patch('/api/platform/clients/:id', requirePlatformAdmin, async (req, res) =>
   if (status !== undefined && !PLATFORM_CLIENT_STATUSES.has(status)) {
     return res.status(400).json({ error: 'Status must be one of: active, paused, archived.' });
   }
+  // Point-of-contact fields: undefined means "leave as-is" (COALESCE), but an explicit ''
+  // must actually clear the field, so only fall back to the column's current value on
+  // undefined, not on empty string.
+  const contact = req.body.contact !== undefined ? String(req.body.contact) : null;
+  const contactTitle = req.body.contactTitle !== undefined ? String(req.body.contactTitle) : null;
+  const contactEmail = req.body.contactEmail !== undefined ? String(req.body.contactEmail) : null;
+  const contactMobile = req.body.contactMobile !== undefined ? String(req.body.contactMobile) : null;
   try {
     const result = await pool.query(
-      'UPDATE platform_clients SET status = COALESCE($1, status) WHERE id = $2 RETURNING *',
-      [status || null, id]
+      `UPDATE platform_clients SET
+         status = COALESCE($1, status),
+         contact = COALESCE($2, contact),
+         contact_title = COALESCE($3, contact_title),
+         contact_email = COALESCE($4, contact_email),
+         contact_mobile = COALESCE($5, contact_mobile)
+       WHERE id = $6 RETURNING *`,
+      [status || null, contact, contactTitle, contactEmail, contactMobile, id]
     );
     if (!result.rowCount) return res.status(404).json({ error: 'Client not found.' });
     res.json({ client: toPlatformClientJson(result.rows[0]) });
