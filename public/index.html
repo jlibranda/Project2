@@ -3976,6 +3976,24 @@ function pgDashboard(){
 }
 
 let empSearch='';
+// Combinable multi-field filters for the Employees list — AND'd together, and AND'd with the
+// free-text search above (which itself OR-matches across fields/terms). '' means "any".
+let empFilters={dept:'',bandLevel:'',type:'',status:''};
+function setEmpFilter(key,val){empFilters[key]=val;render();}
+function clearEmpFilters(){empFilters={dept:'',bandLevel:'',type:'',status:''};empSearch='';render();}
+function applyEmpFilters(emps){
+  return emps.filter(e=>{
+    if(empFilters.dept&&(e.dept||'')!==empFilters.dept)return false;
+    if(empFilters.bandLevel&&(e.bandLevel||'')!==empFilters.bandLevel)return false;
+    if(empFilters.type&&(e.type||'')!==empFilters.type)return false;
+    if(empFilters.status){
+      const active=e.active!==false;
+      if(empFilters.status==='active'&&!active)return false;
+      if(empFilters.status==='inactive'&&active)return false;
+    }
+    return true;
+  });
+}
 
 /* Fix for search input losing focus on render: call this after render() */
 function refocusSearch(id){
@@ -4034,7 +4052,7 @@ function pgEmployees(){
   // being directly viewable via its 201 page, exactly the trap that made one impossible to
   // clean up from this list.
   const allEmps=USERS.filter(u=>u.role==='employee'||!u.role||u.role==='undefined'||u.role==='null');
-  const emps=filterEmps(allEmps,empSearch);
+  const emps=applyEmpFilters(filterEmps(allEmps,empSearch));
   const tabs=['All Employees','Org Chart','Bulk Upload','Bulk Update'];
   if(tab===1){
     const active=allEmps.filter(e=>e.active!==false);
@@ -4571,6 +4589,24 @@ function pgEmployees(){
       ${empSearch?`<button onclick="setEmpSearch('')" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--txt3);font-size:20px;line-height:1" title="Clear search">×</button>`:''}
     </div>
     ${(()=>{
+      // Filter dropdown options come from allEmps (unfiltered), not the filtered emps list,
+      // so picking one filter doesn't make the options for the others disappear.
+      const distinct=(k)=>[...new Set(allEmps.map(e=>e[k]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+      const depts=distinct('dept'),bands=distinct('bandLevel'),types=distinct('type');
+      const activeFilterCount=Object.values(empFilters).filter(Boolean).length;
+      const fsel=(key,label,options)=>`<select class="finput" style="font-size:12px;width:auto;min-width:120px" onchange="setEmpFilter('${key}',this.value)">
+        <option value="">${label}: All</option>
+        ${options.map(o=>`<option value="${esc(o.v!==undefined?o.v:o)}" ${empFilters[key]===(o.v!==undefined?o.v:o)?'selected':''}>${esc(o.l||o)}</option>`).join('')}
+      </select>`;
+      return`<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px">
+        ${fsel('dept','Department',depts)}
+        ${fsel('bandLevel','Band',bands)}
+        ${fsel('type','Type',types)}
+        ${fsel('status','Status',[{v:'active',l:'Active'},{v:'inactive',l:'Disabled'}])}
+        ${activeFilterCount||empSearch?`<button class="btn btn-sm" onclick="clearEmpFilters()" style="font-size:11px">✕ Clear ${activeFilterCount?`filters (${activeFilterCount})`:'search'}</button>`:''}
+      </div>`;
+    })()}
+    ${(()=>{
       const terms=tokenizeSearch(empSearch);
       if(terms.length<=1)return'';
       return`<div style="display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:7px;padding:7px 10px;background:var(--accent-bg);border-radius:8px">
@@ -4612,7 +4648,7 @@ function pgEmployees(){
       ${isPlatformAdmin?`<button class="btn btn-sm" style="padding:4px 8px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${e.id})" title="Log in with this user's actual access — Super Admin only">Log in as user</button>`:''}
       ${(isPlatformAdmin||isAdminUser(user)||canAccess('emp_delete'))?`<button class="btn btn-sm btn-danger" onclick="deleteEmp(${e.id})" title="Delete" style="padding:4px 8px">✕</button>`:''}
     </div></td>
-  </tr>`;}).join('')})():`<tr><td colspan="10" class="empty-state">No employees match "${esc(empSearch)}"</td></tr>`}</tbody></table></div>`;
+  </tr>`;}).join('')})():`<tr><td colspan="10" class="empty-state">No employees match${empSearch?` "${esc(empSearch)}"`:''}${Object.values(empFilters).some(Boolean)?(empSearch?' and the selected filters':' the selected filters'):''}.</td></tr>`}</tbody></table></div>`;
 }
 function deleteEmp(id){
   const e=USERS.find(u=>u.id===id);
