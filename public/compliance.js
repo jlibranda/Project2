@@ -221,7 +221,7 @@
           var currentLayer = a.approvalLayer || 1;
           var layerEntry = chain.find(function (c) { return c.layer === currentLayer; });
           var awaiting = layerEntry ? 'Layer '+currentLayer+' · '+esc(layerEntry.approver.name) : 'Any approver';
-          return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(emp ? emp.name : '?')+'</div><div><div style="font-weight:600">'+esc(emp ? emp.name : '?')+'</div><div style="font-size:10px;color:var(--txt3)">'+esc(emp ? emp.eid : '')+'</div></div></div></td>'+
+          return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(emp ? emp.name : '?')+'</div><div><div style="font-weight:600">'+esc(fmtEmpName(emp)||'?')+'</div><div style="font-size:10px;color:var(--txt3)">'+esc(emp ? emp.eid : '')+'</div></div></div></td>'+
             '<td class="mono">'+a.date+'</td><td class="mono">'+(a.tin || '—')+' – '+(a.tout || '—')+'</td>'+
             '<td><span class="badge b-'+a.status+'">'+esc(a.status)+'</span></td><td>'+(a.ot || '—')+'</td><td>'+(a.nd || '—')+'</td>'+
             '<td style="font-size:11px;color:var(--txt3)">'+esc(a.filedBy || 'Employee')+'</td>'+
@@ -247,9 +247,20 @@
     } else if (isA && tab === 4) {
       body = renderAttendanceReportTab();
     } else {
-      body = (isA ? '<div class="field"><label>Employee</label><select id="ae">'+USERS.filter(function (u) { return u.role === 'employee'; }).map(function (u) {
-        return '<option value="'+u.id+'">'+esc(u.name)+'</option>';
-      }).join('')+'</select></div>' : '')+
+      body = (isA ? '<div class="field"><label>Employee</label>'+(function () {
+        // Attendance records key off the numeric u.id (not eid), so the picker resolves the
+        // typed/selected name back to an eid and then to u.id via a hidden #ae input that
+        // submitAtt() reads exactly as it always has -- no downstream change needed.
+        var attEmpList = USERS.filter(function (u) { return u.role === 'employee'; }).slice().sort(cmpEmpName);
+        var attDefault = attEmpList[0];
+        return empPickerInput({
+          id: 'att-emp-picker',
+          users: attEmpList,
+          value: attDefault ? attDefault.eid : '',
+          placeholder: '— Select employee —',
+          onchange: "var u=USERS.find(function(x){return x.eid===v});document.getElementById('ae').value=u?u.id:'';",
+        }) + '<input type="hidden" id="ae" value="' + (attDefault ? attDefault.id : '') + '"/>';
+      })() + '</div>' : '')+
         '<div class="form-row"><div class="field"><label>Date</label><input type="date" id="adate" value="'+today()+'"/></div>'+
         '<div class="field"><label>Status</label><select id="ast"><option value="present">Present</option><option value="late">Late</option><option value="absent">Absent</option><option value="leave">On Leave</option></select></div></div>'+
         '<div class="form-row"><div class="field"><label>Time In</label><input type="time" id="atin" value="08:00"/></div><div class="field"><label>Time Out</label><input type="time" id="atout" value="17:00"/></div></div>'+
@@ -533,8 +544,9 @@
       tbody = '<tr><td colspan="9" class="empty-state">No employees match this search.</td></tr>';
     } else {
       tbody = punches.map(function (p) {
+        var pDisplayName = fmtEmpName(USERS.find(function (u) { return u.id === p.eid; })) || p.empName || '?';
         if (p.noLogs) {
-          return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(p.empName||'?')+'</div>'+esc(p.empName||'?')+'</div></td>'+
+          return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(p.empName||'?')+'</div>'+esc(pDisplayName)+'</div></td>'+
             '<td colspan="7" style="color:var(--txt3);font-style:italic">No logs recorded'+(range.from&&range.to?' in this range':'')+'.</td>'+
             '<td></td></tr>';
         }
@@ -544,7 +556,7 @@
           : esc(p.location||'—');
         var zoneBadge = p.withinZone===false ? ' <span class="badge b-absent" style="font-size:9px">⚠ Out</span>'
           : p.withinZone===true ? ' <span class="badge b-approved" style="font-size:9px">✓ In zone</span>' : '';
-        return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(p.empName||'?')+'</div>'+esc(p.empName||'?')+'</div></td>'+
+        return '<tr><td><div class="emp-cell"><div class="avatar sm">'+ini(p.empName||'?')+'</div>'+esc(pDisplayName)+'</div></td>'+
           '<td class="mono">'+p.date+'</td><td class="mono">'+esc(p.time||'—')+'</td>'+
           '<td><span class="badge '+(p.type==='Clock In'?'b-present':'b-absent')+'">'+p.type+'</span></td>'+
           '<td style="font-size:11px;color:var(--txt3)">'+esc(p.source)+'</td>'+
@@ -574,7 +586,7 @@
       shown.map(function (u) {
         var hasPending = attendanceRecords().some(function (a) { return a.eid===u.id && a.date>=range.from && a.date<=range.to && a.approvalStatus==='pending'; });
         var noSchedule = hasNoScheduleInRange(u, range.from, range.to, shifts);
-        return '<tr><td style="font-size:12px">'+esc(u.name)+' <span style="color:var(--txt3);font-size:11px">('+esc(u.eid||'—')+')</span>'+(hasPending?redBubble(1):'')+
+        return '<tr><td style="font-size:12px">'+esc(fmtEmpName(u))+' <span style="color:var(--txt3);font-size:11px">('+esc(u.eid||'—')+')</span>'+(hasPending?redBubble(1):'')+
           (noSchedule?' <span class="badge b-absent" style="font-size:9px" title="No shift assigned in this range — Late/Undertime will read 0">⚠ No shift</span>':'')+'</td>'+
           '<td style="text-align:right;white-space:nowrap"><button class="btn btn-sm" onclick="openAttReportDetailModal(\''+ns+'\','+u.id+')">👁 View Detailed</button></td></tr>';
       }).join('')+
@@ -1288,7 +1300,7 @@
       '<div class="card-sub">Plots approved payroll and previous-employer data directly on the September 2021 (ENCS) government form. Review and signatures remain required.</div></div><div style="min-width:130px"><label style="font-size:11px;font-weight:700">Tax Year</label><input type="number" min="2000" max="2099" class="finput" value="'+Number(window._bir2316Year||new Date().getFullYear())+'" onchange="window._bir2316Year=Number(this.value);render()"/></div></div>'+ 
       '<div style="display:grid;gap:5px">'+USERS.filter(function (u) { return u.role === 'employee'; }).map(function (e) {
         return '<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 9px;border:1px solid var(--border);border-radius:7px">'+
-          '<div><div style="font-weight:600;font-size:12px">'+esc(e.name)+'</div><div style="font-size:10px;color:var(--txt3)">TIN '+esc(e.tin||'Not set')+'</div></div>'+
+          '<div><div style="font-weight:600;font-size:12px">'+esc(fmtEmpName(e))+'</div><div style="font-size:10px;color:var(--txt3)">TIN '+esc(e.tin||'Not set')+'</div></div>'+
           '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-sm btn-primary" onclick="generateOfficial2316PDF('+e.id+')">Generate official PDF</button><button class="btn btn-sm" onclick="generate2316Worksheet('+e.id+')">CSV worksheet</button></div></div>';
       }).join('')+'</div></div>';
   };
