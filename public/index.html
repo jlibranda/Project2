@@ -14492,7 +14492,11 @@ function pgEmpDetail(){
     <div class="section-header" style="margin-bottom:8px">Reporting & Approval</div>
     ${(()=>{
       const empOpts=[{v:'',l:'— None —'},...USERS.filter(u=>u.id!==detailEmpId).map(u=>({v:u.eid,l:`${u.eid} — ${u.name} (${u.pos||''})`}))];
-      const ihEid=val('immediateHeadEid')||e.immediateHeadEid||'';
+      // val() already resolves this correctly for both modes (draft value if edited, even an
+      // intentionally-cleared '', else the saved value) -- falling further back to
+      // e.immediateHeadEid on top of that meant picking "— None —" (which sets the draft to '')
+      // got silently overridden back to the original head, since '' is falsy and fell through.
+      const ihEid=val('immediateHeadEid')||'';
       const ihEmp=USERS.find(u=>u.eid===ihEid);
       const chain=getApprovalChain(e.eid);
       if(!detailEdit){
@@ -14525,7 +14529,7 @@ function pgEmpDetail(){
           <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:12px">
             <span style="padding:2px 8px;border-radius:5px;background:var(--accent);color:#fff;font-weight:600">${esc(e.name)}</span>
             ${chain.map(l=>`<span style="color:var(--accent-txt)">→</span>
-              <span style="padding:2px 8px;border-radius:5px;background:#fff;border:1px solid ${l.mode==='custom'?'var(--amber)':'var(--accent)'};color:var(--txt)">
+              <span style="padding:2px 8px;border-radius:5px;background:var(--bg);border:1px solid ${l.mode==='custom'?'var(--amber)':'var(--accent)'};color:var(--txt)">
                 ${esc(l.approver.name)}
                 <span style="font-size:10px;color:var(--txt3);margin-left:2px">L${l.layer}${l.mode==='custom'?' ⚙':''}</span>
               </span>`).join('')}
