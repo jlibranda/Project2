@@ -3518,6 +3518,18 @@ function modalHasEditableDraft(){
   return !!(modal&&(modal.draft||modal.ae||modal.data||modal.rows||modal.it||modal.group||modal.period||modal.changes));
 }
 function closeMConfirmed(){
+  // The "Log in as user" picker only shows up mid-flow: enterClient() already opened this real
+  // client's live data (still nominally as God Admin -- isPlatformAdmin stays true until a
+  // specific user is actually picked via impersonateUser()). Dismissing the picker without
+  // picking anyone used to just close the dialog and strand the session sitting inside that
+  // client's dashboard as "God Admin", with no obvious way back. Treat it the same as any other
+  // in-progress action: confirm, then actually back out to the client list instead of leaving
+  // that half-entered state.
+  if(modal&&modal.type==='impersonatePicker'){
+    if(!confirm('Cancel logging in as a user? This will close the '+(PLATFORM_CLIENTS.find(c=>c.id===modal.clientId)?.name||'client')+' session and return you to the client list.'))return;
+    closeM();exitClientView();
+    return;
+  }
   if(modalHasEditableDraft()&&!confirm('Discard unsaved changes and close this window?'))return;
   closeM();
 }
