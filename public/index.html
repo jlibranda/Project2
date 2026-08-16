@@ -726,6 +726,25 @@ function sessionBrandCacheKey(){
     return payload&&payload.tenantKey?'sr_company_brand_'+payload.tenantKey:'sr_company_brand';
   }catch(e){return'sr_company_brand';}
 }
+
+/* The pre-login/pre-hydrate "quick paint" branding cache (read below, written in render())
+   used to live under one flat localStorage key shared by every tenant on this browser — so
+   whichever client's admin logged in here most recently silently overwrote it for everyone
+   else, and the renderLoading() screen shown on a page refresh could paint the WRONG client's
+   logo/name for a moment (or the wrong one permanently, for an impersonated real client, which
+   never got cached at all under the old flat-key guard). Keying by the current session token's
+   own tenantKey keeps each real client's cached branding distinct and correctly restored,
+   whether logged in directly or entered via God Admin's Enter Portal. */
+function sessionBrandCacheKey(){
+  try{
+    var t=sessionStorage.getItem('sproutripple_session');
+    if(!t)return'sr_company_brand';
+    var b64=t.split('.')[0].replace(/-/g,'+').replace(/_/g,'/');
+    while(b64.length%4)b64+='=';
+    var payload=JSON.parse(decodeURIComponent(atob(b64).split('').map(function(c){return'%'+('00'+c.charCodeAt(0).toString(16)).slice(-2);}).join('')));
+    return payload&&payload.tenantKey?'sr_company_brand_'+payload.tenantKey:'sr_company_brand';
+  }catch(e){return'sr_company_brand';}
+}
 /* ---- COMPANY SETTINGS ---- */
 let COMPANY={
   name:'SproutRipple PH',
@@ -15284,19 +15303,10 @@ function render(){
   if(COMPANY.darkMode){document.documentElement.setAttribute('data-dark','');}else{document.documentElement.removeAttribute('data-dark');}
   try{
     localStorage.setItem('sr_dark_mode',COMPANY.darkMode?'1':'0');
-    /* Cache branding per-tenant (see sessionBrandCacheKey()) so a page refresh always paints
-       THIS session's own client, not whichever client last logged in on this browser. Still
-       skipped while merely browsing a local-only demo client (no tenantKey, no real session
-       swap) — COMPANY there is fake preview data, not this session's own real branding. */
-    const _browsingLocalDemoClient=!!(activeClientId&&activeClientId!==1&&
-      !(PLATFORM_CLIENTS.find(c=>c.id===activeClientId)||{}).tenantKey);
-    /* Also require a live session token — without one, sessionBrandCacheKey() can only fall
-       back to the old shared flat key, and render() still fires once more on logout (after
-       the token is already cleared) with whatever tenant was last active still sitting in
-       COMPANY. Skipping the write here is what keeps that flat key from ever being reused as
-       a leak vector again. */
-    if(!_browsingLocalDemoClient&&sessionStorage.getItem('sproutripple_session')){
-      localStorage.setItem(sessionBrandCacheKey(),JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
+    /* Only cache branding while viewing the real company (id 1) — browsing a demo
+       client's swapped-in COMPANY must never overwrite the real cached brand. */
+    if(!activeClientId||activeClientId===1){
+      localStorage.setItem('sr_company_brand',JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
     }
   }catch(e){}
   const root=document.getElementById('root');
