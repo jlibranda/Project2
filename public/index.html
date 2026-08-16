@@ -5223,6 +5223,17 @@ function downloadUpdateTemplateXLSX(){
   URL.revokeObjectURL(url);
 }
 
+// Reference-style cells (from a dvRef dropdown/Reference sheet, e.g. Immediate Head) are
+// exported as "EID — Name" using an em dash, but that character doesn't always survive being
+// retyped or edited in a spreadsheet -- a plain hyphen is a common substitute. Accepting only
+// the exact em dash meant a row typed with "EID - Name" kept the whole string as the EID,
+// which never matches a real employee and silently drops the reference (e.g. Immediate Head
+// left unset even though the uploaded file had a value).
+function extractEidFromRef(raw){
+  const s=String(raw||'').trim();
+  const m=s.match(/^(.+?)\s+[-—]\s+.+$/);
+  return m?m[1].trim():s;
+}
 function handleBulkUpdateUpload(evt){
   const file=evt.target.files[0];if(!file)return;
   evt.target.value='';
@@ -5247,8 +5258,8 @@ function handleBulkUpdateUpload(evt){
         getUpdateCols().filter(c=>!c.ref&&c.k!=='_effectiveDate'&&c.k!=='_reason').forEach(c=>{
           let newVal=String(row[c.k]??'').trim();
           if(!newVal)return; /* blank = unchanged */
-          /* Normalise immediateHeadEid from "EID — Name" format */
-          if(c.k==='immediateHeadEid'&&newVal.includes(' — '))newVal=newVal.split(' — ')[0].trim();
+          /* Normalise immediateHeadEid from "EID — Name" (or "EID - Name") format */
+          if(c.k==='immediateHeadEid')newVal=extractEidFromRef(newVal);
           /* Normalise Y/N booleans */
           if((c.k==='includeInPayroll'||c.k==='includeInTimekeeping')&&(newVal==='true'||newVal==='1'))newVal='Y';
           if((c.k==='includeInPayroll'||c.k==='includeInTimekeeping')&&(newVal==='false'||newVal==='0'))newVal='N';
@@ -5578,9 +5589,8 @@ function confirmBulkUpload(validatedRows){
     const probEndDate=NO_EVAL_TYPES.has(r.type)?'':evalDate(hired,6);
     const thirdMonthEval=NO_EVAL_TYPES.has(r.type)?'':evalDate(hired,3);
     const fifthMonthEval=NO_EVAL_TYPES.has(r.type)?'':evalDate(hired,5);
-    /* Immediate Head: "EID — Name" → extract EID */
-    const ihRaw=r.immediateHeadEid||'';
-    const immediateHeadEid=ihRaw.includes(' — ')?ihRaw.split(' — ')[0].trim():ihRaw.trim();
+    /* Immediate Head: "EID — Name" (or "EID - Name") → extract EID */
+    const immediateHeadEid=extractEidFromRef(r.immediateHeadEid);
     /* Include in payroll/timekeeping — normalise to Y/N string */
     const inclPay=r.includeInPayroll;
     const inclTime=r.includeInTimekeeping;
