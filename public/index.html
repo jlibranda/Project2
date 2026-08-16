@@ -326,14 +326,37 @@ let LOOKUPS={
     {id:10,code:'End of Project',label:'End of Project'},
   ],
   attritionCodes:[
-    {id:1,code:'VOL-PUSH',label:'VOL-PUSH — Push (voluntary, due to company factors)'},
-    {id:2,code:'VOL-PULL',label:'VOL-PULL — Pull (voluntary, better opportunity)'},
-    {id:3,code:'INVOL-PERF',label:'INVOL-PERF — Involuntary (performance)'},
-    {id:4,code:'INVOL-CONDUCT',label:'INVOL-CONDUCT — Involuntary (conduct)'},
-    {id:5,code:'INVOL-RED',label:'INVOL-RED — Involuntary (redundancy)'},
-    {id:6,code:'CONTRACT-END',label:'CONTRACT-END — Contract ended'},
-    {id:7,code:'RETIRE',label:'RETIRE — Retirement'},
-    {id:8,code:'DEATH',label:'DEATH — Death in service'},
+    {id:1,code:'SALARY',label:'SALARY',group:'voluntary'},
+    {id:2,code:'BENEFITS',label:'BENEFITS',group:'voluntary'},
+    {id:3,code:'WORK-OVERLOAD',label:'WORK OVERLOAD',group:'voluntary'},
+    {id:4,code:'COMP-AND-BENEFITS',label:'COMPENSATION AND BENEFITS',group:'voluntary'},
+    {id:5,code:'CAREER-SHIFT',label:'CAREER SHIFT',group:'voluntary'},
+    {id:6,code:'PROMOTION',label:'PROMOTION',group:'voluntary'},
+    {id:7,code:'RELOCATION-LOCAL',label:'RELOCATION: LOCAL',group:'voluntary'},
+    {id:8,code:'RELOCATION-ABROAD',label:'RELOCATION: ABROAD',group:'voluntary'},
+    {id:9,code:'PERSONAL-FAMILY',label:'PERSONAL/ FAMILY',group:'voluntary'},
+    {id:10,code:'MEDICAL-CONDITION',label:'MEDICAL CONDITION',group:'voluntary'},
+    {id:11,code:'WORKPLACE-PROXIMITY',label:'WORKPLACE PROXIMITY',group:'voluntary'},
+    {id:12,code:'FURTHER-STUDIES',label:'FURTHER STUDIES',group:'voluntary'},
+    {id:13,code:'LEADERSHIP',label:'LEADERSHIP',group:'voluntary'},
+    {id:14,code:'CULTURE-FIT',label:'CULTURE FIT',group:'voluntary'},
+    {id:15,code:'BUSINESS-OPPORTUNITY',label:'BUSINESS OPPORTUNITY',group:'voluntary'},
+    {id:16,code:'CAREER-OPPORTUNITIES',label:'CAREER OPPORTUNITIES',group:'voluntary'},
+    {id:17,code:'ORG-PIVOT',label:'ORG PIVOT',group:'voluntary'},
+    {id:18,code:'REDUNDANCY',label:'REDUNDANCY',group:'involuntary'},
+    {id:19,code:'LABOR-SAVING-DEVICE',label:'LABOR SAVING DEVICE',group:'involuntary'},
+    {id:20,code:'COMPANY-CLOSURE',label:'COMPANY CLOSURE',group:'involuntary'},
+    {id:21,code:'MEDICAL-REASONS',label:'MEDICAL REASONS',group:'involuntary'},
+    {id:22,code:'RETRENCHMENT',label:'RETRENCHMENT',group:'involuntary'},
+    {id:23,code:'DEATH',label:'DEATH',group:'involuntary'},
+    {id:24,code:'JOB-ABANDONMENT',label:'JOB ABANDONMENT',group:'involuntary'},
+    {id:25,code:'TERMINATION-PROBATION',label:'TERMINATION DURING PROBATION',group:'involuntary'},
+    {id:26,code:'DISMISSAL-MISCONDUCT',label:'DISMISSAL (SERIOUS MISCONDUCT)',group:'involuntary'},
+    {id:27,code:'DISMISSAL-NEGLIGENCE',label:'DISMISSAL (GROSS AND HABITUAL NEGLIGENCE)',group:'involuntary'},
+    {id:28,code:'DISMISSAL-LOSS-OF-TRUST',label:'DISMISSAL (LOSS OF TRUST)',group:'involuntary'},
+    {id:29,code:'DISMISSAL-CONVICTION',label:'DISMISSAL (CONVICTION OF A CRIME)',group:'involuntary'},
+    {id:30,code:'DISMISSAL-PERFORMANCE',label:'DISMISSAL (PERFORMANCE)',group:'involuntary'},
+    {id:31,code:'END-OF-CONTRACT',label:'END OF CONTRACT (CONTRACTUAL/CONSULTANT)',group:'involuntary'},
   ],
   payTypes:[
     {id:1,code:'monthly',label:'Monthly'},
@@ -354,7 +377,7 @@ let LOOKUPS={
     {id:2,code:'TiltPay SGP Pte. Ltd.',label:'TiltPay SGP Pte. Ltd.'},
   ],
 };
-let nLookup={bandLevels:20,costCenters:20,pods:20,disciplines:20,employmentTypes:20,terminationTypes:20,attritionCodes:20,payTypes:20,currencies:20,entityNames:20};
+let nLookup={bandLevels:20,costCenters:20,pods:20,disciplines:20,employmentTypes:20,terminationTypes:20,attritionCodes:32,payTypes:20,currencies:20,entityNames:20};
 const USERS=[
   {id:1,eid:'EMP-001',firstName:'Maria',lastName:'Santos',middleName:'Cruz',suffix:'',
    email:'admin@ph.com',personalEmail:'maria.santos@gmail.com',pass:'admin123',role:'admin',
@@ -1071,6 +1094,24 @@ function findDuplicates(candidate,excludeId){
 const PROBATION_EVAL_TYPES=new Set(['probationary']); /* types that get 3rd/5th month + probation dates */
 const NO_EVAL_TYPES=new Set(['contractual','project-based','part-time','consultant']); /* dates are N/A */
 const LAST_WORK_DATE_TYPES=new Set(['contractual','project-based','part-time','consultant']); /* show Last Working Date */
+
+// Attrition Code options are branched under Voluntary/Involuntary (LOOKUPS.attritionCodes[].group).
+// The Offboarding tab's "Voluntary or Involuntary" select isn't rebuilt by esel() (it needs its
+// own onchange to also branch attritionCode), so switching it calls this directly to rebuild the
+// Attrition Code <select>'s options in place — same "no full render()" pattern as
+// toggleClientModule, to avoid losing focus/scroll on an unrelated field. If the currently chosen
+// attritionCode no longer belongs to the new group, it's cleared rather than left pointing at a
+// code from the other bucket.
+function updateAttritionCodeOptions(sepType){
+  const sel=document.getElementById('ef-attritionCode');
+  if(!sel)return;
+  const opts=[{v:'',l:'— Select —'},...(LOOKUPS.attritionCodes||[])
+    .filter(a=>!sepType||a.group===sepType)
+    .map(a=>({v:a.code,l:a.label}))];
+  const stillValid=opts.some(o=>o.v===detailDraft.attritionCode);
+  if(!stillValid)detailDraft.attritionCode='';
+  sel.innerHTML=opts.map(o=>`<option value="${esc(o.v)}" ${o.v===detailDraft.attritionCode?'selected':''}>${esc(o.l)}</option>`).join('');
+}
 
 function checkOffboarding(){
   const tod=today();
@@ -9915,12 +9956,17 @@ function renderModal(){
     inner=`<div class="modal-title">⇅ Bulk Add — <strong>${esc(modal.label)}</strong>
       <button class="close-x" onclick="closeM()">×</button>
     </div>
+    ${modal.hasGroup?`<div class="field" style="margin-bottom:10px"><label>Group — applies to every row pasted below</label>
+      <select class="finput" onchange="modal.bulkGroup=this.value">
+        <option value="voluntary" ${(modal.bulkGroup||'voluntary')==='voluntary'?'selected':''}>Voluntary</option>
+        <option value="involuntary" ${modal.bulkGroup==='involuntary'?'selected':''}>Involuntary</option>
+      </select></div>`:''}
     <div style="font-size:12px;color:var(--txt3);margin-bottom:10px">
-      One row per line.${modal.hasCode?` Format: <strong>Code, Label</strong> — separate with a comma, tab, or pipe (a straight paste from an Excel column works too).<br/>Example: <span style="font-family:'JetBrains Mono',monospace">L10, Principal Engineer</span>`:` Just the name, one per line.<br/>Example: <span style="font-family:'JetBrains Mono',monospace">Alpha</span>`}
+      One row per line.${modal.hasCode?` Just the label, or <strong>Code, Label</strong> if you want to set the code yourself — separate with a comma, tab, or pipe (a straight paste from an Excel column works too). A label-only line gets its code generated automatically.<br/>Example: <span style="font-family:'JetBrains Mono',monospace">${modal.hasGroup?'SALARY':'L10, Principal Engineer'}</span>`:` Just the name, one per line.<br/>Example: <span style="font-family:'JetBrains Mono',monospace">Alpha</span>`}
       Duplicate ${modal.hasCode?'codes':'names'} already in the table are skipped automatically.
     </div>
     <textarea id="lookup-bulk-text" rows="10" class="finput" style="font-family:'JetBrains Mono',monospace;font-size:12px;resize:vertical"
-      placeholder="${modal.hasCode?'L10, Principal Engineer\nL11, Distinguished Engineer':'Alpha\nBeta'}"
+      placeholder="${modal.hasCode?(modal.hasGroup?'SALARY\nBENEFITS\nWORK OVERLOAD':'L10, Principal Engineer\nL11, Distinguished Engineer'):'Alpha\nBeta'}"
       oninput="modal.text=this.value;updateLookupBulkPreview()">${esc(modal.text||'')}</textarea>
     <div id="lookup-bulk-count" style="font-size:12px;color:var(--txt3);margin-top:6px">${preview.length} row${preview.length!==1?'s':''} ready to add</div>
     <div style="display:flex;gap:8px;margin-top:10px">
@@ -12482,8 +12528,8 @@ function pgLookupSetup(){
      cols:['Code','Label']},
     {key:'terminationTypes',label:'Termination Types',desc:'Reason for separation used in Offboarding tab.',hasCode:true,
      cols:['Code','Label']},
-    {key:'attritionCodes',label:'Attrition Codes',desc:'Voluntary vs involuntary attrition classification for analytics.',hasCode:true,
-     cols:['Code','Label']},
+    {key:'attritionCodes',label:'Attrition Codes',desc:'Voluntary vs involuntary attrition classification for analytics.',hasCode:true,hasGroup:true,
+     cols:['Code','Label','Group']},
     {key:'payTypes',label:'Pay Types',desc:'Payment frequency used in Compensation tab.',hasCode:true,
      cols:['Code','Label']},
     {key:'currencies',label:'Currencies',desc:'Currency codes used in Compensation tab.',hasCode:true,
@@ -12491,11 +12537,15 @@ function pgLookupSetup(){
     {key:'entityNames',label:'Entity Names',desc:'Legal entities used in Employment tab.',hasCode:true,
      cols:['Code','Label']},
   ];
-  function rows(key,hasCode){
+  function rows(key,hasCode,hasGroup){
     return LOOKUPS[key].map((item,i)=>hasCode?`
     <tr>
       <td><input class="finput" style="font-size:12px" value="${esc(item.code)}" onchange="LOOKUPS['${key}'][${i}].code=this.value"/></td>
       <td><input class="finput" style="font-size:12px" value="${esc(item.label)}" onchange="LOOKUPS['${key}'][${i}].label=this.value"/></td>
+      ${hasGroup?`<td><select class="finput" style="font-size:12px" onchange="LOOKUPS['${key}'][${i}].group=this.value">
+        <option value="voluntary" ${item.group==='voluntary'?'selected':''}>Voluntary</option>
+        <option value="involuntary" ${item.group==='involuntary'?'selected':''}>Involuntary</option>
+      </select></td>`:''}
       <td><button class="btn btn-sm btn-danger" style="padding:3px 8px" onclick="delLookup('${key}',${i})">✕</button></td>
     </tr>`:`
     <tr>
@@ -12512,24 +12562,28 @@ function pgLookupSetup(){
     <div class="card-hd">
       <div><div class="card-title">${s.label}</div><div class="card-sub">${s.desc}</div></div>
       <div style="display:flex;gap:6px;flex-shrink:0">
-        <button class="btn btn-sm" onclick="openLookupBulkAdd('${s.key}',${s.hasCode},'${esc(s.label)}')" title="Paste multiple rows at once">⇅ Bulk Add</button>
-        <button class="btn btn-sm btn-primary" onclick="addLookup('${s.key}',${s.hasCode})">+ Add</button>
+        <button class="btn btn-sm" onclick="openLookupBulkAdd('${s.key}',${s.hasCode},'${esc(s.label)}',${!!s.hasGroup})" title="Paste multiple rows at once">⇅ Bulk Add</button>
+        <button class="btn btn-sm btn-primary" onclick="addLookup('${s.key}',${s.hasCode},${!!s.hasGroup})">+ Add</button>
       </div>
     </div>
     <table><thead><tr>${s.cols.map(c=>`<th>${c}</th>`).join('')}<th></th></tr></thead>
-    <tbody>${rows(s.key,s.hasCode)}</tbody></table>
+    <tbody>${rows(s.key,s.hasCode,s.hasGroup)}</tbody></table>
   </div>`).join('')}
   </div>
   <div style="margin-top:4px;text-align:right">
     <button class="btn btn-success" onclick="alert('All lookup changes are saved automatically as you type!')">✓ Changes auto-saved</button>
   </div>`;
 }
-function addLookup(key,hasCode){
+function addLookup(key,hasCode,hasGroup){
   const id=nLookup[key]++;
   if(hasCode){
     const code=prompt(`New ${key} code (e.g. L8):`);if(!code?.trim())return;
     const label=prompt(`Label for "${code}":`);if(!label?.trim())return;
-    LOOKUPS[key].push({id,code:code.trim(),label:label.trim()});
+    const entry={id,code:code.trim(),label:label.trim()};
+    // New rows default to Voluntary — the inline Group selector on the row lets you flip it
+    // to Involuntary right away, same as any other editable cell in this table.
+    if(hasGroup)entry.group='voluntary';
+    LOOKUPS[key].push(entry);
   }else{
     const name=prompt(`New ${key} name:`);if(!name?.trim())return;
     LOOKUPS[key].push({id,name:name.trim()});
@@ -12546,17 +12600,23 @@ function delLookup(key,idx){
 /* ── Bulk Add for Lookup Tables — paste multiple rows at once instead of
    one "+ Add" prompt() per row. Accepts comma, tab, or pipe as the
    code/label separator so a straight paste from an Excel column works too. */
+function slugifyLookupCode(label){
+  return label.toUpperCase().replace(/[^A-Z0-9]+/g,'-').replace(/^-+|-+$/g,'')||'CODE';
+}
 function parseLookupBulkText(text,hasCode){
   const lines=(text||'').split('\n').map(l=>l.trim()).filter(Boolean);
   return lines.map(line=>{
     if(!hasCode)return{name:line};
     const parts=line.split(/\t|\||,/).map(p=>p.trim()).filter(Boolean);
-    if(parts.length<2)return null; /* needs both a code and a label */
+    if(!parts.length)return null;
+    // A single-column paste (just a label, no code) — e.g. a plain list of Attrition Code
+    // names — gets a code generated from the label instead of being silently dropped.
+    if(parts.length===1)return{code:slugifyLookupCode(parts[0]),label:parts[0]};
     return{code:parts[0],label:parts.slice(1).join(', ')};
   }).filter(Boolean);
 }
-function openLookupBulkAdd(key,hasCode,label){
-  modal={type:'lookupBulkAdd',key,hasCode,label,text:''};
+function openLookupBulkAdd(key,hasCode,label,hasGroup){
+  modal={type:'lookupBulkAdd',key,hasCode,hasGroup,label,text:'',bulkGroup:'voluntary'};
   render();
 }
 /* Updates just the row count + submit button, not the whole page — a full
@@ -12572,7 +12632,7 @@ function updateLookupBulkPreview(){
   }
 }
 function applyLookupBulkAdd(){
-  const{key,hasCode}=modal;
+  const{key,hasCode,hasGroup,bulkGroup}=modal;
   const text=document.getElementById('lookup-bulk-text')?.value||'';
   const parsed=parseLookupBulkText(text,hasCode);
   if(!parsed.length){toast('No valid rows to add.','warning');return;}
@@ -12582,7 +12642,9 @@ function applyLookupBulkAdd(){
     const key2=(row.code||row.name||'').toLowerCase();
     if(existing.has(key2)){skipped++;return;}
     existing.add(key2);
-    LOOKUPS[key].push(hasCode?{id:nLookup[key]++,code:row.code,label:row.label}:{id:nLookup[key]++,name:row.name});
+    const entry=hasCode?{id:nLookup[key]++,code:row.code,label:row.label}:{id:nLookup[key]++,name:row.name};
+    if(hasGroup)entry.group=bulkGroup||'voluntary';
+    LOOKUPS[key].push(entry);
     added++;
   });
   closeM();
@@ -14703,7 +14765,12 @@ function pgEmpDetail(){
     const isContractual=LAST_WORK_DATE_TYPES.has(e.type);
     const disableNonContract=LAST_WORK_DATE_TYPES.has(e.type); /* mutual, regrettable, rehireable N/A for these types */
     const termTypes=[{v:'',l:'— Select —'},...(LOOKUPS.terminationTypes||[]).map(t=>({v:t.code,l:t.label}))];
-    const attrCodes=[{v:'',l:'— Select —'},...(LOOKUPS.attritionCodes||[]).map(a=>({v:a.code,l:a.label}))];
+    // Narrowed to whichever Voluntary/Involuntary bucket is currently selected, so the two
+    // groups' codes never get mixed together in the same list — see updateAttritionCodeOptions()
+    // for the live version of this same filter, applied when that selection changes in place.
+    const attrCodes=[{v:'',l:'— Select —'},...(LOOKUPS.attritionCodes||[])
+      .filter(a=>!val('separationType')||a.group===val('separationType'))
+      .map(a=>({v:a.code,l:a.label}))];
 
     /* Helper — disabled select field with N/A note */
     const disabledField=(label)=>`<div class="field" style="margin-bottom:6px">
@@ -14716,7 +14783,7 @@ function pgEmpDetail(){
     /* Voluntary/Involuntary select helper */
     const volInvol=detailEdit
       ?`<div class="field" style="margin-bottom:6px"><label>Voluntary or Involuntary</label>
-         <select class="finput" style="font-size:13px" onchange="detailDraft.separationType=this.value">
+         <select class="finput" style="font-size:13px" onchange="detailDraft.separationType=this.value;updateAttritionCodeOptions(this.value)">
            <option value="">— Select —</option>
            <option value="voluntary" ${val('separationType')==='voluntary'?'selected':''}>Voluntary — Employee-initiated</option>
            <option value="involuntary" ${val('separationType')==='involuntary'?'selected':''}>Involuntary — Company-initiated</option>
