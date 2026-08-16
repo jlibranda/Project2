@@ -3443,9 +3443,16 @@ function recordSecurityAudit(action,target,notes){
   queueSync('Security_Audit');
 }
 
-function openUserLogin(clientId){
+async function openUserLogin(clientId){
   if(!isPlatformAdmin||godAdmin){toast('Only the active Super Admin session can use Log in as user.','warning');return;}
-  enterClient(clientId);
+  // enterClient() is async (it fetches a real client's live data) and its own completion sets
+  // modal=null as it lands on that client's dashboard. Firing it without awaiting meant the
+  // picker below got set immediately against the still-stale USERS list, then wiped out again
+  // moments later when enterClient's fetch resolved and cleared modal — so the picker either
+  // showed the wrong (often empty) list or never stayed open at all. Awaiting it first means
+  // USERS is the real client's data by the time the picker actually renders.
+  await enterClient(clientId);
+  if(activeClientId!==clientId)return; /* the entry confirm was cancelled, or it failed — enterClient already handled telling the user */
   modal={type:'impersonatePicker',clientId};
   render();
 }
