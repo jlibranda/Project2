@@ -3527,7 +3527,13 @@ function closeMConfirmed(){
   // that half-entered state.
   if(modal&&modal.type==='impersonatePicker'){
     if(!confirm('Cancel logging in as a user? This will close the '+(PLATFORM_CLIENTS.find(c=>c.id===modal.clientId)?.name||'client')+' session and return you to the client list.'))return;
-    closeM();exitClientView();
+    // Deliberately not closeM() here -- that renders once on its own (the client's dashboard,
+    // modal gone, still nominally God Admin) before exitClientView()'s async restore finishes
+    // and renders again onto the platform console -- a visible flash of "logged in" in between.
+    // Clear modal without rendering so the only render that happens is exitClientView()'s own,
+    // landing straight on the client list.
+    modal=null;
+    exitClientView();
     return;
   }
   if(modalHasEditableDraft()&&!confirm('Discard unsaved changes and close this window?'))return;
