@@ -726,25 +726,6 @@ function sessionBrandCacheKey(){
     return payload&&payload.tenantKey?'sr_company_brand_'+payload.tenantKey:'sr_company_brand';
   }catch(e){return'sr_company_brand';}
 }
-
-/* The pre-login/pre-hydrate "quick paint" branding cache (read below, written in render())
-   used to live under one flat localStorage key shared by every tenant on this browser — so
-   whichever client's admin logged in here most recently silently overwrote it for everyone
-   else, and the renderLoading() screen shown on a page refresh could paint the WRONG client's
-   logo/name for a moment (or the wrong one permanently, for an impersonated real client, which
-   never got cached at all under the old flat-key guard). Keying by the current session token's
-   own tenantKey keeps each real client's cached branding distinct and correctly restored,
-   whether logged in directly or entered via God Admin's Enter Portal. */
-function sessionBrandCacheKey(){
-  try{
-    var t=sessionStorage.getItem('sproutripple_session');
-    if(!t)return'sr_company_brand';
-    var b64=t.split('.')[0].replace(/-/g,'+').replace(/_/g,'/');
-    while(b64.length%4)b64+='=';
-    var payload=JSON.parse(decodeURIComponent(atob(b64).split('').map(function(c){return'%'+('00'+c.charCodeAt(0).toString(16)).slice(-2);}).join('')));
-    return payload&&payload.tenantKey?'sr_company_brand_'+payload.tenantKey:'sr_company_brand';
-  }catch(e){return'sr_company_brand';}
-}
 /* ---- COMPANY SETTINGS ---- */
 let COMPANY={
   name:'SproutRipple PH',
@@ -2864,13 +2845,15 @@ async function loadRealPlatformClients(){
       const existing=PLATFORM_CLIENTS.find(x=>x.tenantKey===rc.tenantKey);
       if(existing){
         Object.assign(existing,{name:rc.name,industry:rc.industry,plan:rc.plan,status:rc.status,
-          color:rc.color,initials:rc.initials,contact:rc.contact,remoteId:rc.id,modules:rc.modules});
+          color:rc.color,initials:rc.initials,contact:rc.contact,remoteId:rc.id,modules:rc.modules,
+          contactTitle:rc.contactTitle||'',contactEmail:rc.contactEmail||'',contactMobile:rc.contactMobile||''});
       }else{
         ensurePlatformClientIdCounterAhead();
         PLATFORM_CLIENTS.push({id:nPlatformClient++,remoteId:rc.id,tenantKey:rc.tenantKey,
           name:rc.name,industry:rc.industry||'—',plan:rc.plan,emps:0,status:rc.status,
           lastActive:(rc.lastActiveAt||'').slice(0,10)||today(),color:rc.color,initials:rc.initials,
-          contact:rc.contact,admin:{email:rc.adminEmail,pass:''},modules:rc.modules&&rc.modules.length?rc.modules:[]});
+          contact:rc.contact,contactTitle:rc.contactTitle||'',contactEmail:rc.contactEmail||'',contactMobile:rc.contactMobile||'',
+          admin:{email:rc.adminEmail,pass:''},modules:rc.modules&&rc.modules.length?rc.modules:[]});
       }
     });
     render();
@@ -2891,7 +2874,7 @@ async function saveNewCompany(){
   try{
     const res=await window.apiRequest('/platform/clients',{method:'POST',body:JSON.stringify({
       name:d.name.trim(),industry:d.industry||'',plan:d.plan||'Starter',color:d.color||'#4f46e5',
-      initials:init,contact:d.contact||'Admin',adminEmail:d.email.trim(),adminPass:d.pass.trim(),
+      initials:init,contact:d.contact||'Admin',contactEmail:d.email.trim(),adminEmail:d.email.trim(),adminPass:d.pass.trim(),
       modules:[...PLAN_MODULES[d.plan||'Starter']],
     })});
     const rc=res.client;
@@ -2900,6 +2883,7 @@ async function saveNewCompany(){
       id:nPlatformClient++,remoteId:rc.id,tenantKey:rc.tenantKey,
       name:rc.name,industry:rc.industry||'—',plan:rc.plan,emps:0,status:rc.status,lastActive:today(),
       color:rc.color,initials:rc.initials,contact:rc.contact,
+      contactTitle:rc.contactTitle||'',contactEmail:rc.contactEmail||'',contactMobile:rc.contactMobile||'',
       admin:{email:rc.adminEmail,pass:d.pass.trim()}, /* kept locally for display — the backend never echoes it back */
       modules:rc.modules&&rc.modules.length?rc.modules:[...PLAN_MODULES[d.plan||'Starter']],
     });
@@ -2936,6 +2920,26 @@ async function archiveClient(cid){
 async function restoreClient(cid){
   const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
   if(await patchClientStatus(c,'active'))render();
+}
+/* Point-of-contact edits — same real-client-syncs-to-backend pattern as patchClientStatus.
+   Edit POC used to only mutate the in-memory object, so entered details vanished the next
+   time loadRealPlatformClients() re-hydrated from the (never-updated) backend row. */
+async function saveEditPOC(cid){
+  const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
+  const contact=document.getElementById('poc-name').value.trim()||c.contact;
+  const contactTitle=document.getElementById('poc-title').value.trim();
+  const contactEmail=document.getElementById('poc-email').value.trim();
+  const contactMobile=document.getElementById('poc-mobile').value.trim();
+  if(c.tenantKey&&c.remoteId&&window.apiRequest){
+    try{
+      await window.apiRequest('/platform/clients/'+c.remoteId,{method:'PATCH',body:JSON.stringify({contact,contactTitle,contactEmail,contactMobile})});
+    }catch(e){
+      alert('Could not save point of contact: '+(e.message||'Unknown error'));
+      return;
+    }
+  }
+  c.contact=contact;c.contactTitle=contactTitle;c.contactEmail=contactEmail;c.contactMobile=contactMobile;
+  closeM();render();
 }
 async function deleteClientPermanently(cid){
   const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
@@ -3360,7 +3364,7 @@ function pgPlatformAdmin(){
               const enabled=grpMods.filter(m=>c.modules.includes(m.k)).length;
               const pct=grpMods.length?enabled/grpMods.length:0;
               return`<div title="${grp}: ${enabled}/${grpMods.length}" style="flex:1;min-width:24px">
-                <div style="font-size:8px;color:#475569;margin-bottom:2px;text-align:center">${grp.split(' ')[0].substring(0,4)}</div>
+                <div style="font-size:8px;color:#94a3b8;margin-bottom:2px;text-align:center">${grp.split(' ')[0].substring(0,4)}</div>
                 <div style="height:4px;border-radius:2px;background:#334155;overflow:hidden">
                   <div style="height:100%;width:${Math.round(pct*100)}%;background:${pct===1?'#22c55e':pct>0?'#f59e0b':'#334155'};transition:width .3s"></div>
                 </div>
@@ -9878,15 +9882,7 @@ function renderModal(){
         <input id="poc-mobile" class="finput" value="${esc(c?.contactMobile||'')}" placeholder="+63 917 XXX XXXX"/></div>
     </div>
     <div style="display:flex;gap:8px;margin-top:4px">
-      <button class="btn btn-primary" onclick="
-        const c=PLATFORM_CLIENTS.find(x=>x.id===${modal.clientId});
-        if(!c)return;
-        c.contact=document.getElementById('poc-name').value.trim()||c.contact;
-        c.contactTitle=document.getElementById('poc-title').value.trim();
-        c.contactEmail=document.getElementById('poc-email').value.trim();
-        c.contactMobile=document.getElementById('poc-mobile').value.trim();
-        closeM();render();
-      ">✓ Save POC</button>
+      <button class="btn btn-primary" onclick="saveEditPOC(${modal.clientId})">✓ Save POC</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
   }else if(modal.type==='lookupBulkAdd'){
@@ -15303,10 +15299,19 @@ function render(){
   if(COMPANY.darkMode){document.documentElement.setAttribute('data-dark','');}else{document.documentElement.removeAttribute('data-dark');}
   try{
     localStorage.setItem('sr_dark_mode',COMPANY.darkMode?'1':'0');
-    /* Only cache branding while viewing the real company (id 1) — browsing a demo
-       client's swapped-in COMPANY must never overwrite the real cached brand. */
-    if(!activeClientId||activeClientId===1){
-      localStorage.setItem('sr_company_brand',JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
+    /* Cache branding per-tenant (see sessionBrandCacheKey()) so a page refresh always paints
+       THIS session's own client, not whichever client last logged in on this browser. Still
+       skipped while merely browsing a local-only demo client (no tenantKey, no real session
+       swap) — COMPANY there is fake preview data, not this session's own real branding. */
+    const _browsingLocalDemoClient=!!(activeClientId&&activeClientId!==1&&
+      !(PLATFORM_CLIENTS.find(c=>c.id===activeClientId)||{}).tenantKey);
+    /* Also require a live session token — without one, sessionBrandCacheKey() can only fall
+       back to the old shared flat key, and render() still fires once more on logout (after
+       the token is already cleared) with whatever tenant was last active still sitting in
+       COMPANY. Skipping the write here is what keeps that flat key from ever being reused as
+       a leak vector again. */
+    if(!_browsingLocalDemoClient&&sessionStorage.getItem('sproutripple_session')){
+      localStorage.setItem(sessionBrandCacheKey(),JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
     }
   }catch(e){}
   const root=document.getElementById('root');
