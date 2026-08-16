@@ -537,6 +537,24 @@ USERS.forEach(u=>{
   u.address=u.permanentAddress||u.city||'';
   // dept, pos, sss, ph, pi, tin, bday, contact, hired, rate, type, status all already present
 });
+// Employee-list display format: "LASTNAME, FirstName M.I." (e.g. "LIBRANDA, JAYSON B.").
+// Deliberately a separate function rather than a change to u.name itself -- .name is relied on
+// elsewhere in "FirstName LastName" order (dashboard greeting's .split(' ')[0], avatar-initials
+// fallback, etc.), and reformatting it in place would silently break those. Used at table/list
+// employee-name cells and employee-picker dropdown options; not intended for prose/sentence
+// mentions of a name (greetings, audit-trail narrative) where "LASTNAME, First M.I." reads oddly.
+function fmtEmpName(u){
+  if(!u)return'';
+  const last=(u.lastName||'').trim().toUpperCase();
+  const first=(u.firstName||'').trim().toUpperCase();
+  if(!last&&!first)return u.name||'';
+  const mi=(u.middleName||'').trim().charAt(0).toUpperCase();
+  const suffix=(u.suffix||'').trim().toUpperCase();
+  let out=(last?last+', ':'')+first;
+  if(mi)out+=' '+mi+'.';
+  if(suffix)out+=', '+suffix;
+  return out;
+}
 let nAtt=20,nLeave=10,nPay=1,nLoan=10,nCand=10,nEmp=6;
 
 /* ---- ACCESS LEVELS ---- */
@@ -2131,11 +2149,12 @@ function zkSaveConnectionOverride(){
   if(!address){alert('Please enter a server address.');return;}
   ZK.connectionOverride={address,port,https};
   render();
-  alert('Saved. These settings will be shown here going forward.');
+  toast('Connection settings saved.','success');
 }
 function zkResetConnectionOverride(){
   ZK.connectionOverride={address:'',port:'',https:false};
   render();
+  toast('Connection settings reset to default.','success');
 }
 function zkSavePunchBuffer(){
   const before=parseInt(document.getElementById('zk-buffer-before').value,10);
@@ -2143,7 +2162,7 @@ function zkSavePunchBuffer(){
   if(!(before>=0)||!(after>=0)){alert('Please enter valid non-negative numbers.');return;}
   ZK.punchBuffer={beforeMinutes:before,afterMinutes:after};
   render();
-  alert('Saved. New punches will use this window going forward.');
+  toast('Punch buffer window saved.','success');
 }
 const ZK_COMMAND_LABELS={reboot:'Restart device',resync:'Resync attendance log',resyncusers:'Resync user list',clearlog:'Clear attendance log'};
 async function zkSendCommand(serial,action,confirmMsg){
@@ -2232,7 +2251,7 @@ function zkSaveMapping(){
   ZK.userMapping=newMapping;
   zkBuildPreview();
   render();
-  alert('User mapping saved!');
+  toast('User mapping saved.','success');
 }
 // Automatically COMMITS a mapping (straight into ZK.userMapping, no "Save mapping" click
 // needed) for any still-unmapped device user whose ID exactly matches exactly one active
@@ -3926,7 +3945,7 @@ function pgDashboard(){
             return`<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 10px;background:var(--amber-bg);border-radius:7px;border:1px solid var(--amber)">
               <div class="avatar sm" style="flex-shrink:0;background:var(--amber)">${ini(e.name)}</div>
               <div style="flex:1;min-width:0">
-                <div style="font-weight:600;font-size:13px">${esc(e.name)} <span style="font-size:11px;color:var(--txt3)">${esc(e.eid)}</span></div>
+                <div style="font-weight:600;font-size:13px">${esc(fmtEmpName(e))} <span style="font-size:11px;color:var(--txt3)">${esc(e.eid)}</span></div>
                 ${conflicts.map(c=>`<div style="font-size:11px;color:var(--amber-txt);margin-top:2px">
                   ⚠ Same <strong>${esc(c.label)}</strong> as: ${c.conflictWith.map(n=>`<strong>${esc(n)}</strong>`).join(', ')}
                 </div>`).join('')}
@@ -3958,6 +3977,24 @@ function pgDashboard(){
 }
 
 let empSearch='';
+// Combinable multi-field filters for the Employees list — AND'd together, and AND'd with the
+// free-text search above (which itself OR-matches across fields/terms). '' means "any".
+let empFilters={dept:'',bandLevel:'',type:'',status:''};
+function setEmpFilter(key,val){empFilters[key]=val;render();}
+function clearEmpFilters(){empFilters={dept:'',bandLevel:'',type:'',status:''};empSearch='';render();}
+function applyEmpFilters(emps){
+  return emps.filter(e=>{
+    if(empFilters.dept&&(e.dept||'')!==empFilters.dept)return false;
+    if(empFilters.bandLevel&&(e.bandLevel||'')!==empFilters.bandLevel)return false;
+    if(empFilters.type&&(e.type||'')!==empFilters.type)return false;
+    if(empFilters.status){
+      const active=e.active!==false;
+      if(empFilters.status==='active'&&!active)return false;
+      if(empFilters.status==='inactive'&&active)return false;
+    }
+    return true;
+  });
+}
 
 /* Fix for search input losing focus on render: call this after render() */
 function refocusSearch(id){
@@ -4016,7 +4053,7 @@ function pgEmployees(){
   // being directly viewable via its 201 page, exactly the trap that made one impossible to
   // clean up from this list.
   const allEmps=USERS.filter(u=>u.role==='employee'||!u.role||u.role==='undefined'||u.role==='null');
-  const emps=filterEmps(allEmps,empSearch);
+  const emps=applyEmpFilters(filterEmps(allEmps,empSearch));
   const tabs=['All Employees','Org Chart','Bulk Upload','Bulk Update'];
   if(tab===1){
     const active=allEmps.filter(e=>e.active!==false);
@@ -4058,7 +4095,7 @@ function pgEmployees(){
         onmouseover="this.style.boxShadow='0 3px 10px rgba(0,0,0,.12)'"
         onmouseout="this.style.boxShadow=''">
         <div class="avatar ${isRoot?'lg':'sm'}" style="margin:0 auto 6px">${ini(e.name)}</div>
-        <div style="font-weight:700;font-size:12px;line-height:1.3;color:${isRoot?'var(--accent-txt)':'var(--txt)'}">${esc(e.name)}</div>
+        <div style="font-weight:700;font-size:12px;line-height:1.3;color:${isRoot?'var(--accent-txt)':'var(--txt)'}">${esc(fmtEmpName(e))}</div>
         <div style="font-size:10px;color:var(--txt3);margin-top:2px">${esc(e.pos||'')}</div>
         <div style="display:flex;justify-content:center;gap:4px;margin-top:5px;flex-wrap:wrap">
           ${e.bandLevel?`<span style="font-size:9px;font-weight:700;padding:1px 6px;border-radius:4px;background:${bc.bg};color:${bc.txt}">${esc(e.bandLevel)}</span>`:''}
@@ -4370,7 +4407,7 @@ function pgEmployees(){
               <tr style="background:${r.errors.length?'#fff1f1':''}">
                 <td style="color:var(--txt3);font-size:11px">${i+1}</td>
                 <td>
-                  <div style="font-weight:600">${esc(r.emp.name)}</div>
+                  <div style="font-weight:600">${esc(fmtEmpName(r.emp))}</div>
                   <div style="font-size:11px;color:var(--txt3)">${esc(r.emp.eid)}</div>
                 </td>
                 <td>
@@ -4553,6 +4590,24 @@ function pgEmployees(){
       ${empSearch?`<button onclick="setEmpSearch('')" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--txt3);font-size:20px;line-height:1" title="Clear search">×</button>`:''}
     </div>
     ${(()=>{
+      // Filter dropdown options come from allEmps (unfiltered), not the filtered emps list,
+      // so picking one filter doesn't make the options for the others disappear.
+      const distinct=(k)=>[...new Set(allEmps.map(e=>e[k]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+      const depts=distinct('dept'),bands=distinct('bandLevel'),types=distinct('type');
+      const activeFilterCount=Object.values(empFilters).filter(Boolean).length;
+      const fsel=(key,label,options)=>`<select class="finput" style="font-size:12px;width:auto;min-width:120px" onchange="setEmpFilter('${key}',this.value)">
+        <option value="">${label}: All</option>
+        ${options.map(o=>`<option value="${esc(o.v!==undefined?o.v:o)}" ${empFilters[key]===(o.v!==undefined?o.v:o)?'selected':''}>${esc(o.l||o)}</option>`).join('')}
+      </select>`;
+      return`<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px">
+        ${fsel('dept','Department',depts)}
+        ${fsel('bandLevel','Band',bands)}
+        ${fsel('type','Type',types)}
+        ${fsel('status','Status',[{v:'active',l:'Active'},{v:'inactive',l:'Disabled'}])}
+        ${activeFilterCount||empSearch?`<button class="btn btn-sm" onclick="clearEmpFilters()" style="font-size:11px">✕ Clear ${activeFilterCount?`filters (${activeFilterCount})`:'search'}</button>`:''}
+      </div>`;
+    })()}
+    ${(()=>{
       const terms=tokenizeSearch(empSearch);
       if(terms.length<=1)return'';
       return`<div style="display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:7px;padding:7px 10px;background:var(--accent-bg);border-radius:8px">
@@ -4573,7 +4628,7 @@ function pgEmployees(){
     return`<tr${dupes.length?' style="background:var(--amber-bg)"':''}>
     <td class="mono" style="font-size:11px;color:var(--txt3)">${esc(e.eid||'—')}${dupes.some(d=>d.field==='eid')?'<span title="Duplicate Employee ID" style="margin-left:4px;color:var(--amber);font-size:10px">⚠</span>':''}</td>
     <td><div class="emp-cell"><div class="avatar" style="${e.active===false?'opacity:.4':''}">${ini(e.name||'?')}</div><div>
-      <div style="font-weight:500;${e.active===false?'color:var(--txt3);text-decoration:line-through':''}">${esc(e.name||'Unnamed Employee')}</div>
+      <div style="font-weight:500;${e.active===false?'color:var(--txt3);text-decoration:line-through':''}">${esc(fmtEmpName(e)||'Unnamed Employee')}</div>
       <div style="font-size:11px;color:var(--txt3)">${esc(e.email||'—')}</div>
       ${dupes.length?`<div style="font-size:10px;color:var(--amber);margin-top:2px">⚠ ${dupes.map(d=>`${d.label} conflict`).join(' · ')}</div>`:''}
     </div></div></td>
@@ -4594,7 +4649,7 @@ function pgEmployees(){
       ${isPlatformAdmin?`<button class="btn btn-sm" style="padding:4px 8px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${e.id})" title="Log in with this user's actual access — Super Admin only">Log in as user</button>`:''}
       ${(isPlatformAdmin||isAdminUser(user)||canAccess('emp_delete'))?`<button class="btn btn-sm btn-danger" onclick="deleteEmp(${e.id})" title="Delete" style="padding:4px 8px">✕</button>`:''}
     </div></td>
-  </tr>`;}).join('')})():`<tr><td colspan="10" class="empty-state">No employees match "${esc(empSearch)}"</td></tr>`}</tbody></table></div>`;
+  </tr>`;}).join('')})():`<tr><td colspan="10" class="empty-state">No employees match${empSearch?` "${esc(empSearch)}"`:''}${Object.values(empFilters).some(Boolean)?(empSearch?' and the selected filters':' the selected filters'):''}.</td></tr>`}</tbody></table></div>`;
 }
 function deleteEmp(id){
   const e=USERS.find(u=>u.id===id);
@@ -5960,7 +6015,7 @@ function pgOnboarding(){
     const done=o.steps.filter(s=>s.done).length;
     const pct=Math.round(done/o.steps.length*100);
     return`<div class="card"><div class="card-hd">
-      <div style="display:flex;align-items:center;gap:10px"><div class="avatar lg">${ini(emp.name)}</div><div><div style="font-weight:600">${emp.name}</div><div style="font-size:12px;color:var(--txt3)">${emp.pos} · Started ${emp.hired}</div></div></div>
+      <div style="display:flex;align-items:center;gap:10px"><div class="avatar lg">${ini(emp.name)}</div><div><div style="font-weight:600">${esc(fmtEmpName(emp))}</div><div style="font-size:12px;color:var(--txt3)">${emp.pos} · Started ${emp.hired}</div></div></div>
       <div style="text-align:right"><div style="font-size:22px;font-weight:700;font-family:'JetBrains Mono',monospace">${pct}%</div><div style="font-size:11px;color:var(--txt3)">${done}/${o.steps.length} tasks done</div></div>
     </div>
     <div class="progress-bar" style="margin-bottom:1rem"><div class="progress-fill" style="width:${pct}%"></div></div>
@@ -5984,9 +6039,9 @@ function pgAttendance(){
     <tbody>${mine.length?mine.map(a=>`<tr><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td style="text-align:center;color:${a.ot>0?'var(--accent)':'var(--txt3)'}">${a.ot||'—'}</td><td style="text-align:center;color:${a.nd>0?'var(--purple)':'var(--txt3)'}">${a.nd||'—'}</td><td style="color:var(--txt3)">${a.notes||'—'}</td><td><span class="badge b-info" style="cursor:pointer" onclick="openAttHistory(${a.eid},'${a.date}')" title="View raw time logs and edit history">🕘 ${(a.punches||[]).length}</span></td></tr>`).join(''):'<tr><td colspan="8" class="empty-state">No records</td></tr>'}</tbody></table>`;
   }else if(isA&&tab===1){
     body=`<table><thead><tr><th>Employee</th><th>Date</th><th>In</th><th>Out</th><th>Status</th><th>OT</th><th>ND</th><th>Logs</th></tr></thead>
-    <tbody>${attendanceRecords().slice().reverse().map(a=>{const emp=USERS.find(u=>u.id===a.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td>${a.ot?`<span style="color:var(--accent);font-weight:600">${a.ot}h</span>`:'—'}</td><td>${a.nd?`<span style="color:var(--purple);font-weight:600">${a.nd}h</span>`:'—'}</td><td><span class="badge b-info" style="cursor:pointer" onclick="openAttHistory(${a.eid},'${a.date}')" title="View raw time logs and edit history">🕘 ${(a.punches||[]).length}</span></td></tr>`;}).join('')}</tbody></table>`;
+    <tbody>${attendanceRecords().slice().reverse().map(a=>{const emp=USERS.find(u=>u.id===a.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${fmtEmpName(emp)||'?'}</div></td><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td><td>${a.ot?`<span style="color:var(--accent);font-weight:600">${a.ot}h</span>`:'—'}</td><td>${a.nd?`<span style="color:var(--purple);font-weight:600">${a.nd}h</span>`:'—'}</td><td><span class="badge b-info" style="cursor:pointer" onclick="openAttHistory(${a.eid},'${a.date}')" title="View raw time logs and edit history">🕘 ${(a.punches||[]).length}</span></td></tr>`;}).join('')}</tbody></table>`;
   }else{
-    body=`${isA?`<div class="field"><label>Employee</label><select id="ae">${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}</select></div>`:''}
+    body=`${isA?`<div class="field"><label>Employee</label><select id="ae">${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.id}">${fmtEmpName(u)}</option>`).join('')}</select></div>`:''}
     <div class="form-row"><div class="field"><label>Date</label><input type="date" id="adate" value="${today()}"/></div><div class="field"><label>Status</label><select id="ast"><option value="present">Present</option><option value="late">Late</option><option value="absent">Absent</option><option value="leave">On Leave</option></select></div></div>
     <div class="form-row"><div class="field"><label>Time In</label><input type="time" id="atin" value="08:00"/></div><div class="field"><label>Time Out</label><input type="time" id="atout" value="17:00"/></div></div>
     <div class="form-row"><div class="field"><label>Overtime Hours</label><input type="number" id="aot" value="0" min="0" max="12"/></div><div class="field"><label>Night Differential Hours</label><input type="number" id="and" value="0" min="0" max="12"/></div></div>
@@ -6185,10 +6240,10 @@ function pgLeave(){
   if(isA&&tab===0){
     const pend=LEAVES.filter(l=>l.status==='pending');
     body=`<table><thead><tr><th>Employee</th><th>Type</th><th>Period</th><th>Days</th><th>Reason</th><th>Actions</th></tr></thead>
-    <tbody>${pend.length?pend.map(l=>{const emp=USERS.find(u=>u.id===l.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${l.type}</td><td class="mono" style="font-size:12px">${l.s}${l.e!==l.s?' – '+l.e:''}</td><td style="text-align:center">${leaveDaysCell(l)}</td><td>${l.reason}</td><td><div style="display:flex;gap:5px"><button class="btn btn-sm btn-success" onclick="actLeave(${l.id},true)">Approve</button><button class="btn btn-sm btn-danger" onclick="actLeave(${l.id},false)">Reject</button></div></td></tr>`;}).join(''):'<tr><td colspan="6" class="empty-state">No pending requests 🎉</td></tr>'}</tbody></table>`;
+    <tbody>${pend.length?pend.map(l=>{const emp=USERS.find(u=>u.id===l.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${fmtEmpName(emp)||'?'}</div></td><td>${l.type}</td><td class="mono" style="font-size:12px">${l.s}${l.e!==l.s?' – '+l.e:''}</td><td style="text-align:center">${leaveDaysCell(l)}</td><td>${l.reason}</td><td><div style="display:flex;gap:5px"><button class="btn btn-sm btn-success" onclick="actLeave(${l.id},true)">Approve</button><button class="btn btn-sm btn-danger" onclick="actLeave(${l.id},false)">Reject</button></div></td></tr>`;}).join(''):'<tr><td colspan="6" class="empty-state">No pending requests 🎉</td></tr>'}</tbody></table>`;
   }else if(isA&&tab===2){
     body=`<table><thead><tr><th>Employee</th><th>Type</th><th>Period</th><th>Days</th><th>Filed</th><th>Status</th></tr></thead>
-    <tbody>${LEAVES.map(l=>{const emp=USERS.find(u=>u.id===l.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td><td>${l.type}</td><td class="mono" style="font-size:12px">${l.s}${l.e!==l.s?' – '+l.e:''}</td><td style="text-align:center">${leaveDaysCell(l)}</td><td style="color:var(--txt3)">${l.filed}</td><td><span class="badge b-${l.status}">${l.status}</span></td></tr>`;}).join('')}</tbody></table>`;
+    <tbody>${LEAVES.map(l=>{const emp=USERS.find(u=>u.id===l.eid);return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${fmtEmpName(emp)||'?'}</div></td><td>${l.type}</td><td class="mono" style="font-size:12px">${l.s}${l.e!==l.s?' – '+l.e:''}</td><td style="text-align:center">${leaveDaysCell(l)}</td><td style="color:var(--txt3)">${l.filed}</td><td><span class="badge b-${l.status}">${l.status}</span></td></tr>`;}).join('')}</tbody></table>`;
   }else if((isA&&tab===1)||(!isA&&tab===0)){
     body=myLeaveRequestsTable();
     return`<div class="page-header"><div class="page-title">Leave Management</div></div>
@@ -6714,7 +6769,7 @@ function pgPayroll(){
             <input type="checkbox" id="pe${e.id}" style="width:auto;accent-color:var(--accent)" ${isMatch?'checked':''} onchange="this.closest('.payroll-employee-row').classList.toggle('selected',this.checked);updatePayrollSelectionCount()"/>
             <div class="avatar sm">${ini(e.name)}</div>
             <div style="flex:1">
-              <div style="font-weight:500;font-size:13px">${esc(e.name)}</div>
+              <div style="font-weight:500;font-size:13px">${esc(fmtEmpName(e))}</div>
               <div style="font-size:11px;color:var(--txt3)">${esc(e.pos||'')} · ${esc(e.eid||'')}</div>
             </div>
             <div style="text-align:right">
@@ -6765,7 +6820,7 @@ function pgPayroll(){
       const displayStatus=isPayrollAdjustmentReady(a)?'ready':a.status;
       return`<tr>
         <td><input type="checkbox" class="adj-delete-check" value="${a.id}" style="width:auto" ${deletable?'':'disabled'} title="${deletable?'Select for bulk deletion':'Applied/submitted adjustments are protected'}"/></td>
-        <td><div class="emp-cell"><div class="avatar sm">${ini(e?.name||'?')}</div>${esc(e?.name||'Unknown')}</div></td>
+        <td><div class="emp-cell"><div class="avatar sm">${ini(e?.name||'?')}</div>${esc(fmtEmpName(e)||'Unknown')}</div></td>
         <td><strong style="font-size:12px">${esc(payItem?.name||a.adjType||'Unmapped')}</strong>${a.payItemCode?`<div><code style="font-size:9px;background:var(--bg);padding:1px 5px;border-radius:3px;border:1px solid var(--border)">${esc(a.payItemCode)}</code> <span style="font-size:10px;color:var(--txt3)">${payItem?.cat==='deductions'?'Deduction':'Income'}</span></div>`:''}</td>
         <td class="mono" style="font-weight:600;color:${a.amount>=0?'var(--green)':'var(--red)'}">${a.amount>=0?'+':''}${fmt(a.amount)}</td>
         <td style="font-size:12px;color:var(--txt2);max-width:200px">${esc(a.reason)}</td>
@@ -6810,7 +6865,7 @@ function pgPayroll(){
       const allocation=BIRTaxVersionCore.allocateAnnualBenefit({limit:taxExemptLimit,previousEmployerNonTaxable:taxProfile.previousEmployerNonTaxableBenefits,currentEmployerYtdNonTaxable:ytdBenefits.exempt,currentQualified:t13});
       const excess=allocation.taxable;
       return`<tr>
-        <td><div class="emp-cell"><div class="avatar sm">${ini(e.name)}</div><div><div style="font-weight:500">${esc(e.name)}</div><div style="font-size:11px;color:var(--txt3)">${esc(e.eid)}</div></div></div></td>
+        <td><div class="emp-cell"><div class="avatar sm">${ini(e.name)}</div><div><div style="font-weight:500">${esc(fmtEmpName(e))}</div><div style="font-size:11px;color:var(--txt3)">${esc(e.eid)}</div></div></div></td>
         <td style="font-size:12px">${esc(e.pos||'')}</td>
         <td class="mono">${fmt(e.rate)}</td>
         <td class="mono">${fmt(ms)}</td>
@@ -6846,7 +6901,7 @@ function pgPayroll(){
         <div class="card-title" style="margin-bottom:10px">Select Employee</div>
         ${resigned.length?`<div style="display:grid;gap:4px">
           ${resigned.map(e=>`<div onclick="window._fpEmpId=${e.id};render()" style="padding:8px 10px;border-radius:7px;border:1px solid ${selFP===e.id?'var(--accent)':'var(--border)'};background:${selFP===e.id?'var(--accent-bg)':'var(--bg)'};cursor:pointer">
-            <div style="font-weight:500;font-size:13px;color:${selFP===e.id?'var(--accent-txt)':'var(--txt)'}">${esc(e.name)}</div>
+            <div style="font-weight:500;font-size:13px;color:${selFP===e.id?'var(--accent-txt)':'var(--txt)'}">${esc(fmtEmpName(e))}</div>
             <div style="font-size:11px;color:var(--txt3)">${esc(e.eid)} · ${e.effectiveTermDate||'—'}</div>
           </div>`).join('')}
         </div>`:
@@ -7253,7 +7308,7 @@ function renderPayrollRegister(){
   </tr></thead>
   <tbody>${(PAYROLLS.find(x=>x.id===(window._regRun||r.id))||r).items.map(i=>`<tr>
     <td><div class="emp-cell"><div class="avatar sm">${ini(i.name)}</div><div>
-      <div style="font-weight:500;font-size:12px">${esc(i.name)}</div>
+      <div style="font-weight:500;font-size:12px">${esc(fmtEmpName(USERS.find(u=>u.id===i.empId||u.eid===i.eid))||i.name)}</div>
       <div style="font-size:10px;color:var(--txt3)">${esc(i.pos||'')}</div>
     </div></div></td>
     <td class="mono" style="font-size:11px">${fmt(i.basic)}</td>
@@ -7287,7 +7342,7 @@ function renderPayslipsList(){
     ${r.items.map(i=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-radius:8px;border:1px solid var(--border);background:var(--bg)">
       <div style="display:flex;align-items:center;gap:10px">
         <div class="avatar sm">${ini(i.name)}</div>
-        <div><div style="font-weight:500;font-size:13px">${esc(i.name)}</div><div style="font-size:11px;color:var(--txt3)">${esc(i.pos||'')} · ${i.pr} days worked</div></div>
+        <div><div style="font-weight:500;font-size:13px">${esc(fmtEmpName(USERS.find(u=>u.id===i.empId||u.eid===i.eid))||i.name)}</div><div style="font-size:11px;color:var(--txt3)">${esc(i.pos||'')} · ${i.pr} days worked</div></div>
       </div>
       <div style="text-align:right">
         <div class="mono" style="font-weight:700;color:var(--green);font-size:14px">${fmt(i.net)}</div>
@@ -7323,7 +7378,7 @@ function renderGovtReports(){
     <div style="font-size:12px;color:var(--txt3);margin-bottom:10px">Individual Certificates of Compensation Payment / Tax Withheld — must be issued by January 31 each year.</div>
     <div style="display:grid;gap:4px">
       ${emps.slice(0,3).map(e=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg)">
-        <div style="display:flex;align-items:center;gap:8px"><div class="avatar sm">${ini(e.name)}</div><div><div style="font-weight:500;font-size:12px">${esc(e.name)}</div><div style="font-size:11px;color:var(--txt3)">TIN: ${e.tin||'Not set'}</div></div></div>
+        <div style="display:flex;align-items:center;gap:8px"><div class="avatar sm">${ini(e.name)}</div><div><div style="font-weight:500;font-size:12px">${esc(fmtEmpName(e))}</div><div style="font-size:11px;color:var(--txt3)">TIN: ${e.tin||'Not set'}</div></div></div>
         <button class="btn btn-sm" onclick="toast('BIR 2316 for ${esc(e.name)} — coming soon','info')">Generate 2316</button>
       </div>`).join('')}
       ${emps.length>3?`<div style="text-align:center;font-size:12px;color:var(--txt3);padding:4px">... and ${emps.length-3} more employees</div>`:''}
@@ -7349,7 +7404,7 @@ function renderBankFile(){
     <div style="font-size:13px;font-weight:600;color:var(--accent-txt);margin-bottom:6px">Disbursement Summary — ${r.from} – ${r.to}</div>
     <div style="display:grid;gap:4px">
       ${r.items.map(i=>`<div style="display:flex;align-items:center;justify-content:space-between;font-size:12px;padding:5px 0;border-bottom:1px solid var(--accent-bg)">
-        <div style="display:flex;align-items:center;gap:8px"><div class="avatar sm">${ini(i.name)}</div><div><div style="font-weight:500">${esc(i.name)}</div></div></div>
+        <div style="display:flex;align-items:center;gap:8px"><div class="avatar sm">${ini(i.name)}</div><div><div style="font-weight:500">${esc(fmtEmpName(USERS.find(u=>u.id===i.empId||u.eid===i.eid))||i.name)}</div></div></div>
         <div class="mono" style="font-weight:700;color:var(--accent)">${fmt(i.net)}</div>
       </div>`).join('')}
       <div style="display:flex;justify-content:space-between;font-weight:800;padding:8px 0;font-size:14px;border-top:2px solid var(--accent)">
@@ -8564,7 +8619,7 @@ function pgGovernment(){
     <div class="card"><div class="card-title" style="margin-bottom:.875rem">BIR Form 2316 — Annual Summary</div>
     <table><thead><tr><th>Employee</th><th>Annual Gross</th><th>SSS+MPF (Annual EE)</th><th>PhilHealth (Annual)</th><th>Pag-IBIG (Annual)</th><th>Tax Withheld</th><th>ER Cost (SSS+PH+PI)</th><th>Net Taxable</th></tr></thead>
     <tbody>${emps.map(e=>{const ms=e.rate*22;const ann=ms*12;const sEE=totalSSS(ms)*12,pEE=phContrib(ms)*12,iEE=piContrib(ms)*12,tax=birTax(ms)*12;const erCost=(totalSssEr(ms)+phErShare(ms)+piErShare(ms))*12;return`<tr>
-      <td><div class="emp-cell"><div class="avatar sm">${ini(e.name)}</div>${e.name}</div></td>
+      <td><div class="emp-cell"><div class="avatar sm">${ini(e.name)}</div>${esc(fmtEmpName(e))}</div></td>
       <td class="mono">${fmt(ann)}</td>
       <td class="mono" style="color:var(--red)">${fmt(sEE)}</td>
       <td class="mono" style="color:var(--red)">${fmt(pEE)}</td>
@@ -8631,7 +8686,7 @@ function pgGovernment(){
       const erCost=ms+sER+mER+ec+pER+iER;
       return`<tr>
         <td><div class="emp-cell"><div class="avatar sm">${ini(e.name)}</div><div>
-          <div style="font-weight:500;font-size:12px">${esc(e.name)}</div><div style="font-size:10px;color:var(--txt3)">${esc(e.eid)}</div>
+          <div style="font-weight:500;font-size:12px">${esc(fmtEmpName(e))}</div><div style="font-size:10px;color:var(--txt3)">${esc(e.eid)}</div>
         </div></div></td>
         <td class="mono" style="font-weight:600">${fmt(ms)}</td>
         <td class="mono" style="color:var(--red);font-size:11px">${fmt(sEE)}</td>
@@ -8829,7 +8884,7 @@ function pgLoans(){
   <div class="card">
   ${myLoans.length?`<table><thead><tr><th>${isA?'Employee':''}</th><th>Loan Type</th><th>Amount</th><th>Balance</th><th>Monthly</th><th>Started</th><th>Progress</th><th>Status</th></tr></thead>
   <tbody>${myLoans.map(l=>{const emp=USERS.find(u=>u.id===l.eid);const pct=Math.round((1-l.balance/l.amount)*100);return`<tr>
-    ${isA?`<td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div></td>`:''}
+    ${isA?`<td><div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${fmtEmpName(emp)||'?'}</div></td>`:''}
     <td>${l.type}</td>
     <td class="mono">${fmt(l.amount)}</td>
     <td class="mono" style="color:var(--red)">${fmt(l.balance)}</td>
@@ -8911,7 +8966,7 @@ function pgPerformance(){
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
         <div style="display:flex;align-items:center;gap:10px">
           <div class="avatar">${ini(emp.name)}</div>
-          <div><div style="font-weight:600">${emp.name}</div><div style="font-size:12px;color:var(--txt3)">${emp.pos} · ${p.period}</div></div>
+          <div><div style="font-weight:600">${esc(fmtEmpName(emp))}</div><div style="font-size:12px;color:var(--txt3)">${emp.pos} · ${p.period}</div></div>
         </div>
         <div style="text-align:right">
           <div style="font-size:24px;font-weight:800;font-family:'JetBrains Mono',monospace;color:${avg>=85?'var(--green)':avg>=70?'var(--accent)':'var(--amber)'}">${avg}%</div>
@@ -9383,7 +9438,7 @@ function pgAnalytics(){
     <div class="card" style="grid-column:1/-1"><div class="card-title" style="margin-bottom:1rem">Employee Cost Breakdown</div>
     <table><thead><tr><th>Employee</th><th>Gross Monthly</th><th>SSS (Employer)</th><th>PhilHealth (Employer)</th><th>Pag-IBIG (Employer)</th><th>Total Cost</th></tr></thead>
     <tbody>${emps.map(e=>{const ms=e.rate*22;const eSss=sssContrib(ms)*2;const ePh=phContrib(ms);const ePi=piContrib(ms)*2;return`<tr>
-      <td><div class="emp-cell"><div class="avatar sm">${ini(e.name)}</div>${e.name}</div></td>
+      <td><div class="emp-cell"><div class="avatar sm">${ini(e.name)}</div>${esc(fmtEmpName(e))}</div></td>
       <td class="mono">${fmt(ms)}</td>
       <td class="mono" style="color:var(--blue)">${fmt(eSss)}</td>
       <td class="mono" style="color:var(--green)">${fmt(ePh)}</td>
@@ -9601,7 +9656,7 @@ function renderModal(){
     <div class="form-row"><div class="field"><label>Start Date</label><input type="date" id="ne-start" value="${ae.hired||today()}" oninput="setAeField('hired',this.value)"/></div><div class="field"><label>Probation End Date</label><input type="date" id="ne-prob" value="${ae.probEndDate||''}" oninput="setAeField('probEndDate',this.value)"/></div></div>
     <div class="form-row"><div class="field"><label>Cost Center</label><select id="ne-cc" onchange="setAeField('costCenter',this.value)"><option value="">— Select —</option>${LOOKUPS.costCenters.map(c=>`<option value="${c.code}" ${ae.costCenter===c.code?'selected':''}>${c.label}</option>`).join('')}</select></div></div>
     <div class="form-row"><div class="field"><label>Rehireable</label><select id="ne-reh" onchange="setAeField('rehireable',this.value)"><option value="Y" ${ae.rehireable==='Y'?'selected':''}>Yes</option><option value="N" ${ae.rehireable==='N'?'selected':''}>No</option><option value="" ${!ae.rehireable?'selected':''}>TBD</option></select></div>${fieldVisible('employment','loanEligibility')?`<div class="field"><label>Loan Eligibility</label><select id="ne-loan" onchange="setAeField('loanEligibility',this.value)"><option value="" ${!ae.loanEligibility?'selected':''}>— Select —</option><option value="Y" ${ae.loanEligibility==='Y'?'selected':''}>Yes</option><option value="N" ${ae.loanEligibility==='N'?'selected':''}>No</option></select></div>`:''}</div>
-    <div class="form-row"><div class="field"><label>Manager</label><select id="ne-mgr" onchange="setAeField('managerId',this.value)"><option value="">— None —</option>${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.eid}" ${ae.managerId===u.eid?'selected':''}>${u.eid} — ${u.name}</option>`).join('')}</select></div><div class="field"><label>Functional Head</label><input id="ne-fh" value="${ae.functionalHead||''}" oninput="setAeField('functionalHead',this.value)"/></div></div>`
+    <div class="form-row"><div class="field"><label>Manager</label><select id="ne-mgr" onchange="setAeField('managerId',this.value)"><option value="">— None —</option>${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.eid}" ${ae.managerId===u.eid?'selected':''}>${u.eid} — ${fmtEmpName(u)}</option>`).join('')}</select></div><div class="field"><label>Functional Head</label><input id="ne-fh" value="${ae.functionalHead||''}" oninput="setAeField('functionalHead',this.value)"/></div></div>`
     :(modal.addTab||0)===2?`
     <div class="form-row"><div class="field"><label>Currency</label><select id="ne-curr" onchange="setAeField('currency',this.value);render()"><option ${ae.currency!=='USD'?'selected':''}>PHP</option><option ${ae.currency==='USD'?'selected':''}>USD</option></select></div></div>
     <div class="field"><label>Monthly Rate (${currencySymbol(ae.currency)}) *</label><input type="text" inputmode="decimal" id="ne-ratepm" value="${ae.salaryPM?fmtN(ae.salaryPM):''}" style="${reqBorderStyle(ae.salaryPM)}" oninput="moneyMaskInput(this,'salaryPM');reqBorderLive(this,this.value);recalcSalary();"/></div>
@@ -9771,7 +9826,7 @@ function renderModal(){
     </div>`;
   }else if(modal.type==='addLoan'){
     inner=`<div class="modal-title">Add Loan <button class="close-x" onclick="closeMConfirmed()">×</button></div>
-    <div class="field"><label>Employee</label><select id="ml-emp">${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.id}">${u.name}</option>`).join('')}</select></div>
+    <div class="field"><label>Employee</label><select id="ml-emp">${USERS.filter(u=>u.role==='employee').map(u=>`<option value="${u.id}">${fmtEmpName(u)}</option>`).join('')}</select></div>
     <div class="field"><label>Loan Type</label><select id="ml-type"><option>SSS Salary Loan</option><option>Pag-IBIG MP2 Loan</option><option>Pag-IBIG Housing Loan</option><option>Company Loan</option><option>Emergency Loan</option></select></div>
     <div class="form-row"><div class="field"><label>Loan Amount</label><input type="number" id="ml-amt" placeholder="50000"/></div><div class="field"><label>Monthly Deduction</label><input type="number" id="ml-mo" placeholder="2000"/></div></div>
     <div class="field"><label>Start Date</label><input type="date" id="ml-start" value="${today()}"/></div>
@@ -9938,7 +9993,7 @@ function renderModal(){
       <button class="close-x" onclick="closeMConfirmed()">×</button></div>
       <div style="padding:9px 11px;background:var(--amber-bg);border:1px solid var(--amber);border-radius:8px;color:var(--amber-txt);font-size:11px;margin-bottom:10px">The selected account's actual permissions will apply. Passwords are not used or revealed, and start/end events are added to the security audit.</div>
       <div style="display:grid;gap:6px;max-height:420px;overflow-y:auto">
-        ${availableUsers.length?availableUsers.map(u=>`<button class="btn" style="display:flex;align-items:center;text-align:left;justify-content:flex-start;padding:9px 10px" onclick="impersonateUser(${u.id})"><span class="avatar sm">${ini(u.name)}</span><span style="flex:1"><strong>${esc(u.name)}</strong><br><span style="font-size:10px;color:var(--txt3)">${esc(u.eid||u.email)} · ${esc(u.role||'employee')}</span></span><span style="font-size:11px;color:var(--accent)">Log in →</span></button>`).join(''):'<div class="empty-state">No active users are available in this company.</div>'}
+        ${availableUsers.length?availableUsers.map(u=>`<button class="btn" style="display:flex;align-items:center;text-align:left;justify-content:flex-start;padding:9px 10px" onclick="impersonateUser(${u.id})"><span class="avatar sm">${ini(u.name)}</span><span style="flex:1"><strong>${esc(fmtEmpName(u))}</strong><br><span style="font-size:10px;color:var(--txt3)">${esc(u.eid||u.email)} · ${esc(u.role||'employee')}</span></span><span style="font-size:11px;color:var(--accent)">Log in →</span></button>`).join(''):'<div class="empty-state">No active users are available in this company.</div>'}
       </div>`;
   }else if(modal.type==='editPOC'){
     const c=PLATFORM_CLIENTS.find(x=>x.id===modal.clientId);
@@ -10371,7 +10426,7 @@ function renderModal(){
       <div class="field" style="margin-bottom:8px"><label>Employees</label>
         <div style="font-size:11px;margin-bottom:6px">
           ${selectedEmps.length
-            ?'<span style="color:var(--green);font-weight:600">'+selectedEmps.length+' selected: </span>'+selectedEmps.map(e=>'<span class="badge b-approved" style="font-size:10px;margin-right:2px">'+esc(e.name)+'</span>').join('')
+            ?'<span style="color:var(--green);font-weight:600">'+selectedEmps.length+' selected: </span>'+selectedEmps.map(e=>'<span class="badge b-approved" style="font-size:10px;margin-right:2px">'+esc(fmtEmpName(e))+'</span>').join('')
             :'<span style="color:var(--txt3)">No employees selected.</span>'}
         </div>
         <input class="finput" style="font-size:12px;margin-bottom:6px" placeholder="Search name, EID or position…" value="${esc(modal.search||'')}" oninput="modal.search=this.value;render()"/>
@@ -10382,7 +10437,7 @@ function renderModal(){
               onclick="event.preventDefault();toggleBulkPschedEmployee(${e.id})">
               <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${chk?'checked':''} onclick="event.preventDefault()"/>
               <div style="flex:1;min-width:0">
-                <div style="font-weight:500;font-size:12px">${esc(e.name)}</div>
+                <div style="font-weight:500;font-size:12px">${esc(fmtEmpName(e))}</div>
                 <div style="font-size:10px;color:var(--txt3)">${esc(e.eid||'')}${e.pos?' · '+esc(e.pos):''}</div>
               </div>
             </label>`;
@@ -10681,7 +10736,7 @@ function renderModal(){
             <select class="finput" tabindex="${bi+1}" style="font-size:12px;padding:4px 6px;width:190px"
               onchange="modal.rows[${i}].eid=this.value">
               <option value="">— Select —</option>
-              ${emps.map(e=>`<option value="${e.eid}" ${r.eid===e.eid?'selected':''}>${esc(e.name)} (${esc(e.eid)})</option>`).join('')}
+              ${emps.map(e=>`<option value="${e.eid}" ${r.eid===e.eid?'selected':''}>${esc(fmtEmpName(e))} (${esc(e.eid)})</option>`).join('')}
             </select>
             ${!hasEmp&&r.eid?`<div style="font-size:9px;color:var(--red)">Not found: ${esc(r.eid)}</div>`:''}
           </td>
@@ -10760,7 +10815,7 @@ function renderModal(){
     <div class="field"><label>Employee <span style="color:var(--red)">*</span></label>
       <select id="adj-emp" class="finput">
         <option value="">— Select Employee —</option>
-        ${emps.map(e=>`<option value="${e.id}">${esc(e.name)} (${esc(e.eid)})</option>`).join('')}
+        ${emps.map(e=>`<option value="${e.id}">${esc(fmtEmpName(e))} (${esc(e.eid)})</option>`).join('')}
       </select></div>
     <div class="field"><label>Target Open Payroll Period <span style="color:var(--red)">*</span></label>
       <select id="adj-period" class="finput">
@@ -10818,7 +10873,7 @@ function renderModal(){
     <div style="max-height:180px;overflow-y:auto;display:grid;gap:3px">
       ${matched.length?matched.map(e=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 9px;border-radius:7px;background:var(--bg)">
         <div class="avatar sm" style="width:24px;height:24px;font-size:9px">${ini(e.name)}</div>
-        <div style="flex:1"><div style="font-weight:500;font-size:12px">${esc(e.name)}</div>
+        <div style="flex:1"><div style="font-weight:500;font-size:12px">${esc(fmtEmpName(e))}</div>
           <div style="font-size:10px;color:var(--txt3)">${esc(e.eid||'')} · ${esc(e.type||'')}${e.bandLevel?' · '+esc(e.bandLevel):''}</div></div>
         <span class="badge b-info" style="font-size:9px">${esc(e.payType||'monthly')}</span>
       </div>`).join(''):'<div style="font-size:12px;color:var(--txt3);padding:6px">No employees match.</div>'}
@@ -10949,7 +11004,7 @@ function renderModal(){
             <div>
               <div style="font-size:11px;margin-bottom:6px">
                 ${selVals.length
-                  ?'<span style="color:var(--green);font-weight:600">'+selVals.length+' selected: </span>'+activeEmps.filter(e=>selVals.includes(String(e.id))||selVals.includes(e.eid||'')).map(e=>'<span class="badge b-approved" style="font-size:10px;margin-right:2px">'+esc(e.name)+'</span>').join('')
+                  ?'<span style="color:var(--green);font-weight:600">'+selVals.length+' selected: </span>'+activeEmps.filter(e=>selVals.includes(String(e.id))||selVals.includes(e.eid||'')).map(e=>'<span class="badge b-approved" style="font-size:10px;margin-right:2px">'+esc(fmtEmpName(e))+'</span>').join('')
                   :'<span style="color:var(--txt3)">No employees selected.</span>'}
               </div>
               <input class="finput" style="font-size:11px;padding:4px 8px;margin-bottom:6px" placeholder="Search name, EID or position…"
@@ -10965,7 +11020,7 @@ function renderModal(){
                     onclick="(function(){var ids=modal.criteria[${ri}].values||[];var sid='${e.id}';var idx=ids.indexOf(sid);if(idx>=0)ids.splice(idx,1);else ids.push(sid);pgSaveFormState();modal.criteria[${ri}].values=ids;modal.criteria[${ri}].value=ids.join(',');render();})()">
                     <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${chk?'checked':''} onclick="event.preventDefault()"/>
                     <div style="flex:1;min-width:0">
-                      <div style="font-weight:500;font-size:12px">${esc(e.name)}</div>
+                      <div style="font-weight:500;font-size:12px">${esc(fmtEmpName(e))}</div>
                       <div style="font-size:10px;color:var(--txt3)">${esc(e.eid||'')} · ${esc(e.type||'')}${e.bandLevel?' · '+esc(e.bandLevel):''}</div>
                     </div>
                     <span class="badge b-info" style="font-size:9px">${esc(e.payType||'monthly')}</span>
@@ -11781,7 +11836,7 @@ function renderModal(){
             ${inCustomMode?`<select class="finput" style="font-size:12px;width:100%"
               onchange="modal.draft.overrides['${ln}']=this.value;render()">
               <option value="">— Select approver —</option>
-              ${USERS.filter(u=>u.id!==modal.empId).map(u=>`<option value="${esc(u.eid)}" ${ovEid===u.eid?'selected':''}>${esc(u.eid+' — '+u.name+(u.pos?' ('+u.pos+')':''))}</option>`).join('')}
+              ${USERS.filter(u=>u.id!==modal.empId).map(u=>`<option value="${esc(u.eid)}" ${ovEid===u.eid?'selected':''}>${esc(u.eid+' — '+fmtEmpName(u)+(u.pos?' ('+u.pos+')':''))}</option>`).join('')}
             </select>`:''}
           </div>`;
         }).join('')}
@@ -12085,7 +12140,7 @@ function saveAccessEdit(){
     if(e.role&&e.role!==target.role&&(isAdminUser(user)||isPlatformAdmin))target.role=e.role;
     if(target.role==='employee')ensureEmployeeShape(target);
   }
-  alert(`Access level updated for ${e.name}.`);closeM();
+  closeM();toast(`Access level updated for ${e.name}.`,'success');
 }
 function openAddAdmin(){
   if(!(isAdminUser(user)||isPlatformAdmin)){toast('Only administrators can add new administrator accounts.','warning');return;}
@@ -12223,14 +12278,14 @@ function pgZKSetup(){
         <td class="mono" style="font-size:11px">${du.cardNo||'—'}</td>
         <td><select id="zkmap-${du.userId}" class="finput" style="font-size:12px">
           <option value="">— Unmapped —</option>
-          ${USERS.filter(u=>u.role==='employee').map(e=>`<option value="${e.id}" ${mapped&&mapped.id===e.id?'selected':''}>${e.name} (${e.eid})</option>`).join('')}
+          ${USERS.filter(u=>u.role==='employee').map(e=>`<option value="${e.id}" ${mapped&&mapped.id===e.id?'selected':''}>${fmtEmpName(e)} (${e.eid})</option>`).join('')}
         </select>${autoMatched?`<div style="font-size:10px;color:var(--green-txt);margin-top:3px">🔗 Auto-matched via Biometric No.</div>`:''}</td>
-        <td>${mapped?`<span class="badge b-approved">${mapped.name}</span>`:`<span class="badge b-absent">Unmapped</span>`}${isDuplicate?` <span class="badge b-late" title="This employee is also mapped to another device user ID — their punches from all mapped IDs will be merged into one attendance record.">⚠ Already mapped elsewhere</span>`:''}</td>
+        <td>${mapped?`<span class="badge b-approved">${fmtEmpName(mapped)}</span>`:`<span class="badge b-absent">Unmapped</span>`}${isDuplicate?` <span class="badge b-late" title="This employee is also mapped to another device user ID — their punches from all mapped IDs will be merged into one attendance record.">⚠ Already mapped elsewhere</span>`:''}</td>
       </tr>`;}).join('')}</tbody></table>`
     :`<div class="empty-state"><div class="ei">👆</div>No device users seen yet. Users appear here automatically as they're enrolled on the device or as punches come in, or click "Refresh device users".</div>`}
     <div class="card" style="margin-top:1rem">
       <div class="card-title" style="margin-bottom:.5rem">Employees without a mapped biometric (${unmappedEmployees.length})</div>
-      ${unmappedEmployees.length?`<div style="display:flex;flex-wrap:wrap;gap:6px">${unmappedEmployees.map(e=>`<span class="badge b-absent">${e.name} (${e.eid})</span>`).join('')}</div>`
+      ${unmappedEmployees.length?`<div style="display:flex;flex-wrap:wrap;gap:6px">${unmappedEmployees.map(e=>`<span class="badge b-absent">${fmtEmpName(e)} (${e.eid})</span>`).join('')}</div>`
         :`<div style="font-size:13px;color:var(--txt2)">Every active employee has a mapped biometric ID. 🎉</div>`}
     </div>
   `;}
@@ -12272,7 +12327,7 @@ function pgZKSetup(){
         const statusBadge=g.duplicate?'<span class="badge b-absent">duplicate</span>':!g.mapped?'<span class="badge b-pending">unmapped</span>':'<span class="badge b-approved">ready</span>';
         return`<tr>
           <td class="mono" style="font-size:12px">${g.userId}</td>
-          <td>${g.mapped?`<div class="emp-cell"><div class="avatar sm">${ini(g.empName)}</div>${g.empName}</div>`:`<span style="color:var(--red);font-size:12px">Unmapped</span>`}</td>
+          <td>${g.mapped?`<div class="emp-cell"><div class="avatar sm">${ini(g.empName)}</div>${fmtEmpName(USERS.find(u=>u.id===g.empId))||g.empName}</div>`:`<span style="color:var(--red);font-size:12px">Unmapped</span>`}</td>
           <td>${g.date||'—'}</td>
           <td class="mono" style="font-size:12px">${tin||'—'}</td>
           <td class="mono" style="font-size:12px">${tout||'—'}</td>
@@ -12403,7 +12458,7 @@ function pgApprovalSetup(){
     </div>
     <div style="display:flex;align-items:center;gap:10px">
       <select class="finput" style="font-size:13px;width:80px"
-        onchange="APPROVAL_CONFIG.maxLayers=parseInt(this.value);queueSync('Approval_Config');render()">
+        onchange="APPROVAL_CONFIG.maxLayers=parseInt(this.value);queueSync('Approval_Config');render();toast('Maximum layers updated.','success')">
         ${[1,2,3,4,5,6].map(n=>`<option value="${n}" ${maxG===n?'selected':''}>${n}</option>`).join('')}
       </select>
       <span style="font-size:12px;color:var(--txt3)">layers max</span>
@@ -12411,7 +12466,7 @@ function pgApprovalSetup(){
     <div style="font-size:12px;color:var(--accent-txt);padding:6px 10px;background:var(--accent-bg);border-radius:6px">
       Default for unconfigured employees: <strong>${APPROVAL_CONFIG.defaultLayers||1} layer</strong>
       <select style="margin-left:8px;font-size:12px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg)"
-        onchange="APPROVAL_CONFIG.defaultLayers=parseInt(this.value);queueSync('Approval_Config');render()">
+        onchange="APPROVAL_CONFIG.defaultLayers=parseInt(this.value);queueSync('Approval_Config');render();toast('Default layers updated.','success')">
         ${Array.from({length:maxG},(_,i)=>i+1).map(n=>`<option value="${n}" ${(APPROVAL_CONFIG.defaultLayers||1)===n?'selected':''}>${n}</option>`).join('')}
       </select>
     </div>
@@ -12437,7 +12492,7 @@ function pgApprovalSetup(){
           <!-- Employee -->
           <div>
             <div style="display:flex;align-items:center;gap:7px">
-              <span style="font-weight:600;font-size:13px">${esc(emp.name)}</span>
+              <span style="font-weight:600;font-size:13px">${esc(fmtEmpName(emp))}</span>
               ${emp.bandLevel?`<span style="font-size:9px;font-weight:700;padding:1px 6px;border-radius:4px;background:${bc.bg};color:${bc.txt}">${emp.bandLevel}</span>`:''}
               ${hasCustom?`<span style="font-size:9px;background:var(--accent-bg);color:var(--accent-txt);padding:1px 6px;border-radius:4px;font-weight:600">configured</span>`:''}
             </div>
@@ -12470,6 +12525,19 @@ function pgApprovalSetup(){
 
 
 function pgOrgSetup(){
+  // Sorted in place (not just for this render) so every other picker that reads ORG/depts/
+  // teams/subteams directly — Add Employee, Bulk Update dropdowns, etc. — inherits the same
+  // alphabetical order without each needing its own sort. Index-based lookups (editSubteam/
+  // delSubteam use the array position) stay correct because the underlying array itself is
+  // what's sorted, not a display-only copy.
+  ORG.sort((a,b)=>a.name.localeCompare(b.name));
+  ORG.forEach(bu=>{
+    bu.depts.sort((a,b)=>a.name.localeCompare(b.name));
+    bu.depts.forEach(d=>{
+      d.teams.sort((a,b)=>a.name.localeCompare(b.name));
+      d.teams.forEach(t=>t.subteams.sort((a,b)=>a.localeCompare(b)));
+    });
+  });
   function subHtml(bu,d,t){return t.subteams.map((s,si)=>`<span style="display:inline-flex;align-items:center;gap:4px;background:var(--surface2);border:1px solid var(--border);color:var(--txt);border-radius:5px;padding:2px 7px;font-size:11px;margin:2px">${s}<button onclick="editSubteam(${bu.id},${d.id},${t.id},${si})" style="background:none;border:none;cursor:pointer;color:var(--txt3);font-size:11px;padding:0 1px">✎</button><button onclick="delSubteam(${bu.id},${d.id},${t.id},${si})" style="background:none;border:none;cursor:pointer;color:var(--red);font-size:11px;padding:0 1px">✕</button></span>`).join('');}
   function teamHtml(bu,d){return d.teams.map(t=>`<div style="margin-left:2rem;padding:8px 10px;border-left:3px solid var(--border);margin-bottom:5px;border-radius:0 6px 6px 0">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
@@ -12510,18 +12578,18 @@ function pgOrgSetup(){
     ${deptHtml(bu)||'<div style="font-size:13px;color:var(--txt3);padding:.5rem 1rem">No departments yet.</div>'}
   </div>`).join(''):`<div class="card"><div class="empty-state">No Business Units yet. Click "+ Business Unit".</div></div>`}`;
 }
-function addBU(){const n=prompt('Business Unit name:');if(!n?.trim())return;const c=prompt('Short code (e.g. TECH):');if(!c?.trim())return;ORG.push({id:nOrg++,name:n.trim(),code:c.trim().toUpperCase(),depts:[]});render();}
-function editBU(bid){const bu=ORG.find(b=>b.id===bid);const n=prompt('Rename BU:',bu.name);if(!n?.trim())return;const c=prompt('Update code:',bu.code);bu.name=n.trim();if(c?.trim())bu.code=c.trim().toUpperCase();render();}
-function delBU(bid){const bu=ORG.find(b=>b.id===bid);if(!confirm(`Delete BU "${bu.name}" and ALL its contents?`))return;ORG.splice(ORG.indexOf(bu),1);render();}
-function addDept(bid){const bu=ORG.find(b=>b.id===bid);const n=prompt(`Department under "${bu.name}":`);if(!n?.trim())return;bu.depts.push({id:nOrgDept++,name:n.trim(),teams:[]});render();}
-function editDept(bid,did){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const n=prompt('Rename Dept:',d.name);if(!n?.trim())return;d.name=n.trim();render();}
-function delDept(bid,did){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);if(!confirm(`Delete "${d.name}" and all its teams?`))return;bu.depts=bu.depts.filter(x=>x.id!==did);render();}
-function addTeam(bid,did){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const n=prompt(`Team under "${d.name}":`);if(!n?.trim())return;d.teams.push({id:nOrgTeam++,name:n.trim(),subteams:[]});render();}
-function editTeam(bid,did,tid){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const t=d.teams.find(x=>x.id===tid);const n=prompt('Rename Team:',t.name);if(!n?.trim())return;t.name=n.trim();render();}
-function delTeam(bid,did,tid){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const t=d.teams.find(x=>x.id===tid);if(!confirm(`Delete team "${t.name}"?`))return;d.teams=d.teams.filter(x=>x.id!==tid);render();}
-function addSubteam(bid,did,tid){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const t=d.teams.find(x=>x.id===tid);const n=prompt(`Subteam under "${t.name}":`);if(!n?.trim())return;t.subteams.push(n.trim());render();}
-function editSubteam(bid,did,tid,si){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const t=d.teams.find(x=>x.id===tid);const n=prompt('Rename Subteam:',t.subteams[si]);if(!n?.trim())return;t.subteams[si]=n.trim();render();}
-function delSubteam(bid,did,tid,si){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const t=d.teams.find(x=>x.id===tid);if(!confirm(`Delete subteam "${t.subteams[si]}"?`))return;t.subteams.splice(si,1);render();}
+function addBU(){const n=prompt('Business Unit name:');if(!n?.trim())return;const c=prompt('Short code (e.g. TECH):');if(!c?.trim())return;ORG.push({id:nOrg++,name:n.trim(),code:c.trim().toUpperCase(),depts:[]});render();toast('Business Unit added.','success');}
+function editBU(bid){const bu=ORG.find(b=>b.id===bid);const n=prompt('Rename BU:',bu.name);if(!n?.trim())return;const c=prompt('Update code:',bu.code);bu.name=n.trim();if(c?.trim())bu.code=c.trim().toUpperCase();render();toast('Business Unit updated.','success');}
+function delBU(bid){const bu=ORG.find(b=>b.id===bid);if(!confirm(`Delete BU "${bu.name}" and ALL its contents?`))return;ORG.splice(ORG.indexOf(bu),1);render();toast('Business Unit deleted.','success');}
+function addDept(bid){const bu=ORG.find(b=>b.id===bid);const n=prompt(`Department under "${bu.name}":`);if(!n?.trim())return;bu.depts.push({id:nOrgDept++,name:n.trim(),teams:[]});render();toast('Department added.','success');}
+function editDept(bid,did){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const n=prompt('Rename Dept:',d.name);if(!n?.trim())return;d.name=n.trim();render();toast('Department renamed.','success');}
+function delDept(bid,did){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);if(!confirm(`Delete "${d.name}" and all its teams?`))return;bu.depts=bu.depts.filter(x=>x.id!==did);render();toast('Department deleted.','success');}
+function addTeam(bid,did){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const n=prompt(`Team under "${d.name}":`);if(!n?.trim())return;d.teams.push({id:nOrgTeam++,name:n.trim(),subteams:[]});render();toast('Team added.','success');}
+function editTeam(bid,did,tid){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const t=d.teams.find(x=>x.id===tid);const n=prompt('Rename Team:',t.name);if(!n?.trim())return;t.name=n.trim();render();toast('Team renamed.','success');}
+function delTeam(bid,did,tid){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const t=d.teams.find(x=>x.id===tid);if(!confirm(`Delete team "${t.name}"?`))return;d.teams=d.teams.filter(x=>x.id!==tid);render();toast('Team deleted.','success');}
+function addSubteam(bid,did,tid){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const t=d.teams.find(x=>x.id===tid);const n=prompt(`Subteam under "${t.name}":`);if(!n?.trim())return;t.subteams.push(n.trim());render();toast('Subteam added.','success');}
+function editSubteam(bid,did,tid,si){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const t=d.teams.find(x=>x.id===tid);const n=prompt('Rename Subteam:',t.subteams[si]);if(!n?.trim())return;t.subteams[si]=n.trim();render();toast('Subteam renamed.','success');}
+function delSubteam(bid,did,tid,si){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const t=d.teams.find(x=>x.id===tid);if(!confirm(`Delete subteam "${t.subteams[si]}"?`))return;t.subteams.splice(si,1);render();toast('Subteam deleted.','success');}
 
 
 function pgLookupSetup(){
@@ -12550,16 +12618,16 @@ function pgLookupSetup(){
   function rows(key,hasCode,hasGroup){
     return LOOKUPS[key].map((item,i)=>hasCode?`
     <tr>
-      <td><input class="finput" style="font-size:12px" value="${esc(item.code)}" onchange="LOOKUPS['${key}'][${i}].code=this.value"/></td>
-      <td><input class="finput" style="font-size:12px" value="${esc(item.label)}" onchange="LOOKUPS['${key}'][${i}].label=this.value"/></td>
-      ${hasGroup?`<td><select class="finput" style="font-size:12px" onchange="LOOKUPS['${key}'][${i}].group=this.value">
+      <td><input class="finput" style="font-size:12px" value="${esc(item.code)}" onchange="updateLookupCell('${key}',${i},'code',this.value)"/></td>
+      <td><input class="finput" style="font-size:12px" value="${esc(item.label)}" onchange="updateLookupCell('${key}',${i},'label',this.value)"/></td>
+      ${hasGroup?`<td><select class="finput" style="font-size:12px" onchange="updateLookupCell('${key}',${i},'group',this.value)">
         <option value="voluntary" ${item.group==='voluntary'?'selected':''}>Voluntary</option>
         <option value="involuntary" ${item.group==='involuntary'?'selected':''}>Involuntary</option>
       </select></td>`:''}
       <td><button class="btn btn-sm btn-danger" style="padding:3px 8px" onclick="delLookup('${key}',${i})">✕</button></td>
     </tr>`:`
     <tr>
-      <td><input class="finput" style="font-size:12px" value="${esc(item.name)}" onchange="LOOKUPS['${key}'][${i}].name=this.value"/></td>
+      <td><input class="finput" style="font-size:12px" value="${esc(item.name)}" onchange="updateLookupCell('${key}',${i},'name',this.value)"/></td>
       <td><button class="btn btn-sm btn-danger" style="padding:3px 8px" onclick="delLookup('${key}',${i})">✕</button></td>
     </tr>`).join('');
   }
@@ -12599,12 +12667,18 @@ function addLookup(key,hasCode,hasGroup){
     LOOKUPS[key].push({id,name:name.trim()});
   }
   render();
+  toast('Lookup value added.','success');
 }
 function delLookup(key,idx){
   const item=LOOKUPS[key][idx];
   const label=item.name||item.label||item.code;
   if(!confirm(`Delete "${label}" from ${key}?`))return;
   LOOKUPS[key].splice(idx,1);render();
+  toast('Lookup value deleted.','success');
+}
+function updateLookupCell(key,idx,field,value){
+  LOOKUPS[key][idx][field]=value;
+  toast('Saved.','success');
 }
 
 /* ── Bulk Add for Lookup Tables — paste multiple rows at once instead of
@@ -12792,7 +12866,7 @@ function renderCredRows(filter){
     const c=alColors[al.color]||'#6b7280';
     return`<tr>
       <td><div class="emp-cell"><div class="avatar sm">${ini(u.name||'?')}</div>
-        <div><div style="font-weight:500">${esc(u.name||'Unnamed')}</div><div style="font-size:11px;color:var(--txt3)">${esc(u.eid||'')}</div></div>
+        <div><div style="font-weight:500">${esc(fmtEmpName(u)||'Unnamed')}</div><div style="font-size:11px;color:var(--txt3)">${esc(u.eid||'')}</div></div>
       </div></td>
       <td style="color:var(--txt3)">${esc(u.email||'—')}</td>
       <td><span class="badge" style="background:${c}22;color:${c};font-size:10px">${al.name}</span></td>
@@ -12828,6 +12902,7 @@ function togglePermFast(alId,key,checked,lbl){
   /* Update inline count text */
   const info=document.querySelector('.perm-count-info');
   if(info)info.innerHTML=`<strong style="color:var(--accent)">${total}</strong> of ${PERM_DEFS.length} permissions enabled`;
+  toast('Permission updated.','success');
 }
 
 function setGroupPerms(alId,grp,enable){
@@ -12840,6 +12915,7 @@ function setGroupPerms(alId,grp,enable){
     if(cb)cb.checked=enable;
     if(lbl){lbl.style.border=enable?'1px solid var(--accent)':'1px solid transparent';lbl.style.background=enable?'var(--accent-bg)':'var(--bg)';const t=lbl.querySelector('div>div:first-child');if(t)t.style.color=enable?'var(--accent-txt)':'var(--txt)';}
   });
+  toast('Group permissions updated.','success');
 }
 
 function applyPreset(alId,preset){
@@ -12848,6 +12924,7 @@ function applyPreset(alId,preset){
   else if(preset==='__all__'){al.perms=Object.fromEntries(PERM_DEFS.map(p=>[p.k,true]));}
   else{al.perms={...(ACCESS_PRESETS[preset]||{})};}
   render();
+  toast('Preset applied.','success');
 }
 
 function duplicateLevel(id){
@@ -12855,6 +12932,7 @@ function duplicateLevel(id){
   const name=src.name+' (Copy)';
   ACCESS_LEVELS.push({id:nAccess++,name,color:'gray',desc:src.desc,perms:{...src.perms}});
   _aclSel=nAccess-1;render();
+  toast('Access level duplicated.','success');
 }
 
 function openNewLevel(){
@@ -12872,6 +12950,7 @@ function saveNewLevel(){
   ACCESS_LEVELS.push({id:newId,name:d.name.trim(),color:d.color||'gray',desc:d.desc||'',
     perms:{...ACCESS_PRESETS['Employee']}});
   _aclSel=newId;closeM();render();
+  toast('Access level created.','success');
 }
 
 function saveEditLevel(){
@@ -12879,6 +12958,7 @@ function saveEditLevel(){
   const al=ACCESS_LEVELS.find(a=>a.id===d.id);if(!al)return;
   al.name=d.name||al.name;al.color=d.color||al.color;al.desc=d.desc??al.desc;
   closeM();render();
+  toast('Access level updated.','success');
 }
 
 function delAccessLevel(id){
@@ -12888,6 +12968,7 @@ function delAccessLevel(id){
   if(!confirm('Delete "'+al.name+'"?'))return;
   ACCESS_LEVELS.splice(ACCESS_LEVELS.indexOf(al),1);
   _aclSel=null;render();
+  toast('Access level deleted.','success');
 }
 
 function togglePerm(alId,key,val){
@@ -12909,7 +12990,7 @@ function pgProfileChanges(){
   <tbody>${list.map(r=>{
     const emp=USERS.find(u=>u.id===r.eid);
     return r.changes.map((c,ci)=>`<tr>
-      <td>${ci===0?`<div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${emp?.name||'?'}</div>`:''}</td>
+      <td>${ci===0?`<div class="emp-cell"><div class="avatar sm">${ini(emp?.name||'?')}</div>${fmtEmpName(emp)||'?'}</div>`:''}</td>
       <td style="font-size:12px;font-weight:500">${c.label}</td>
       <td style="font-size:12px;color:var(--txt3)">${esc(c.old||'—')}</td>
       <td style="font-size:12px;color:var(--accent);font-weight:500">${esc(c.new||'—')}</td>
@@ -13186,7 +13267,7 @@ function pgBundyAdmin(){
               ${ini(e.name)}
               <div style="position:absolute;bottom:-1px;right:-1px;width:9px;height:9px;border-radius:50%;background:${isClockedIn?'var(--green)':li?'var(--txt3)':'var(--red)'};border:1.5px solid white"></div>
             </div>
-            <div><div style="font-weight:600;font-size:13px">${e.name}</div>
+            <div><div style="font-weight:600;font-size:13px">${esc(fmtEmpName(e))}</div>
             <div style="font-size:11px;color:var(--txt3)">${e.dept||e.pos}</div></div>
           </div>
           ${li?`<div style="font-size:12px"><span class="badge b-approved">IN ${li.time}</span>${lo?`<span class="badge b-absent" style="margin-left:4px">OUT ${lo.time}</span>`:''}</div>
@@ -13201,7 +13282,7 @@ function pgBundyAdmin(){
     const logs=BUNDY_LOGS.filter(b=>b.eid===user.id).reverse();
     body=`<div style="overflow-x:auto"><table style="min-width:700px"><thead><tr><th>Employee</th><th>Date</th><th>Type</th><th>Time</th><th>Location</th><th>Zone</th><th>Selfie</th></tr></thead>
     <tbody>${logs.length?logs.map(b=>`<tr>
-      <td><div class="emp-cell"><div class="avatar sm">${ini(b.empName)}</div>${b.empName}</div></td>
+      <td><div class="emp-cell"><div class="avatar sm">${ini(b.empName)}</div>${fmtEmpName(USERS.find(u=>u.id===b.eid))||b.empName}</div></td>
       <td style="font-size:12px">${b.date}</td>
       <td><span class="badge ${b.type==='in'?'b-approved':'b-absent'}">${b.type==='in'?'Clock In':'Clock Out'}</span></td>
       <td class="mono" style="font-size:12px">${b.time}</td>
@@ -13523,7 +13604,7 @@ function pgGoogleSheets(){
       </div>
       <div style="margin-top:10px;display:flex;gap:8px">
         <button class="btn btn-primary" onclick="GS.url=document.getElementById('gs-url').value.trim();gsPing()">⚡ Test Connection</button>
-        <button class="btn" onclick="GS.url=document.getElementById('gs-url').value.trim();render()">Save URL</button>
+        <button class="btn" onclick="GS.url=document.getElementById('gs-url').value.trim();render();toast('URL saved.','success')">Save URL</button>
       </div>
       ${GS.status==='error'?`<div style="margin-top:10px;padding:10px 12px;background:var(--red-bg);border-radius:8px;font-size:12px;color:var(--red-txt);white-space:pre-wrap">${esc(GS.statusMsg)}</div>`:''}
       ${GS.status==='connected'?`<div style="margin-top:10px;padding:10px 12px;background:var(--green-bg);border-radius:8px;font-size:12px;color:var(--green-txt)">✅ Connected! Go to the <strong>Sync</strong> tab to push your data.</div>`:''}
@@ -13611,7 +13692,7 @@ function pgGoogleSheets(){
               <div style="font-weight:600;font-size:13px;color:${GS.autoSync?'var(--accent-txt)':'var(--txt)'}">⚡ Auto-Sync</div>
               <div style="font-size:11px;color:var(--txt3);margin-top:2px">Push changes to Sheets automatically (2.5s debounce)</div>
             </div>
-            <input type="checkbox" style="width:auto;accent-color:var(--accent);transform:scale(1.3)" ${GS.autoSync?'checked':''} onchange="GS.autoSync=this.checked;if(!GS.autoSync){clearTimeout(_syncTimer);_syncQueue.clear();}render()"/>
+            <input type="checkbox" style="width:auto;accent-color:var(--accent);transform:scale(1.3)" ${GS.autoSync?'checked':''} onchange="GS.autoSync=this.checked;if(!GS.autoSync){clearTimeout(_syncTimer);_syncQueue.clear();}render();toast(GS.autoSync?'Auto-Sync enabled.':'Auto-Sync disabled.','success')"/>
           </label>
         </div>
         ${GS.lastSync?`<div style="font-size:11px;color:var(--txt3);margin-top:8px">Last sync: ${new Date(GS.lastSync).toLocaleString('en-PH')}</div>`:''}
@@ -14076,6 +14157,7 @@ function saveApprovalConfig(){
   };
   queueSync('Approval_Config');
   closeM();
+  toast('Approval config saved.','success');
 }
 
 function resetApprovalConfig(empEid){
@@ -14083,6 +14165,7 @@ function resetApprovalConfig(empEid){
   if(APPROVAL_CONFIG.perEmployee)delete APPROVAL_CONFIG.perEmployee[empEid];
   queueSync('Approval_Config');
   render();
+  toast('Approval config reset.','success');
 }
 
 
@@ -14491,7 +14574,7 @@ function pgEmpDetail(){
     <!-- Immediate Head -->
     <div class="section-header" style="margin-bottom:8px">Reporting & Approval</div>
     ${(()=>{
-      const empOpts=[{v:'',l:'— None —'},...USERS.filter(u=>u.id!==detailEmpId).map(u=>({v:u.eid,l:`${u.eid} — ${u.name} (${u.pos||''})`}))];
+      const empOpts=[{v:'',l:'— None —'},...USERS.filter(u=>u.id!==detailEmpId).map(u=>({v:u.eid,l:`${u.eid} — ${fmtEmpName(u)} (${u.pos||''})`}))];
       // val() already resolves this correctly for both modes (draft value if edited, even an
       // intentionally-cleared '', else the saved value) -- falling further back to
       // e.immediateHeadEid on top of that meant picking "— None —" (which sets the draft to '')
@@ -15139,11 +15222,11 @@ function pgFieldConfig(){
             </div>
             <div style="text-align:center">
               <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${it.visible?'checked':''}
-                onchange="STATUTORY_CONFIG.items[${i}].visible=this.checked;queueSync('Field_Config');render()"/>
+                onchange="STATUTORY_CONFIG.items[${i}].visible=this.checked;queueSync('Field_Config');render();toast('Saved.','success')"/>
             </div>
             <div style="display:flex;gap:4px;justify-content:center">
               <button class="btn btn-sm" onclick="editStatItem(${i})">✎</button>
-              ${!it.builtin?`<button class="btn btn-sm btn-danger" onclick="if(confirm('Remove?')){STATUTORY_CONFIG.items.splice(${i},1);queueSync('Field_Config');render();}">✕</button>`:'<div style="width:28px"></div>'}
+              ${!it.builtin?`<button class="btn btn-sm btn-danger" onclick="if(confirm('Remove?')){STATUTORY_CONFIG.items.splice(${i},1);queueSync('Field_Config');render();toast('Item removed.','success')}">✕</button>`:'<div style="width:28px"></div>'}
             </div>
           </div>`).join('')}
         </div>
@@ -15198,8 +15281,8 @@ function pgFieldConfig(){
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
         <div class="card-title">Default Fields</div>
         <div style="display:flex;gap:5px">
-          <button class="btn btn-sm" onclick="Object.keys(FIELD_CONFIG['${key}'].visible).forEach(k=>{if(!DEFAULT_FIELDS['${key}'].find(f=>f.locked&&f.key===k))FIELD_CONFIG['${key}'].visible[k]=true;});render()">Show all</button>
-          <button class="btn btn-sm" onclick="Object.keys(FIELD_CONFIG['${key}'].visible).forEach(k=>{if(!DEFAULT_FIELDS['${key}'].find(f=>f.locked&&f.key===k))FIELD_CONFIG['${key}'].visible[k]=false;});render()">Hide all</button>
+          <button class="btn btn-sm" onclick="Object.keys(FIELD_CONFIG['${key}'].visible).forEach(k=>{if(!DEFAULT_FIELDS['${key}'].find(f=>f.locked&&f.key===k))FIELD_CONFIG['${key}'].visible[k]=true;});render();toast('All fields shown.','success')">Show all</button>
+          <button class="btn btn-sm" onclick="Object.keys(FIELD_CONFIG['${key}'].visible).forEach(k=>{if(!DEFAULT_FIELDS['${key}'].find(f=>f.locked&&f.key===k))FIELD_CONFIG['${key}'].visible[k]=false;});render();toast('All fields hidden.','success')">Hide all</button>
         </div>
       </div>
       <!-- Column headers -->
@@ -15216,13 +15299,13 @@ function pgFieldConfig(){
           <div style="text-align:center">
             <label style="cursor:${f.locked?'default':'pointer'};display:inline-flex">
               <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${cfg.visible[f.key]?'checked':''}
-                ${f.locked?'disabled':''} onchange="FIELD_CONFIG['${key}'].visible['${f.key}']=this.checked;queueSync('Field_Visibility');render()"/>
+                ${f.locked?'disabled':''} onchange="FIELD_CONFIG['${key}'].visible['${f.key}']=this.checked;queueSync('Field_Visibility');render();toast('Saved.','success')"/>
             </label>
           </div>
           <div style="text-align:center">
             <label style="cursor:pointer;display:inline-flex" title="${f.locked?'Always required (locked)':'Toggle required'}">
               <input type="checkbox" style="width:auto;accent-color:var(--red)" ${cfg.required[f.key]?'checked':''}
-                ${f.locked?'disabled':''} onchange="FIELD_CONFIG['${key}'].required['${f.key}']=this.checked;queueSync('Field_Visibility');render()"/>
+                ${f.locked?'disabled':''} onchange="FIELD_CONFIG['${key}'].required['${f.key}']=this.checked;queueSync('Field_Visibility');render();toast('Saved.','success')"/>
             </label>
           </div>
         </div>`).join('')}
@@ -15250,7 +15333,7 @@ function pgFieldConfig(){
             </div>
             <div style="display:flex;gap:4px;flex-shrink:0">
               <button class="btn btn-sm" onclick="editCustomField('${key}',${i})">✎ Edit</button>
-              <button class="btn btn-sm btn-danger" onclick="if(confirm('Delete this field?')){FIELD_CONFIG['${key}'].custom.splice(${i},1);queueSync('Field_Config');render();}">✕</button>
+              <button class="btn btn-sm btn-danger" onclick="if(confirm('Delete this field?')){FIELD_CONFIG['${key}'].custom.splice(${i},1);queueSync('Field_Config');render();toast('Custom field deleted.','success')}">✕</button>
             </div>
           </div>
         </div>`).join('')}
@@ -15328,7 +15411,8 @@ function saveCustomField(){
   const required=document.getElementById('cf-req')?.checked||false;
   const key='custom_'+lbl.toLowerCase().replace(/\s+/g,'_').replace(/[^a-z0-9_]/g,'');
   const cfg=FIELD_CONFIG[m.tabKey];
-  if(m.idx===null){
+  const isNew=m.idx===null;
+  if(isNew){
     if(cfg.custom.find(f=>f.key===key)){
       alert(`A field with the key "${key}" already exists. Use a different label.`);return;
     }
@@ -15338,6 +15422,7 @@ function saveCustomField(){
   }
   queueSync('Field_Config','Field_Visibility');
   closeM();
+  toast(isNew?'Custom field added.':'Custom field updated.','success');
 }
 
 function cancelOffboarding(){
@@ -15387,6 +15472,7 @@ function addStatItem(){
   });
   queueSync('Field_Config');
   render();
+  toast('Deduction item added.','success');
 }
 
 function editStatItem(idx){
@@ -15399,6 +15485,7 @@ function editStatItem(idx){
   }
   queueSync('Field_Config');
   render();
+  toast('Deduction item updated.','success');
 }
 
 function render(){
@@ -15562,12 +15649,12 @@ function toast(msg, type, dur) {
   if (!wrap) {
     wrap = document.createElement('div');
     wrap.id = 'toast-wrap';
-    wrap.style.cssText = 'position:fixed;bottom:88px;right:24px;z-index:99999;display:flex;flex-direction:column-reverse;gap:8px;pointer-events:none;max-width:340px';
+    wrap.style.cssText = 'position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:99999;display:flex;flex-direction:column-reverse;align-items:center;gap:8px;pointer-events:none;max-width:340px';
     document.body.appendChild(wrap);
   }
   function dismiss(el) {
     clearTimeout(el._toastTimer);
-    el.style.opacity = '0'; el.style.transform = 'translateX(16px)';
+    el.style.opacity = '0'; el.style.transform = 'translateY(-12px)';
     setTimeout(function() { el.remove(); }, 260);
   }
   // Dedupe: an identical message already showing just gets its timer refreshed instead of stacking again.
@@ -15587,7 +15674,7 @@ function toast(msg, type, dur) {
   }[type] || 'background:var(--bg);border-color:var(--border);color:var(--txt)';
   var el = document.createElement('div');
   el.dataset.toastMsg = msg;
-  el.style.cssText = 'display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-radius:10px;border:1.5px solid;' + clr + ';font-size:13px;font-weight:500;box-shadow:0 4px 20px rgba(0,0,0,.12);pointer-events:auto;opacity:0;transform:translateX(16px);transition:opacity .22s,transform .22s;line-height:1.4';
+  el.style.cssText = 'display:flex;align-items:flex-start;gap:10px;padding:10px 14px;border-radius:10px;border:1.5px solid;' + clr + ';font-size:13px;font-weight:500;box-shadow:0 4px 20px rgba(0,0,0,.12);pointer-events:auto;opacity:0;transform:translateY(-12px);transition:opacity .22s,transform .22s;line-height:1.4';
   var closeBtn = document.createElement('span');
   closeBtn.textContent = '×';
   closeBtn.style.cssText = 'cursor:pointer;opacity:.5;font-size:18px;line-height:1;margin-left:4px;flex-shrink:0';
@@ -15611,7 +15698,7 @@ function toast(msg, type, dur) {
     clearTimeout(oldest._toastTimer);
     oldest.remove();
   }
-  requestAnimationFrame(function() { el.style.opacity = '1'; el.style.transform = 'translateX(0)'; });
+  requestAnimationFrame(function() { el.style.opacity = '1'; el.style.transform = 'translateY(0)'; });
   el._toastTimer = setTimeout(function() { dismiss(el); }, dur);
 }
 
@@ -15660,7 +15747,7 @@ function doGlobalSearch(v) {
     if (emps.length) {
       var h = '<div style="padding:6px 12px 3px;font-size:10px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.5px">Employees</div>';
       emps.forEach(function(e) {
-        h += '<div data-eid="'+e.id+'" style="display:flex;align-items:center;gap:10px;padding:7px 12px;cursor:pointer;border-radius:6px" onmouseover="this.style.background=\'var(--bg)\'" onmouseout="this.style.background=\'\'"><div class="avatar sm">'+ini(e.name)+'</div><div><div style="font-size:13px;font-weight:500">'+esc(e.name)+'</div><div style="font-size:11px;color:var(--txt3)">'+esc(e.eid||'')+' · '+esc(e.pos||e.dept||'')+'</div></div></div>';
+        h += '<div data-eid="'+e.id+'" style="display:flex;align-items:center;gap:10px;padding:7px 12px;cursor:pointer;border-radius:6px" onmouseover="this.style.background=\'var(--bg)\'" onmouseout="this.style.background=\'\'"><div class="avatar sm">'+ini(e.name)+'</div><div><div style="font-size:13px;font-weight:500">'+esc(fmtEmpName(e))+'</div><div style="font-size:11px;color:var(--txt3)">'+esc(e.eid||'')+' · '+esc(e.pos||e.dept||'')+'</div></div></div>';
       });
       box.innerHTML += h;
     }
