@@ -247,7 +247,7 @@
     if(showForm){
       var preset=window._resolutionForm||{};
       body='<div style="max-width:760px"><div class="section-header">Request details</div>'+
-        (isAdmin?'<div class="field"><label>Employee</label><select id="case-employee">'+USERS.filter(function(u){return u.role==='employee';}).map(function(e){return '<option value="'+e.id+'">'+esc(e.name)+' · '+esc(e.eid)+'</option>';}).join('')+'</select></div>':'')+
+        (isAdmin?'<div class="field"><label>Employee</label><select id="case-employee">'+USERS.filter(function(u){return u.role==='employee';}).map(function(e){return '<option value="'+e.id+'">'+esc(fmtEmpName(e))+' · '+esc(e.eid)+'</option>';}).join('')+'</select></div>':'')+
         '<div class="form-row"><div class="field"><label>Category</label><select id="case-category">'+
         ['Attendance','Leave','Payroll','Payslip','Government Contribution','Employee Record','Policy'].map(function(x){return '<option '+(preset.category===x?'selected':'')+'>'+x+'</option>';}).join('')+
         '</select></div><div class="field"><label>Priority</label><select id="case-priority"><option value="normal">Normal · 4-day SLA</option><option value="low">Low</option><option value="high">High · 2-day SLA</option><option value="urgent">Urgent · 1-day SLA</option></select></div></div>'+
@@ -261,7 +261,7 @@
         (list.length?list.slice().reverse().map(function(c){
           var emp=USERS.find(function(e){return e.id===c.employeeId;})||{};
           return '<tr><td><div class="mono" style="font-weight:700">'+c.caseNo+'</div><div style="font-size:10px;color:var(--txt3)">'+new Date(c.submittedAt).toLocaleDateString()+'</div></td>'+
-            '<td><div style="font-weight:600">'+esc(emp.name||c.submittedBy)+'</div><div style="font-size:10px;color:var(--txt3)">'+esc(emp.eid||'')+'</div></td>'+
+            '<td><div style="font-weight:600">'+esc(fmtEmpName(emp)||c.submittedBy)+'</div><div style="font-size:10px;color:var(--txt3)">'+esc(emp.eid||'')+'</div></td>'+
             '<td style="min-width:260px"><div style="font-weight:600">'+esc(c.subject)+'</div><div style="font-size:11px;color:var(--txt3);margin-top:2px">'+esc(linkedRecordText(c))+'</div>'+
             (c.resolution?'<div style="font-size:11px;color:var(--green);margin-top:4px">Resolution: '+esc(c.resolution)+'</div>':'')+'</td>'+
             '<td>'+priorityBadge(c.priority)+'</td><td><div style="font-size:12px">'+esc(c.owner)+'</div><div style="font-size:10px;margin-top:2px">'+dueState(c)+'</div></td>'+
@@ -433,12 +433,12 @@
     var isAdmin=isAdminUser(user)||isPlatformAdmin;var tabs=['Review Results','Goals & Check-ins','Calibration'];var records=isAdmin?PERF:PERF.filter(function(p){return p.eid===user.id;});
     var body='';
     if(tab===0){
-      body=records.map(function(p){var emp=USERS.find(function(e){return e.id===p.eid;})||{};var avg=Math.round(p.kpis.reduce(function(s,k){return s+k.s;},0)/p.kpis.length);return '<div style="border:1px solid var(--border);border-radius:10px;padding:1rem;margin-bottom:10px"><div style="display:flex;justify-content:space-between;margin-bottom:12px"><div><div style="font-weight:700">'+esc(emp.name)+'</div><div class="card-sub">'+esc(p.period)+' · '+esc(emp.pos||'')+'</div></div><div style="font-size:25px;font-weight:800;color:'+(avg>=85?'var(--green)':'var(--accent)')+'">'+avg+'%</div></div>'+
+      body=records.map(function(p){var emp=USERS.find(function(e){return e.id===p.eid;})||{};var avg=Math.round(p.kpis.reduce(function(s,k){return s+k.s;},0)/p.kpis.length);return '<div style="border:1px solid var(--border);border-radius:10px;padding:1rem;margin-bottom:10px"><div style="display:flex;justify-content:space-between;margin-bottom:12px"><div><div style="font-weight:700">'+esc(fmtEmpName(emp))+'</div><div class="card-sub">'+esc(p.period)+' · '+esc(emp.pos||'')+'</div></div><div style="font-size:25px;font-weight:800;color:'+(avg>=85?'var(--green)':'var(--accent)')+'">'+avg+'%</div></div>'+
         p.kpis.map(function(k){return '<div class="perf-bar"><div class="perf-label">'+esc(k.k)+'</div><div class="perf-track"><div class="perf-fill" style="width:'+k.s+'%;background:'+(k.s>=85?'var(--green)':k.s>=70?'var(--accent)':'var(--amber)')+'"></div></div><div class="perf-score">'+k.s+'</div></div>';}).join('')+'<div style="font-size:12px;color:var(--txt3);margin-top:10px">'+esc(p.comment)+'</div></div>';}).join('')||'<div class="empty-state">No reviews.</div>';
     }else if(tab===1){
       var goals=isAdmin?PERFORMANCE_GOALS:PERFORMANCE_GOALS.filter(function(g){return g.eid===user.id;});
       body='<div style="display:flex;justify-content:flex-end;margin-bottom:10px">'+(isAdmin?'<button class="btn btn-primary btn-sm" onclick="addGoal()">+ Add Goal</button>':'')+'</div>'+
-        goals.map(function(g){var emp=USERS.find(function(e){return e.id===g.eid;})||{};return '<div class="card" style="margin-bottom:8px"><div style="display:flex;align-items:flex-start;justify-content:space-between"><div><div style="font-weight:700">'+esc(g.title)+'</div><div class="card-sub">'+esc(emp.name)+' · '+esc(g.metric)+' · Due '+g.due+'</div></div><span class="badge '+(g.status==='at_risk'?'b-pending':'b-approved')+'">'+g.status.replace('_',' ')+'</span></div>'+
+        goals.map(function(g){var emp=USERS.find(function(e){return e.id===g.eid;})||{};return '<div class="card" style="margin-bottom:8px"><div style="display:flex;align-items:flex-start;justify-content:space-between"><div><div style="font-weight:700">'+esc(g.title)+'</div><div class="card-sub">'+esc(fmtEmpName(emp))+' · '+esc(g.metric)+' · Due '+g.due+'</div></div><span class="badge '+(g.status==='at_risk'?'b-pending':'b-approved')+'">'+g.status.replace('_',' ')+'</span></div>'+
           '<div class="progress-bar" style="height:9px;margin:12px 0 6px"><div class="progress-fill" style="width:'+g.progress+'%;background:'+(g.status==='at_risk'?'var(--amber)':'var(--green)')+'"></div></div><div style="display:flex;justify-content:space-between;font-size:11px;color:var(--txt3)"><span>'+g.progress+'% progress · Last check-in '+g.checkIn+'</span><button class="btn btn-sm" onclick="checkInGoal('+g.id+')">Check in</button></div></div>';}).join('');
     }else{
       var distribution={exceeds:0,meets:0,needs:0};PERF.forEach(function(p){var a=p.kpis.reduce(function(s,k){return s+k.s;},0)/p.kpis.length;if(a>=85)distribution.exceeds++;else if(a>=70)distribution.meets++;else distribution.needs++;});
