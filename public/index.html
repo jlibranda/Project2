@@ -1739,6 +1739,17 @@ function toggleBulkPschedEmployee(id){
   if(idx>=0)modal.selectedIds.splice(idx,1);else modal.selectedIds.push(id);
   render();
 }
+// Selects/deselects every employee currently matching the search filter -- not the whole
+// roster -- so narrowing the list first and then "select all" only picks the narrowed set.
+function toggleBulkPschedSelectAllVisibleEmps(checked){
+  if(!modal||modal.type!=='bulkPersonalSchedule')return;
+  const q=(modal.search||'').toLowerCase();
+  const visible=USERS.filter(u=>u.role==='employee'&&u.active!==false)
+    .filter(e=>!q||(e.name+' '+(e.eid||'')+' '+(e.pos||'')).toLowerCase().includes(q));
+  if(checked)visible.forEach(e=>{if(!modal.selectedIds.includes(e.id))modal.selectedIds.push(e.id);});
+  else{const visibleIds=new Set(visible.map(e=>e.id));modal.selectedIds=modal.selectedIds.filter(id=>!visibleIds.has(id));}
+  render();
+}
 function bulkPschedSetDayField(day,field,value){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
   modal.schedule[day][field]=value;
@@ -10557,6 +10568,14 @@ function renderModal(){
             :'<span style="color:var(--txt3)">No employees selected.</span>'}
         </div>
         <input class="finput" style="font-size:12px;margin-bottom:6px" placeholder="Search name, EID or position…" value="${esc(modal.search||'')}" oninput="modal.search=this.value;render()"/>
+        ${(()=>{
+          const visibleEmps=activeEmps.filter(e=>!q||(e.name+' '+(e.eid||'')+' '+(e.pos||'')).toLowerCase().includes(q));
+          const allVisibleSelected=visibleEmps.length>0&&visibleEmps.every(e=>modal.selectedIds.includes(e.id));
+          return`<label style="display:flex;align-items:center;gap:7px;padding:4px 2px;margin-bottom:4px;font-size:11px;color:var(--txt3);cursor:pointer">
+            <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${allVisibleSelected?'checked':''} onchange="toggleBulkPschedSelectAllVisibleEmps(this.checked)"/>
+            Select all${modal.search?' matching':''} (${visibleEmps.length})
+          </label>`;
+        })()}
         <div style="max-height:180px;overflow-y:auto;display:grid;gap:3px;border:1px solid var(--border);border-radius:8px;padding:6px">
           ${activeEmps.filter(e=>!q||(e.name+' '+(e.eid||'')+' '+(e.pos||'')).toLowerCase().includes(q)).map(e=>{
             const chk=modal.selectedIds.includes(e.id);
