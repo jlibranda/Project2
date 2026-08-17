@@ -2451,8 +2451,9 @@ async function zkImport(){
     const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,g.punches);
     const schedule=emp?TimekeepingCore.scheduleForDate(emp,g.date,COMPANY.shifts||[]):null;
     const isRest=emp?TimekeepingCore.isRestDay(emp,g.date,COMPANY.shifts||[]):false;
-    const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest)||{};
-    const computed=isRest?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
+    const exempted=emp&&emp.scheduleType==='exempted';
+    const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest,emp&&emp.scheduleType)||{};
+    const computed=(isRest||exempted)?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
     const flagged=outOfBufferKeys.has(`${g.empId}_${g.date}`);
     if(flagged)flaggedCount++;
     const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
@@ -6292,8 +6293,9 @@ function computedAttendancePatch(empId,date,tin,tout,manualStatus,manualOt,manua
   const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,newPunches);
   const schedule=TimekeepingCore.scheduleForDate(emp,date,COMPANY.shifts||[]);
   const isRest=TimekeepingCore.isRestDay(emp,date,COMPANY.shifts||[]);
-  const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest)||{};
-  const computed=isRest?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
+  const exempted=emp&&emp.scheduleType==='exempted';
+  const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest,emp&&emp.scheduleType)||{};
+  const computed=(isRest||exempted)?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
   const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
   return{...computed,punches:mergedPunches,
     status:(computed.lwop||computed.incomplete)?'absent':(isRest?manualStatus:(computed.lateMinutes>0?'late':'present')),
@@ -13415,8 +13417,9 @@ async function doBundy(type){
   const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,todaysPunches);
   const schedule=TimekeepingCore.scheduleForDate(user,today(),COMPANY.shifts||[]);
   const isRest=TimekeepingCore.isRestDay(user,today(),COMPANY.shifts||[]);
-  const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest)||{};
-  const computed=isRest?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
+  const exempted=user&&user.scheduleType==='exempted';
+  const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest,user&&user.scheduleType)||{};
+  const computed=(isRest||exempted)?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
   const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
   upsertAttendance(user.id,today(),{...computed,punches:mergedPunches,
     status:(computed.lwop||computed.incomplete)?'absent':isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),

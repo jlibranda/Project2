@@ -347,7 +347,12 @@
   // break out/in pairs when there's an even number of them (consecutive pairing); an odd count
   // can't be paired unambiguously, so it falls back to the shift's configured break window
   // instead of guessing which punch is the stray one.
-  function computeFromPunches(punches, schedule, isRestDayOrHoliday) {
+  //
+  // scheduleType 'exempted' still derives tin/tout/hoursWorked/breakMinutes (informational —
+  // the time log itself is still worth keeping) but forces lateMinutes/undertimeMinutes/ot to
+  // zero, since an exempted employee is by definition excluded from time-based attendance
+  // discipline.
+  function computeFromPunches(punches, schedule, isRestDayOrHoliday, scheduleType) {
     var valid = (punches || []).filter(function (p) { return p && p.time; });
     if (!valid.length) return null;
     var sorted = valid.slice().sort(function (a, b) { return a.time < b.time ? -1 : a.time > b.time ? 1 : 0; });
@@ -401,10 +406,11 @@
     var shiftEnd = schedule ? timeToMinutes(schedule.end) : null;
     if (shiftStart != null && shiftEnd != null && shiftEnd <= shiftStart) shiftEnd += 1440;
     var grace = schedule ? Number(schedule.graceMinutes || 0) : 0;
+    var exempted = scheduleType === 'exempted';
 
-    var lateMinutes = !isRestDayOrHoliday && shiftStart != null && tinMin != null ? Math.max(0, tinMin - shiftStart - grace) : 0;
-    var undertimeMinutes = !isRestDayOrHoliday && shiftEnd != null && toutMinAbs != null ? Math.max(0, shiftEnd - toutMinAbs) : 0;
-    var otMinutes = !isRestDayOrHoliday && shiftEnd != null && toutMinAbs != null ? Math.max(0, toutMinAbs - shiftEnd) : 0;
+    var lateMinutes = !exempted && !isRestDayOrHoliday && shiftStart != null && tinMin != null ? Math.max(0, tinMin - shiftStart - grace) : 0;
+    var undertimeMinutes = !exempted && !isRestDayOrHoliday && shiftEnd != null && toutMinAbs != null ? Math.max(0, shiftEnd - toutMinAbs) : 0;
+    var otMinutes = !exempted && !isRestDayOrHoliday && shiftEnd != null && toutMinAbs != null ? Math.max(0, toutMinAbs - shiftEnd) : 0;
 
     var nightGross = toutMinAbs != null ? intervalNightMinutes(tinMin, toutMinAbs) : 0;
     var nightBreak = 0;
@@ -492,13 +498,14 @@
         var code = classifyHolidayPremium(employee, record.date, shifts, holidays) || 'RDH_GENERIC';
         summary.restDayHolidayHoursByCode[code] = (summary.restDayHolidayHoursByCode[code] || 0) + rdhHours;
       }
+      var exempted = employee && employee.scheduleType === 'exempted';
       var schedule = scheduleForDate(employee, record.date, shifts);
       var actualIn = minutes(record.tin);
       var actualOut = minutes(record.tout);
       var shiftIn = schedule && minutes(schedule.start);
       var shiftOut = schedule && minutes(schedule.end);
-      var calculatedLate = actualIn != null && shiftIn != null ? Math.max(0, actualIn - shiftIn - Number(schedule.graceMinutes || 0)) : 0;
-      var calculatedUndertime = actualOut != null && shiftOut != null ? Math.max(0, shiftOut - actualOut) : 0;
+      var calculatedLate = !exempted && actualIn != null && shiftIn != null ? Math.max(0, actualIn - shiftIn - Number(schedule.graceMinutes || 0)) : 0;
+      var calculatedUndertime = !exempted && actualOut != null && shiftOut != null ? Math.max(0, shiftOut - actualOut) : 0;
       // Max of stored vs. recomputed, same as undertime below -- a record can carry an explicit
       // lateMinutes:0 that predates this engine and was simply never computed, which a plain
       // "use it if it's not null" check can't distinguish from a real zero.

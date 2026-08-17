@@ -35,4 +35,32 @@ assert.equal(summary.lateMinutes, 0, 'approved schedule adjustments must control
 assert.equal(summary.undertimeMinutes, 90, 'the larger actual undertime must be used without double counting the request');
 assert.equal(summary.otHours, 2);
 
+// scheduleType 'exempted' — late/undertime/OT must be zeroed even with a real late arrival and
+// early departure, but tin/tout/hoursWorked are still derived (informational).
+const normalSchedule = { start: '08:00', end: '17:00', breakStart: '12:00', breakEnd: '13:00', graceMinutes: 0 };
+const latePunches = [{ time: '09:00' }, { time: '16:00' }];
+const normalComputed = core.computeFromPunches(latePunches, normalSchedule, false, 'normal');
+assert.equal(normalComputed.lateMinutes, 60, 'sanity check: a normal schedule employee is late here');
+assert.equal(normalComputed.undertimeMinutes, 60, 'sanity check: a normal schedule employee is undertime here');
+const exemptedComputed = core.computeFromPunches(latePunches, normalSchedule, false, 'exempted');
+assert.equal(exemptedComputed.lateMinutes, 0, 'an exempted employee must never show late minutes');
+assert.equal(exemptedComputed.undertimeMinutes, 0, 'an exempted employee must never show undertime minutes');
+assert.equal(exemptedComputed.ot, 0, 'an exempted employee must never show OT hours');
+assert.equal(exemptedComputed.tin, '09:00', 'the actual time log is still kept, informationally');
+assert.equal(exemptedComputed.tout, '16:00');
+assert.equal(exemptedComputed.hoursWorked, 6, 'hoursWorked is still derived (7h span minus 1h break)');
+
+// periodSummary must not recompute late/undertime from the schedule for an exempted employee
+// either — the record itself already carries stored zeros, and the schedule-vs-actual fallback
+// used for pre-engine records must not silently reintroduce them.
+const exemptedEmployee = { id: 9, shiftId: 1 };
+const exemptedRecords = [{ id: 20, eid: 9, date: '2026-08-01', tin: '09:00', tout: '16:00', status: 'present', lateMinutes: 0, undertimeMinutes: 0, ot: 0 }];
+const baselineSummary = core.periodSummary(exemptedRecords, exemptedEmployee, '2026-08-01', '2026-08-01', shifts);
+assert.equal(baselineSummary.lateMinutes, 50, 'sanity check: without scheduleType, periodSummary recomputes late minutes from schedule vs actual');
+assert.equal(baselineSummary.undertimeMinutes, 60, 'sanity check: without scheduleType, periodSummary recomputes undertime from schedule vs actual');
+exemptedEmployee.scheduleType = 'exempted';
+const exemptedSummary2 = core.periodSummary(exemptedRecords, exemptedEmployee, '2026-08-01', '2026-08-01', shifts);
+assert.equal(exemptedSummary2.lateMinutes, 0, 'periodSummary must not recompute late minutes for an exempted employee');
+assert.equal(exemptedSummary2.undertimeMinutes, 0, 'periodSummary must not recompute undertime for an exempted employee');
+
 console.log('Timekeeping core tests passed.');
