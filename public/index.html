@@ -1758,6 +1758,11 @@ function setBulkPschedFilter(key,val){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
   if(!modal.pschedFilters)modal.pschedFilters={bu:'',dept:'',bandLevel:'',type:''};
   modal.pschedFilters[key]=val;
+  if(key==='bu'){
+    const buObj=ORG.find(b=>b.name===val);
+    const deptNames=buObj?buObj.depts.map(d=>d.name):[];
+    if(modal.pschedFilters.dept&&!deptNames.includes(modal.pschedFilters.dept))modal.pschedFilters.dept='';
+  }
   renderPreservingModalScroll();
 }
 // Selects/deselects every employee currently matching search+filters -- not the whole roster --
@@ -1777,7 +1782,7 @@ function bulkPschedToggleRestDay(day,checked){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
   modal.schedule[day].restDay=checked;
   if(checked){modal.schedule[day].start='';modal.schedule[day].end='';modal.schedule[day].breakStart='';modal.schedule[day].breakEnd='';}
-  render();
+  renderPreservingModalScroll();
 }
 function bulkPschedApplyToAll(day){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
@@ -1786,7 +1791,7 @@ function bulkPschedApplyToAll(day){
     if(k===day||modal.schedule[k].restDay)return;
     modal.schedule[k]=Object.assign({},src,{restDay:false});
   });
-  render();
+  renderPreservingModalScroll();
 }
 function applyBulkPersonalScheduleMulti(){
   if(!(isAdminUser(user)||isPlatformAdmin))return;
@@ -10598,6 +10603,8 @@ function renderModal(){
       const allVisibleSelected=visibleEmps.length>0&&visibleEmps.every(e=>modal.selectedIds.includes(e.id));
       const hasActiveFilter=modal.search||modal.pschedFilters.bu||modal.pschedFilters.dept||modal.pschedFilters.bandLevel||modal.pschedFilters.type;
       const distinct=k=>[...new Set(allActiveEmps.map(e=>e[k]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+      const buObjFilter=modal.pschedFilters.bu?ORG.find(b=>b.name===modal.pschedFilters.bu):null;
+      const deptOptions=buObjFilter?buObjFilter.depts.map(d=>d.name).sort((a,b)=>a.localeCompare(b)):distinct('dept');
       const fsel=(key,label,options)=>`<select class="finput" style="font-size:12px;width:auto;min-width:110px" onchange="setBulkPschedFilter('${key}',this.value)">
         <option value="">${label}: All</option>
         ${options.map(o=>`<option value="${esc(o)}" ${modal.pschedFilters[key]===o?'selected':''}>${esc(o)}</option>`).join('')}
@@ -10617,16 +10624,16 @@ function renderModal(){
         <input id="bulkpsched-search-input" class="finput" style="font-size:12px;margin-bottom:6px" placeholder="Search name, EID or position…" value="${esc(modal.search||'')}" oninput="modal.search=this.value;renderPreservingModalScroll();refocusSearch('bulkpsched-search-input')"/>
         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">
           ${fsel('bu','BU',distinct('bu'))}
-          ${fsel('dept','Dept',distinct('dept'))}
+          ${fsel('dept','Dept',deptOptions)}
           ${fsel('bandLevel','Band',distinct('bandLevel'))}
           ${fsel('type','Type',distinct('type'))}
           ${hasActiveFilter?`<button class="btn btn-sm" style="font-size:11px" onclick="modal.search='';modal.pschedFilters={bu:'',dept:'',bandLevel:'',type:''};renderPreservingModalScroll()">✕ Clear filters</button>`:''}
         </div>
-        <label style="display:flex;align-items:center;gap:7px;padding:4px 2px;margin-bottom:4px;font-size:11px;color:var(--txt3);cursor:pointer">
-          <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${allVisibleSelected?'checked':''} onchange="toggleBulkPschedSelectAllVisibleEmps(this.checked)"/>
-          Select all${hasActiveFilter?' matching':''} (${visibleEmps.length})
-          ${hasActiveFilter?`<span style="color:var(--txt3)">— ${visibleEmps.filter(e=>modal.selectedIds.includes(e.id)).length} of these already selected; ${selectedEmps.length} selected in total across all filters</span>`:''}
-        </label>
+        <div style="display:flex;align-items:center;gap:7px;padding:4px 2px;margin-bottom:4px;font-size:11px;color:var(--txt3)">
+          <input type="checkbox" style="width:auto;accent-color:var(--accent);cursor:pointer" ${allVisibleSelected?'checked':''} onchange="toggleBulkPschedSelectAllVisibleEmps(this.checked)"/>
+          <span>Select all${hasActiveFilter?' matching':''} (${visibleEmps.length})
+          ${hasActiveFilter?`<span style="color:var(--txt3)">— ${visibleEmps.filter(e=>modal.selectedIds.includes(e.id)).length} of these already selected; ${selectedEmps.length} selected in total across all filters</span>`:''}</span>
+        </div>
         <div data-scroll-id="bulkpsched-emp-list" style="max-height:180px;overflow-y:auto;display:grid;gap:3px;border:1px solid var(--border);border-radius:8px;padding:6px">
           ${visibleEmps.map(e=>{
             const chk=modal.selectedIds.includes(e.id);
