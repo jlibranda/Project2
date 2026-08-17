@@ -4080,11 +4080,20 @@ function pgDashboard(){
 let empSearch='';
 // Combinable multi-field filters for the Employees list — AND'd together, and AND'd with the
 // free-text search above (which itself OR-matches across fields/terms). '' means "any".
-let empFilters={dept:'',bandLevel:'',type:'',status:''};
-function setEmpFilter(key,val){empFilters[key]=val;render();}
-function clearEmpFilters(){empFilters={dept:'',bandLevel:'',type:'',status:''};empSearch='';render();}
+let empFilters={bu:'',dept:'',bandLevel:'',type:'',status:''};
+function setEmpFilter(key,val){
+  empFilters[key]=val;
+  if(key==='bu'){
+    const buObj=ORG.find(b=>b.name===val);
+    const deptNames=buObj?buObj.depts.map(d=>d.name):[];
+    if(empFilters.dept&&!deptNames.includes(empFilters.dept))empFilters.dept='';
+  }
+  render();
+}
+function clearEmpFilters(){empFilters={bu:'',dept:'',bandLevel:'',type:'',status:''};empSearch='';render();}
 function applyEmpFilters(emps){
   return emps.filter(e=>{
+    if(empFilters.bu&&(e.bu||'')!==empFilters.bu)return false;
     if(empFilters.dept&&(e.dept||'')!==empFilters.dept)return false;
     if(empFilters.bandLevel&&(e.bandLevel||'')!==empFilters.bandLevel)return false;
     if(empFilters.type&&(e.type||'')!==empFilters.type)return false;
@@ -4722,13 +4731,16 @@ function pgEmployees(){
       // Filter dropdown options come from allEmps (unfiltered), not the filtered emps list,
       // so picking one filter doesn't make the options for the others disappear.
       const distinct=(k)=>[...new Set(allEmps.map(e=>e[k]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
-      const depts=distinct('dept'),bands=distinct('bandLevel'),types=distinct('type');
+      const bus=distinct('bu'),bands=distinct('bandLevel'),types=distinct('type');
+      const buObjFilter=empFilters.bu?ORG.find(b=>b.name===empFilters.bu):null;
+      const depts=buObjFilter?buObjFilter.depts.map(d=>d.name).sort((a,b)=>a.localeCompare(b)):distinct('dept');
       const activeFilterCount=Object.values(empFilters).filter(Boolean).length;
       const fsel=(key,label,options)=>`<select class="finput" style="font-size:12px;width:auto;min-width:120px" onchange="setEmpFilter('${key}',this.value)">
         <option value="">${label}: All</option>
         ${options.map(o=>`<option value="${esc(o.v!==undefined?o.v:o)}" ${empFilters[key]===(o.v!==undefined?o.v:o)?'selected':''}>${esc(o.l||o)}</option>`).join('')}
       </select>`;
       return`<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:8px">
+        ${fsel('bu','Business Unit',bus)}
         ${fsel('dept','Department',depts)}
         ${fsel('bandLevel','Band',bands)}
         ${fsel('type','Type',types)}
