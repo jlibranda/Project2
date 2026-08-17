@@ -290,6 +290,17 @@
     return d.toISOString().slice(0, 10);
   }
 
+  // The first date of the 7-day week bucket containing dateStr, given which weekday
+  // (COMPANY.startOfWeek, e.g. 'mon') a work week starts on — the boundary Flexible Per Week
+  // schedules settle Undertime/OT against. Falls back to Monday if startOfWeek is unset/unknown.
+  function weekStartForDate(dateStr, startOfWeek) {
+    var startIdx = GETDAY_TO_KEY.indexOf(startOfWeek);
+    if (startIdx < 0) startIdx = 1;
+    var dow = new Date(dateStr + 'T00:00:00Z').getUTCDay();
+    var diff = (dow - startIdx + 7) % 7;
+    return addDaysToDateStr(dateStr, -diff);
+  }
+
   // Determine which "shift day" a punch belongs to, using the employee's assigned shift
   // start/end plus a configurable buffer window, so a punch near midnight (e.g. the tail
   // end of an overnight shift) lands on the correct day instead of splitting by raw
@@ -410,19 +421,27 @@
     var exempted = scheduleType === 'exempted';
     // Flexible Per Day: no fixed shift start/end to be late against or clock out after — Undertime/
     // OT instead compare the day's actual net worked minutes (already break-excluded, above)
-    // against a flat 8-hour daily requirement. Rest-day/holiday work is still carved out into
-    // restDayHolidayHours below exactly like every other schedule type, not counted here.
+    // against a flat 8-hour daily requirement.
     var flexDay = scheduleType === 'flexDay';
+    // Flexible Per Week: also never late, but Undertime/OT are settled once per week (against
+    // that week's required hours — scheduled working days × 8) rather than per day, so both
+    // stay zero here; the weekly figure is computed and applied separately by periodSummary,
+    // which is the only place with visibility across a whole week's records at once.
+    var flexWeek = scheduleType === 'flexWeek';
     var FLEX_DAY_REQUIRED_MINUTES = 480; // 8 hrs
 
-    var lateMinutes = !exempted && !flexDay && !isRestDayOrHoliday && shiftStart != null && tinMin != null ? Math.max(0, tinMin - shiftStart - grace) : 0;
-    var undertimeMinutes, otMinutes;
-    if (!exempted && flexDay && !isRestDayOrHoliday && netMinutes != null) {
-      undertimeMinutes = Math.max(0, FLEX_DAY_REQUIRED_MINUTES - netMinutes);
-      otMinutes = Math.max(0, netMinutes - FLEX_DAY_REQUIRED_MINUTES);
-    } else {
-      undertimeMinutes = !exempted && !flexDay && !isRestDayOrHoliday && shiftEnd != null && toutMinAbs != null ? Math.max(0, shiftEnd - toutMinAbs) : 0;
-      otMinutes = !exempted && !flexDay && !isRestDayOrHoliday && shiftEnd != null && toutMinAbs != null ? Math.max(0, toutMinAbs - shiftEnd) : 0;
+    var lateMinutes = 0, undertimeMinutes = 0, otMinutes = 0;
+    if (!isRestDayOrHoliday && !exempted && !flexWeek) {
+      if (flexDay) {
+        if (netMinutes != null) {
+          undertimeMinutes = Math.max(0, FLEX_DAY_REQUIRED_MINUTES - netMinutes);
+          otMinutes = Math.max(0, netMinutes - FLEX_DAY_REQUIRED_MINUTES);
+        }
+      } else {
+        lateMinutes = shiftStart != null && tinMin != null ? Math.max(0, tinMin - shiftStart - grace) : 0;
+        undertimeMinutes = shiftEnd != null && toutMinAbs != null ? Math.max(0, shiftEnd - toutMinAbs) : 0;
+        otMinutes = shiftEnd != null && toutMinAbs != null ? Math.max(0, toutMinAbs - shiftEnd) : 0;
+      }
     }
 
     var nightGross = toutMinAbs != null ? intervalNightMinutes(tinMin, toutMinAbs) : 0;
@@ -493,7 +512,52 @@
     return result;
   }
 
-  function periodSummary(records, employee, from, to, shifts, holidays) {
+  // Minutes an employee is expected to work across the 7-day week starting weekStart --
+  // Flexible Per Week's requirement, one flat 8-hour day for every day scheduleForDate resolves
+  // an actual work schedule (i.e. every non-rest, non-adjustment-blanked day), same "8 hrs/day"
+  // rate Flexible Per Day uses, just totaled across the week instead of compared day by day.
+  function flexWeekRequiredMinutes(employee, weekStart, shifts) {
+    var workingDays = 0;
+    for (var i = 0; i < 7; i++) {
+      if (scheduleForDate(employee, addDaysToDateStr(weekStart, i), shifts)) workingDays++;
+    }
+    return workingDays * 480;
+  }
+
+  // Settles Undertime/OT for a Flexible Per Week employee once per week (required minutes vs.
+  // actual net hoursWorked summed across the whole week), instead of the per-day comparison
+  // every other schedule type uses -- computeFromPunches deliberately leaves both at zero per
+  // record for this schedule type, so periodSummary is the only place with visibility across a
+  // whole week's records at once to settle them.
+  //
+  // Only weeks that fully conclude within [from, to] are settled here (weekEnd <= to) -- a week
+  // split across two cutoff periods is entirely settled in whichever period's `to` covers its
+  // last day, using that week's full 7 days of records regardless of which period they fall in,
+  // so it's never partially judged on an incomplete week and never double-counted across periods.
+  function flexWeekSummary(records, employee, from, to, shifts, startOfWeek) {
+    var result = { undertimeMinutes: 0, otHours: 0 };
+    if (!employee || employee.scheduleType !== 'flexWeek') return result;
+    var canonical = canonicalRecords(records).filter(function (r) { return r.eid === employee.id && r.approvalStatus !== 'rejected'; });
+    var weekStarts = {};
+    canonical.forEach(function (r) {
+      if (r.date < from || r.date > to) return;
+      weekStarts[weekStartForDate(r.date, startOfWeek)] = true;
+    });
+    Object.keys(weekStarts).forEach(function (weekStart) {
+      var weekEnd = addDaysToDateStr(weekStart, 6);
+      if (weekEnd > to) return;
+      var requiredMinutes = flexWeekRequiredMinutes(employee, weekStart, shifts);
+      var netMinutes = 0;
+      canonical.forEach(function (r) {
+        if (r.date >= weekStart && r.date <= weekEnd) netMinutes += Math.round(Number(r.hoursWorked || 0) * 60);
+      });
+      result.undertimeMinutes += Math.max(0, requiredMinutes - netMinutes);
+      result.otHours += Math.max(0, netMinutes - requiredMinutes) / 60;
+    });
+    return result;
+  }
+
+  function periodSummary(records, employee, from, to, shifts, holidays, startOfWeek) {
     var rows = canonicalRecords(records).filter(function (record) {
       return record.eid === employee.id && record.date >= from && record.date <= to && record.approvalStatus !== 'rejected';
     });
@@ -511,13 +575,14 @@
         var code = classifyHolidayPremium(employee, record.date, shifts, holidays) || 'RDH_GENERIC';
         summary.restDayHolidayHoursByCode[code] = (summary.restDayHolidayHoursByCode[code] || 0) + rdhHours;
       }
-      // Both 'exempted' (no Late/Undertime/OT at all) and 'flexDay' (Undertime measured against
-      // a flat daily hour requirement, not a fixed shift end) define Late/Undertime differently
-      // from the generic shift-vs-actual math below — recomputing it here from schedule.start/
-      // end would silently reintroduce numbers computeFromPunches deliberately zeroed or
-      // recalculated differently, for any record that predates a stored value. Trust the stored
-      // field for these schedule types instead.
-      var skipScheduleRecompute = employee && (employee.scheduleType === 'exempted' || employee.scheduleType === 'flexDay');
+      // 'exempted' (no Late/Undertime/OT at all), 'flexDay' (Undertime measured against a flat
+      // daily hour requirement, not a fixed shift end), and 'flexWeek' (Undertime/OT settled
+      // once per week below, not per day) all define Late/Undertime differently from the
+      // generic shift-vs-actual math below — recomputing it here from schedule.start/end would
+      // silently reintroduce numbers computeFromPunches deliberately zeroed or recalculated
+      // differently, for any record that predates a stored value. Trust the stored field for
+      // these schedule types instead.
+      var skipScheduleRecompute = employee && (employee.scheduleType === 'exempted' || employee.scheduleType === 'flexDay' || employee.scheduleType === 'flexWeek');
       var schedule = scheduleForDate(employee, record.date, shifts);
       var actualIn = minutes(record.tin);
       var actualOut = minutes(record.tout);
@@ -531,6 +596,9 @@
       summary.lateMinutes += Math.max(Number(record.lateMinutes || 0), calculatedLate);
       summary.undertimeMinutes += Math.max(Number(record.undertimeMinutes || 0), calculatedUndertime);
     });
+    var weeklyFlex = flexWeekSummary(records, employee, from, to, shifts, startOfWeek || 'mon');
+    summary.undertimeMinutes += weeklyFlex.undertimeMinutes;
+    summary.otHours += weeklyFlex.otHours;
     Object.keys(summary).forEach(function (key) {
       if (key !== 'records' && typeof summary[key] === 'number') summary[key] = Math.round(summary[key] * 100) / 100;
     });
@@ -557,6 +625,9 @@
     resolveShiftDay: resolveShiftDay,
     isRestDay: isRestDay,
     classifyHolidayPremium: classifyHolidayPremium,
-    periodSummary: periodSummary
+    periodSummary: periodSummary,
+    weekStartForDate: weekStartForDate,
+    flexWeekRequiredMinutes: flexWeekRequiredMinutes,
+    flexWeekSummary: flexWeekSummary
   };
 });

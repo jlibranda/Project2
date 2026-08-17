@@ -326,9 +326,9 @@ function zkCommitPunches(state, punchesByEmpDate, outOfBufferReasons) {
     const mergedPunches = TimekeepingCore.mergePunches(existing && existing.punches, entries.map(e => Object.assign({ receivedAt }, e)));
     const schedule = employee ? TimekeepingCore.scheduleForDate(employee, date, shifts) : null;
     const isRestDay = employee ? TimekeepingCore.isRestDay(employee, date, shifts) : false;
-    const exempted = employee && employee.scheduleType === 'exempted';
+    const noPolicy = employee && (employee.scheduleType === 'exempted' || employee.scheduleType === 'flexWeek');
     const rawComputed = TimekeepingCore.computeFromPunches(mergedPunches, schedule, isRestDay, employee && employee.scheduleType) || {};
-    const computed = (isRestDay || exempted) ? rawComputed : TimekeepingCore.applyAttendancePolicy(rawComputed, schedule, state.attendancePolicy);
+    const computed = (isRestDay || noPolicy) ? rawComputed : TimekeepingCore.applyAttendancePolicy(rawComputed, schedule, state.attendancePolicy);
     const reason = outOfBufferReasons && outOfBufferReasons.get(key);
     const policyNote = computed.policyNotes ? computed.policyNotes.join(' · ') : '';
     const patch = Object.assign({}, computed, {

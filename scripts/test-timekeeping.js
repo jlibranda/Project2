@@ -88,4 +88,51 @@ const flexDaySummary = core.periodSummary(flexDayRecords, flexDayEmployee, '2026
 assert.equal(flexDaySummary.lateMinutes, 0, 'periodSummary must not recompute late minutes for a flexDay employee from schedule.start');
 assert.equal(flexDaySummary.undertimeMinutes, 240, 'periodSummary must keep the stored flexDay undertime, not the schedule-vs-actual figure');
 
+// scheduleType 'flexWeek' — per day, never late and never shows Undertime/OT (settled weekly
+// instead), even with a real late arrival/early departure.
+const flexWeekDayComputed = core.computeFromPunches(latePunches, normalSchedule, false, 'flexWeek');
+assert.equal(flexWeekDayComputed.lateMinutes, 0);
+assert.equal(flexWeekDayComputed.undertimeMinutes, 0, 'flexWeek never shows undertime per day -- only once the week is settled');
+assert.equal(flexWeekDayComputed.ot, 0, 'flexWeek never shows OT per day -- only once the week is settled');
+assert.equal(flexWeekDayComputed.tin, '09:00', 'the actual time log is still kept per day');
+assert.equal(flexWeekDayComputed.hoursWorked, 6);
+
+// weekStartForDate: 2026-08-03 is a Monday, 2026-08-09 the following Sunday.
+assert.equal(core.weekStartForDate('2026-08-06', 'mon'), '2026-08-03', 'a Thursday belongs to the Monday-starting week');
+assert.equal(core.weekStartForDate('2026-08-09', 'mon'), '2026-08-03', 'Sunday still belongs to the same Monday-starting week');
+assert.equal(core.weekStartForDate('2026-08-03', 'mon'), '2026-08-03', 'Monday itself is its own week start');
+assert.equal(core.weekStartForDate('2026-08-06', 'sun'), '2026-08-02', 'with Sunday as the configured week start, Thursday belongs to the week starting the previous Sunday');
+
+// flexWeekRequiredMinutes: a 5-day (Mon-Fri) personal schedule requires 5 x 8h = 2400 min/week;
+// a 6-day (Mon-Sat) one requires 6 x 8h = 2880 min/week.
+const workDay = { restDay: false, start: '08:00', end: '17:00', breakStart: '12:00', breakEnd: '13:00' };
+const restDay = { restDay: true, start: '', end: '', breakStart: '', breakEnd: '' };
+const fiveDayEmployee = {
+  id: 12, scheduleType: 'flexWeek',
+  personalSchedule: { mon: workDay, tue: workDay, wed: workDay, thu: workDay, fri: workDay, sat: restDay, sun: restDay }
+};
+const sixDayEmployee = {
+  id: 13, scheduleType: 'flexWeek',
+  personalSchedule: { mon: workDay, tue: workDay, wed: workDay, thu: workDay, fri: workDay, sat: workDay, sun: restDay }
+};
+assert.equal(core.flexWeekRequiredMinutes(fiveDayEmployee, '2026-08-03', shifts), 2400, '5-day workweek: 5 x 8h = 40h = 2400 min');
+assert.equal(core.flexWeekRequiredMinutes(sixDayEmployee, '2026-08-03', shifts), 2880, '6-day workweek: 6 x 8h = 48h = 2880 min');
+
+// periodSummary settles a flexWeek employee's Undertime/OT once, for the whole week, only once
+// the period's `to` covers that week's last day (2026-08-09) -- never partially, never twice.
+const weekDates = ['2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06', '2026-08-07'];
+const shortWeekRecords = weekDates.map((d, i) => ({ id: 200 + i, eid: 12, date: d, tin: '08:00', tout: '15:30', status: 'present', lateMinutes: 0, undertimeMinutes: 0, ot: 0, hoursWorked: 7.5 }));
+const midWeekSummary = core.periodSummary(shortWeekRecords, fiveDayEmployee, '2026-08-01', '2026-08-07', shifts, [], 'mon');
+assert.equal(midWeekSummary.undertimeMinutes, 0, 'a week not yet concluded within [from,to] must not be settled yet');
+assert.equal(midWeekSummary.otHours, 0);
+const fullWeekSummary = core.periodSummary(shortWeekRecords, fiveDayEmployee, '2026-08-01', '2026-08-09', shifts, [], 'mon');
+assert.equal(fullWeekSummary.undertimeMinutes, 150, '5 x 7.5h = 37.5h net vs 40h required = 2.5h = 150 min undertime');
+assert.equal(fullWeekSummary.otHours, 0);
+assert.equal(fullWeekSummary.lateMinutes, 0, 'flexWeek is never late even when settled');
+
+const longWeekRecords = weekDates.map((d, i) => ({ id: 300 + i, eid: 12, date: d, tin: '07:00', tout: '16:48', status: 'present', lateMinutes: 0, undertimeMinutes: 0, ot: 0, hoursWorked: 8.8 }));
+const otWeekSummary = core.periodSummary(longWeekRecords, fiveDayEmployee, '2026-08-01', '2026-08-09', shifts, [], 'mon');
+assert.equal(otWeekSummary.undertimeMinutes, 0);
+assert.equal(otWeekSummary.otHours, 4, '5 x 8.8h = 44h net vs 40h required = 4h OT');
+
 console.log('Timekeeping core tests passed.');

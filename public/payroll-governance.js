@@ -78,7 +78,7 @@
     // COMPANY.shifts/holidays (not the enterprise.js-local SHIFT_DEFINITIONS/HOLIDAYS vars,
     // which aren't visible from this file's own scope) are the shared source of truth kept
     // in sync by saveShiftConfig()/saveHolidayConfig().
-    return TimekeepingCore.periodSummary(approved,emp,from,to,COMPANY.shifts||[],COMPANY.holidays||[]);
+    return TimekeepingCore.periodSummary(approved,emp,from,to,COMPANY.shifts||[],COMPANY.holidays||[],COMPANY.startOfWeek);
   }
   function periodForCalculation(period) {
     if (period) return period;
