@@ -1724,7 +1724,7 @@ function blankPschedDay(){return {restDay:false,start:'',end:'',breakStart:'',br
 function blankPschedWeek(){const w={};BULK_PSCHED_DAY_KEYS.forEach(k=>{w[k]=blankPschedDay();});return w;}
 function openBulkPersonalSchedule(){
   if(!(isAdminUser(user)||isPlatformAdmin))return;
-  modal={type:'bulkPersonalSchedule',mode:'multi',selectedIds:[],search:'',pschedFilters:{dept:'',bandLevel:'',type:''},schedule:blankPschedWeek(),rows:[Object.assign({eid:''},blankPschedWeek())],rowSearch:'',selectedRowIdx:[]};
+  modal={type:'bulkPersonalSchedule',mode:'multi',selectedIds:[],search:'',pschedFilters:{bu:'',dept:'',bandLevel:'',type:''},schedule:blankPschedWeek(),rows:[Object.assign({eid:''},blankPschedWeek())],rowSearch:'',selectedRowIdx:[]};
   render();
 }
 function setBulkPschedMode(mode){
@@ -1748,6 +1748,7 @@ function bulkPschedVisibleEmps(){
   const f=modal.pschedFilters||{};
   return USERS.filter(u=>u.role==='employee'&&u.active!==false)
     .filter(e=>!q||(e.name+' '+(e.eid||'')+' '+(e.pos||'')).toLowerCase().includes(q))
+    .filter(e=>!f.bu||(e.bu||'')===f.bu)
     .filter(e=>!f.dept||(e.dept||'')===f.dept)
     .filter(e=>!f.bandLevel||(e.bandLevel||'')===f.bandLevel)
     .filter(e=>!f.type||(e.type||'')===f.type)
@@ -1755,7 +1756,7 @@ function bulkPschedVisibleEmps(){
 }
 function setBulkPschedFilter(key,val){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
-  if(!modal.pschedFilters)modal.pschedFilters={dept:'',bandLevel:'',type:''};
+  if(!modal.pschedFilters)modal.pschedFilters={bu:'',dept:'',bandLevel:'',type:''};
   modal.pschedFilters[key]=val;
   renderPreservingModalScroll();
 }
@@ -10583,12 +10584,12 @@ function renderModal(){
       <div class="tab ${mode==='excel'?'active':''}" onclick="setBulkPschedMode('excel')">Excel Upload — Different per Employee</div>
     </div>`;
     if(mode==='multi'){
-      if(!modal.pschedFilters)modal.pschedFilters={dept:'',bandLevel:'',type:''};
+      if(!modal.pschedFilters)modal.pschedFilters={bu:'',dept:'',bandLevel:'',type:''};
       const allActiveEmps=USERS.filter(u=>u.role==='employee'&&u.active!==false);
       const visibleEmps=bulkPschedVisibleEmps();
       const selectedEmps=allActiveEmps.filter(e=>modal.selectedIds.includes(e.id)).sort(cmpEmpName);
       const allVisibleSelected=visibleEmps.length>0&&visibleEmps.every(e=>modal.selectedIds.includes(e.id));
-      const hasActiveFilter=modal.search||modal.pschedFilters.dept||modal.pschedFilters.bandLevel||modal.pschedFilters.type;
+      const hasActiveFilter=modal.search||modal.pschedFilters.bu||modal.pschedFilters.dept||modal.pschedFilters.bandLevel||modal.pschedFilters.type;
       const distinct=k=>[...new Set(allActiveEmps.map(e=>e[k]).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
       const fsel=(key,label,options)=>`<select class="finput" style="font-size:12px;width:auto;min-width:110px" onchange="setBulkPschedFilter('${key}',this.value)">
         <option value="">${label}: All</option>
@@ -10608,10 +10609,11 @@ function renderModal(){
         </div>
         <input id="bulkpsched-search-input" class="finput" style="font-size:12px;margin-bottom:6px" placeholder="Search name, EID or position…" value="${esc(modal.search||'')}" oninput="modal.search=this.value;renderPreservingModalScroll();refocusSearch('bulkpsched-search-input')"/>
         <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">
+          ${fsel('bu','BU',distinct('bu'))}
           ${fsel('dept','Dept',distinct('dept'))}
           ${fsel('bandLevel','Band',distinct('bandLevel'))}
           ${fsel('type','Type',distinct('type'))}
-          ${hasActiveFilter?`<button class="btn btn-sm" style="font-size:11px" onclick="modal.search='';modal.pschedFilters={dept:'',bandLevel:'',type:''};renderPreservingModalScroll()">✕ Clear filters</button>`:''}
+          ${hasActiveFilter?`<button class="btn btn-sm" style="font-size:11px" onclick="modal.search='';modal.pschedFilters={bu:'',dept:'',bandLevel:'',type:''};renderPreservingModalScroll()">✕ Clear filters</button>`:''}
         </div>
         <label style="display:flex;align-items:center;gap:7px;padding:4px 2px;margin-bottom:4px;font-size:11px;color:var(--txt3);cursor:pointer">
           <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${allVisibleSelected?'checked':''} onchange="toggleBulkPschedSelectAllVisibleEmps(this.checked)"/>
