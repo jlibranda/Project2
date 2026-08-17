@@ -4106,10 +4106,17 @@ function refocusSearch(id){
 function renderPreservingModalScroll(){
   const box=document.querySelector('.modal-box');
   const top=box?box.scrollTop:0;
+  const innerTops={};
+  if(box)box.querySelectorAll('[data-scroll-id]').forEach(el=>{innerTops[el.getAttribute('data-scroll-id')]=el.scrollTop;});
   render();
-  if(top)requestAnimationFrame(()=>{
+  requestAnimationFrame(()=>{
     const newBox=document.querySelector('.modal-box');
-    if(newBox)newBox.scrollTop=top;
+    if(!newBox)return;
+    if(top)newBox.scrollTop=top;
+    newBox.querySelectorAll('[data-scroll-id]').forEach(el=>{
+      const id=el.getAttribute('data-scroll-id');
+      if(id in innerTops)el.scrollTop=innerTops[id];
+    });
   });
 }
 
@@ -10618,18 +10625,18 @@ function renderModal(){
         <label style="display:flex;align-items:center;gap:7px;padding:4px 2px;margin-bottom:4px;font-size:11px;color:var(--txt3);cursor:pointer">
           <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${allVisibleSelected?'checked':''} onchange="toggleBulkPschedSelectAllVisibleEmps(this.checked)"/>
           Select all${hasActiveFilter?' matching':''} (${visibleEmps.length})
+          ${hasActiveFilter?`<span style="color:var(--txt3)">— ${visibleEmps.filter(e=>modal.selectedIds.includes(e.id)).length} of these already selected; ${selectedEmps.length} selected in total across all filters</span>`:''}
         </label>
-        <div style="max-height:180px;overflow-y:auto;display:grid;gap:3px;border:1px solid var(--border);border-radius:8px;padding:6px">
+        <div data-scroll-id="bulkpsched-emp-list" style="max-height:180px;overflow-y:auto;display:grid;gap:3px;border:1px solid var(--border);border-radius:8px;padding:6px">
           ${visibleEmps.map(e=>{
             const chk=modal.selectedIds.includes(e.id);
-            return`<label style="display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:7px;border:1px solid ${chk?'var(--accent)':'var(--border)'};background:${chk?'var(--accent-bg)':'var(--surface)'};cursor:pointer"
-              onclick="event.preventDefault();toggleBulkPschedEmployee(${e.id})">
-              <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${chk?'checked':''} onclick="event.preventDefault()"/>
+            return`<div style="display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:7px;border:1px solid ${chk?'var(--accent)':'var(--border)'};background:${chk?'var(--accent-bg)':'var(--surface)'}">
+              <input type="checkbox" style="width:auto;accent-color:var(--accent);cursor:pointer" ${chk?'checked':''} onchange="toggleBulkPschedEmployee(${e.id})"/>
               <div style="flex:1;min-width:0">
                 <div style="font-weight:500;font-size:12px">${esc(fmtEmpName(e))}</div>
                 <div style="font-size:10px;color:var(--txt3)">${esc(e.eid||'')}${e.pos?' · '+esc(e.pos):''}</div>
               </div>
-            </label>`;
+            </div>`;
           }).join('')||'<div style="font-size:11px;color:var(--txt3);padding:6px">No employees match.</div>'}
         </div>
       </div>
