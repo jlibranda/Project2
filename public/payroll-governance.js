@@ -73,12 +73,32 @@
   function audit(action,details) {
     PAYROLL_RULE_AUDIT.push({id:Date.now()+Math.random(),action:action,details:details||'',by:user&&user.name||'System',at:new Date().toISOString()});
   }
+  function approvedRecords() {
+    return attendanceRecords().filter(function (record) { return record.approvalStatus === 'approved'; });
+  }
   function approvedAttendanceSummary(emp,from,to) {
-    var approved = attendanceRecords().filter(function (record) { return record.approvalStatus === 'approved'; });
     // COMPANY.shifts/holidays (not the enterprise.js-local SHIFT_DEFINITIONS/HOLIDAYS vars,
     // which aren't visible from this file's own scope) are the shared source of truth kept
     // in sync by saveShiftConfig()/saveHolidayConfig().
-    return TimekeepingCore.periodSummary(approved,emp,from,to,COMPANY.shifts||[],COMPANY.holidays||[],COMPANY.startOfWeek);
+    return TimekeepingCore.periodSummary(approvedRecords(),emp,from,to,COMPANY.shifts||[],COMPANY.holidays||[],COMPANY.startOfWeek);
+  }
+  // For an Exempted employee whose attendance record always shows zero Late/Undertime/OT, the
+  // per-employee "Apply Late/Undertime Deduction" / "Pay Overtime" toggles let payroll apply
+  // "as-if-normal" figures for deduction/pay purposes only -- computed here (never written back
+  // to ATT/the employee's attendance record), and only used inside this payroll draft build.
+  function approvedExemptedShadowSummary(emp,from,to) {
+    return TimekeepingCore.exemptedShadowSummary(approvedRecords(),emp,from,to,COMPANY.shifts||[]);
+  }
+  // Fixed Amount (tiered) OT pay is evaluated per day for Normal/Flexible Per Day (each
+  // attendance record already carries that day's OT hours) and per settled week for Flexible
+  // Per Week (weekly lump sums, since flexWeek never stores OT per individual record).
+  function fixedTierOTPayAmount(emp,attendance,from,to) {
+    var tiers = emp.otFixedTiers || COMPANY.otFixedTiersDefault || {firstHours:2,firstAmount:500,succeedingRate:50,prorateFirstTier:true};
+    if (emp.scheduleType === 'flexWeek') {
+      var weekly = TimekeepingCore.flexWeekSummary(approvedRecords(),emp,from,to,COMPANY.shifts||[],COMPANY.startOfWeek);
+      return PayrollRuleEngine.money((weekly.weeks||[]).reduce(function(sum,w){return sum+computeFixedTierOTPay(w.otHours,tiers);},0));
+    }
+    return PayrollRuleEngine.money((attendance.records||[]).reduce(function(sum,r){return sum+computeFixedTierOTPay(Number(r.ot||0),tiers);},0));
   }
   function periodForCalculation(period) {
     if (period) return period;
@@ -148,10 +168,17 @@
     var from=p.attendanceFrom||p.from,to=p.attendanceTo||p.to;
     var appliedEmp=effectiveEmployee(emp,p.to);
     var attendance=approvedAttendanceSummary(appliedEmp,from,to);
+    if(appliedEmp.scheduleType==='exempted'&&(appliedEmp.exemptedLateDeduction||appliedEmp.exemptedUndertimeDeduction||appliedEmp.exemptedOvertimePay)){
+      var shadow=approvedExemptedShadowSummary(appliedEmp,from,to);
+      if(appliedEmp.exemptedLateDeduction)attendance.lateMinutes=shadow.lateMinutes;
+      if(appliedEmp.exemptedUndertimeDeduction)attendance.undertimeMinutes=shadow.undertimeMinutes;
+      if(appliedEmp.exemptedOvertimePay)attendance.otHours=shadow.otHours;
+    }
+    var otOverrideAmount=appliedEmp.scheduleType!=='exempted'&&appliedEmp.otPayMethod==='fixed'?fixedTierOTPayAmount(appliedEmp,attendance,from,to):undefined;
     var baseBasic=computeBasicByPayType(appliedEmp,grp,p);
     var recurringAllowances=effectiveRecurringAllowances(emp,grp,p);
     var adjustments=effectiveAdjustments(emp,p),taxYear=Number(p.taxYear||String(p.bir1601CMonth||p.releaseDate||p.to).slice(0,4)),taxProfile=employeeTaxRecord(emp,taxYear,false)||{},benefitYtd=employeeYtdBenefitSnapshot(emp.id,taxYear,p.bir1601CMonth||String(taxYear)+'-12',p.id||null);
-    var result=PayrollRuleEngine.calculate({employee:appliedEmp,group:grp,period:p,attendance:attendance,rules:PAYROLL_RULEBOOK,baseBasic:baseBasic,defaultDivisor:COMPANY.dailyDivisor||22,recurringAllowances:recurringAllowances,adjustments:adjustments,annualBenefitContext:{limit:90000,previousEmployerNonTaxable:Number(taxProfile.previousEmployerNonTaxableBenefits||0),currentEmployerYtdNonTaxable:benefitYtd.exempt},loans:LOANS.filter(function(loan){return loan.eid===emp.id;}),statutory:statutoryAmounts,tax:birTaxByFreq,otRates:(typeof OT_RATES==='undefined'?[]:OT_RATES)});
+    var result=PayrollRuleEngine.calculate({employee:appliedEmp,group:grp,period:p,attendance:attendance,rules:PAYROLL_RULEBOOK,baseBasic:baseBasic,defaultDivisor:COMPANY.dailyDivisor||22,recurringAllowances:recurringAllowances,adjustments:adjustments,annualBenefitContext:{limit:90000,previousEmployerNonTaxable:Number(taxProfile.previousEmployerNonTaxableBenefits||0),currentEmployerYtdNonTaxable:benefitYtd.exempt},loans:LOANS.filter(function(loan){return loan.eid===emp.id;}),statutory:statutoryAmounts,tax:birTaxByFreq,otRates:(typeof OT_RATES==='undefined'?[]:OT_RATES),otOverrideAmount:otOverrideAmount});
     result.birTaxTableVersion=birTaxVersionSnapshot(p.releaseDate||p.to);
     if(adjustments.some(function(a){return a.benefitTreatment==='annual-benefit-bucket';})){
       BIRAnnualizationCore.validateProfile(taxProfile,taxYear,COMPANY.taxPolicy.requireConfirmedTaxRecord!==false).concat(window.BIRTaxVersionCore?BIRTaxVersionCore.validatePreviousEmployer(taxProfile):[]).forEach(function(message){result.issues.push({severity:'blocker',code:'BENEFIT_PROFILE_INCOMPLETE',message:message});});

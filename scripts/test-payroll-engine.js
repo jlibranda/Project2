@@ -86,4 +86,23 @@ assert.equal(decimalDivisorResult.rates.daily,994.42,'daily rate must be derived
 assert.equal(decimalDivisorResult.ot,323.19,'OT must use the daily rate produced by the decimal divisor, not a cached profile rate');
 assert.equal(decimalDivisorResult.attendanceDeduction,1087.65,'absence, late, and undertime must use the decimal-divisor daily and minute rates');
 
+// otOverrideAmount lets the caller (governanceDraft, which computes Fixed Amount tiered OT
+// pay from per-day/per-week attendance records the engine itself never sees) replace the
+// standard percentage-of-hourly-rate OT_REG amount, while everything else about the line
+// (quantity in hours, for reporting) stays intact.
+const otOverrideBase = {
+  employee,group,period,rules,baseBasic:11000,defaultDivisor:22,
+  attendance:{records:[],presentDays:10,absentDays:0,lateMinutes:0,undertimeMinutes:0,otHours:5,ndHours:0,restDayHolidayHours:0},
+  adjustments:[],loans:[],statutory:()=>({sssEE:0,sssER:0,phEE:0,phER:0,piEE:0,piER:0}),tax:()=>0
+};
+const percentageOt = engine.calculate(otOverrideBase);
+const fixedTierOt = engine.calculate({...otOverrideBase,otOverrideAmount:1050});
+assert.notEqual(percentageOt.ot,1050,'sanity check: the percentage formula would not coincidentally already equal the fixed-tier amount');
+assert.equal(fixedTierOt.ot,1050,'otOverrideAmount must replace the percentage formula amount');
+const otRegLine = fixedTierOt.lines.find(line=>line.code==='OT_REG');
+assert.equal(otRegLine.quantity,5,'the OT_REG line must keep reporting actual OT hours even when the amount is overridden');
+assert.equal(otRegLine.formula,'Fixed Amount (tiered) overtime pay per employee-configured tiers','the formula text must reflect the override, for the calculation trace');
+const zeroOtOverride = engine.calculate({...otOverrideBase,attendance:{...otOverrideBase.attendance,otHours:0},otOverrideAmount:0});
+assert.ok(!zeroOtOverride.lines.some(line=>line.code==='OT_REG'),'zero OT hours must still omit the OT_REG line entirely, override or not');
+
 console.log('Payroll rule engine tests passed.');

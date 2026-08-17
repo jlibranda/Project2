@@ -535,7 +535,7 @@
   // last day, using that week's full 7 days of records regardless of which period they fall in,
   // so it's never partially judged on an incomplete week and never double-counted across periods.
   function flexWeekSummary(records, employee, from, to, shifts, startOfWeek) {
-    var result = { undertimeMinutes: 0, otHours: 0 };
+    var result = { undertimeMinutes: 0, otHours: 0, weeks: [] };
     if (!employee || employee.scheduleType !== 'flexWeek') return result;
     var canonical = canonicalRecords(records).filter(function (r) { return r.eid === employee.id && r.approvalStatus !== 'rejected'; });
     var weekStarts = {};
@@ -551,10 +551,49 @@
       canonical.forEach(function (r) {
         if (r.date >= weekStart && r.date <= weekEnd) netMinutes += Math.round(Number(r.hoursWorked || 0) * 60);
       });
-      result.undertimeMinutes += Math.max(0, requiredMinutes - netMinutes);
-      result.otHours += Math.max(0, netMinutes - requiredMinutes) / 60;
+      var weekUndertime = Math.max(0, requiredMinutes - netMinutes);
+      var weekOtHours = Math.max(0, netMinutes - requiredMinutes) / 60;
+      result.undertimeMinutes += weekUndertime;
+      result.otHours += weekOtHours;
+      result.weeks.push({ weekStart: weekStart, weekEnd: weekEnd, undertimeMinutes: round2(weekUndertime), otHours: round2(weekOtHours) });
     });
     return result;
+  }
+
+  // For an Exempted employee whose attendance record always shows zero Late/Undertime/OT
+  // (computeFromPunches deliberately zeroes them at commit time for scheduleType 'exempted'),
+  // this recomputes what those figures WOULD have been under a plain shift-vs-actual
+  // comparison, from each record's raw tin/tout against that date's scheduled shift — the same
+  // formula computeFromPunches uses for a Normal Shift employee. Used only to drive optional
+  // per-employee payroll toggles (Apply Late/Undertime Deduction, Pay Overtime) without ever
+  // touching what the attendance record itself displays.
+  function exemptedShadowSummary(records, employee, from, to, shifts) {
+    var rows = canonicalRecords(records).filter(function (record) {
+      return employee && record.eid === employee.id && record.date >= from && record.date <= to && record.approvalStatus !== 'rejected';
+    });
+    var out = { lateMinutes: 0, undertimeMinutes: 0, otHours: 0 };
+    rows.forEach(function (record) {
+      if (record.status === 'absent') return;
+      if (Number(record.restDayHolidayHours || 0) > 0) return;
+      var schedule = scheduleForDate(employee, record.date, shifts);
+      if (!schedule) return;
+      var tinMin = minutes(record.tin);
+      var toutMin = minutes(record.tout);
+      if (tinMin == null || toutMin == null) return;
+      var shiftStart = minutes(schedule.start);
+      var shiftEnd = minutes(schedule.end);
+      if (shiftStart == null || shiftEnd == null) return;
+      if (shiftEnd <= shiftStart) shiftEnd += 1440;
+      var toutAbs = toutMin <= tinMin ? toutMin + 1440 : toutMin;
+      var grace = Number(schedule.graceMinutes || 0);
+      out.lateMinutes += Math.max(0, tinMin - shiftStart - grace);
+      out.undertimeMinutes += Math.max(0, shiftEnd - toutAbs);
+      out.otHours += Math.max(0, toutAbs - shiftEnd) / 60;
+    });
+    out.lateMinutes = round2(out.lateMinutes);
+    out.undertimeMinutes = round2(out.undertimeMinutes);
+    out.otHours = round2(out.otHours);
+    return out;
   }
 
   function periodSummary(records, employee, from, to, shifts, holidays, startOfWeek) {
@@ -628,6 +667,7 @@
     periodSummary: periodSummary,
     weekStartForDate: weekStartForDate,
     flexWeekRequiredMinutes: flexWeekRequiredMinutes,
-    flexWeekSummary: flexWeekSummary
+    flexWeekSummary: flexWeekSummary,
+    exemptedShadowSummary: exemptedShadowSummary
   };
 });

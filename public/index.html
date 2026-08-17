@@ -491,6 +491,19 @@ function attendanceRecord(eid,date){return TimekeepingCore.canonicalRecord(ATT,e
 function attendanceRecords(){return TimekeepingCore.canonicalRecords(ATT);}
 function upsertAttendance(eid,date,patch){return TimekeepingCore.upsert(ATT,eid,date,patch,function(){return nAtt++;},user&&user.name);}
 function attendancePeriodSummary(emp,from,to){return TimekeepingCore.periodSummary(ATT,emp,from,to,COMPANY.shifts||[],COMPANY.holidays||[],COMPANY.startOfWeek);}
+/* Fixed Amount (tiered) Overtime Pay -- e.g. "first 2 hrs = P500, succeeding hrs = P50/hr".
+   Shared with payroll-governance.js's fixedTierOTPayAmount(), which drives the actual payroll
+   OT calculation via PayrollRuleEngine's otOverrideAmount. */
+function computeFixedTierOTPay(hours,tiers){
+  const h=Math.max(0,Number(hours)||0);
+  if(!h)return 0;
+  const firstHours=Math.max(0,Number(tiers.firstHours)||0);
+  const firstAmount=Number(tiers.firstAmount)||0;
+  const succeedingRate=Number(tiers.succeedingRate)||0;
+  if(!firstHours)return h*succeedingRate;
+  if(h<=firstHours)return tiers.prorateFirstTier?firstAmount*(h/firstHours):firstAmount;
+  return firstAmount+(h-firstHours)*succeedingRate;
+}
 function myFlaggedAttendance(){
   if(!user)return[];
   return attendanceRecords().filter(a=>a.eid===user.id&&a.approvalStatus==='pending'&&/Outside scheduled shift window/.test(a.notes||''));
@@ -835,6 +848,10 @@ let COMPANY={
   hoursPerDay:8,
   salaryMultiplier:13,
   startOfWeek:'mon', /* Flexible Per Week schedule-type bucket boundary — which day a work week starts on */
+  /* Convenience template only — pre-fills an employee's otFixedTiers the first time their
+     Overtime Pay Method is switched to 'fixed'. Each employee's actual tiers are stored on
+     their own record afterward and can diverge freely from this template. */
+  otFixedTiersDefault:{firstHours:2,firstAmount:500,succeedingRate:50,prorateFirstTier:true},
   registeredName:'SproutRipple PH',
   taxIdentificationNo:'',
   rdo:'',
@@ -15093,6 +15110,47 @@ function pgEmpDetail(){
         ${FIELD_CONFIG.compensation.custom.map(f=>customField(f)).join('')}
       </div>
     </div>
+    ${(()=>{
+      const schedType=val('scheduleType')||e.scheduleType||'normal';
+      const isExempted=schedType==='exempted';
+      const boolField=(key,label,hint)=>detailEdit
+        ?`<label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;cursor:pointer">
+            <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${val(key)?'checked':''} onchange="detailDraft['${key}']=this.checked"/>
+            <span>${label}${hint?` <span style="font-weight:400;color:var(--txt3)">${hint}</span>`:''}</span>
+          </label>`
+        :vrow(label,e[key]?'Yes':'No');
+      if(isExempted){
+        return `<div style="border-top:1px solid var(--border);margin:10px 0"></div>
+          <div class="section-header" style="margin-bottom:4px">Exempted Pay Rules</div>
+          <div style="font-size:11px;color:var(--txt3);margin-bottom:10px">This employee's Schedule Type is Exempted — their attendance record always shows zero Late/Undertime/OT. These toggles let payroll still apply the following for this employee specifically, without changing what their attendance record displays.</div>
+          ${boolField('exemptedLateDeduction','Apply Late Deduction')}
+          ${boolField('exemptedUndertimeDeduction','Apply Undertime Deduction')}
+          ${boolField('exemptedOvertimePay','Pay Overtime','— at the standard percentage rate')}`;
+      }
+      const otMethod=val('otPayMethod')||e.otPayMethod||'percentage';
+      const tiers=val('otFixedTiers')||e.otFixedTiers||COMPANY.otFixedTiersDefault||{firstHours:2,firstAmount:500,succeedingRate:50,prorateFirstTier:true};
+      // Single-quoted onchange attributes here on purpose -- JSON.stringify always double-quotes
+      // its keys, which would otherwise prematurely close a double-quoted HTML attribute.
+      const tierField=(key,label,width)=>`<div class="field" style="margin-bottom:6px;display:inline-block;width:${width}px;margin-right:10px"><label style="font-size:11px">${label}</label>
+        <input class="finput" type="number" step="0.01" style="font-size:13px" value="${tiers[key]}"
+          oninput='detailDraft.otFixedTiers=Object.assign({},detailDraft.otFixedTiers||${JSON.stringify(tiers)},{${key}:parseFloat(this.value)||0})'/></div>`;
+      return `<div style="border-top:1px solid var(--border);margin:10px 0"></div>
+        <div class="section-header" style="margin-bottom:8px">Overtime Pay Method</div>
+        ${detailEdit
+          ?`<select class="finput" style="font-size:13px;max-width:320px;margin-bottom:8px" onchange="detailDraft.otPayMethod=this.value;render()">
+              <option value="percentage" ${otMethod==='percentage'?'selected':''}>Percentage of Hourly Rate (default)</option>
+              <option value="fixed" ${otMethod==='fixed'?'selected':''}>Fixed Amount (tiered)</option>
+            </select>`
+          :vrow('Overtime Pay Method',otMethod==='fixed'?'Fixed Amount (tiered)':'Percentage of Hourly Rate')}
+        ${otMethod==='fixed'?(detailEdit
+          ?`<div>${tierField('firstHours','First (hrs)',90)}${tierField('firstAmount','First-tier Amount (₱)',150)}${tierField('succeedingRate','Succeeding Rate (₱/hr)',150)}</div>
+            <label style="display:flex;align-items:center;gap:8px;margin-top:4px;font-size:12px;cursor:pointer">
+              <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${tiers.prorateFirstTier?'checked':''} onchange='detailDraft.otFixedTiers=Object.assign({},detailDraft.otFixedTiers||${JSON.stringify(tiers)},{prorateFirstTier:this.checked})'/>
+              <span>Prorate first tier by actual hours <span style="font-weight:400;color:var(--txt3)">— unchecked = flat amount once any OT is logged within the first tier</span></span>
+            </label>`
+          :`<div style="font-size:12px;color:var(--txt3)">First ${tiers.firstHours} hrs = ₱${numFmt(tiers.firstAmount)}${tiers.prorateFirstTier?' (prorated)':' (flat)'}, succeeding hrs = ₱${numFmt(tiers.succeedingRate)}/hr</div>`
+        ):''}`;
+    })()}
     ${STATUTORY_CONFIG.items.some(it=>it.visible)?`
     <div style="border-top:1px solid var(--border);margin:10px 0"></div>
     <div class="section-header" style="margin-bottom:8px">${STATUTORY_CONFIG.sectionLabel}</div>

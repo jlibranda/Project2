@@ -162,7 +162,23 @@
     addLine(lines,Object.assign({code:'BASIC',name:'Basic Pay',type:'earning',amount:baseBasic,taxable:true,rate:baseBasic,formula:group.freq==='semi-monthly'?'Monthly salary ÷ 2':'Configured payroll-frequency basic pay'},lineFromRule(selectRule(rules,'BASIC_PAY',date,context),'BASIC_PAY','Employment contract / company compensation policy')));
 
     var regularOt = ruleValue(rules,'OT_REGULAR_DAY',date,context,1.25);
-    if (attendance.otHours) addLine(lines,Object.assign({code:'OT_REG',name:'Regular-Day Overtime',type:'earning',quantity:attendance.otHours,rate:hourly,multiplier:regularOt.value,amount:hourly*regularOt.value*attendance.otHours,taxable:true,formula:'Hourly rate × approved OT hours × '+regularOt.value},lineFromRule(regularOt.rule,'OT_REGULAR_DAY','Labor Code / DOLE')));
+    // Fixed Amount (tiered) OT is an alternative to the standard percentage-of-hourly-rate
+    // formula (e.g. "first 2 hrs = P500, succeeding hrs = P50/hr"), per employee. The tiered
+    // amount is computed by the caller (governanceDraft), which has visibility into per-day/
+    // per-week attendance records that this generic engine doesn't -- otOverrideAmount, when
+    // supplied, replaces the percentage formula's amount only, keeping the OT_REG line itself
+    // (and its otHours quantity, still useful for reporting) intact.
+    var hasOtOverride = typeof input.otOverrideAmount === 'number';
+    var otAmount = hasOtOverride ? input.otOverrideAmount : hourly*regularOt.value*attendance.otHours;
+    if (attendance.otHours) {
+      var otLine = Object.assign({code:'OT_REG',name:'Regular-Day Overtime',type:'earning',quantity:attendance.otHours,rate:hourly,multiplier:regularOt.value,amount:otAmount,taxable:true,formula:'Hourly rate × approved OT hours × '+regularOt.value},lineFromRule(regularOt.rule,'OT_REGULAR_DAY','Labor Code / DOLE'));
+      // lineFromRule's own `formula` (pulled from the matched PAYROLL_RULEBOOK rule) otherwise
+      // always wins over the object's own formula key above, since it's spread in second --
+      // for the Fixed Amount override specifically, that would silently hide the fact that the
+      // percentage rule wasn't actually used, so it's set explicitly after the merge instead.
+      if (hasOtOverride) otLine.formula = 'Fixed Amount (tiered) overtime pay per employee-configured tiers';
+      addLine(lines,otLine);
+    }
 
     // Approved rest-day/holiday hours are broken down by holiday-pay code (RH_8, SH_8, DH_8,
     // etc. — see the Overtime & Premium Rates table) when the date matches the holiday

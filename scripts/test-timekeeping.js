@@ -135,4 +135,54 @@ const otWeekSummary = core.periodSummary(longWeekRecords, fiveDayEmployee, '2026
 assert.equal(otWeekSummary.undertimeMinutes, 0);
 assert.equal(otWeekSummary.otHours, 4, '5 x 8.8h = 44h net vs 40h required = 4h OT');
 
+// exemptedShadowSummary — recomputes "as-if-normal" Late/Undertime/OT for an Exempted
+// employee straight from each record's raw tin/tout against that date's scheduled shift,
+// entirely independent of the (deliberately zeroed) stored lateMinutes/undertimeMinutes/ot
+// fields. Used only to drive the per-employee payroll toggles, never the attendance display.
+const shadowEmployee = { id: 14, shiftId: 1, scheduleType: 'exempted' };
+const shadowRecords = [
+  // 08:40 in vs 08:00 shift start = 40 min, minus 10 min grace = 30 min late; 19:00 out vs
+  // 17:00 shift end = 2h OT.
+  { id: 400, eid: 14, date: '2026-08-03', tin: '08:40', tout: '19:00', status: 'present', lateMinutes: 0, undertimeMinutes: 0, ot: 0 },
+  // absent day must be skipped entirely, even with punches attached.
+  { id: 401, eid: 14, date: '2026-08-04', tin: '08:00', tout: '12:00', status: 'absent', lateMinutes: 0, undertimeMinutes: 0, ot: 0 }
+];
+const shadow = core.exemptedShadowSummary(shadowRecords, shadowEmployee, '2026-08-03', '2026-08-04', shifts);
+assert.equal(shadow.lateMinutes, 30, '08:40 in vs 08:00 shift start + 10 min grace = 30 min late');
+assert.equal(shadow.undertimeMinutes, 0);
+assert.equal(shadow.otHours, 2, '19:00 out vs 17:00 shift end = 2h OT');
+
+// exemptedShadowSummary must return zero for a day with no schedule (e.g. a rest day where
+// scheduleForDate returns null) rather than throwing or miscounting.
+const restDayEmployee = { id: 15, scheduleType: 'exempted' };
+const noScheduleRecord = [{ id: 402, eid: 15, date: '2026-08-03', tin: '08:00', tout: '17:00', status: 'present' }];
+const noScheduleShadow = core.exemptedShadowSummary(noScheduleRecord, restDayEmployee, '2026-08-03', '2026-08-03', shifts);
+assert.equal(noScheduleShadow.lateMinutes, 0, 'no assigned shift => no shadow late/undertime/OT, not a crash');
+assert.equal(noScheduleShadow.otHours, 0);
+
+// flexWeekSummary now also exposes a per-week breakdown (used by Fixed Amount OT tiers, which
+// must apply per settled week, not to the whole period's OT lumped together).
+const twoWeekDates = [
+  '2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06', '2026-08-07', // week 1: Mon-Fri
+  '2026-08-10', '2026-08-11', '2026-08-12', '2026-08-13', '2026-08-14'  // week 2: Mon-Fri
+];
+const twoWeekRecords = twoWeekDates.map((d, i) => ({
+  id: 500 + i, eid: 12, date: d, tin: '07:00', tout: i < 5 ? '16:48' : '15:30', status: 'present',
+  lateMinutes: 0, undertimeMinutes: 0, ot: 0, hoursWorked: i < 5 ? 8.8 : 7.5
+}));
+const twoWeekSummary = core.periodSummary(twoWeekRecords, fiveDayEmployee, '2026-08-01', '2026-08-16', shifts, [], 'mon');
+assert.equal(twoWeekSummary.weeks, undefined, 'periodSummary itself keeps returning only the aggregate shape');
+const twoWeekFlex = core.flexWeekSummary(twoWeekRecords, fiveDayEmployee, '2026-08-01', '2026-08-16', shifts, 'mon');
+assert.equal(twoWeekFlex.weeks.length, 2, 'both fully-concluded weeks are broken out individually');
+assert.equal(twoWeekFlex.weeks[0].otHours, 4, 'week 1: 5 x 8.8h = 44h vs 40h required = 4h OT');
+assert.equal(twoWeekFlex.weeks[0].undertimeMinutes, 0);
+assert.equal(twoWeekFlex.weeks[1].otHours, 0);
+assert.equal(twoWeekFlex.weeks[1].undertimeMinutes, 150, 'week 2: 5 x 7.5h = 37.5h vs 40h required = 2.5h undertime');
+assert.equal(twoWeekFlex.otHours, 4, 'aggregate total is unaffected by the added breakdown');
+
+// A schedule type other than 'flexWeek' must still get an (empty) weeks array, not undefined,
+// so callers can always safely read .weeks without a type check.
+const normalFlexWeekResult = core.flexWeekSummary(records, employee, '2026-08-01', '2026-08-01', shifts, 'mon');
+assert.deepEqual(normalFlexWeekResult.weeks, [], 'non-flexWeek employees get an empty weeks array, not undefined');
+
 console.log('Timekeeping core tests passed.');
