@@ -400,17 +400,30 @@
     }
 
     var grossMinutes = toutMinAbs != null ? Math.max(0, toutMinAbs - tinMin) : null;
-    var hoursWorked = grossMinutes != null ? round2((grossMinutes - breakMinutes) / 60) : null;
+    var netMinutes = grossMinutes != null ? Math.max(0, grossMinutes - breakMinutes) : null;
+    var hoursWorked = netMinutes != null ? round2(netMinutes / 60) : null;
 
     var shiftStart = schedule ? timeToMinutes(schedule.start) : null;
     var shiftEnd = schedule ? timeToMinutes(schedule.end) : null;
     if (shiftStart != null && shiftEnd != null && shiftEnd <= shiftStart) shiftEnd += 1440;
     var grace = schedule ? Number(schedule.graceMinutes || 0) : 0;
     var exempted = scheduleType === 'exempted';
+    // Flexible Per Day: no fixed shift start/end to be late against or clock out after — Undertime/
+    // OT instead compare the day's actual net worked minutes (already break-excluded, above)
+    // against a flat 8-hour daily requirement. Rest-day/holiday work is still carved out into
+    // restDayHolidayHours below exactly like every other schedule type, not counted here.
+    var flexDay = scheduleType === 'flexDay';
+    var FLEX_DAY_REQUIRED_MINUTES = 480; // 8 hrs
 
-    var lateMinutes = !exempted && !isRestDayOrHoliday && shiftStart != null && tinMin != null ? Math.max(0, tinMin - shiftStart - grace) : 0;
-    var undertimeMinutes = !exempted && !isRestDayOrHoliday && shiftEnd != null && toutMinAbs != null ? Math.max(0, shiftEnd - toutMinAbs) : 0;
-    var otMinutes = !exempted && !isRestDayOrHoliday && shiftEnd != null && toutMinAbs != null ? Math.max(0, toutMinAbs - shiftEnd) : 0;
+    var lateMinutes = !exempted && !flexDay && !isRestDayOrHoliday && shiftStart != null && tinMin != null ? Math.max(0, tinMin - shiftStart - grace) : 0;
+    var undertimeMinutes, otMinutes;
+    if (!exempted && flexDay && !isRestDayOrHoliday && netMinutes != null) {
+      undertimeMinutes = Math.max(0, FLEX_DAY_REQUIRED_MINUTES - netMinutes);
+      otMinutes = Math.max(0, netMinutes - FLEX_DAY_REQUIRED_MINUTES);
+    } else {
+      undertimeMinutes = !exempted && !flexDay && !isRestDayOrHoliday && shiftEnd != null && toutMinAbs != null ? Math.max(0, shiftEnd - toutMinAbs) : 0;
+      otMinutes = !exempted && !flexDay && !isRestDayOrHoliday && shiftEnd != null && toutMinAbs != null ? Math.max(0, toutMinAbs - shiftEnd) : 0;
+    }
 
     var nightGross = toutMinAbs != null ? intervalNightMinutes(tinMin, toutMinAbs) : 0;
     var nightBreak = 0;
@@ -498,14 +511,20 @@
         var code = classifyHolidayPremium(employee, record.date, shifts, holidays) || 'RDH_GENERIC';
         summary.restDayHolidayHoursByCode[code] = (summary.restDayHolidayHoursByCode[code] || 0) + rdhHours;
       }
-      var exempted = employee && employee.scheduleType === 'exempted';
+      // Both 'exempted' (no Late/Undertime/OT at all) and 'flexDay' (Undertime measured against
+      // a flat daily hour requirement, not a fixed shift end) define Late/Undertime differently
+      // from the generic shift-vs-actual math below — recomputing it here from schedule.start/
+      // end would silently reintroduce numbers computeFromPunches deliberately zeroed or
+      // recalculated differently, for any record that predates a stored value. Trust the stored
+      // field for these schedule types instead.
+      var skipScheduleRecompute = employee && (employee.scheduleType === 'exempted' || employee.scheduleType === 'flexDay');
       var schedule = scheduleForDate(employee, record.date, shifts);
       var actualIn = minutes(record.tin);
       var actualOut = minutes(record.tout);
       var shiftIn = schedule && minutes(schedule.start);
       var shiftOut = schedule && minutes(schedule.end);
-      var calculatedLate = !exempted && actualIn != null && shiftIn != null ? Math.max(0, actualIn - shiftIn - Number(schedule.graceMinutes || 0)) : 0;
-      var calculatedUndertime = !exempted && actualOut != null && shiftOut != null ? Math.max(0, shiftOut - actualOut) : 0;
+      var calculatedLate = !skipScheduleRecompute && actualIn != null && shiftIn != null ? Math.max(0, actualIn - shiftIn - Number(schedule.graceMinutes || 0)) : 0;
+      var calculatedUndertime = !skipScheduleRecompute && actualOut != null && shiftOut != null ? Math.max(0, shiftOut - actualOut) : 0;
       // Max of stored vs. recomputed, same as undertime below -- a record can carry an explicit
       // lateMinutes:0 that predates this engine and was simply never computed, which a plain
       // "use it if it's not null" check can't distinguish from a real zero.
