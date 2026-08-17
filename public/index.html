@@ -490,7 +490,7 @@ let ATT=[
 function attendanceRecord(eid,date){return TimekeepingCore.canonicalRecord(ATT,eid,date);}
 function attendanceRecords(){return TimekeepingCore.canonicalRecords(ATT);}
 function upsertAttendance(eid,date,patch){return TimekeepingCore.upsert(ATT,eid,date,patch,function(){return nAtt++;},user&&user.name);}
-function attendancePeriodSummary(emp,from,to){return TimekeepingCore.periodSummary(ATT,emp,from,to,COMPANY.shifts||[]);}
+function attendancePeriodSummary(emp,from,to){return TimekeepingCore.periodSummary(ATT,emp,from,to,COMPANY.shifts||[],COMPANY.holidays||[],COMPANY.startOfWeek);}
 function myFlaggedAttendance(){
   if(!user)return[];
   return attendanceRecords().filter(a=>a.eid===user.id&&a.approvalStatus==='pending'&&/Outside scheduled shift window/.test(a.notes||''));
@@ -796,6 +796,24 @@ function sessionBrandCacheKey(){
     return payload&&payload.tenantKey?'sr_company_brand_'+payload.tenantKey:'sr_company_brand';
   }catch(e){return'sr_company_brand';}
 }
+/* ---- SCHEDULE TYPE ----
+ * Governs how Late/Undertime/Overtime are computed for an employee: 'normal' (fixed shift,
+ * late/UT/OT compared per day against the shift's start/end), 'flexDay' (no Late; per-day
+ * Undertime/OT compared against a flat 8-hour net requirement), 'flexWeek' (no Late; Undertime/OT
+ * compared against a weekly net-hour requirement — working days that week × 8 — aggregated
+ * across the week instead of per day), 'exempted' (no Late/Undertime/OT computed at all). */
+const SCHEDULE_TYPES=[
+  {v:'normal',l:'Normal Shift'},
+  {v:'flexDay',l:'Flexible Per Day'},
+  {v:'flexWeek',l:'Flexible Per Week'},
+  {v:'exempted',l:'Exempted'},
+];
+const SCHEDULE_TYPE_LABELS=Object.fromEntries(SCHEDULE_TYPES.map(s=>[s.v,s.l]));
+const WEEK_START_DAYS=[
+  {v:'sun',l:'Sunday'},{v:'mon',l:'Monday'},{v:'tue',l:'Tuesday'},{v:'wed',l:'Wednesday'},
+  {v:'thu',l:'Thursday'},{v:'fri',l:'Friday'},{v:'sat',l:'Saturday'},
+];
+
 /* ---- COMPANY SETTINGS ---- */
 let COMPANY={
   name:'SproutRipple PH',
@@ -816,6 +834,7 @@ let COMPANY={
   dailyDivisor:22,
   hoursPerDay:8,
   salaryMultiplier:13,
+  startOfWeek:'mon', /* Flexible Per Week schedule-type bucket boundary — which day a work week starts on */
   registeredName:'SproutRipple PH',
   taxIdentificationNo:'',
   rdo:'',
@@ -1724,7 +1743,7 @@ function blankPschedDay(){return {restDay:false,start:'',end:'',breakStart:'',br
 function blankPschedWeek(){const w={};BULK_PSCHED_DAY_KEYS.forEach(k=>{w[k]=blankPschedDay();});return w;}
 function openBulkPersonalSchedule(){
   if(!(isAdminUser(user)||isPlatformAdmin))return;
-  modal={type:'bulkPersonalSchedule',mode:'multi',selectedIds:[],search:'',pschedFilters:{bu:'',dept:'',bandLevel:'',type:''},schedule:blankPschedWeek(),rows:[Object.assign({eid:''},blankPschedWeek())],rowSearch:'',selectedRowIdx:[]};
+  modal={type:'bulkPersonalSchedule',mode:'multi',selectedIds:[],search:'',pschedFilters:{bu:'',dept:'',bandLevel:'',type:''},schedule:blankPschedWeek(),scheduleType:'',rows:[Object.assign({eid:'',scheduleType:''},blankPschedWeek())],rowSearch:'',selectedRowIdx:[]};
   render();
 }
 function setBulkPschedMode(mode){
@@ -1811,6 +1830,7 @@ function applyBulkPersonalScheduleMulti(){
     const emp=USERS.find(u=>u.id===id);
     if(!emp||emp.active===false){skipped.push(emp?emp.name:('#'+id));return;}
     emp.personalSchedule=JSON.parse(JSON.stringify(modal.schedule));
+    if(modal.scheduleType)emp.scheduleType=modal.scheduleType;
     applied++;
   });
   if(applied>0)queueSync('Employees','Personal_Schedules');
@@ -1821,6 +1841,15 @@ function applyBulkPersonalScheduleMulti(){
 }
 
 /* -- excel mode: one row per employee, all 7 days laid out horizontally -- */
+// Matches free-text input (from a select's value, or a typed Excel cell) against SCHEDULE_TYPES
+// by code or label, case/whitespace-insensitive -- returns '' (meaning "leave unchanged") when
+// blank or unrecognised, rather than guessing.
+function normalizeScheduleTypeInput(raw){
+  const s=String(raw||'').trim().toLowerCase();
+  if(!s)return'';
+  const hit=SCHEDULE_TYPES.find(t=>t.v.toLowerCase()===s||t.l.toLowerCase()===s);
+  return hit?hit.v:'';
+}
 function downloadPersonalScheduleTemplate(){
   const emps=USERS.filter(u=>u.role==='employee'&&u.active!==false);
   const dayHeaders=[];
@@ -1828,17 +1857,18 @@ function downloadPersonalScheduleTemplate(){
     const label=BULK_PSCHED_DAY_LABELS[k];
     dayHeaders.push(label+' is Rest Day? (Y/N)',label+' Start Shift',label+' Start Break',label+' End Break',label+' End Shift');
   });
-  const header=['EID *'].concat(dayHeaders);
+  const header=['EID *','Schedule Type'].concat(dayHeaders);
   const templateRows=[
     ['PERSONAL SCHEDULE BULK IMPORT — SproutRipple PH'],
     ['One row per employee. Rest Day = Y means no shift that day — leave that day\'s 4 time columns blank.'],
     ['Times use 24-hour HH:MM format (e.g. 08:00, 17:00). Only active employees are applied.'],
+    ['Schedule Type is optional -- leave blank to keep the employee\'s current setting. Valid values: '+SCHEDULE_TYPES.map(t=>t.l).join(', ')+'.'],
     [],
     header
   ];
   const sample=emps[0];
   if(sample){
-    const row=[sample.eid];
+    const row=[sample.eid,SCHEDULE_TYPE_LABELS[sample.scheduleType]||''];
     BULK_PSCHED_DAY_KEYS.forEach(k=>{
       if(k==='sun')row.push('Y','','','','');
       else row.push('N','08:00','12:00','13:00','17:00');
@@ -1847,7 +1877,7 @@ function downloadPersonalScheduleTemplate(){
   }
   const empRows=[['EID','Name','Status']].concat(emps.map(e=>[e.eid,e.name,e.active!==false?'Active':'Inactive']));
   try{
-    const colWidths=[14].concat(BULK_PSCHED_DAY_KEYS.flatMap(()=>[18,12,12,12,12]));
+    const colWidths=[14,16].concat(BULK_PSCHED_DAY_KEYS.flatMap(()=>[18,12,12,12,12]));
     const data=buildXLSX([
       {name:'Template',rows:templateRows,colWidths:colWidths},
       {name:'Employees',rows:empRows,colWidths:[14,26,12]}
@@ -1881,6 +1911,7 @@ function parsePersonalScheduleExcel(file,input){
       const hdr=raw[hdrIdx].map(h=>String(h).toLowerCase().trim());
       const eidCol=hdr.findIndex(h=>h==='eid'||h.startsWith('eid'));
       if(eidCol<0){toast('EID column not found','warning');return;}
+      const scheduleTypeCol=hdr.findIndex(h=>h.includes('schedule type'));
       const dayCols={};
       BULK_PSCHED_DAY_KEYS.forEach(k=>{
         const label=BULK_PSCHED_DAY_LABELS[k].toLowerCase();
@@ -1897,7 +1928,7 @@ function parsePersonalScheduleExcel(file,input){
         if(!r.some(c=>String(c).trim()))return;
         const first=String(r[0]||'').trim();
         if(/^EXAMPLE/i.test(first))return;
-        const row={eid:String(r[eidCol]||'').trim()};
+        const row={eid:String(r[eidCol]||'').trim(),scheduleType:scheduleTypeCol<0?'':normalizeScheduleTypeInput(r[scheduleTypeCol])};
         BULK_PSCHED_DAY_KEYS.forEach(k=>{
           const c=dayCols[k];
           const isRest=/^y/i.test(String(r[c.rest]||'').trim());
@@ -1922,11 +1953,11 @@ function parsePersonalScheduleExcel(file,input){
 }
 function addBulkPersonalScheduleRow(){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
-  modal.rows.push(Object.assign({eid:''},blankPschedWeek()));render();
+  modal.rows.push(Object.assign({eid:'',scheduleType:''},blankPschedWeek()));render();
 }
 function removeBulkPersonalScheduleRow(i){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
-  modal.rows.splice(i,1);if(!modal.rows.length)modal.rows.push(Object.assign({eid:''},blankPschedWeek()));render();
+  modal.rows.splice(i,1);if(!modal.rows.length)modal.rows.push(Object.assign({eid:'',scheduleType:''},blankPschedWeek()));render();
 }
 // Row search + bulk-select for the Excel-upload table -- indices are always into the real
 // modal.rows array (never reindexed by filtering), so every existing per-cell handler that
@@ -1995,6 +2026,7 @@ function applyBulkPersonalSchedulesExcel(){
     const schedule={};
     BULK_PSCHED_DAY_KEYS.forEach(k=>{schedule[k]={restDay:r[k].restDay,start:r[k].restDay?'':r[k].start,end:r[k].restDay?'':r[k].end,breakStart:r[k].restDay?'':r[k].breakStart,breakEnd:r[k].restDay?'':r[k].breakEnd};});
     emp.personalSchedule=schedule;
+    if(r.scheduleType)emp.scheduleType=r.scheduleType;
     applied++;
   });
   if(applied>0)queueSync('Employees','Personal_Schedules');
@@ -2419,8 +2451,9 @@ async function zkImport(){
     const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,g.punches);
     const schedule=emp?TimekeepingCore.scheduleForDate(emp,g.date,COMPANY.shifts||[]):null;
     const isRest=emp?TimekeepingCore.isRestDay(emp,g.date,COMPANY.shifts||[]):false;
-    const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest)||{};
-    const computed=isRest?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
+    const noPolicy=emp&&(emp.scheduleType==='exempted'||emp.scheduleType==='flexWeek');
+    const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest,emp&&emp.scheduleType)||{};
+    const computed=(isRest||noPolicy)?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
     const flagged=outOfBufferKeys.has(`${g.empId}_${g.date}`);
     if(flagged)flaggedCount++;
     const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
@@ -4917,6 +4950,9 @@ function validateBulkRow(row,idx,usedEmails,usedEids){
     if(!valid.includes(String(row.type).trim()))
       warnings.push(`Employment type "${row.type}" unrecognized. Valid: ${valid.join(', ')}`);
   }
+  /* Schedule type — optional; unrecognized values fall back to Normal Shift at import time */
+  if(row.scheduleType&&String(row.scheduleType).trim()&&!normalizeScheduleTypeInput(row.scheduleType))
+    warnings.push(`Schedule Type "${row.scheduleType}" unrecognized — will default to Normal Shift. Valid: ${SCHEDULE_TYPES.map(s=>s.l).join(', ')}`);
   /* Govt number validation + auto-format with digit count notification */
   const govtSpec={sss:{digits:10,label:'SSS',fmt:'XX-XXXXXXX-X'},ph:{digits:12,label:'PhilHealth',fmt:'XX-XXXXXXXXX-X'},pi:{digits:12,label:'Pag-IBIG',fmt:'XXXX-XXXX-XXXX'},tin:{digits:12,label:'TIN/BIR',fmt:'XXX-XXX-XXX-XXX'}};
   const formatted={};
@@ -5071,7 +5107,7 @@ function mapLabelToKey(label){
     'temporary address':'temporaryAddress',
     'employee id':'eid','biometric number':'biometricNo','biometric no.':'biometricNo',
     'position':'pos','job title':'pos',
-    'employment type':'type','start date':'hired','date hired':'hired',
+    'employment type':'type','schedule type':'scheduleType','start date':'hired','date hired':'hired',
     'entity name':'entityName','business unit':'bu',
     'department':'dept','team':'team','subteam':'subteam',
     'band level':'bandLevel','non-mass / mass':'nonMass','non-mass/mass':'nonMass',
@@ -5651,6 +5687,7 @@ function downloadTemplateXLSX(){
   /* ── Employment ── */
   col({k:'pos',           l:'* Position',        req:true, fmt:'Job title'});
   col({k:'type',          l:'* Employment Type', req:true, dv:LOOKUPS.employmentTypes.map(t=>t.code)});
+  col({k:'scheduleType',  l:'Schedule Type',     fmt:'Leave blank = Normal Shift', dv:SCHEDULE_TYPES.map(s=>s.l)});
   col({k:'hired',         l:'* Start Date',      req:true, fmt:'MM/DD/YYYY', txt:true,
        prompt:'Enter as MM/DD/YYYY (e.g. 06/01/2025).',promptTitle:'Start Date'});
   if(fvis('employment','entityName'))       col({k:'entityName',      l:'Entity Name',          dv:(LOOKUPS.entityNames||[]).map(n=>n.code).filter(Boolean)});
@@ -5824,6 +5861,7 @@ function confirmBulkUpload(validatedRows){
       name:`${r.firstName} ${r.lastName}`.trim(),
       address:r.permanentAddress||r.city||'',
       role:'employee',status:'active',
+      scheduleType:normalizeScheduleTypeInput(r.scheduleType)||'normal',
       active:true,accessLevelId:5,
       hired,bday,
       rate,salaryPM:+salPM.toFixed(2),
@@ -6259,8 +6297,9 @@ function computedAttendancePatch(empId,date,tin,tout,manualStatus,manualOt,manua
   const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,newPunches);
   const schedule=TimekeepingCore.scheduleForDate(emp,date,COMPANY.shifts||[]);
   const isRest=TimekeepingCore.isRestDay(emp,date,COMPANY.shifts||[]);
-  const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest)||{};
-  const computed=isRest?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
+  const noPolicy=emp&&(emp.scheduleType==='exempted'||emp.scheduleType==='flexWeek');
+  const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest,emp&&emp.scheduleType)||{};
+  const computed=(isRest||noPolicy)?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
   const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
   return{...computed,punches:mergedPunches,
     status:(computed.lwop||computed.incomplete)?'absent':(isRest?manualStatus:(computed.lateMinutes>0?'late':'present')),
@@ -10449,6 +10488,11 @@ function renderModal(){
       <button class="close-x" onclick="closeMConfirmed()">×</button>
     </div>
     <p style="font-size:12px;color:var(--txt3);margin-bottom:.5rem">${modal.isNew?(pAssignedShift?`Pre-filled from their current shift (<strong>${esc(pAssignedShift.name)}</strong>) — change only the day(s) that need to be different.`:'Starting from a blank week.'):`Editing ${esc(pEmp?.name||'this employee')}'s personal weekly schedule.`} This overrides the assigned shift's pattern for this employee only; an approved Schedule Adjustment still takes priority over both when it applies.</p>
+    <div class="field" style="max-width:280px;margin-bottom:12px"><label>Schedule Type <span style="font-weight:400;color:var(--txt3);font-size:11px">governs how Late/Undertime/OT are computed</span></label>
+      <select class="finput" style="font-size:13px" onchange="modal.scheduleType=this.value">
+        ${SCHEDULE_TYPES.map(s=>`<option value="${s.v}" ${(modal.scheduleType||'normal')===s.v?'selected':''}>${s.l}</option>`).join('')}
+      </select>
+    </div>
     <div style="overflow-x:auto"><table><thead><tr><th>Day</th><th>Rest Day</th><th>Start</th><th>End</th><th>Break Start</th><th>Break End</th><th></th></tr></thead>
     <tbody>${dayKeys.map(k=>{
       const day=pd[k];
@@ -10659,6 +10703,12 @@ function renderModal(){
           }).join('')||'<div style="font-size:11px;color:var(--txt3);padding:6px">No employees match.</div>'}
         </div>
       </div>
+      <div class="field" style="max-width:280px;margin-bottom:12px"><label>Schedule Type <span style="font-weight:400;color:var(--txt3);font-size:11px">governs how Late/Undertime/OT are computed</span></label>
+        <select class="finput" style="font-size:13px" onchange="modal.scheduleType=this.value">
+          <option value="">— Don't change —</option>
+          ${SCHEDULE_TYPES.map(s=>`<option value="${s.v}" ${modal.scheduleType===s.v?'selected':''}>${s.l}</option>`).join('')}
+        </select>
+      </div>
       <div style="overflow-x:auto;margin-bottom:12px">
       <table><thead><tr><th>Day</th><th>Rest Day</th><th>Start</th><th>Break Start</th><th>Break End</th><th>End</th><th></th></tr></thead>
       <tbody>${BULK_PSCHED_DAY_KEYS.map(k=>{
@@ -10705,15 +10755,16 @@ function renderModal(){
           ${selCount?`<button class="btn btn-sm btn-danger" onclick="removeSelectedBulkPschedRows()">✕ Delete ${selCount} Selected</button>`:''}
         </div>
         <div style="overflow-x:auto;margin-bottom:12px">
-        <table style="min-width:${300+BULK_PSCHED_DAY_KEYS.length*300}px;font-size:12px;border-collapse:separate;border-spacing:0 4px">
+        <table style="min-width:${450+BULK_PSCHED_DAY_KEYS.length*300}px;font-size:12px;border-collapse:separate;border-spacing:0 4px">
           <thead><tr style="background:var(--bg)">
             <th style="width:20px;padding:4px 8px"><input type="checkbox" ${allVisibleSelected?'checked':''} onchange="toggleBulkPschedSelectAllVisible(this.checked)" title="Select all visible rows"/></th>
             <th style="width:20px;padding:4px 8px">#</th>
             <th style="padding:4px 8px;text-align:left">Employee <span style="color:var(--red)">*</span></th>
+            <th style="padding:4px 8px;text-align:left">Schedule Type</th>
             ${BULK_PSCHED_DAY_KEYS.map(k=>`<th colspan="5" style="padding:4px 8px;text-align:center;border-left:1px solid var(--border)">${BULK_PSCHED_DAY_LABELS[k]}</th>`).join('')}
             <th></th>
           </tr><tr style="background:var(--bg)">
-            <th></th><th></th><th></th>
+            <th></th><th></th><th></th><th></th>
             ${BULK_PSCHED_DAY_KEYS.map(()=>`<th style="padding:2px 6px;font-size:10px;border-left:1px solid var(--border)">Rest</th><th style="padding:2px 6px;font-size:10px">Start</th><th style="padding:2px 6px;font-size:10px">Break Start</th><th style="padding:2px 6px;font-size:10px">Break End</th><th style="padding:2px 6px;font-size:10px">End</th>`).join('')}
             <th></th>
           </tr></thead>
@@ -10734,6 +10785,10 @@ function renderModal(){
                 onchange:"modal.rows["+i+"].eid=v",
                 extraAttrs:'style="font-size:12px;width:170px;'+(r.eid&&!empOk?'border-color:var(--red)':r.eid&&!empActive?'border-color:var(--amber)':'')+'"',
               })}${r.eid&&!empOk?'<div style="font-size:10px;color:var(--red)">Not found</div>':r.eid&&!empActive?'<div style="font-size:10px;color:var(--amber-txt)">Inactive</div>':''}</td>
+              <td><select class="finput" style="font-size:11px;width:130px" onchange="modal.rows[${i}].scheduleType=this.value">
+                <option value="" ${!r.scheduleType?'selected':''}>— Don't change —</option>
+                ${SCHEDULE_TYPES.map(s=>`<option value="${s.v}" ${r.scheduleType===s.v?'selected':''}>${s.l}</option>`).join('')}
+              </select></td>
               ${BULK_PSCHED_DAY_KEYS.map(k=>{
                 const day=r[k];
                 return`<td style="border-left:1px solid var(--border)"><input type="checkbox" ${day.restDay?'checked':''} onchange="bulkPschedRowToggleRestDay(${i},'${k}',this.checked)"/></td>
@@ -10744,7 +10799,7 @@ function renderModal(){
               }).join('')}
               <td><button class="btn btn-sm btn-danger" onclick="removeBulkPersonalScheduleRow(${i})" title="Remove row">✕</button></td>
             </tr>`;
-          }).join(''):`<tr><td colspan="${3+BULK_PSCHED_DAY_KEYS.length*5+1}" class="empty-state">No rows match "${esc(modal.rowSearch||'')}"</td></tr>`}
+          }).join(''):`<tr><td colspan="${4+BULK_PSCHED_DAY_KEYS.length*5+1}" class="empty-state">No rows match "${esc(modal.rowSearch||'')}"</td></tr>`}
           </tbody>
         </table>
         </div>`;
@@ -12302,6 +12357,7 @@ function saveEmp(){
     name:`${ae.firstName} ${ae.lastName}`,
     address:ae.permanentAddress||ae.city||'',
     role:'employee',status:'active',
+    scheduleType:ae.scheduleType||'normal',
     managerFirst:mgrObj?.firstName||'',managerLast:mgrObj?.lastName||'',managerTitle:mgrObj?.pos||'',
     nextLevelId:'',nextLevelFirst:'',nextLevelLast:'',nextLevelTitle:'',immediateHeadEid:'',approverEid:'',
     lastWorkDate:'',lastEmpDate:'',effectiveTermDate:'',
@@ -13365,8 +13421,9 @@ async function doBundy(type){
   const mergedPunches=TimekeepingCore.mergePunches(existing&&existing.punches,todaysPunches);
   const schedule=TimekeepingCore.scheduleForDate(user,today(),COMPANY.shifts||[]);
   const isRest=TimekeepingCore.isRestDay(user,today(),COMPANY.shifts||[]);
-  const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest)||{};
-  const computed=isRest?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
+  const noPolicy=user&&(user.scheduleType==='exempted'||user.scheduleType==='flexWeek');
+  const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest,user&&user.scheduleType)||{};
+  const computed=(isRest||noPolicy)?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
   const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
   upsertAttendance(user.id,today(),{...computed,punches:mergedPunches,
     status:(computed.lwop||computed.incomplete)?'absent':isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),
@@ -14162,6 +14219,12 @@ function pgCompanySettings(){
           Annual = ₱${numFmt((COMPANY.salaryMultiplier||13))} × Monthly Salary
         </div>
       </div>
+      <div class="field"><label>Start of the Week <span style="font-weight:400;color:var(--txt3);font-size:11px">weekly bucket boundary for Flexible Per Week schedules</span></label>
+        <select id="co-week-start" class="finput" style="width:160px">
+          ${WEEK_START_DAYS.map(d=>`<option value="${d.v}" ${(COMPANY.startOfWeek||'mon')===d.v?'selected':''}>${d.l}</option>`).join('')}
+        </select>
+        <div style="margin-top:6px;font-size:11px;color:var(--txt3)">Determines which 7-day span an employee's weekly Undertime/Overtime is totaled over, for anyone on a Flexible Per Week schedule.</div>
+      </div>
     </div>
 
     <div class="card">
@@ -14328,6 +14391,8 @@ function saveCompany(){
   if(!isNaN(hrs)&&hrs>0)COMPANY.hoursPerDay=hrs;
   const mult=parseFloat(document.getElementById('co-multiplier')?.value);
   if(!isNaN(mult)&&mult>0)COMPANY.salaryMultiplier=mult;
+  const weekStart=document.getElementById('co-week-start')?.value;
+  if(WEEK_START_DAYS.some(d=>d.v===weekStart))COMPANY.startOfWeek=weekStart;
   ensureAnnualizedTaxConfig();
   COMPANY.taxPolicy.annualizationEnabled=document.getElementById('co-tax-annualized')?.checked??COMPANY.taxPolicy.annualizationEnabled;
   COMPANY.taxPolicy.autoSuggestDecember=document.getElementById('co-tax-december')?.checked??COMPANY.taxPolicy.autoSuggestDecember;
@@ -14749,6 +14814,12 @@ function pgEmpDetail(){
         ${fv('employment','bandLevel')?esel('bandLevel','Band Level',[{v:'',l:'—'},...LOOKUPS.bandLevels.map(b=>({v:b.code,l:b.label}))]):''}
         ${fv('employment','nonMass')?esel('nonMass','Non-Mass / Mass',['Non-Mass','Mass']):''}
         ${fv('employment','costCenter')?esel('costCenter','Cost Center',[{v:'',l:'— Select —'},...LOOKUPS.costCenters.map(c=>({v:c.code,l:c.label}))]):''}
+        ${detailEdit
+          ?`<div class="field" style="margin-bottom:6px"><label>Schedule Type <span style="font-weight:400;color:var(--txt3);font-size:11px">governs how Late/Undertime/OT are computed</span></label>
+             <select id="ef-scheduleType" class="finput" style="font-size:13px" onchange="detailDraft.scheduleType=this.value">
+               ${SCHEDULE_TYPES.map(s=>`<option value="${s.v}" ${(val('scheduleType')||'normal')===s.v?'selected':''}>${s.l}</option>`).join('')}
+             </select></div>`
+          :vrow('Schedule Type',SCHEDULE_TYPE_LABELS[e.scheduleType]||'Normal Shift')}
         ${detailEdit
           ?`<div class="field" style="margin-bottom:6px"><label>Employment Type</label>
              <select id="ef-type" class="finput" style="font-size:13px"

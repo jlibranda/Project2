@@ -508,7 +508,7 @@
   ]);
   COMPANY.shifts=SHIFT_DEFINITIONS; /* keep readable from other files even before the first explicit save */
   var nextShiftId=SHIFT_DEFINITIONS.reduce(function(max,s){return Math.max(max,s.id||0);},0)+1;
-  USERS.filter(function(e){return e.role==='employee';}).forEach(function(e){if(!e.shiftId)e.shiftId=1;});
+  USERS.filter(function(e){return e.role==='employee';}).forEach(function(e){if(!e.shiftId)e.shiftId=1;if(!e.scheduleType)e.scheduleType='normal';});
 
   function saveShiftConfig(){
     COMPANY.shifts=SHIFT_DEFINITIONS;
@@ -633,7 +633,7 @@
       var assignedShift=SHIFT_DEFINITIONS.find(function(s){return s.id===employee.shiftId;});
       baseSchedule=assignedShift?JSON.parse(JSON.stringify(TimekeepingCore.normalizeShift(assignedShift).schedule)):defaultShiftSchedule();
     }
-    modal={type:'personalScheduleEditor',employeeId:employeeId,draft:baseSchedule,isNew:isNew};
+    modal={type:'personalScheduleEditor',employeeId:employeeId,draft:baseSchedule,isNew:isNew,scheduleType:employee.scheduleType||'normal'};
     render();
   };
 
@@ -669,6 +669,7 @@
     // unedited from a rest-day-heavy starting point), not a deliberate "never works" schedule.
     if(SHIFT_DAY_KEYS.every(function(k){return d[k].restDay;})){toast('Every day is marked Rest Day — mark at least one working day, or remove the personal schedule instead.','warning');return;}
     employee.personalSchedule=d;
+    employee.scheduleType=modal.scheduleType||'normal';
     queueSync('Employees','Personal_Schedules');
     closeM();
     if(amPmFixes.length)toast('Personal schedule saved for '+employee.name+'. Auto-corrected a likely AM/PM mix-up — '+amPmFixes.join(', ')+'.','info',7000);

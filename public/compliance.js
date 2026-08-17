@@ -599,7 +599,7 @@
     var emp = USERS.find(function (u) { return u.id === empId; });
     if (!emp) return;
     var shifts = COMPANY.shifts || [], holidays = COMPANY.holidays || [];
-    var summary = TimekeepingCore.periodSummary(ATT, emp, range.from, range.to, shifts, holidays);
+    var summary = TimekeepingCore.periodSummary(ATT, emp, range.from, range.to, shifts, holidays, COMPANY.startOfWeek);
     var noSchedule = hasNoScheduleInRange(emp, range.from, range.to, shifts);
     var byDate = {};
     summary.records.forEach(function (r) { byDate[r.date] = r; });
@@ -772,7 +772,7 @@
     };
 
     emps.forEach(function (emp) {
-      var summary = TimekeepingCore.periodSummary(ATT, emp, range.from, range.to, shifts, holidays);
+      var summary = TimekeepingCore.periodSummary(ATT, emp, range.from, range.to, shifts, holidays, COMPANY.startOfWeek);
       var noSchedule = hasNoScheduleInRange(emp, range.from, range.to, shifts);
       var byDate = {};
       summary.records.forEach(function (r) { byDate[r.date] = r; });
