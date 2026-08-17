@@ -4950,6 +4950,9 @@ function validateBulkRow(row,idx,usedEmails,usedEids){
     if(!valid.includes(String(row.type).trim()))
       warnings.push(`Employment type "${row.type}" unrecognized. Valid: ${valid.join(', ')}`);
   }
+  /* Schedule type — optional; unrecognized values fall back to Normal Shift at import time */
+  if(row.scheduleType&&String(row.scheduleType).trim()&&!normalizeScheduleTypeInput(row.scheduleType))
+    warnings.push(`Schedule Type "${row.scheduleType}" unrecognized — will default to Normal Shift. Valid: ${SCHEDULE_TYPES.map(s=>s.l).join(', ')}`);
   /* Govt number validation + auto-format with digit count notification */
   const govtSpec={sss:{digits:10,label:'SSS',fmt:'XX-XXXXXXX-X'},ph:{digits:12,label:'PhilHealth',fmt:'XX-XXXXXXXXX-X'},pi:{digits:12,label:'Pag-IBIG',fmt:'XXXX-XXXX-XXXX'},tin:{digits:12,label:'TIN/BIR',fmt:'XXX-XXX-XXX-XXX'}};
   const formatted={};
@@ -5104,7 +5107,7 @@ function mapLabelToKey(label){
     'temporary address':'temporaryAddress',
     'employee id':'eid','biometric number':'biometricNo','biometric no.':'biometricNo',
     'position':'pos','job title':'pos',
-    'employment type':'type','start date':'hired','date hired':'hired',
+    'employment type':'type','schedule type':'scheduleType','start date':'hired','date hired':'hired',
     'entity name':'entityName','business unit':'bu',
     'department':'dept','team':'team','subteam':'subteam',
     'band level':'bandLevel','non-mass / mass':'nonMass','non-mass/mass':'nonMass',
@@ -5684,6 +5687,7 @@ function downloadTemplateXLSX(){
   /* ── Employment ── */
   col({k:'pos',           l:'* Position',        req:true, fmt:'Job title'});
   col({k:'type',          l:'* Employment Type', req:true, dv:LOOKUPS.employmentTypes.map(t=>t.code)});
+  col({k:'scheduleType',  l:'Schedule Type',     fmt:'Leave blank = Normal Shift', dv:SCHEDULE_TYPES.map(s=>s.l)});
   col({k:'hired',         l:'* Start Date',      req:true, fmt:'MM/DD/YYYY', txt:true,
        prompt:'Enter as MM/DD/YYYY (e.g. 06/01/2025).',promptTitle:'Start Date'});
   if(fvis('employment','entityName'))       col({k:'entityName',      l:'Entity Name',          dv:(LOOKUPS.entityNames||[]).map(n=>n.code).filter(Boolean)});
@@ -5857,7 +5861,7 @@ function confirmBulkUpload(validatedRows){
       name:`${r.firstName} ${r.lastName}`.trim(),
       address:r.permanentAddress||r.city||'',
       role:'employee',status:'active',
-      scheduleType:r.scheduleType||'normal',
+      scheduleType:normalizeScheduleTypeInput(r.scheduleType)||'normal',
       active:true,accessLevelId:5,
       hired,bday,
       rate,salaryPM:+salPM.toFixed(2),
