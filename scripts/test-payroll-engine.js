@@ -105,4 +105,20 @@ assert.equal(otRegLine.formula,'Fixed Amount (tiered) overtime pay per employee-
 const zeroOtOverride = engine.calculate({...otOverrideBase,attendance:{...otOverrideBase.attendance,otHours:0},otOverrideAmount:0});
 assert.ok(!zeroOtOverride.lines.some(line=>line.code==='OT_REG'),'zero OT hours must still omit the OT_REG line entirely, override or not');
 
+// exemptLateDeduction/exemptUndertimeDeduction are a per-employee payroll exception,
+// independent of Schedule Type -- attendance stays untouched (the caller never alters
+// attendance.lateMinutes/undertimeMinutes for this), only the deduction LINE is skipped.
+const exemptAttendance = {records:[],presentDays:10,absentDays:0,lateMinutes:30,undertimeMinutes:15,otHours:0,ndHours:0,restDayHolidayHours:0};
+const noExemptions = engine.calculate({employee,group,period,rules,baseBasic:11000,defaultDivisor:22,attendance:exemptAttendance,adjustments:[],loans:[],statutory:()=>({sssEE:0,sssER:0,phEE:0,phER:0,piEE:0,piER:0}),tax:()=>0});
+assert.ok(noExemptions.lines.some(line=>line.code==='LATE'),'a non-exempt employee must still get the Late Deduction line');
+assert.ok(noExemptions.lines.some(line=>line.code==='UNDERTIME'),'a non-exempt employee must still get the Undertime Deduction line');
+const lateExemptEmployee = {...employee,exemptLateDeduction:true};
+const lateExempt = engine.calculate({employee:lateExemptEmployee,group,period,rules,baseBasic:11000,defaultDivisor:22,attendance:exemptAttendance,adjustments:[],loans:[],statutory:()=>({sssEE:0,sssER:0,phEE:0,phER:0,piEE:0,piER:0}),tax:()=>0});
+assert.ok(!lateExempt.lines.some(line=>line.code==='LATE'),'exemptLateDeduction must omit the Late Deduction line entirely');
+assert.ok(lateExempt.lines.some(line=>line.code==='UNDERTIME'),'exemptLateDeduction must not affect the Undertime Deduction line');
+assert.equal(lateExempt.attendanceDeduction,noExemptions.attendanceDeduction-noExemptions.lines.find(l=>l.code==='LATE').amount,'the exempted late amount must be fully removed from the attendance deduction total');
+const bothExemptEmployee = {...employee,exemptLateDeduction:true,exemptUndertimeDeduction:true};
+const bothExempt = engine.calculate({employee:bothExemptEmployee,group,period,rules,baseBasic:11000,defaultDivisor:22,attendance:exemptAttendance,adjustments:[],loans:[],statutory:()=>({sssEE:0,sssER:0,phEE:0,phER:0,piEE:0,piER:0}),tax:()=>0});
+assert.equal(bothExempt.attendanceDeduction,0,'both toggles on, with no absences, must leave zero attendance deduction');
+
 console.log('Payroll rule engine tests passed.');

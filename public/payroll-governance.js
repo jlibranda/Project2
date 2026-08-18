@@ -82,13 +82,6 @@
     // in sync by saveShiftConfig()/saveHolidayConfig().
     return TimekeepingCore.periodSummary(approvedRecords(),emp,from,to,COMPANY.shifts||[],COMPANY.holidays||[],COMPANY.startOfWeek);
   }
-  // For an Exempted employee whose attendance record always shows zero Late/Undertime/OT, the
-  // per-employee "Apply Late/Undertime Deduction" / "Pay Overtime" toggles let payroll apply
-  // "as-if-normal" figures for deduction/pay purposes only -- computed here (never written back
-  // to ATT/the employee's attendance record), and only used inside this payroll draft build.
-  function approvedExemptedShadowSummary(emp,from,to) {
-    return TimekeepingCore.exemptedShadowSummary(approvedRecords(),emp,from,to,COMPANY.shifts||[]);
-  }
   // Fixed Amount (tiered) OT pay is evaluated per day for Normal/Flexible Per Day (each
   // attendance record already carries that day's OT hours) and per settled week for Flexible
   // Per Week (weekly lump sums, since flexWeek never stores OT per individual record).
@@ -168,12 +161,6 @@
     var from=p.attendanceFrom||p.from,to=p.attendanceTo||p.to;
     var appliedEmp=effectiveEmployee(emp,p.to);
     var attendance=approvedAttendanceSummary(appliedEmp,from,to);
-    if(appliedEmp.scheduleType==='exempted'&&(appliedEmp.exemptedLateDeduction||appliedEmp.exemptedUndertimeDeduction||appliedEmp.exemptedOvertimePay)){
-      var shadow=approvedExemptedShadowSummary(appliedEmp,from,to);
-      if(appliedEmp.exemptedLateDeduction)attendance.lateMinutes=shadow.lateMinutes;
-      if(appliedEmp.exemptedUndertimeDeduction)attendance.undertimeMinutes=shadow.undertimeMinutes;
-      if(appliedEmp.exemptedOvertimePay)attendance.otHours=shadow.otHours;
-    }
     var otOverrideAmount=appliedEmp.scheduleType!=='exempted'&&appliedEmp.otPayMethod==='fixed'?fixedTierOTPayAmount(appliedEmp,attendance,from,to):undefined;
     var baseBasic=computeBasicByPayType(appliedEmp,grp,p);
     var recurringAllowances=effectiveRecurringAllowances(emp,grp,p);
