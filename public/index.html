@@ -1309,6 +1309,9 @@ let ATTENDANCE_POLICY={
   lateHalfDayMinutes:120,
   minHoursFullDay:4,
   deductLateFromOT:true,
+  filingDeadlineEnabled:false,
+  filingDeadlineDaysAfterPeriodEnd:3,
+  filingDeadlineTime:'17:00',
 };
 let OT_RATES=[
   /* ── Regular Day ─────────────────────────────────────────────────────── */
@@ -6424,6 +6427,32 @@ function pgAttendance(){
   return`<div class="page-header"><div class="page-title">Attendance</div>${tab<(isA?2:1)?'':''}
   </div><div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div><div class="card">${body}</div>`;
 }
+// Attendance Filing Deadline — finds the pay period covering a filed date and resolves its
+// cutoff: a per-period override (set from Pay Calendar) wins if present, otherwise it's
+// computed from the global ATTENDANCE_POLICY rule (N days after the period's attendance
+// window ends, at a fixed time). Returns null when there's nothing to enforce (feature off,
+// no override, or the date falls outside every configured pay period) so callers can just
+// check the return value instead of separately checking whether the rule applies.
+function attendanceFilingDeadlineFor(dateStr){
+  if(!dateStr)return null;
+  const period=PAY_PERIODS.find(p=>{
+    const from=p.attendanceFrom||p.from,to=p.attendanceTo||p.to;
+    return from&&to&&dateStr>=from&&dateStr<=to;
+  });
+  if(!period)return null;
+  if(period.filingDeadlineOverride)return new Date(period.filingDeadlineOverride);
+  if(!ATTENDANCE_POLICY.filingDeadlineEnabled)return null;
+  const periodEnd=period.attendanceTo||period.to;
+  const d=new Date(periodEnd+'T00:00:00');
+  d.setDate(d.getDate()+(parseInt(ATTENDANCE_POLICY.filingDeadlineDaysAfterPeriodEnd)||0));
+  const[hh,mm]=(ATTENDANCE_POLICY.filingDeadlineTime||'17:00').split(':').map(Number);
+  d.setHours(hh||0,mm||0,0,0);
+  return d;
+}
+function attendanceFilingBlocked(dateStr){
+  const deadline=attendanceFilingDeadlineFor(dateStr);
+  return!!deadline&&new Date()>deadline;
+}
 // Shared by every MANUAL attendance entry point (File Attendance form, Edit Attendance Row,
 // Bulk Import) so filing or correcting a record by hand gets the same intelligent late/
 // undertime/OT/ND/attendance-policy computation the automatic sources (biometric, Web Bundy)
@@ -6468,6 +6497,7 @@ function submitAtt(isA){
   const eid=isA?parseInt(document.getElementById('ae').value):user.id;
   const date=document.getElementById('adate').value;
   if(!date){alert('Select a date.');return;}
+  if(!isA&&attendanceFilingBlocked(date)){alert('The filing deadline for this date has passed. Contact your administrator if you still need to file this attendance.');return;}
   const existing=attendanceRecord(eid,date);
   const patch=computedAttendancePatch(eid,date,
     document.getElementById('atin').value,document.getElementById('atout').value,document.getElementById('ast').value,
@@ -7554,6 +7584,36 @@ function pgPayroll(){
           </label>
         </div>
       </div>
+    </div>
+
+    <!-- ── Attendance Filing Deadline ── -->
+    <div class="section-header" style="margin-bottom:.75rem">Attendance Filing Deadline</div>
+    <div class="card" style="margin-bottom:1.5rem;padding:.875rem;border-top:3px solid var(--accent)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <span style="font-size:18px">⏰</span>
+        <div><div style="font-weight:700;font-size:14px">Lock employees out of filing after a deadline</div>
+          <div style="font-size:11px;color:var(--txt3)">Applies to employee self-service filing only — Admins and HR can still file or correct records after the deadline. Override this for a specific pay period from Pay Calendar.</div></div>
+        <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer">
+          <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ATTENDANCE_POLICY.filingDeadlineEnabled?'checked':''}
+            onchange="ATTENDANCE_POLICY.filingDeadlineEnabled=this.checked;render()"/> Enabled
+        </label>
+      </div>
+      ${ATTENDANCE_POLICY.filingDeadlineEnabled?`
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:.875rem">
+        <div class="field"><label>Days after the pay period's attendance window ends</label>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="number" class="finput" min="0" step="1" value="${ATTENDANCE_POLICY.filingDeadlineDaysAfterPeriodEnd}" style="font-size:13px;font-weight:700"
+              onchange="ATTENDANCE_POLICY.filingDeadlineDaysAfterPeriodEnd=parseInt(this.value)||0;render()"/>
+            <span style="font-size:11px;color:var(--txt3)">day(s)</span>
+          </div>
+          <div style="font-size:10px;color:var(--txt3);margin-top:4px">e.g. 3 = employees can still file until 3 days after the period's attendance window ends.</div>
+        </div>
+        <div class="field"><label>Deadline time</label>
+          <input type="time" class="finput" value="${ATTENDANCE_POLICY.filingDeadlineTime}" style="font-size:13px;font-weight:700"
+            onchange="ATTENDANCE_POLICY.filingDeadlineTime=this.value;render()"/>
+          <div style="font-size:10px;color:var(--txt3);margin-top:4px">Filing closes at this time on the computed deadline date.</div>
+        </div>
+      </div>`:''}
     </div>
 
     <!-- ── Deduction Section ── -->
@@ -11722,6 +11782,10 @@ function renderModal(){
         <div class="field"><label>Attendance From</label><input id="epp-att-from" type="date" class="finput" value="${p.attendanceFrom||p.from||''}"/></div>
         <div class="field"><label>Attendance To</label><input id="epp-att-to" type="date" class="finput" value="${p.attendanceTo||p.to||''}"/></div>
       </div>
+      <div class="field" style="margin-top:8px"><label>Filing Deadline Override <span style="font-weight:400;color:var(--txt3)">(optional)</span></label>
+        <input id="epp-filing-deadline" type="datetime-local" class="finput" value="${esc(p.filingDeadlineOverride||'')}"/>
+        <div style="font-size:10px;color:var(--txt3);margin-top:3px">Overrides the global filing deadline rule for this period only. Leave blank to use the global rule (Payroll → Configuration → Attendance Formula and Overtime Table).</div>
+      </div>
     </div>
     <label style="display:flex;align-items:flex-start;gap:9px;padding:10px 12px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;margin-bottom:10px;cursor:pointer">
       <input type="checkbox" id="epp-recurring" style="width:auto;accent-color:var(--accent);margin-top:2px" ${recurringEnabled?'checked':''} onchange="toggleRecurringAllowanceSelection(this,'.epp-ra-code')"/>
@@ -11755,6 +11819,7 @@ function renderModal(){
         const taxYear=parseInt(document.getElementById('epp-tax-year')?.value)||Number(String(bir1601CMonth||'').slice(0,4));
         const attFrom=document.getElementById('epp-att-from')?.value||from;
         const attTo=document.getElementById('epp-att-to')?.value||to;
+        const filingDeadlineOverride=document.getElementById('epp-filing-deadline')?.value||'';
         const co1=document.getElementById('epp-co1')?.checked||false;
         const co2=document.getElementById('epp-co2')?.checked||false;
         const recurringAllowanceCodes=[...document.querySelectorAll('.epp-ra-code:checked')].map(x=>x.value);
@@ -11763,7 +11828,7 @@ function renderModal(){
         if(from>to){toast('Period From must be before Period To','warning');return;}
         if(taxEvent!=='regular'&&!COMPANY.taxPolicy.annualizationEnabled){toast('Annualized withholding is disabled in Company Settings.','warning');return;}
         const pp=PAY_PERIODS.find(x=>x.id===${p.id});
-        if(pp){Object.assign(pp,{groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,releaseDate:rel,bir1601CMonth,taxEvent,taxYear,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,recurringAllowanceCodes});}
+        if(pp){Object.assign(pp,{groupId:gid,label:lbl,from,to,attendanceFrom:attFrom,attendanceTo:attTo,filingDeadlineOverride,releaseDate:rel,bir1601CMonth,taxEvent,taxYear,cutoff1:co1,cutoff2:co2,includeRecurringAllowances,recurringAllowanceCodes});}
         closeM();queueSync('Payroll_Periods');toast('Pay period updated!','success');render();">
         ✓ Save Changes</button>
       <button class="btn" onclick="closeM()">Cancel</button>
