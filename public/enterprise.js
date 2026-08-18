@@ -1377,6 +1377,17 @@
     if(isAdminUser(user)||isPlatformAdmin)return false;
     return typeof attendanceFilingBlocked==='function'&&attendanceFilingBlocked(dateStr);
   }
+  // Collects every date currently blocked in the open form's draft, across all form kinds
+  // (multi-row for punch/schedule, single att-form-date field for everything else), so the
+  // disabled Submit button can show exactly which date(s) triggered it instead of a generic
+  // "complete the required fields" message that would be misleading here.
+  function filingDeadlineBlockedDates(form){
+    if(!form)return[];
+    if(form.kind==='punch')return(window._correctionRows||[]).map(function(r){return r.date;}).filter(filingDeadlinePassed);
+    if(form.kind==='schedule')return(window._scheduleAdjRows||[]).map(function(r){return r.date;}).filter(filingDeadlinePassed);
+    var d=attFieldVal('att-form-date','');
+    return d&&filingDeadlinePassed(d)?[d]:[];
+  }
   function attendanceFormValid(form){
     var reason=attFieldVal('att-form-reason','').trim();
     if(!reason)return false;
@@ -1423,7 +1434,11 @@
     if(!btn||!form)return;
     var ok=attendanceFormValid(form);
     btn.disabled=!ok;
-    btn.title=ok?'':'Complete the required fields above before submitting.';
+    var blockedDates=filingDeadlineBlockedDates(form);
+    var warn=document.getElementById('att-deadline-warn');
+    if(warn)warn.innerHTML=blockedDates.length?('⚠ The filing deadline has passed for: <strong>'+blockedDates.join(', ')+'</strong>. Contact your administrator if you still need to file this.'):'';
+    if(warn)warn.style.display=blockedDates.length?'':'none';
+    btn.title=ok?'':(blockedDates.length?'The filing deadline for this date has passed.':'Complete the required fields above before submitting.');
   };
 
   window.openAttendanceForm=function(key){
@@ -1639,7 +1654,8 @@
       '<div style="max-width:'+(selected.kind==='schedule'?'100%':'760px')+'"><button class="btn btn-sm" style="margin-bottom:14px" onclick="window._attendanceFormKey=null;render()">Back to forms</button>'+
       '<div class="section-header">'+esc(selected.label)+'</div><div class="card-sub" style="margin-bottom:14px">'+esc(selected.description)+'</div>'+
       attendanceFormFields(selected)+'<div style="padding:9px 12px;background:var(--accent-bg);border-radius:8px;color:var(--accent-txt);font-size:12px;margin-bottom:12px">Your request will be routed to HR Operations for review and will not affect payroll until approved.</div>'+
-      '<div class="action-row"><button class="btn btn-primary" id="att-submit-btn" '+(!formSubmitOk?'disabled title="Complete the required fields above before submitting."':'')+' onclick="submitAttendanceFormRequest()">Submit for approval</button><button class="btn" onclick="window._attendanceFormKey=null;render()">Cancel</button></div></div>':
+      (function(){var blocked=filingDeadlineBlockedDates(selected);return '<div id="att-deadline-warn" style="'+(blocked.length?'':'display:none;')+'padding:9px 12px;background:var(--amber-bg);border-radius:8px;color:var(--amber-txt);font-size:12px;margin-bottom:12px">'+(blocked.length?('⚠ The filing deadline has passed for: <strong>'+blocked.join(', ')+'</strong>. Contact your administrator if you still need to file this.'):'')+'</div>';})()+
+      '<div class="action-row"><button class="btn btn-primary" id="att-submit-btn" '+(!formSubmitOk?'disabled title="'+(filingDeadlineBlockedDates(selected).length?'The filing deadline for this date has passed.':'Complete the required fields above before submitting.')+'"':'')+' onclick="submitAttendanceFormRequest()">Submit for approval</button><button class="btn" onclick="window._attendanceFormKey=null;render()">Cancel</button></div></div>':
       (visible.length?'<div class="attendance-catalog">'+visible.map(function(f){
         return '<button class="attendance-form-card" onclick="openAttendanceForm(\''+f.key+'\')"><span class="attendance-form-mark">'+f.short+'</span><span><strong>'+esc(f.label)+'</strong><small>'+esc(f.description)+'</small></span><span class="attendance-form-arrow">›</span></button>';
       }).join('')+'</div>':'<div class="empty-state"><div style="font-weight:700;margin-bottom:5px">No attendance forms are currently available.</div>Please contact HR if you need an attendance correction or special request.</div>')+myAttendanceFormRequests();
