@@ -5326,6 +5326,8 @@ const UPDATE_COLS=[
   {k:'loanEligibility', l:'Loan Eligibility',       grp:'Employment',  tab:'employment',dv:()=>['Y','N']},
   {k:'includeInPayroll',l:'Include in Payroll',     grp:'Employment',  tab:'employment',dv:()=>['Y','N']},
   {k:'includeInTimekeeping',l:'Include in TK',      grp:'Employment',  tab:'employment',dv:()=>['Y','N']},
+  {k:'exemptLateDeduction',      l:'Exempt Late Deduction',      grp:'Employment',  tab:'employment',dv:()=>['Y','N'],fmt:'Not applicable to Exempted schedule type'},
+  {k:'exemptUndertimeDeduction', l:'Exempt Undertime Deduction', grp:'Employment',  tab:'employment',dv:()=>['Y','N'],fmt:'Not applicable to Exempted schedule type'},
   /* Organization */
   {k:'bu',              l:'Business Unit',          grp:'Organization',tab:'employment',mov:true, dvRef:'bu'},
   {k:'dept',            l:'Department',             grp:'Organization',tab:'employment',mov:true, dvRef:'dept'},
@@ -5364,6 +5366,17 @@ const UPDATE_COLS=[
   {k:'_effectiveDate',  l:'Effective Date',         mov:true, txt:true, fmt:'MM/DD/YYYY — required for movement fields'},
   {k:'_reason',         l:'Reason for Change',      mov:true,           fmt:'Required when changing tracked fields'},
 ];
+/* Fields the bulk-update diff/apply treats as Y/N for display, regardless of how each is
+   actually stored on the employee record (see UPDATE_COLS_NATIVE_BOOLEAN below for which of
+   these are the exception). */
+const UPDATE_COLS_YN_DISPLAY=new Set(['includeInPayroll','includeInTimekeeping','exemptLateDeduction','exemptUndertimeDeduction']);
+/* Unlike includeInPayroll/includeInTimekeeping (stored as literal 'Y'/'N' strings, matching
+   this codebase's dominant convention for employee Y/N fields), exemptLateDeduction/
+   exemptUndertimeDeduction are stored as real booleans everywhere else in the app (the
+   single-employee edit checkbox, and payroll-rule-engine.js's `!employee.exemptLateDeduction`
+   check) -- a string 'N' is truthy in JS, so writing the raw 'Y'/'N' string here would silently
+   treat "not exempt" as "exempt" in payroll. */
+const UPDATE_COLS_NATIVE_BOOLEAN=new Set(['exemptLateDeduction','exemptUndertimeDeduction']);
 
 /* Returns the active column list: ref cols + visible + custom fields (from FIELD_CONFIG) + trailing */
 function getUpdateCols(){
@@ -5438,8 +5451,7 @@ function downloadUpdateTemplateXLSX(){
       if(c.k==='name')return e.name||`${e.firstName} ${e.lastName}`.trim();
       if(c.k==='immediateHeadEid')return ihEmp?`${ihEmp.eid} — ${ihEmp.name}`:(e.immediateHeadEid||'');
       if(c.k==='salaryPM')return parseFloat(e.salaryPM||0).toFixed(2);
-      if(c.k==='includeInPayroll'||c.k==='includeInTimekeeping')
-        return(e[c.k]==='Y'||e[c.k]===true)?'Y':'N';
+      if(UPDATE_COLS_YN_DISPLAY.has(c.k))return(e[c.k]==='Y'||e[c.k]===true)?'Y':'N';
       if(c.k==='_effectiveDate'||c.k==='_reason')return'';
       return String(e[c.k]??'');
     });
@@ -5534,9 +5546,9 @@ function buildBulkUpdateResults(rows){
       /* Normalise immediateHeadEid from "EID — Name" (or "EID - Name") format */
       if(c.k==='immediateHeadEid')newVal=extractEidFromRef(newVal);
       /* Normalise Y/N booleans */
-      if((c.k==='includeInPayroll'||c.k==='includeInTimekeeping')&&(newVal==='true'||newVal==='1'))newVal='Y';
-      if((c.k==='includeInPayroll'||c.k==='includeInTimekeeping')&&(newVal==='false'||newVal==='0'))newVal='N';
-      const oldVal=c.k==='includeInPayroll'||c.k==='includeInTimekeeping'
+      if(UPDATE_COLS_YN_DISPLAY.has(c.k)&&(newVal==='true'||newVal==='1'))newVal='Y';
+      if(UPDATE_COLS_YN_DISPLAY.has(c.k)&&(newVal==='false'||newVal==='0'))newVal='N';
+      const oldVal=UPDATE_COLS_YN_DISPLAY.has(c.k)
         ?(emp[c.k]==='Y'||emp[c.k]===true)?'Y':'N'
         :String(emp[c.k]??'').trim();
       if(newVal===oldVal)return;
@@ -5641,6 +5653,8 @@ function applyBulkUpdate(){
         if(parseFloat(e.salaryPM)>0)e.rate=+(e.salaryPM/div).toFixed(4);
       } else if(c.field==='includeInPayroll'||c.field==='includeInTimekeeping'){
         e[c.field]=c.to;
+      } else if(UPDATE_COLS_NATIVE_BOOLEAN.has(c.field)){
+        e[c.field]=c.to==='Y';
       } else {
         e[c.field]=c.to;
       }
