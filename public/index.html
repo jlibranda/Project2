@@ -1874,6 +1874,22 @@ function normalizeYesNoOrBlank(raw){
   if(!s)return'';
   return (s==='y'||s==='yes'||s==='true'||s==='1')?'Y':'N';
 }
+/* Builds a new employee's otFixedTiers from a bulk-upload row -- each of the 7 sub-fields is
+   independently optional and falls back to the company default template, matching how the
+   single-employee edit UI's tier fields already default when unset. */
+function buildOtFixedTiersFromRow(r){
+  const defaults=COMPANY.otFixedTiersDefault||{firstHours:2,firstAmount:500,prorateFirstTier:true,firstTierMinimumMinutes:0,succeedingRate:50,prorateSucceedingHours:true,succeedingMinimumMinutes:0};
+  const has=v=>v!==undefined&&v!==null&&String(v).trim()!=='';
+  return{
+    firstHours:has(r.otTierFirstHours)?(parseFloat(r.otTierFirstHours)||0):defaults.firstHours,
+    firstAmount:has(r.otTierFirstAmount)?(parseFloat(r.otTierFirstAmount)||0):defaults.firstAmount,
+    prorateFirstTier:has(r.otTierProrateFirst)?normalizeYesNoInput(r.otTierProrateFirst):defaults.prorateFirstTier,
+    firstTierMinimumMinutes:has(r.otTierFirstMin)?(parseFloat(r.otTierFirstMin)||0):defaults.firstTierMinimumMinutes,
+    succeedingRate:has(r.otTierSucceedingRate)?(parseFloat(r.otTierSucceedingRate)||0):defaults.succeedingRate,
+    prorateSucceedingHours:has(r.otTierProrateSucceeding)?normalizeYesNoInput(r.otTierProrateSucceeding):defaults.prorateSucceedingHours,
+    succeedingMinimumMinutes:has(r.otTierSucceedingMin)?(parseFloat(r.otTierSucceedingMin)||0):defaults.succeedingMinimumMinutes,
+  };
+}
 function downloadPersonalScheduleTemplate(){
   const emps=USERS.filter(u=>u.role==='employee'&&u.active!==false);
   const dayHeaders=[];
@@ -4988,6 +5004,10 @@ function validateBulkRow(row,idx,usedEmails,usedEids){
      already always zero automatically with no per-employee configuration. */
   if(normalizeScheduleTypeInput(row.scheduleType)==='exempted'&&(normalizeYesNoInput(row.exemptLateDeduction)||normalizeYesNoInput(row.exemptUndertimeDeduction)))
     warnings.push('Exempt Late/Undertime Deduction is not applicable to the Exempted schedule type, which is already automatically exempt — these values will be ignored.');
+  /* Fixed Amount OT — Exempted employees always use the standard percentage rate, even with
+     otPayMethod set to fixed. */
+  if(normalizeScheduleTypeInput(row.scheduleType)==='exempted'&&String(row.otPayMethod||'').trim().toLowerCase()==='fixed')
+    warnings.push('OT Pay Method "fixed" is not applicable to the Exempted schedule type, which always uses the standard percentage rate — this value will be ignored.');
   /* Govt number validation + auto-format with digit count notification */
   const govtSpec={sss:{digits:10,label:'SSS',fmt:'XX-XXXXXXX-X'},ph:{digits:12,label:'PhilHealth',fmt:'XX-XXXXXXXXX-X'},pi:{digits:12,label:'Pag-IBIG',fmt:'XXXX-XXXX-XXXX'},tin:{digits:12,label:'TIN/BIR',fmt:'XXX-XXX-XXX-XXX'}};
   const formatted={};
@@ -5144,6 +5164,10 @@ function mapLabelToKey(label){
     'position':'pos','job title':'pos',
     'employment type':'type','schedule type':'scheduleType','start date':'hired','date hired':'hired',
     'exempt late deduction':'exemptLateDeduction','exempt undertime deduction':'exemptUndertimeDeduction',
+    'ot pay method':'otPayMethod','ot first-tier hours':'otTierFirstHours','ot first-tier amount':'otTierFirstAmount',
+    'ot prorate first tier':'otTierProrateFirst','ot first-tier minimum':'otTierFirstMin',
+    'ot succeeding rate':'otTierSucceedingRate','ot prorate succeeding hours':'otTierProrateSucceeding',
+    'ot succeeding minimum':'otTierSucceedingMin',
     'entity name':'entityName','business unit':'bu',
     'department':'dept','team':'team','subteam':'subteam',
     'band level':'bandLevel','non-mass / mass':'nonMass','non-mass/mass':'nonMass',
@@ -5328,6 +5352,17 @@ const UPDATE_COLS=[
   {k:'includeInTimekeeping',l:'Include in TK',      grp:'Employment',  tab:'employment',dv:()=>['Y','N']},
   {k:'exemptLateDeduction',      l:'Exempt Late Deduction',      grp:'Employment',  tab:'employment',dv:()=>['Y','N'],fmt:'Not applicable to Exempted schedule type'},
   {k:'exemptUndertimeDeduction', l:'Exempt Undertime Deduction', grp:'Employment',  tab:'employment',dv:()=>['Y','N'],fmt:'Not applicable to Exempted schedule type'},
+  /* Overtime — otPayMethod is a flat field; the rest are flattened sub-fields of the nested
+     otFixedTiers object (see OT_TIER_SUBFIELDS), only meaningful when otPayMethod is 'fixed'.
+     None of this applies to Exempted employees, who always use the percentage rate. */
+  {k:'otPayMethod',           l:'OT Pay Method',                grp:'Overtime',tab:'compensation',dv:()=>['percentage','fixed'],fmt:'percentage or fixed. Not applicable to Exempted schedule type.'},
+  {k:'otTierFirstHours',      l:'OT First-Tier Hours',          grp:'Overtime',tab:'compensation',fmt:'Number, e.g. 2'},
+  {k:'otTierFirstAmount',     l:'OT First-Tier Amount',         grp:'Overtime',tab:'compensation',fmt:'Number, e.g. 500'},
+  {k:'otTierProrateFirst',    l:'OT Prorate First Tier',        grp:'Overtime',tab:'compensation',dv:()=>['Y','N']},
+  {k:'otTierFirstMin',        l:'OT First-Tier Minimum (min)',  grp:'Overtime',tab:'compensation',fmt:'Number of minutes, e.g. 0'},
+  {k:'otTierSucceedingRate',  l:'OT Succeeding Rate (₱/hr)',    grp:'Overtime',tab:'compensation',fmt:'Number, e.g. 50'},
+  {k:'otTierProrateSucceeding',l:'OT Prorate Succeeding Hours', grp:'Overtime',tab:'compensation',dv:()=>['Y','N']},
+  {k:'otTierSucceedingMin',   l:'OT Succeeding Minimum (min)',  grp:'Overtime',tab:'compensation',fmt:'Number of minutes, e.g. 0'},
   /* Organization */
   {k:'bu',              l:'Business Unit',          grp:'Organization',tab:'employment',mov:true, dvRef:'bu'},
   {k:'dept',            l:'Department',             grp:'Organization',tab:'employment',mov:true, dvRef:'dept'},
@@ -5377,6 +5412,40 @@ const UPDATE_COLS_YN_DISPLAY=new Set(['includeInPayroll','includeInTimekeeping',
    check) -- a string 'N' is truthy in JS, so writing the raw 'Y'/'N' string here would silently
    treat "not exempt" as "exempt" in payroll. */
 const UPDATE_COLS_NATIVE_BOOLEAN=new Set(['exemptLateDeduction','exemptUndertimeDeduction']);
+
+/* Maps each flattened OT-tier update column to its key inside the employee's nested
+   otFixedTiers object, and whether that sub-field is boolean (Y/N display) or numeric. */
+const OT_TIER_SUBFIELDS={
+  otTierFirstHours:      {k:'firstHours',              type:'num'},
+  otTierFirstAmount:     {k:'firstAmount',              type:'num'},
+  otTierProrateFirst:    {k:'prorateFirstTier',         type:'bool'},
+  otTierFirstMin:        {k:'firstTierMinimumMinutes',  type:'num'},
+  otTierSucceedingRate:  {k:'succeedingRate',           type:'num'},
+  otTierProrateSucceeding:{k:'prorateSucceedingHours',  type:'bool'},
+  otTierSucceedingMin:   {k:'succeedingMinimumMinutes', type:'num'},
+};
+/* Current display value (Y/N or a plain number string) for one OT-tier update column, falling
+   back to the company default template the same way the single-employee edit UI does. */
+function otTierSubfieldDisplay(emp,updateKey){
+  const spec=OT_TIER_SUBFIELDS[updateKey];
+  const tiers=emp.otFixedTiers||COMPANY.otFixedTiersDefault||{};
+  const raw=tiers[spec.k];
+  return spec.type==='bool'?(raw!==false?'Y':'N'):String(raw??'');
+}
+/* Merges every OT-tier sub-field change in a bulk-update row into a single cloned
+   otFixedTiers object -- these 7 columns share one nested object on the employee record, so
+   they can't each be written independently like a normal flat field. */
+function applyOtTierSubfieldChanges(e,changes){
+  const tierChanges=changes.filter(c=>OT_TIER_SUBFIELDS[c.field]);
+  if(!tierChanges.length)return;
+  const defaults=COMPANY.otFixedTiersDefault||{firstHours:2,firstAmount:500,prorateFirstTier:true,firstTierMinimumMinutes:0,succeedingRate:50,prorateSucceedingHours:true,succeedingMinimumMinutes:0};
+  const merged=Object.assign({},defaults,e.otFixedTiers||{});
+  tierChanges.forEach(c=>{
+    const spec=OT_TIER_SUBFIELDS[c.field];
+    merged[spec.k]=spec.type==='bool'?(c.to==='Y'):(parseFloat(c.to)||0);
+  });
+  e.otFixedTiers=merged;
+}
 
 /* Returns the active column list: ref cols + visible + custom fields (from FIELD_CONFIG) + trailing */
 function getUpdateCols(){
@@ -5451,6 +5520,7 @@ function downloadUpdateTemplateXLSX(){
       if(c.k==='name')return e.name||`${e.firstName} ${e.lastName}`.trim();
       if(c.k==='immediateHeadEid')return ihEmp?`${ihEmp.eid} — ${ihEmp.name}`:(e.immediateHeadEid||'');
       if(c.k==='salaryPM')return parseFloat(e.salaryPM||0).toFixed(2);
+      if(OT_TIER_SUBFIELDS[c.k])return otTierSubfieldDisplay(e,c.k);
       if(UPDATE_COLS_YN_DISPLAY.has(c.k))return(e[c.k]==='Y'||e[c.k]===true)?'Y':'N';
       if(c.k==='_effectiveDate'||c.k==='_reason')return'';
       return String(e[c.k]??'');
@@ -5545,12 +5615,16 @@ function buildBulkUpdateResults(rows){
       }
       /* Normalise immediateHeadEid from "EID — Name" (or "EID - Name") format */
       if(c.k==='immediateHeadEid')newVal=extractEidFromRef(newVal);
-      /* Normalise Y/N booleans */
-      if(UPDATE_COLS_YN_DISPLAY.has(c.k)&&(newVal==='true'||newVal==='1'))newVal='Y';
-      if(UPDATE_COLS_YN_DISPLAY.has(c.k)&&(newVal==='false'||newVal==='0'))newVal='N';
-      const oldVal=UPDATE_COLS_YN_DISPLAY.has(c.k)
-        ?(emp[c.k]==='Y'||emp[c.k]===true)?'Y':'N'
-        :String(emp[c.k]??'').trim();
+      /* Normalise Y/N booleans (includes the boolean OT-tier sub-fields) */
+      const isYNField=UPDATE_COLS_YN_DISPLAY.has(c.k)||OT_TIER_SUBFIELDS[c.k]?.type==='bool';
+      if(isYNField&&(newVal==='true'||newVal==='1'))newVal='Y';
+      if(isYNField&&(newVal==='false'||newVal==='0'))newVal='N';
+      let oldVal;
+      if(OT_TIER_SUBFIELDS[c.k])oldVal=otTierSubfieldDisplay(emp,c.k);
+      else if(UPDATE_COLS_YN_DISPLAY.has(c.k))oldVal=(emp[c.k]==='Y'||emp[c.k]===true)?'Y':'N';
+      else oldVal=String(emp[c.k]??'').trim();
+      // Numeric OT-tier sub-fields: compare as numbers so "500" vs "500.0" isn't a false diff.
+      if(OT_TIER_SUBFIELDS[c.k]?.type==='num'&&newVal!==''&&(Number(newVal)===Number(oldVal)))return;
       if(newVal===oldVal)return;
       const change={field:c.k,label:c.l,from:oldVal,to:newVal,isMovement:!!c.mov};
       changes.push(change);
@@ -5655,10 +5729,15 @@ function applyBulkUpdate(){
         e[c.field]=c.to;
       } else if(UPDATE_COLS_NATIVE_BOOLEAN.has(c.field)){
         e[c.field]=c.to==='Y';
+      } else if(OT_TIER_SUBFIELDS[c.field]){
+        /* Applied together after this loop via applyOtTierSubfieldChanges -- these 7 columns
+           share one nested otFixedTiers object, so writing them one at a time here would
+           overwrite each other instead of merging. */
       } else {
         e[c.field]=c.to;
       }
     });
+    applyOtTierSubfieldChanges(e,changes);
     e.name=`${e.firstName} ${e.lastName}`.trim();
     /* Record movement for tracked changes */
     if(movChanges.length){
@@ -5764,6 +5843,14 @@ function downloadTemplateXLSX(){
   if(fvis('compensation','currency'))      col({k:'currency',       l:'Currency',               dv:LOOKUPS.currencies.map(c=>c.code)});
   col({k:'payType',       l:'Pay Type',            dv:LOOKUPS.payTypes.map(t=>t.code)});
   col({k:'dailyDivisor',  l:'Daily Rate Divisor',  fmt:`Number up to 4 decimals (blank = ${formatDailyDivisor(COMPANY.dailyDivisor||22)})`});
+  col({k:'otPayMethod',           l:'OT Pay Method',                fmt:'percentage or fixed — leave blank = percentage. Not applicable to Exempted schedule type.', dv:['percentage','fixed']});
+  col({k:'otTierFirstHours',      l:'OT First-Tier Hours',          fmt:`Number — leave blank = company default (${COMPANY.otFixedTiersDefault?.firstHours ?? 2})`});
+  col({k:'otTierFirstAmount',     l:'OT First-Tier Amount',         fmt:`Number — leave blank = company default (${COMPANY.otFixedTiersDefault?.firstAmount ?? 500})`});
+  col({k:'otTierProrateFirst',    l:'OT Prorate First Tier',        fmt:'Y/N — leave blank = company default', dv:['Y','N']});
+  col({k:'otTierFirstMin',        l:'OT First-Tier Minimum (min)',  fmt:'Number of minutes — leave blank = company default'});
+  col({k:'otTierSucceedingRate',  l:'OT Succeeding Rate (₱/hr)',    fmt:`Number — leave blank = company default (${COMPANY.otFixedTiersDefault?.succeedingRate ?? 50})`});
+  col({k:'otTierProrateSucceeding',l:'OT Prorate Succeeding Hours', fmt:'Y/N — leave blank = company default', dv:['Y','N']});
+  col({k:'otTierSucceedingMin',   l:'OT Succeeding Minimum (min)',  fmt:'Number of minutes — leave blank = company default'});
   if(fvis('compensation','mobileAllowance')) col({k:'mobileAllowance',l:'Mobile Allowance',     fmt:'Number only'});
   if(fvis('compensation','riceAllowance'))   col({k:'riceAllowance', l:'Rice Allowance',        fmt:'Number only'});
   if(fvis('compensation','stockOptions'))    col({k:'stockOptions',  l:'Stock Options',         dv:['Y','N']});
@@ -5916,6 +6003,8 @@ function confirmBulkUpload(validatedRows){
       scheduleType:normalizeScheduleTypeInput(r.scheduleType)||'normal',
       exemptLateDeduction:normalizeYesNoInput(r.exemptLateDeduction),
       exemptUndertimeDeduction:normalizeYesNoInput(r.exemptUndertimeDeduction),
+      otPayMethod:String(r.otPayMethod||'').trim().toLowerCase()==='fixed'?'fixed':'percentage',
+      otFixedTiers:buildOtFixedTiersFromRow(r),
       active:true,accessLevelId:5,
       hired,bday,
       rate,salaryPM:+salPM.toFixed(2),
