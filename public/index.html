@@ -634,6 +634,7 @@ const PERM_DEFS=[
   {grp:'Self-Service',        k:'profilechanges',     l:'Profile Change Requests',         desc:'Submit changes to own profile for HR approval',                                         sub:false},
   {grp:'Self-Service',        k:'profile_approve',    l:'Approve Profile Changes',         desc:'Review and approve or reject employee self-edit requests',                              sub:true},
   {grp:'Self-Service',        k:'resolution',         l:'Resolution Center',               desc:'File and track HR/payroll support cases; admins triage and resolve from the same queue', sub:false},
+  {grp:'Self-Service',        k:'teamview',           l:'Team View',                       desc:'For anyone who approves for others: pending attendance approvals, team schedule access, and approval delegation, all scoped to their own approval chain', sub:false},
 
   /* ── TIME & ATTENDANCE ────────────────────────────────────── */
   {grp:'Time & Attendance',   k:'webbundy',           l:'Web Bundy (Clock-in)',             desc:'Clock in/out using the GPS-tagged web bundy tool',                                     sub:false},
@@ -685,7 +686,7 @@ const ACCESS_PRESETS={
     dashboard:true,myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,emp_view_personal:true,
     webbundy:true,attendance:true,leave:true,leave_apply:true,
     myslips:true,loans:true,loans_apply:true,
-    performance:true,perf_self:true,assistant:true,profilechanges:true,resolution:true,
+    performance:true,perf_self:true,assistant:true,profilechanges:true,resolution:true,teamview:true,
   },
   'Team Leader':{
     dashboard:true,employees:true,emp_view_personal:true,emp_view_employment:true,myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,
@@ -693,7 +694,7 @@ const ACCESS_PRESETS={
     leave:true,leave_apply:true,leave_approve:true,
     myslips:true,loans:true,loans_apply:true,
     performance:true,perf_manage:true,perf_self:true,
-    analytics:true,assistant:true,profilechanges:true,resolution:true,
+    analytics:true,assistant:true,profilechanges:true,resolution:true,teamview:true,
   },
   'HR Staff':{
     dashboard:true,
@@ -704,7 +705,7 @@ const ACCESS_PRESETS={
     leave:true,leave_apply:true,leave_approve:true,leave_credits:true,
     government:true,myslips:true,all_payslips:true,loans:true,loans_apply:true,loans_approve:true,
     recruitment:true,recruitment_manage:true,performance:true,perf_manage:true,perf_self:true,
-    analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,
+    analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,teamview:true,
     orgsetup:true,lookupsetup:true,accesssetup:true,approvalsetup:true,
   },
   'Payroll Specialist':{
@@ -715,7 +716,7 @@ const ACCESS_PRESETS={
     webbundy:true,attendance:true,att_edit:true,bundyadmin:true,
     leave:true,leave_apply:true,
     payroll:true,payroll_approve:true,government:true,myslips:true,all_payslips:true,loans:true,loans_approve:true,
-    analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,
+    analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,teamview:true,
   },
   'Department Head':{
     dashboard:true,
@@ -725,7 +726,7 @@ const ACCESS_PRESETS={
     leave:true,leave_apply:true,leave_approve:true,
     myslips:true,loans:true,loans_apply:true,
     recruitment:true,recruitment_manage:true,performance:true,perf_manage:true,perf_self:true,
-    analytics:true,reports:true,assistant:true,resolution:true,
+    analytics:true,reports:true,assistant:true,resolution:true,teamview:true,
   },
   'Finance Officer':{
     dashboard:true,
@@ -733,19 +734,19 @@ const ACCESS_PRESETS={
     myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,
     webbundy:true,attendance:true,leave:true,leave_apply:true,
     payroll:true,payroll_approve:true,government:true,myslips:true,all_payslips:true,loans:true,loans_approve:true,
-    analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,
+    analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,teamview:true,
   },
   'IT Admin':{
     dashboard:true,myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,
     webbundy:true,leave:true,leave_apply:true,myslips:true,
-    accesssetup:true,access_manage:true,gsheets:true,zksetup:true,assistant:true,resolution:true,
+    accesssetup:true,access_manage:true,gsheets:true,zksetup:true,assistant:true,resolution:true,teamview:true,
   },
   'Auditor':{
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_compensation:true,emp_view_govt:true,emp_view_movements:true,emp_export:true,
     myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,attendance:true,bundyadmin:true,leave:true,
     myslips:true,all_payslips:true,government:true,loans:true,
-    analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,
+    analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,teamview:true,
   },
   'Full Admin':Object.fromEntries(PERM_DEFS.map(p=>[p.k,true])),
 };
@@ -3938,6 +3939,7 @@ function sidebarSections(){
       ...(has('attendance')?[{v:'attendance',k:'clock',l:'Attendance',badge:isA?attendanceRecords().filter(a=>a.approvalStatus==='pending').length:0}]:[]),
       ...(has('leave')?[{v:'leave',k:'leave',l:'Leave',badge:isA?pendingLeaves():0}]:[]),
       ...(has('bundyadmin')?[{v:'bundyadmin',k:'chart',l:'Web Bundy Monitor'}]:[]),
+      ...(has('teamview')&&!isA?[{v:'teamview',k:'people',l:'Team View',badge:pendingApprovalsFor(user.eid).length}]:[]),
     ]},
     {title:'Payroll',items:[
       ...(has('payroll')?[{v:'payroll',k:'peso',l:'Payroll'}]:[]),
@@ -14638,7 +14640,57 @@ function getApprovalChain(empEid,maxLayersOverride){
     }
     if(natural[i])chain.push({layer:layerNum,approver:natural[i],mode:'chain'});
   }
+  /* Temporary Approval Delegation — an approver can redirect their own layer(s) to someone
+     else for a validity window (or indefinitely, until they revoke it). Applied last, after
+     the natural/override chain is built, so a delegated-to person shows up with the same
+     mode/layer semantics either way; a single hop only (no delegate-of-a-delegate chasing),
+     guarded so a delegate can never resolve back to the original approver (a same-day swap
+     both ways would otherwise loop the two into resolving to each other). */
+  chain.forEach(entry=>{
+    const delegate=resolveApprovalDelegate(entry.approver);
+    if(delegate&&delegate.eid!==entry.approver.eid)entry.approver=delegate;
+  });
   return chain;
+}
+
+/* Returns the employee currently covering approverEmp's delegated approvals (if any active
+   delegation exists right now), else null. today() is compared as plain YYYY-MM-DD strings,
+   same as every other date field in this app. */
+function resolveApprovalDelegate(approverEmp){
+  const d=approverEmp&&approverEmp.approvalDelegate;
+  if(!d||!d.toEid)return null;
+  const tod=today();
+  if(d.from&&tod<d.from)return null;
+  if(d.to&&tod>d.to)return null;
+  const delegate=USERS.find(u=>u.eid===d.toEid);
+  return delegate&&delegate.active!==false?delegate:null;
+}
+
+/* Self-service delegation setup — the acting user delegates their own approvals to someone
+   else, with an optional validity window (blank end date = indefinite, until revoked). */
+function setApprovalDelegate(toEid,from,to,reason){
+  if(!user)return;
+  const me=USERS.find(u=>u.eid===user.eid);
+  if(!me)return;
+  if(!toEid){toast('Choose who to delegate to.','warning');return;}
+  if(toEid===me.eid){toast('You cannot delegate to yourself.','warning');return;}
+  const delegate=USERS.find(u=>u.eid===toEid);
+  if(!delegate||delegate.active===false){toast('That employee is not an active user.','warning');return;}
+  if(!from){toast('Choose a start date.','warning');return;}
+  if(to&&to<from){toast('The end date cannot be before the start date.','warning');return;}
+  me.approvalDelegate={toEid,from,to:to||'',reason:reason||''};
+  queueSync('Employees');
+  toast(`Approvals delegated to ${delegate.name}${to?' through '+to:' (no end date — revoke anytime)'}.`,'success');
+  render();
+}
+function clearApprovalDelegate(){
+  if(!user)return;
+  const me=USERS.find(u=>u.eid===user.eid);
+  if(!me||!me.approvalDelegate)return;
+  me.approvalDelegate=null;
+  queueSync('Employees');
+  toast('Delegation revoked.','success');
+  render();
 }
 
 /* Every pending attendance record whose currently-resolved approver (per getApprovalChain)
@@ -14652,6 +14704,104 @@ function pendingApprovalsFor(approverEid){
     const layerEntry=chain.find(c=>c.layer===(a.approvalLayer||1));
     return layerEntry&&layerEntry.approver.eid===approverEid;
   });
+}
+
+/* ═══════════════════════════════════════════════════════════
+   TEAM VIEW — for any employee who currently approves for
+   others: pending attendance approvals, team schedule access,
+   and approval delegation, all scoped to their own team.
+   ═══════════════════════════════════════════════════════════ */
+function pgTeamView(){
+  const tabs=['Pending Approvals','Team Schedule','My Delegation'];
+  const teamMembers=USERS.filter(e=>e.role==='employee'&&e.immediateHeadEid===user.eid).sort(cmpEmpName);
+  const pendingCount=pendingApprovalsFor(user.eid).length;
+  const body=tab===1?teamViewScheduleTab(teamMembers):tab===2?teamViewDelegationTab():teamViewPendingTab();
+  return`<div class="page-header"><div><div class="page-title">Team View</div><div class="page-sub">${teamMembers.length} direct report${teamMembers.length!==1?'s':''} · ${pendingCount} pending approval${pendingCount!==1?'s':''}</div></div></div>
+  <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${esc(t)}${i===0&&pendingCount?redBubble(pendingCount):''}</div>`).join('')}</div>
+  <div class="card">${body}</div>`;
+}
+
+function teamViewPendingTab(){
+  if(!window._teamViewFilters)window._teamViewFilters={type:'',from:'',status:''};
+  const f=window._teamViewFilters;
+  let rows=pendingApprovalsFor(user.eid);
+  if(f.from)rows=rows.filter(a=>a.date>=f.from);
+  if(f.status)rows=rows.filter(a=>a.status===f.status);
+  if(f.type)rows=rows.filter(a=>(window.attendanceRecordRequestType?attendanceRecordRequestType(a):'daily')===f.type);
+  rows=rows.slice().sort((a,b)=>(b.date+b.id).localeCompare(a.date+a.id));
+  const typeLabels=window.ATTENDANCE_REQUEST_TYPE_LABELS||{daily:'Daily Attendance'};
+  const hasFilters=!!(f.type||f.from||f.status);
+  return`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:14px">
+    <div class="field" style="min-width:190px"><label>Type</label>
+      <select class="finput" style="font-size:13px" onchange="window._teamViewFilters.type=this.value;render()">
+        <option value="">All types</option>
+        ${Object.keys(typeLabels).map(k=>`<option value="${k}" ${f.type===k?'selected':''}>${esc(typeLabels[k])}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field" style="min-width:150px"><label>From</label>
+      <input type="date" class="finput" style="font-size:13px" value="${esc(f.from)}" onchange="window._teamViewFilters.from=this.value;render()"/>
+    </div>
+    <div class="field" style="min-width:150px"><label>Status</label>
+      <select class="finput" style="font-size:13px" onchange="window._teamViewFilters.status=this.value;render()">
+        <option value="">All statuses</option>
+        <option value="present" ${f.status==='present'?'selected':''}>Present</option>
+        <option value="late" ${f.status==='late'?'selected':''}>Late</option>
+        <option value="absent" ${f.status==='absent'?'selected':''}>Absent</option>
+      </select>
+    </div>
+    ${hasFilters?`<button class="btn btn-sm" onclick="window._teamViewFilters={type:'',from:'',status:''};render()">✕ Clear filters</button>`:''}
+  </div>
+  <div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>Type</th><th>In / Out</th><th>Work status</th><th>Actions</th></tr></thead><tbody>
+  ${rows.length?rows.map(a=>{
+    const emp=USERS.find(u=>u.id===a.eid);
+    const typeKey=window.attendanceRecordRequestType?attendanceRecordRequestType(a):'daily';
+    return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?emp.name:'?')}</div><div><div style="font-weight:600">${esc(fmtEmpName(emp)||'?')}</div><div style="font-size:10px;color:var(--txt3)">${esc(emp?emp.eid:'')}</div></div></div></td>
+      <td class="mono">${a.date}</td>
+      <td><span class="badge b-info">${esc(typeLabels[typeKey]||typeKey)}</span></td>
+      <td class="mono">${a.tin||'—'} – ${a.tout||'—'}</td>
+      <td><span class="badge b-${a.status}">${esc(a.status)}</span></td>
+      <td><div class="action-row"><button class="btn btn-sm btn-success" onclick="actAttendance(${a.id},'approved')">Approve</button><button class="btn btn-sm btn-danger" onclick="actAttendance(${a.id},'rejected')">Reject</button></div></td></tr>`;
+  }).join(''):`<tr><td colspan="6" class="empty-state">${hasFilters?'No pending approvals match these filters.':'No pending attendance approvals right now.'}</td></tr>`}
+  </tbody></table></div>`;
+}
+
+function teamViewScheduleTab(teamMembers){
+  if(!teamMembers.length)return'<div class="empty-state">No one reports directly to you.</div>';
+  return`<div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Position</th><th>Schedule Type</th><th>Current Pattern</th><th></th></tr></thead><tbody>
+  ${teamMembers.map(e=>{
+    const hasPersonal=!!e.personalSchedule;
+    return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(e.name)}</div><div style="font-weight:600">${esc(fmtEmpName(e))}</div></div></td>
+      <td>${esc(e.pos||'—')}</td>
+      <td>${esc(SCHEDULE_TYPE_LABELS[e.scheduleType]||'Normal Shift')}</td>
+      <td style="font-size:12px;color:var(--txt3)">${hasPersonal?'Personal schedule':'Follows assigned shift'}</td>
+      <td><button class="btn btn-sm" onclick="openPersonalScheduleEditor(${e.id})">${hasPersonal?'Edit Schedule':'Set Personal Schedule'}</button></td></tr>`;
+  }).join('')}
+  </tbody></table></div>`;
+}
+
+function teamViewDelegationTab(){
+  const me=USERS.find(u=>u.eid===user.eid);
+  const d=me&&me.approvalDelegate;
+  const isActive=d&&resolveApprovalDelegate(me);
+  const eligibleDelegates=USERS.filter(u=>u.role==='employee'&&u.eid!==user.eid&&u.active!==false);
+  if(!window._teamViewDelegateDraft)window._teamViewDelegateDraft={toEid:d?d.toEid:'',from:d?d.from:today(),to:d?d.to:'',reason:d?d.reason:''};
+  const draft=window._teamViewDelegateDraft;
+  return`${d?`<div style="padding:12px 14px;background:${isActive?'var(--accent-bg)':'var(--bg)'};border:1px solid ${isActive?'var(--accent)':'var(--border)'};border-radius:8px;margin-bottom:16px">
+      <div style="font-weight:600;margin-bottom:4px">${isActive?'Currently delegated':'Delegation configured — not active yet'}</div>
+      <div style="font-size:13px;color:var(--txt3)">To ${esc((USERS.find(u=>u.eid===d.toEid)||{}).name||d.toEid)} · ${esc(d.from)}${d.to?' – '+esc(d.to):' (no end date)'}${d.reason?' · '+esc(d.reason):''}</div>
+      <button class="btn btn-sm btn-danger" style="margin-top:8px" onclick="clearApprovalDelegate()">Revoke Delegation</button>
+    </div>`:''}
+  <div class="section-header">${d?'Update Delegation':'Delegate My Approvals'}</div>
+  <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">Temporarily route your approval-chain layers to someone else — while on leave, traveling, or any period you won't be available. Leave End Date blank to keep it active until you revoke it.</div>
+  <div class="form-row">
+    <div class="field"><label>Delegate to</label>${empPickerInput({id:'teamview-delegate-picker',users:eligibleDelegates,value:draft.toEid,placeholder:'— Select employee —',onchange:"window._teamViewDelegateDraft.toEid=v"})}</div>
+  </div>
+  <div class="form-row">
+    <div class="field"><label>Start Date</label><input type="date" class="finput" value="${esc(draft.from)}" onchange="window._teamViewDelegateDraft.from=this.value"/></div>
+    <div class="field"><label>End Date <span style="font-weight:400;color:var(--txt3)">(optional)</span></label><input type="date" class="finput" value="${esc(draft.to)}" onchange="window._teamViewDelegateDraft.to=this.value"/></div>
+  </div>
+  <div class="field"><label>Reason <span style="font-weight:400;color:var(--txt3)">(optional)</span></label><input type="text" class="finput" value="${esc(draft.reason)}" placeholder="e.g. On leave" onchange="window._teamViewDelegateDraft.reason=this.value"/></div>
+  <button class="btn btn-primary" onclick="setApprovalDelegate(window._teamViewDelegateDraft.toEid,window._teamViewDelegateDraft.from,window._teamViewDelegateDraft.to,window._teamViewDelegateDraft.reason)">Save Delegation</button>`;
 }
 
 function openApprovalConfig(empId){
@@ -16147,6 +16297,7 @@ function render(){
     else if(view==='reports')pg=gate('reports','Reports',pgReports);
     else if(view==='assistant')pg=gate('assistant','HR Assistant',pgAssistant);
     else if(view==='resolution')pg=gate('resolution','Resolution Center',pgResolution);
+    else if(view==='teamview')pg=gate('teamview','Team View',pgTeamView);
     else if(view==='orgsetup')pg=gate('orgsetup','Org Structure',pgOrgSetup);
     else if(view==='approvalsetup')pg=gate('approvalsetup','Approval Layers',pgApprovalSetup);
     else if(view==='lookupsetup')pg=gate('lookupsetup','Lookup Tables',pgLookupSetup);
