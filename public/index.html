@@ -1189,6 +1189,7 @@ function updateAttritionCodeOptions(sepType){
 function checkOffboarding(){
   const tod=today();
   let terminated=0,converted=0;
+  const transferNotes=[];
   USERS.forEach(u=>{
     /* Self-heal legacy records where status was mistakenly set to the employment type
        ('probationary') instead of the lifecycle state — status (active/terminated) and type
@@ -1206,6 +1207,16 @@ function checkOffboarding(){
     }
     if(!u.effectiveTermDate)return;
     if(u.effectiveTermDate<=tod&&u.active!==false){
+      /* Unlike the admin-initiated path in applyEmpSave(), this runs silently in the
+         background on any render — a blocking confirm() dialog here would ambush whoever
+         happens to load the app the day the date arrives. getApprovalChain() already skips
+         inactive approvers on its own, so pending items still resolve correctly with no
+         dialog needed; this just leaves an audit trail of who they moved to. */
+      const pending=pendingApprovalsFor(u.eid);
+      if(pending.length){
+        const successor=USERS.find(h=>h.eid===u.immediateHeadEid);
+        transferNotes.push(`${u.name}'s ${pending.length} pending attendance approval(s) moved to ${successor?successor.name:'no one (no one configured above them in the hierarchy)'}`);
+      }
       u.active=false;u.status='terminated';u.projectedAttrition=false;terminated++;
     }else if(u.effectiveTermDate>tod&&u.terminationType&&u.terminationType!=='N/A'){
       u.projectedAttrition=true;u.active=true;
@@ -1213,6 +1224,7 @@ function checkOffboarding(){
   });
   if(terminated)gsLog(`Auto-deactivated ${terminated} employee(s) — termination date reached`,'info');
   if(converted)gsLog(`${converted} employee(s) automatically converted to Regular — probation period ended`,'info');
+  transferNotes.forEach(note=>gsLog(note,'info'));
 }
 
 
@@ -14593,15 +14605,25 @@ function getApprovalChain(empEid,maxLayersOverride){
   );
   const overrides=empCfg.overrides||{};
 
-  /* Pre-compute the natural chain positions (immediate head hierarchy) */
+  /* Pre-compute the natural chain positions (immediate head hierarchy). A head who has
+     resigned/been terminated (active===false) is skipped -- the walk continues up through
+     THEIR immediateHeadEid instead, so a pending approval automatically resolves to the next
+     active person in the hierarchy rather than getting stuck on someone who can no longer act
+     on it. */
   const natural=[];
   let curEid=empEid;
   const visited=new Set([empEid]);
   for(let i=0;i<numLayers;i++){
-    const cur=USERS.find(u=>u.eid===curEid);
-    const head=cur?USERS.find(u=>u.eid===cur.immediateHeadEid):null;
-    natural.push(head||null);
-    if(head&&!visited.has(head.eid)){visited.add(head.eid);curEid=head.eid;}
+    let head=null,probeEid=curEid;
+    for(;;){
+      const probe=USERS.find(u=>u.eid===probeEid);
+      const candidate=probe?USERS.find(u=>u.eid===probe.immediateHeadEid):null;
+      if(!candidate||visited.has(candidate.eid))break;
+      if(candidate.active===false){visited.add(candidate.eid);probeEid=candidate.eid;continue;}
+      head=candidate;break;
+    }
+    natural.push(head);
+    if(head){visited.add(head.eid);curEid=head.eid;}
     else{for(let j=i+1;j<numLayers;j++)natural.push(null);break;}
   }
 
@@ -14617,6 +14639,19 @@ function getApprovalChain(empEid,maxLayersOverride){
     if(natural[i])chain.push({layer:layerNum,approver:natural[i],mode:'chain'});
   }
   return chain;
+}
+
+/* Every pending attendance record whose currently-resolved approver (per getApprovalChain)
+   is approverEid -- used by the resignation confirm-and-transfer flow below. */
+function pendingApprovalsFor(approverEid){
+  return attendanceRecords().filter(a=>{
+    if(a.approvalStatus!=='pending')return false;
+    const owner=USERS.find(u=>u.id===a.eid);
+    if(!owner)return false;
+    const chain=getApprovalChain(owner.eid);
+    const layerEntry=chain.find(c=>c.layer===(a.approvalLayer||1));
+    return layerEntry&&layerEntry.approver.eid===approverEid;
+  });
 }
 
 function openApprovalConfig(empId){
@@ -15652,6 +15687,23 @@ function saveEmpEdit(){
   applyEmpSave('');
 }
 
+/* Before deactivating an approver, surface any pending attendance approvals currently
+   awaiting them and let the admin confirm the transfer -- once confirmed, getApprovalChain()
+   automatically routes those (and any future) pending approvals to the next active person up
+   the hierarchy on its own, since it already skips inactive approvers when walking the chain.
+   Declining leaves the employee active for now, so the admin can sort out the pending items
+   first and re-save afterward. Returns true if it's OK to proceed with deactivation. */
+function confirmPendingApprovalTransfer(e){
+  const pending=pendingApprovalsFor(e.eid);
+  if(!pending.length)return true;
+  const successor=USERS.find(u=>u.eid===e.immediateHeadEid);
+  const affected=new Set(pending.map(a=>a.eid)).size;
+  const msg=successor
+    ?`${e.name} is the approver for ${pending.length} pending attendance form(s) across ${affected} employee(s).\n\nTransfer these to ${successor.name} (next in the approval hierarchy)?`
+    :`${e.name} is the approver for ${pending.length} pending attendance form(s) across ${affected} employee(s).\n\nNo one is configured above them in the hierarchy — these will be left without an active approver until reassigned manually in Company Settings > Approval Layers.\n\nProceed with deactivation anyway?`;
+  return confirm(msg);
+}
+
 function applyEmpSave(reason){
   const e=USERS.find(u=>u.id===detailEmpId);
   if(!e)return;
@@ -15699,12 +15751,12 @@ function applyEmpSave(reason){
       e.projectedAttrition=true;e.active=true;
       alert(`ℹ Projected Attrition noted for ${e.name}.\n\nEffective date: ${e.effectiveTermDate}\n\nAccess remains active until that date is reached.`);
     } else if(hasReachedDate||!e.effectiveTermDate){
-      if(e.active!==false){
+      if(e.active!==false&&confirmPendingApprovalTransfer(e)){
         e.active=false;e.status='terminated';e.projectedAttrition=false;
         alert(`⚠ Access automatically disabled for ${e.name} — "${e.terminationType}".`);
       }
     }
-  } else if(e.effectiveTermDate&&e.effectiveTermDate<=today()&&e.active!==false){
+  } else if(e.effectiveTermDate&&e.effectiveTermDate<=today()&&e.active!==false&&confirmPendingApprovalTransfer(e)){
     e.active=false;e.status='terminated';e.projectedAttrition=false;
   }
   closeM();
