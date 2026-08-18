@@ -72,6 +72,26 @@
     return c.linkedType?c.linkedType.charAt(0).toUpperCase()+c.linkedType.slice(1):'General inquiry';
   }
 
+  var ATTENDANCE_REQUEST_TYPE_LABELS={
+    daily:'Daily Attendance',time_correction:'Time Correction',overtime:'Overtime',
+    rest_day_holiday:'Rest Day / Holiday',undertime:'Undertime',
+    official_business:'Official Business',work_from_home:'Work From Home',
+    schedule_adjustment:'Schedule Adjustment'
+  };
+  window.ATTENDANCE_REQUEST_TYPE_LABELS=ATTENDANCE_REQUEST_TYPE_LABELS;
+  // RESOLUTION_CASES lives in this file's own closure, unreachable from index.html directly --
+  // this is the one exported way for Team View (and anywhere else outside this file) to learn
+  // which filed request (if any) produced a given ATT row, since a plain daily attendance
+  // sign-off has no case behind it at all and defaults to 'daily'.
+  window.attendanceRecordRequestType=function(record){
+    if(!record)return'daily';
+    var c=RESOLUTION_CASES.find(function(x){
+      return (x.linkedType==='attendance'&&x.linkedId===record.id)||
+        (Array.isArray(x.attendanceRecordIds)&&x.attendanceRecordIds.indexOf(record.id)>=0);
+    });
+    return (c&&c.attendanceRequestType)||'daily';
+  };
+
   window.openResolutionForm=function(category,linkedType,linkedId) {
     window._resolutionForm={category:category||'Attendance',linkedType:linkedType||'',linkedId:linkedId||null};
     view='resolution';tab=(isAdminUser(user)||isPlatformAdmin)?0:1;render();
@@ -618,10 +638,15 @@
   // hours or rest day genuinely differ from everyone else on the same shift — without forking
   // a new shared template just for them. TimekeepingCore checks this before falling back to
   // the assigned shift; an approved Schedule Adjustment still overrides both.
+  // Direct-reports-only, matching how getApprovalChain() reads immediateHeadEid -- no
+  // walking further up the hierarchy for this check.
+  window.isManagerOf=function(managerUser,employee){
+    return !!(managerUser&&employee&&employee.immediateHeadEid===managerUser.eid);
+  };
   window.openPersonalScheduleEditor=function(employeeId){
-    if(!(isAdminUser(user)||isPlatformAdmin))return;
     var employee=USERS.find(function(e){return e.id===employeeId;});
     if(!employee)return;
+    if(!(isAdminUser(user)||isPlatformAdmin||isManagerOf(user,employee)))return;
     var isNew=!employee.personalSchedule;
     var baseSchedule;
     if(!isNew){
@@ -648,9 +673,9 @@
   };
 
   window.savePersonalSchedule=function(){
-    if(!(isAdminUser(user)||isPlatformAdmin))return;
     var employee=USERS.find(function(e){return e.id===modal.employeeId;});
     if(!employee)return;
+    if(!(isAdminUser(user)||isPlatformAdmin||isManagerOf(user,employee)))return;
     var d=modal.draft;
     var amPmFixes=[];
     for(var i=0;i<SHIFT_DAY_KEYS.length;i++){
