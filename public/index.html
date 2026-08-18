@@ -2975,6 +2975,7 @@ const ALL_MODULES=[
   {k:'leave',       l:'Leave Management',    grp:'Time & Attendance'},
   {k:'webbundy',    l:'Web Bundy (GPS)',      grp:'Time & Attendance'},
   {k:'bundyadmin',  l:'Web Bundy Monitor',   grp:'Time & Attendance'},
+  {k:'teamview',    l:'Team View',           grp:'Time & Attendance'},
   {k:'payroll',     l:'Payroll',             grp:'Payroll'},
   {k:'government',  l:'Gov\'t Remittances',  grp:'Payroll'},
   {k:'myslips',     l:'My Payslips',         grp:'Payroll'},
@@ -3939,7 +3940,7 @@ function sidebarSections(){
       ...(has('attendance')?[{v:'attendance',k:'clock',l:'Attendance',badge:isA?attendanceRecords().filter(a=>a.approvalStatus==='pending').length:0}]:[]),
       ...(has('leave')?[{v:'leave',k:'leave',l:'Leave',badge:isA?pendingLeaves():0}]:[]),
       ...(has('bundyadmin')?[{v:'bundyadmin',k:'chart',l:'Web Bundy Monitor'}]:[]),
-      ...(has('teamview')&&!isA?[{v:'teamview',k:'people',l:'Team View',badge:pendingApprovalsFor(user.eid).length}]:[]),
+      ...(has('teamview')?[{v:'teamview',k:'people',l:'Team View',badge:pendingApprovalsFor(user.eid).length}]:[]),
     ]},
     {title:'Payroll',items:[
       ...(has('payroll')?[{v:'payroll',k:'peso',l:'Payroll'}]:[]),
