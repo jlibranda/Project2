@@ -254,6 +254,7 @@ tr:hover td{background:var(--accent-bg) !important}
 <div id="root"></div>
 <script src="/timekeeping-core.js?v=20260814-summary-total-late-fix"></script>
 <script src="/payroll-rule-engine.js?v=20260803-four-decimal-divisor-engine"></script>
+<script src="/ot-fixed-tier.js?v=20260818-dual-prorate-toggles"></script>
 <script>
 /* ========== DATA ========== */
 /* ---- ORG STRUCTURE (BU → Dept → Team → Subteam) ---- */
@@ -491,19 +492,8 @@ function attendanceRecord(eid,date){return TimekeepingCore.canonicalRecord(ATT,e
 function attendanceRecords(){return TimekeepingCore.canonicalRecords(ATT);}
 function upsertAttendance(eid,date,patch){return TimekeepingCore.upsert(ATT,eid,date,patch,function(){return nAtt++;},user&&user.name);}
 function attendancePeriodSummary(emp,from,to){return TimekeepingCore.periodSummary(ATT,emp,from,to,COMPANY.shifts||[],COMPANY.holidays||[],COMPANY.startOfWeek);}
-/* Fixed Amount (tiered) Overtime Pay -- e.g. "first 2 hrs = P500, succeeding hrs = P50/hr".
-   Shared with payroll-governance.js's fixedTierOTPayAmount(), which drives the actual payroll
-   OT calculation via PayrollRuleEngine's otOverrideAmount. */
-function computeFixedTierOTPay(hours,tiers){
-  const h=Math.max(0,Number(hours)||0);
-  if(!h)return 0;
-  const firstHours=Math.max(0,Number(tiers.firstHours)||0);
-  const firstAmount=Number(tiers.firstAmount)||0;
-  const succeedingRate=Number(tiers.succeedingRate)||0;
-  if(!firstHours)return h*succeedingRate;
-  if(h<=firstHours)return tiers.prorateFirstTier?firstAmount*(h/firstHours):firstAmount;
-  return firstAmount+(h-firstHours)*succeedingRate;
-}
+// computeFixedTierOTPay now lives in ot-fixed-tier.js (loaded via <script src> below), shared
+// as-is with payroll-governance.js's fixedTierOTPayAmount() and Node test coverage.
 function myFlaggedAttendance(){
   if(!user)return[];
   return attendanceRecords().filter(a=>a.eid===user.id&&a.approvalStatus==='pending'&&/Outside scheduled shift window/.test(a.notes||''));
@@ -851,7 +841,7 @@ let COMPANY={
   /* Convenience template only — pre-fills an employee's otFixedTiers the first time their
      Overtime Pay Method is switched to 'fixed'. Each employee's actual tiers are stored on
      their own record afterward and can diverge freely from this template. */
-  otFixedTiersDefault:{firstHours:2,firstAmount:500,succeedingRate:50,prorateFirstTier:true},
+  otFixedTiersDefault:{firstHours:2,firstAmount:500,prorateFirstTier:true,firstTierMinimumMinutes:0,succeedingRate:50,prorateSucceedingHours:true,succeedingMinimumMinutes:0},
   registeredName:'SproutRipple PH',
   taxIdentificationNo:'',
   rdo:'',
@@ -1760,7 +1750,7 @@ function blankPschedDay(){return {restDay:false,start:'',end:'',breakStart:'',br
 function blankPschedWeek(){const w={};BULK_PSCHED_DAY_KEYS.forEach(k=>{w[k]=blankPschedDay();});return w;}
 function openBulkPersonalSchedule(){
   if(!(isAdminUser(user)||isPlatformAdmin))return;
-  modal={type:'bulkPersonalSchedule',mode:'multi',selectedIds:[],search:'',pschedFilters:{bu:'',dept:'',bandLevel:'',type:''},schedule:blankPschedWeek(),scheduleType:'',rows:[Object.assign({eid:'',scheduleType:''},blankPschedWeek())],rowSearch:'',selectedRowIdx:[]};
+  modal={type:'bulkPersonalSchedule',mode:'multi',selectedIds:[],search:'',pschedFilters:{bu:'',dept:'',bandLevel:'',type:''},schedule:blankPschedWeek(),scheduleType:'',exemptLateDeduction:'',exemptUndertimeDeduction:'',rows:[Object.assign({eid:'',scheduleType:'',exemptLateDeduction:'',exemptUndertimeDeduction:''},blankPschedWeek())],rowSearch:'',selectedRowIdx:[]};
   render();
 }
 function setBulkPschedMode(mode){
@@ -1848,6 +1838,8 @@ function applyBulkPersonalScheduleMulti(){
     if(!emp||emp.active===false){skipped.push(emp?emp.name:('#'+id));return;}
     emp.personalSchedule=JSON.parse(JSON.stringify(modal.schedule));
     if(modal.scheduleType)emp.scheduleType=modal.scheduleType;
+    if(modal.exemptLateDeduction)emp.exemptLateDeduction=modal.exemptLateDeduction==='Y';
+    if(modal.exemptUndertimeDeduction)emp.exemptUndertimeDeduction=modal.exemptUndertimeDeduction==='Y';
     applied++;
   });
   if(applied>0)queueSync('Employees','Personal_Schedules');
@@ -1867,6 +1859,21 @@ function normalizeScheduleTypeInput(raw){
   const hit=SCHEDULE_TYPES.find(t=>t.v.toLowerCase()===s||t.l.toLowerCase()===s);
   return hit?hit.v:'';
 }
+/* Converts a bulk-upload/bulk-update spreadsheet cell (Y/N, Yes/No, TRUE/FALSE, blank) into a
+   real boolean, matching how exemptLateDeduction/exemptUndertimeDeduction are already stored
+   from the single-employee edit checkbox -- storing the raw 'N' string instead would be
+   truthy in JS and silently treat "not exempt" as "exempt" in the payroll engine's checks. */
+function normalizeYesNoInput(raw){
+  const s=String(raw||'').trim().toLowerCase();
+  return s==='y'||s==='yes'||s==='true'||s==='1';
+}
+/* Same Y/N parsing as normalizeYesNoInput, but for bulk UPDATE (existing employees) where a
+   blank cell/selection means "don't change" rather than "false" -- returns 'Y', 'N', or ''. */
+function normalizeYesNoOrBlank(raw){
+  const s=String(raw||'').trim().toLowerCase();
+  if(!s)return'';
+  return (s==='y'||s==='yes'||s==='true'||s==='1')?'Y':'N';
+}
 function downloadPersonalScheduleTemplate(){
   const emps=USERS.filter(u=>u.role==='employee'&&u.active!==false);
   const dayHeaders=[];
@@ -1874,18 +1881,19 @@ function downloadPersonalScheduleTemplate(){
     const label=BULK_PSCHED_DAY_LABELS[k];
     dayHeaders.push(label+' is Rest Day? (Y/N)',label+' Start Shift',label+' Start Break',label+' End Break',label+' End Shift');
   });
-  const header=['EID *','Schedule Type'].concat(dayHeaders);
+  const header=['EID *','Schedule Type','Exempt Late Deduction','Exempt Undertime Deduction'].concat(dayHeaders);
   const templateRows=[
     ['PERSONAL SCHEDULE BULK IMPORT — SproutRipple PH'],
     ['One row per employee. Rest Day = Y means no shift that day — leave that day\'s 4 time columns blank.'],
     ['Times use 24-hour HH:MM format (e.g. 08:00, 17:00). Only active employees are applied.'],
     ['Schedule Type is optional -- leave blank to keep the employee\'s current setting. Valid values: '+SCHEDULE_TYPES.map(t=>t.l).join(', ')+'.'],
+    ['Exempt Late/Undertime Deduction: Y/N, optional -- leave blank to keep current setting. Not applicable to Exempted schedule type.'],
     [],
     header
   ];
   const sample=emps[0];
   if(sample){
-    const row=[sample.eid,SCHEDULE_TYPE_LABELS[sample.scheduleType]||''];
+    const row=[sample.eid,SCHEDULE_TYPE_LABELS[sample.scheduleType]||'',sample.exemptLateDeduction?'Y':'N',sample.exemptUndertimeDeduction?'Y':'N'];
     BULK_PSCHED_DAY_KEYS.forEach(k=>{
       if(k==='sun')row.push('Y','','','','');
       else row.push('N','08:00','12:00','13:00','17:00');
@@ -1894,7 +1902,7 @@ function downloadPersonalScheduleTemplate(){
   }
   const empRows=[['EID','Name','Status']].concat(emps.map(e=>[e.eid,e.name,e.active!==false?'Active':'Inactive']));
   try{
-    const colWidths=[14,16].concat(BULK_PSCHED_DAY_KEYS.flatMap(()=>[18,12,12,12,12]));
+    const colWidths=[14,16,20,24].concat(BULK_PSCHED_DAY_KEYS.flatMap(()=>[18,12,12,12,12]));
     const data=buildXLSX([
       {name:'Template',rows:templateRows,colWidths:colWidths},
       {name:'Employees',rows:empRows,colWidths:[14,26,12]}
@@ -1929,6 +1937,8 @@ function parsePersonalScheduleExcel(file,input){
       const eidCol=hdr.findIndex(h=>h==='eid'||h.startsWith('eid'));
       if(eidCol<0){toast('EID column not found','warning');return;}
       const scheduleTypeCol=hdr.findIndex(h=>h.includes('schedule type'));
+      const exemptLateCol=hdr.findIndex(h=>h.includes('exempt late'));
+      const exemptUndertimeCol=hdr.findIndex(h=>h.includes('exempt undertime'));
       const dayCols={};
       BULK_PSCHED_DAY_KEYS.forEach(k=>{
         const label=BULK_PSCHED_DAY_LABELS[k].toLowerCase();
@@ -1945,7 +1955,9 @@ function parsePersonalScheduleExcel(file,input){
         if(!r.some(c=>String(c).trim()))return;
         const first=String(r[0]||'').trim();
         if(/^EXAMPLE/i.test(first))return;
-        const row={eid:String(r[eidCol]||'').trim(),scheduleType:scheduleTypeCol<0?'':normalizeScheduleTypeInput(r[scheduleTypeCol])};
+        const row={eid:String(r[eidCol]||'').trim(),scheduleType:scheduleTypeCol<0?'':normalizeScheduleTypeInput(r[scheduleTypeCol]),
+          exemptLateDeduction:exemptLateCol<0?'':normalizeYesNoOrBlank(r[exemptLateCol]),
+          exemptUndertimeDeduction:exemptUndertimeCol<0?'':normalizeYesNoOrBlank(r[exemptUndertimeCol])};
         BULK_PSCHED_DAY_KEYS.forEach(k=>{
           const c=dayCols[k];
           const isRest=/^y/i.test(String(r[c.rest]||'').trim());
@@ -1970,11 +1982,11 @@ function parsePersonalScheduleExcel(file,input){
 }
 function addBulkPersonalScheduleRow(){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
-  modal.rows.push(Object.assign({eid:'',scheduleType:''},blankPschedWeek()));render();
+  modal.rows.push(Object.assign({eid:'',scheduleType:'',exemptLateDeduction:'',exemptUndertimeDeduction:''},blankPschedWeek()));render();
 }
 function removeBulkPersonalScheduleRow(i){
   if(!modal||modal.type!=='bulkPersonalSchedule')return;
-  modal.rows.splice(i,1);if(!modal.rows.length)modal.rows.push(Object.assign({eid:'',scheduleType:''},blankPschedWeek()));render();
+  modal.rows.splice(i,1);if(!modal.rows.length)modal.rows.push(Object.assign({eid:'',scheduleType:'',exemptLateDeduction:'',exemptUndertimeDeduction:''},blankPschedWeek()));render();
 }
 // Row search + bulk-select for the Excel-upload table -- indices are always into the real
 // modal.rows array (never reindexed by filtering), so every existing per-cell handler that
@@ -2010,7 +2022,7 @@ function removeSelectedBulkPschedRows(){
   const toRemove=new Set(modal.selectedRowIdx);
   modal.rows=modal.rows.filter((_,i)=>!toRemove.has(i));
   modal.selectedRowIdx=[];
-  if(!modal.rows.length)modal.rows.push(Object.assign({eid:''},blankPschedWeek()));
+  if(!modal.rows.length)modal.rows.push(Object.assign({eid:'',scheduleType:'',exemptLateDeduction:'',exemptUndertimeDeduction:''},blankPschedWeek()));
   render();
 }
 function bulkPschedRowToggleRestDay(i,day,checked){
@@ -2044,6 +2056,8 @@ function applyBulkPersonalSchedulesExcel(){
     BULK_PSCHED_DAY_KEYS.forEach(k=>{schedule[k]={restDay:r[k].restDay,start:r[k].restDay?'':r[k].start,end:r[k].restDay?'':r[k].end,breakStart:r[k].restDay?'':r[k].breakStart,breakEnd:r[k].restDay?'':r[k].breakEnd};});
     emp.personalSchedule=schedule;
     if(r.scheduleType)emp.scheduleType=r.scheduleType;
+    if(r.exemptLateDeduction)emp.exemptLateDeduction=r.exemptLateDeduction==='Y';
+    if(r.exemptUndertimeDeduction)emp.exemptUndertimeDeduction=r.exemptUndertimeDeduction==='Y';
     applied++;
   });
   if(applied>0)queueSync('Employees','Personal_Schedules');
@@ -4970,6 +4984,10 @@ function validateBulkRow(row,idx,usedEmails,usedEids){
   /* Schedule type — optional; unrecognized values fall back to Normal Shift at import time */
   if(row.scheduleType&&String(row.scheduleType).trim()&&!normalizeScheduleTypeInput(row.scheduleType))
     warnings.push(`Schedule Type "${row.scheduleType}" unrecognized — will default to Normal Shift. Valid: ${SCHEDULE_TYPES.map(s=>s.l).join(', ')}`);
+  /* Exempt Late/Undertime Deduction — not applicable to Exempted schedule type, which is
+     already always zero automatically with no per-employee configuration. */
+  if(normalizeScheduleTypeInput(row.scheduleType)==='exempted'&&(normalizeYesNoInput(row.exemptLateDeduction)||normalizeYesNoInput(row.exemptUndertimeDeduction)))
+    warnings.push('Exempt Late/Undertime Deduction is not applicable to the Exempted schedule type, which is already automatically exempt — these values will be ignored.');
   /* Govt number validation + auto-format with digit count notification */
   const govtSpec={sss:{digits:10,label:'SSS',fmt:'XX-XXXXXXX-X'},ph:{digits:12,label:'PhilHealth',fmt:'XX-XXXXXXXXX-X'},pi:{digits:12,label:'Pag-IBIG',fmt:'XXXX-XXXX-XXXX'},tin:{digits:12,label:'TIN/BIR',fmt:'XXX-XXX-XXX-XXX'}};
   const formatted={};
@@ -5125,6 +5143,7 @@ function mapLabelToKey(label){
     'employee id':'eid','biometric number':'biometricNo','biometric no.':'biometricNo',
     'position':'pos','job title':'pos',
     'employment type':'type','schedule type':'scheduleType','start date':'hired','date hired':'hired',
+    'exempt late deduction':'exemptLateDeduction','exempt undertime deduction':'exemptUndertimeDeduction',
     'entity name':'entityName','business unit':'bu',
     'department':'dept','team':'team','subteam':'subteam',
     'band level':'bandLevel','non-mass / mass':'nonMass','non-mass/mass':'nonMass',
@@ -5705,6 +5724,8 @@ function downloadTemplateXLSX(){
   col({k:'pos',           l:'* Position',        req:true, fmt:'Job title'});
   col({k:'type',          l:'* Employment Type', req:true, dv:LOOKUPS.employmentTypes.map(t=>t.code)});
   col({k:'scheduleType',  l:'Schedule Type',     fmt:'Leave blank = Normal Shift', dv:SCHEDULE_TYPES.map(s=>s.l)});
+  col({k:'exemptLateDeduction',      l:'Exempt Late Deduction',      fmt:'Y/N — leave blank = N. Not applicable to Exempted schedule type.', dv:['Y','N']});
+  col({k:'exemptUndertimeDeduction', l:'Exempt Undertime Deduction', fmt:'Y/N — leave blank = N. Not applicable to Exempted schedule type.', dv:['Y','N']});
   col({k:'hired',         l:'* Start Date',      req:true, fmt:'MM/DD/YYYY', txt:true,
        prompt:'Enter as MM/DD/YYYY (e.g. 06/01/2025).',promptTitle:'Start Date'});
   if(fvis('employment','entityName'))       col({k:'entityName',      l:'Entity Name',          dv:(LOOKUPS.entityNames||[]).map(n=>n.code).filter(Boolean)});
@@ -5879,6 +5900,8 @@ function confirmBulkUpload(validatedRows){
       address:r.permanentAddress||r.city||'',
       role:'employee',status:'active',
       scheduleType:normalizeScheduleTypeInput(r.scheduleType)||'normal',
+      exemptLateDeduction:normalizeYesNoInput(r.exemptLateDeduction),
+      exemptUndertimeDeduction:normalizeYesNoInput(r.exemptUndertimeDeduction),
       active:true,accessLevelId:5,
       hired,bday,
       rate,salaryPM:+salPM.toFixed(2),
@@ -10726,6 +10749,22 @@ function renderModal(){
           ${SCHEDULE_TYPES.map(s=>`<option value="${s.v}" ${modal.scheduleType===s.v?'selected':''}>${s.l}</option>`).join('')}
         </select>
       </div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px">
+        <div class="field" style="max-width:260px"><label>Exempt Late Deduction <span style="font-weight:400;color:var(--txt3);font-size:11px">not applicable to Exempted schedule type</span></label>
+          <select class="finput" style="font-size:13px" onchange="modal.exemptLateDeduction=this.value">
+            <option value="">— Don't change —</option>
+            <option value="Y" ${modal.exemptLateDeduction==='Y'?'selected':''}>Y (exempt)</option>
+            <option value="N" ${modal.exemptLateDeduction==='N'?'selected':''}>N (not exempt)</option>
+          </select>
+        </div>
+        <div class="field" style="max-width:260px"><label>Exempt Undertime Deduction <span style="font-weight:400;color:var(--txt3);font-size:11px">not applicable to Exempted schedule type</span></label>
+          <select class="finput" style="font-size:13px" onchange="modal.exemptUndertimeDeduction=this.value">
+            <option value="">— Don't change —</option>
+            <option value="Y" ${modal.exemptUndertimeDeduction==='Y'?'selected':''}>Y (exempt)</option>
+            <option value="N" ${modal.exemptUndertimeDeduction==='N'?'selected':''}>N (not exempt)</option>
+          </select>
+        </div>
+      </div>
       <div style="overflow-x:auto;margin-bottom:12px">
       <table><thead><tr><th>Day</th><th>Rest Day</th><th>Start</th><th>Break Start</th><th>Break End</th><th>End</th><th></th></tr></thead>
       <tbody>${BULK_PSCHED_DAY_KEYS.map(k=>{
@@ -10778,10 +10817,12 @@ function renderModal(){
             <th style="width:20px;padding:4px 8px">#</th>
             <th style="padding:4px 8px;text-align:left">Employee <span style="color:var(--red)">*</span></th>
             <th style="padding:4px 8px;text-align:left">Schedule Type</th>
+            <th style="padding:4px 8px;text-align:left">Exempt Late</th>
+            <th style="padding:4px 8px;text-align:left">Exempt Undertime</th>
             ${BULK_PSCHED_DAY_KEYS.map(k=>`<th colspan="5" style="padding:4px 8px;text-align:center;border-left:1px solid var(--border)">${BULK_PSCHED_DAY_LABELS[k]}</th>`).join('')}
             <th></th>
           </tr><tr style="background:var(--bg)">
-            <th></th><th></th><th></th><th></th>
+            <th></th><th></th><th></th><th></th><th></th><th></th>
             ${BULK_PSCHED_DAY_KEYS.map(()=>`<th style="padding:2px 6px;font-size:10px;border-left:1px solid var(--border)">Rest</th><th style="padding:2px 6px;font-size:10px">Start</th><th style="padding:2px 6px;font-size:10px">Break Start</th><th style="padding:2px 6px;font-size:10px">Break End</th><th style="padding:2px 6px;font-size:10px">End</th>`).join('')}
             <th></th>
           </tr></thead>
@@ -10806,6 +10847,16 @@ function renderModal(){
                 <option value="" ${!r.scheduleType?'selected':''}>— Don't change —</option>
                 ${SCHEDULE_TYPES.map(s=>`<option value="${s.v}" ${r.scheduleType===s.v?'selected':''}>${s.l}</option>`).join('')}
               </select></td>
+              <td><select class="finput" style="font-size:11px;width:110px" onchange="modal.rows[${i}].exemptLateDeduction=this.value">
+                <option value="" ${!r.exemptLateDeduction?'selected':''}>— Don't change —</option>
+                <option value="Y" ${r.exemptLateDeduction==='Y'?'selected':''}>Y</option>
+                <option value="N" ${r.exemptLateDeduction==='N'?'selected':''}>N</option>
+              </select></td>
+              <td><select class="finput" style="font-size:11px;width:110px" onchange="modal.rows[${i}].exemptUndertimeDeduction=this.value">
+                <option value="" ${!r.exemptUndertimeDeduction?'selected':''}>— Don't change —</option>
+                <option value="Y" ${r.exemptUndertimeDeduction==='Y'?'selected':''}>Y</option>
+                <option value="N" ${r.exemptUndertimeDeduction==='N'?'selected':''}>N</option>
+              </select></td>
               ${BULK_PSCHED_DAY_KEYS.map(k=>{
                 const day=r[k];
                 return`<td style="border-left:1px solid var(--border)"><input type="checkbox" ${day.restDay?'checked':''} onchange="bulkPschedRowToggleRestDay(${i},'${k}',this.checked)"/></td>
@@ -10816,7 +10867,7 @@ function renderModal(){
               }).join('')}
               <td><button class="btn btn-sm btn-danger" onclick="removeBulkPersonalScheduleRow(${i})" title="Remove row">✕</button></td>
             </tr>`;
-          }).join(''):`<tr><td colspan="${4+BULK_PSCHED_DAY_KEYS.length*5+1}" class="empty-state">No rows match "${esc(modal.rowSearch||'')}"</td></tr>`}
+          }).join(''):`<tr><td colspan="${6+BULK_PSCHED_DAY_KEYS.length*5+1}" class="empty-state">No rows match "${esc(modal.rowSearch||'')}"</td></tr>`}
           </tbody>
         </table>
         </div>`;
@@ -15113,28 +15164,38 @@ function pgEmpDetail(){
     ${(()=>{
       const schedType=val('scheduleType')||e.scheduleType||'normal';
       const isExempted=schedType==='exempted';
+      if(isExempted){
+        return `<div style="border-top:1px solid var(--border);margin:10px 0"></div>
+          <div class="section-header" style="margin-bottom:4px">Exempted Pay Rules</div>
+          <div style="font-size:11px;color:var(--txt3)">This employee's Schedule Type is Exempted — Late, Undertime, and Overtime are automatically zero in both attendance and payroll, with no per-employee configuration.</div>`;
+      }
       const boolField=(key,label,hint)=>detailEdit
         ?`<label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px;cursor:pointer">
             <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${val(key)?'checked':''} onchange="detailDraft['${key}']=this.checked"/>
             <span>${label}${hint?` <span style="font-weight:400;color:var(--txt3)">${hint}</span>`:''}</span>
           </label>`
         :vrow(label,e[key]?'Yes':'No');
-      if(isExempted){
-        return `<div style="border-top:1px solid var(--border);margin:10px 0"></div>
-          <div class="section-header" style="margin-bottom:4px">Exempted Pay Rules</div>
-          <div style="font-size:11px;color:var(--txt3);margin-bottom:10px">This employee's Schedule Type is Exempted — their attendance record always shows zero Late/Undertime/OT. These toggles let payroll still apply the following for this employee specifically, without changing what their attendance record displays.</div>
-          ${boolField('exemptedLateDeduction','Apply Late Deduction')}
-          ${boolField('exemptedUndertimeDeduction','Apply Undertime Deduction')}
-          ${boolField('exemptedOvertimePay','Pay Overtime','— at the standard percentage rate')}`;
-      }
+      const exemptionSection=`<div style="border-top:1px solid var(--border);margin:10px 0"></div>
+        <div class="section-header" style="margin-bottom:4px">Attendance Deduction Exceptions</div>
+        <div style="font-size:11px;color:var(--txt3);margin-bottom:10px">Per-employee exception, independent of Schedule Type — attendance still shows this employee's real Late/Undertime minutes; only the payroll deduction is skipped.</div>
+        ${boolField('exemptLateDeduction','Exempt from Late Deduction')}
+        ${boolField('exemptUndertimeDeduction','Exempt from Undertime Deduction')}`;
       const otMethod=val('otPayMethod')||e.otPayMethod||'percentage';
-      const tiers=val('otFixedTiers')||e.otFixedTiers||COMPANY.otFixedTiersDefault||{firstHours:2,firstAmount:500,succeedingRate:50,prorateFirstTier:true};
-      // Single-quoted onchange attributes here on purpose -- JSON.stringify always double-quotes
-      // its keys, which would otherwise prematurely close a double-quoted HTML attribute.
-      const tierField=(key,label,width)=>`<div class="field" style="margin-bottom:6px;display:inline-block;width:${width}px;margin-right:10px"><label style="font-size:11px">${label}</label>
-        <input class="finput" type="number" step="0.01" style="font-size:13px" value="${tiers[key]}"
+      const tiers=val('otFixedTiers')||e.otFixedTiers||COMPANY.otFixedTiersDefault||{firstHours:2,firstAmount:500,prorateFirstTier:true,firstTierMinimumMinutes:0,succeedingRate:50,prorateSucceedingHours:true,succeedingMinimumMinutes:0};
+      const firstProrated=tiers.prorateFirstTier!==false;
+      const succeedingProrated=tiers.prorateSucceedingHours!==false;
+      // Single-quoted onchange/oninput attributes here on purpose -- JSON.stringify always
+      // double-quotes its keys, which would otherwise prematurely close a double-quoted
+      // HTML attribute.
+      const tierField=(key,label,width,step)=>`<div class="field" style="margin-bottom:6px;display:inline-block;width:${width}px;margin-right:10px"><label style="font-size:11px">${label}</label>
+        <input class="finput" type="number" step="${step||'0.01'}" style="font-size:13px" value="${tiers[key]||0}"
           oninput='detailDraft.otFixedTiers=Object.assign({},detailDraft.otFixedTiers||${JSON.stringify(tiers)},{${key}:parseFloat(this.value)||0})'/></div>`;
-      return `<div style="border-top:1px solid var(--border);margin:10px 0"></div>
+      const tierCheckbox=(key,label,hint)=>`<label style="display:flex;align-items:center;gap:8px;margin-top:4px;font-size:12px;cursor:pointer">
+        <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${tiers[key]!==false?'checked':''} onchange='detailDraft.otFixedTiers=Object.assign({},detailDraft.otFixedTiers||${JSON.stringify(tiers)},{${key}:this.checked});render()'/>
+        <span>${label}${hint?` <span style="font-weight:400;color:var(--txt3)">${hint}</span>`:''}</span>
+      </label>`;
+      return `${exemptionSection}
+        <div style="border-top:1px solid var(--border);margin:10px 0"></div>
         <div class="section-header" style="margin-bottom:8px">Overtime Pay Method</div>
         ${detailEdit
           ?`<select class="finput" style="font-size:13px;max-width:320px;margin-bottom:8px" onchange="detailDraft.otPayMethod=this.value;render()">
@@ -15144,11 +15205,11 @@ function pgEmpDetail(){
           :vrow('Overtime Pay Method',otMethod==='fixed'?'Fixed Amount (tiered)':'Percentage of Hourly Rate')}
         ${otMethod==='fixed'?(detailEdit
           ?`<div>${tierField('firstHours','First (hrs)',90)}${tierField('firstAmount','First-tier Amount (₱)',150)}${tierField('succeedingRate','Succeeding Rate (₱/hr)',150)}</div>
-            <label style="display:flex;align-items:center;gap:8px;margin-top:4px;font-size:12px;cursor:pointer">
-              <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${tiers.prorateFirstTier?'checked':''} onchange='detailDraft.otFixedTiers=Object.assign({},detailDraft.otFixedTiers||${JSON.stringify(tiers)},{prorateFirstTier:this.checked})'/>
-              <span>Prorate first tier by actual hours <span style="font-weight:400;color:var(--txt3)">— unchecked = flat amount once any OT is logged within the first tier</span></span>
-            </label>`
-          :`<div style="font-size:12px;color:var(--txt3)">First ${tiers.firstHours} hrs = ₱${numFmt(tiers.firstAmount)}${tiers.prorateFirstTier?' (prorated)':' (flat)'}, succeeding hrs = ₱${numFmt(tiers.succeedingRate)}/hr</div>`
+            ${tierCheckbox('prorateFirstTier','Prorate first tier by actual time','— unchecked = must fully complete the first-tier hours to earn any of it')}
+            ${firstProrated?tierField('firstTierMinimumMinutes','First-tier Minimum (min)',180,'1'):''}
+            ${tierCheckbox('prorateSucceedingHours','Prorate succeeding hours by actual time','— unchecked = paid only in completed whole hours')}
+            ${succeedingProrated?tierField('succeedingMinimumMinutes','Succeeding Minimum (min)',180,'1'):''}`
+          :`<div style="font-size:12px;color:var(--txt3)">First ${tiers.firstHours} hrs = ₱${numFmt(tiers.firstAmount)}${firstProrated?` (prorated${tiers.firstTierMinimumMinutes?', '+tiers.firstTierMinimumMinutes+' min minimum':''})`:' (all-or-nothing)'}, succeeding hrs = ₱${numFmt(tiers.succeedingRate)}/hr${succeedingProrated?` (prorated${tiers.succeedingMinimumMinutes?', '+tiers.succeedingMinimumMinutes+' min minimum':''})`:' (whole hours only)'}</div>`
         ):''}`;
     })()}
     ${STATUTORY_CONFIG.items.some(it=>it.visible)?`

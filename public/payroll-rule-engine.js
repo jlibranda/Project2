@@ -247,9 +247,13 @@
     if (attendance.absentDays) addLine(lines,Object.assign({code:'ABSENT',name:'Unpaid Absence',type:'deduction',quantity:attendance.absentDays,rate:daily,multiplier:absentRule.value,amount:daily*attendance.absentDays*absentRule.value,formula:'Daily rate × unpaid absence days'},lineFromRule(absentRule.rule,'ABSENCE_DEDUCTION','Labor standards / company attendance policy')));
     var lateRounding = ruleValue(rules,'LATE_ROUNDING_MINUTES',date,context,1).value;
     var lateMinutes = lateRounding>1?Math.ceil(number(attendance.lateMinutes)/lateRounding)*lateRounding:number(attendance.lateMinutes);
-    if (lateMinutes) addLine(lines,{code:'LATE',name:'Late Deduction',type:'deduction',quantity:lateMinutes,rate:minute,amount:lateMinutes*minute,formula:'Chargeable late minutes × minute rate',ruleCode:'LATE_DEDUCTION',ruleVersion:1,legalSource:'Company attendance policy'});
+    // exemptLateDeduction/exemptUndertimeDeduction are a per-employee payroll exception,
+    // independent of Schedule Type -- the employee's attendance record still shows their real
+    // late/undertime minutes (attendance is untouched above), only the deduction line here is
+    // skipped for this specific employee.
+    if (lateMinutes && !employee.exemptLateDeduction) addLine(lines,{code:'LATE',name:'Late Deduction',type:'deduction',quantity:lateMinutes,rate:minute,amount:lateMinutes*minute,formula:'Chargeable late minutes × minute rate',ruleCode:'LATE_DEDUCTION',ruleVersion:1,legalSource:'Company attendance policy'});
     var utMinutes = number(attendance.undertimeMinutes);
-    if (utMinutes) addLine(lines,{code:'UNDERTIME',name:'Undertime Deduction',type:'deduction',quantity:utMinutes,rate:minute,amount:utMinutes*minute,formula:'Chargeable undertime minutes × minute rate; no double deduction',ruleCode:'UNDERTIME_DEDUCTION',ruleVersion:1,legalSource:'Company attendance policy'});
+    if (utMinutes && !employee.exemptUndertimeDeduction) addLine(lines,{code:'UNDERTIME',name:'Undertime Deduction',type:'deduction',quantity:utMinutes,rate:minute,amount:utMinutes*minute,formula:'Chargeable undertime minutes × minute rate; no double deduction',ruleCode:'UNDERTIME_DEDUCTION',ruleVersion:1,legalSource:'Company attendance policy'});
 
     var credits = lines.filter(function (line) { return line.type === 'earning'; }).reduce(function (sum,line) { return sum+line.amount; },0);
     var attendanceDeductions = lines.filter(function (line) { return line.type === 'deduction'; }).reduce(function (sum,line) { return sum+line.amount; },0);
