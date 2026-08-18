@@ -57,6 +57,13 @@
     replaceArray(OT_RATES,saved.overtimeRates);replaceArray(PAYROLL_GROUPS,saved.payrollGroups);replaceArray(PAY_PERIODS,saved.payPeriods);
     replaceArray(PAYROLL_ADJ,saved.payrollAdjustments);replaceArray(FINAL_PAY_LIST,saved.finalPayList);replaceArray(PAYROLL_AUDIT,saved.payrollAudit);replaceArray(SECURITY_AUDIT,saved.securityAudit);
     if(saved.governmentRates)GOVT_RATES=saved.governmentRates;replaceArray(BIR_TAX_VERSIONS,saved.birTaxVersions);replaceArray(PLATFORM_CLIENTS,saved.platformClients);
+    // One-time migration: 'teamview' was added to the module catalog after some clients'
+    // module lists were already persisted, so replaceArray above just restored those clients
+    // to their old, teamview-less snapshot. Backfill it in so existing tenants aren't stuck
+    // forever on a module that didn't exist when their record was first saved.
+    PLATFORM_CLIENTS.forEach(function(c){
+      if(c.modules&&Array.isArray(c.modules)&&c.modules.indexOf('teamview')===-1)c.modules.push('teamview');
+    });
     if(window.applyEnterpriseState)window.applyEnterpriseState(saved.enterprise);
     if(window.applyPayrollGovernanceState)window.applyPayrollGovernanceState(saved.payrollGovernance);
     if(saved.zk&&typeof ZK!=='undefined'){
