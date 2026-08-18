@@ -1370,30 +1370,42 @@
   // submit — mirrors the exact same checks submitAttendanceFormRequest() runs before filing, just
   // returning a boolean instead of toasting, so the Submit button can be grayed out live instead
   // of letting someone click it and get bounced by a warning toast.
+  // Attendance Filing Deadline — admins/HR filing on someone's behalf always bypass it; the
+  // actual cutoff math lives in index.html's attendanceFilingBlocked (global scope, shared with
+  // submitAtt()) since both PAY_PERIODS and ATTENDANCE_POLICY are defined there.
+  function filingDeadlinePassed(dateStr){
+    if(isAdminUser(user)||isPlatformAdmin)return false;
+    return typeof attendanceFilingBlocked==='function'&&attendanceFilingBlocked(dateStr);
+  }
   function attendanceFormValid(form){
     var reason=attFieldVal('att-form-reason','').trim();
     if(!reason)return false;
     if(form.kind==='punch'){
       var corrections=window._correctionRows||[];
-      return corrections.length>0&&corrections.every(function(r){return r.date&&r.punchType&&r.correctedTime;});
+      if(!corrections.length||!corrections.every(function(r){return r.date&&r.punchType&&r.correctedTime;}))return false;
+      return !corrections.some(function(r){return filingDeadlinePassed(r.date);});
     }
     if(form.kind==='schedule'){
       var schedRows=window._scheduleAdjRows||[];
       if(!schedRows.length)return false;
-      return !schedRows.some(function(r){return !r.isRestDay&&(!r.start||!r.end);});
+      if(schedRows.some(function(r){return !r.isRestDay&&(!r.start||!r.end);}))return false;
+      return !schedRows.some(function(r){return filingDeadlinePassed(r.date);});
     }
     if(form.kind==='rdh_ot'){
       var rdhReqStart=attFieldVal('att-form-in',''),rdhReqEnd=attFieldVal('att-form-out','');
       if(!rdhReqStart||!rdhReqEnd)return false;
+      if(filingDeadlinePassed(attFieldVal('att-form-date','')))return false;
       return rdhEligibility(user,attFieldVal('att-form-date',''),attFieldVal('att-form-rdh-type',''),rdhReqStart,rdhReqEnd).ok;
     }
     if(form.kind==='interval'){
       var otReqStart=attFieldVal('att-form-in',''),otReqEnd=attFieldVal('att-form-out','');
       if(!otReqStart||!otReqEnd)return false;
+      if(filingDeadlinePassed(attFieldVal('att-form-date','')))return false;
       return otTypeEligibility(user,attFieldVal('att-form-date',''),attFieldVal('att-form-ot-type',''),otReqStart,otReqEnd).ok;
     }
     var date=attFieldVal('att-form-date','');
     if(!date)return false;
+    if(filingDeadlinePassed(date))return false;
     var tin=attFieldVal('att-form-in',''),tout=attFieldVal('att-form-out','');
     if(form.kind==='ob'&&(!tin||!tout))return false;
     if(form.kind==='minutes'&&Number(attFieldVal('att-form-minutes',''))<=0)return false;
@@ -1654,6 +1666,8 @@
     if(form.kind==='punch'){
       var corrections=window._correctionRows||[];
       if(!corrections.length||corrections.some(function(r){return !r.date||!r.punchType||!r.correctedTime;})){toast('Complete the date, punch type, and corrected time for every row.','warning');return;}
+      var blockedCorrection=corrections.find(function(r){return filingDeadlinePassed(r.date);});
+      if(blockedCorrection){toast('The filing deadline for '+blockedCorrection.date+' has passed. Contact your administrator if you still need to file this.','warning',7000);return;}
       var batchId='TC-'+Date.now();
       corrections.forEach(function(row){
         var correctionLinked=attendanceRecord(user.id,row.date);
@@ -1668,6 +1682,8 @@
       if(!schedRows.length){toast('Generate at least one date before submitting.','warning');return;}
       var badRow=schedRows.find(function(r){return !r.isRestDay&&(!r.start||!r.end);});
       if(badRow){toast('Enter a Shift Start and Shift End for '+badRow.date+', or mark it a rest day.','warning');return;}
+      var blockedSchedRow=schedRows.find(function(r){return filingDeadlinePassed(r.date);});
+      if(blockedSchedRow){toast('The filing deadline for '+blockedSchedRow.date+' has passed. Contact your administrator if you still need to file this.','warning',7000);return;}
       var fromDate=schedRows[0].date,toDate=schedRows[schedRows.length-1].date;
       var schedSummary=schedRows.map(function(r){
         var holidayTag=r.holiday?' [Holiday: '+r.holiday.name+']':'';
@@ -1682,6 +1698,7 @@
       var rdhType=value('att-form-rdh-type');
       var rdhReqStart=value('att-form-in'),rdhReqEnd=value('att-form-out');
       if(!rdhReqStart||!rdhReqEnd){toast('Enter both a Requested Start Time and End Time.','warning');return;}
+      if(filingDeadlinePassed(date)){toast('The filing deadline for '+date+' has passed. Contact your administrator if you still need to file this.','warning',7000);return;}
       var rdhCheck=rdhEligibility(user,date,rdhType,rdhReqStart,rdhReqEnd);
       if(!rdhCheck.ok){toast(rdhCheck.html.replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim(),'warning',7000);return;}
       var rdhLog=actualLogForDate(user.id,date);
@@ -1699,6 +1716,7 @@
       var otType=value('att-form-ot-type');
       var otReqStart=value('att-form-in'),otReqEnd=value('att-form-out');
       if(!otReqStart||!otReqEnd){toast('Enter both a Requested Start Time and End Time.','warning');return;}
+      if(filingDeadlinePassed(date)){toast('The filing deadline for '+date+' has passed. Contact your administrator if you still need to file this.','warning',7000);return;}
       var otCheck=otTypeEligibility(user,date,otType,otReqStart,otReqEnd);
       if(!otCheck.ok){toast(otCheck.html.replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim(),'warning',7000);return;}
       var otLog=actualLogForDate(user.id,date);
@@ -1710,6 +1728,7 @@
       toast('Overtime request submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
     }
     if(!date){toast('Request date is required.','warning');return;}
+    if(filingDeadlinePassed(date)){toast('The filing deadline for '+date+' has passed. Contact your administrator if you still need to file this.','warning',7000);return;}
     var tin=value('att-form-in'),tout=value('att-form-out');
     if(form.kind==='ob'&&(!tin||!tout)){toast('OB Time In and Time Out are required.','warning');return;}
     if(form.kind==='minutes'&&Number(value('att-form-minutes'))<=0){toast('Enter valid undertime minutes.','warning');return;}
