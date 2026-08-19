@@ -1446,7 +1446,7 @@
     var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===key&&f.visible;});
     if(!form){toast('This attendance form is not currently available.','warning');return;}
     window._attFormDraft={};
-    if(key==='time_correction')window._correctionRows=[{date:'',punchType:'',correctedTime:''}];
+    if(key==='time_correction'){window._correctionRows=[{date:'',punchType:'',correctedTime:''}];window._correctionOnBehalfEid=null;}
     if(key==='schedule_adjustment'){window._scheduleAdjRows=null;window._scheduleAdjFrom=null;window._scheduleAdjTo=null;window._scheduleAdjShiftEndTouched=false;}
     window._attendanceFormKey=key;
     tab=(isAdminUser(user)||isPlatformAdmin)?3:1; /* "Attendance Forms" sits at index 3 in the admin tab layout, index 1 otherwise */
@@ -1465,10 +1465,30 @@
     if(window._correctionRows&&window._correctionRows[index])window._correctionRows[index][key]=value;
   };
 
+  // The only way an admin can now record or fix another employee's attendance — the old
+  // manual "File Attendance" entry-on-behalf-of-others form is gone, so this picker is what
+  // replaces it. Left blank, the correction files as the admin's own (matches the plain
+  // employee experience); picking someone routes it as that employee's request instead —
+  // see correctionTargetUser() and submitAttendanceFormRequest()'s 'punch' branch.
+  function correctionTargetUser(){
+    if((isAdminUser(user)||isPlatformAdmin)&&window._correctionOnBehalfEid){
+      var target=USERS.find(function(u){return u.eid===window._correctionOnBehalfEid;});
+      if(target)return target;
+    }
+    return user;
+  }
   function correctionRowsFields(){
     var rows=window._correctionRows||[{date:'',punchType:'',correctedTime:''}];
     window._correctionRows=rows;
-    return '<div class="card-sub" style="margin-bottom:8px">Add as many Time In or Time Out corrections as needed. Each row becomes a separate approval item.</div>'+
+    var admin=isAdminUser(user)||isPlatformAdmin;
+    var onBehalfField=admin?('<div class="field"><label>Employee</label>'+empPickerInput({
+      id:'att-on-behalf-picker',
+      users:USERS.filter(function(u){return u.role==='employee'&&u.active!==false;}).sort(cmpEmpName),
+      value:window._correctionOnBehalfEid||'',
+      placeholder:'— File as yourself —',
+      onchange:"window._correctionOnBehalfEid=v;updateAttSubmitButton()",
+    })+'<div style="font-size:10px;color:var(--txt3);margin-top:3px">Leave blank to file this as your own correction. Select an employee to file it on their behalf instead.</div></div>'):'';
+    return onBehalfField+'<div class="card-sub" style="margin-bottom:8px">Add as many Time In or Time Out corrections as needed. Each row becomes a separate approval item.</div>'+
       '<div style="display:grid;gap:8px">'+rows.map(function(row,i){return '<div class="correction-row"><div class="field"><label>Date</label><input type="date" value="'+esc(row.date)+'" onchange="updateCorrectionRow('+i+',\'date\',this.value);updateAttSubmitButton()"></div>'+
         '<div class="field"><label>Punch</label><select onchange="updateCorrectionRow('+i+',\'punchType\',this.value);updateAttSubmitButton()"><option value="" '+(row.punchType?'':'selected')+'>Select…</option><option value="time_in" '+(row.punchType==='time_in'?'selected':'')+'>Time In</option><option value="time_out" '+(row.punchType==='time_out'?'selected':'')+'>Time Out</option></select></div>'+
         '<div class="field"><label>Correct Time</label><input type="time" value="'+esc(row.correctedTime)+'" onchange="updateCorrectionRow('+i+',\'correctedTime\',this.value);updateAttSubmitButton()"></div>'+
@@ -1685,13 +1705,14 @@
       if(!corrections.length||corrections.some(function(r){return !r.date||!r.punchType||!r.correctedTime;})){toast('Complete the date, punch type, and corrected time for every row.','warning');return;}
       var blockedCorrection=corrections.find(function(r){return filingDeadlinePassed(r.date);});
       if(blockedCorrection){toast('The filing deadline for '+blockedCorrection.date+' has passed. Contact your administrator if you still need to file this.','warning',7000);return;}
+      var correctionTarget=correctionTargetUser();
       var batchId='TC-'+Date.now();
       corrections.forEach(function(row){
-        var correctionLinked=attendanceRecord(user.id,row.date);
+        var correctionLinked=attendanceRecord(correctionTarget.id,row.date);
         var correctionId=nextCaseId++,correctionDue=new Date();correctionDue.setDate(correctionDue.getDate()+4);
-        RESOLUTION_CASES.push({id:correctionId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(correctionId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+row.date,description:'Request date: '+row.date+'\nPunch: '+(row.punchType==='time_out'?'Time Out':'Time In')+'\nCorrect time: '+row.correctedTime+'\nDetails: '+reason,priority:'normal',status:'open',linkedType:correctionLinked?'attendance':'',linkedId:correctionLinked?correctionLinked.id:null,attendanceRequestType:'time_correction',requestDate:row.date,requestEndDate:row.date,punchType:row.punchType,correctedTime:row.correctedTime,batchId:batchId,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:correctionDue.toISOString().slice(0,10),resolution:''});
+        RESOLUTION_CASES.push({id:correctionId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(correctionId).padStart(3,'0'),employeeId:correctionTarget.id,category:'Attendance',subject:form.label+' · '+row.date,description:(correctionTarget.id!==user.id?'Filed by '+user.name+' on behalf of '+correctionTarget.name+'\n':'')+'Request date: '+row.date+'\nPunch: '+(row.punchType==='time_out'?'Time Out':'Time In')+'\nCorrect time: '+row.correctedTime+'\nDetails: '+reason,priority:'normal',status:'open',linkedType:correctionLinked?'attendance':'',linkedId:correctionLinked?correctionLinked.id:null,attendanceRequestType:'time_correction',requestDate:row.date,requestEndDate:row.date,punchType:row.punchType,correctedTime:row.correctedTime,batchId:batchId,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:correctionDue.toISOString().slice(0,10),resolution:''});
       });
-      window._correctionRows=null;window._attendanceFormKey=null;
+      window._correctionRows=null;window._correctionOnBehalfEid=null;window._attendanceFormKey=null;
       toast(corrections.length+' time correction request(s) submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
     }
     if(form.kind==='schedule'){
@@ -1772,18 +1793,19 @@
     var admin=isAdminUser(user)||isPlatformAdmin;
     var isStaff=!!(user&&user.role==='employee');
     if(!admin&&tab===1)return renderEmployeeAttendanceForms();
-    // A staff-admin (SaaS mode: role:'employee' + Super Admin access) is also filing their OWN
-    // attendance, so their "File Attendance" tab (index 3 in the admin tab layout) should be the
-    // same self-service catalog regular employees use — not the manual entry-on-behalf-of-others
-    // form, which stays reserved for outsourced/service admins (role:'admin', not staff).
-    if(admin&&isStaff&&tab===3)return renderEmployeeAttendanceForms();
+    // Every admin — staff-admin or a true outsourced/service admin (role:'admin') — files
+    // through the same request catalog everyone else does now; there's no more raw manual
+    // entry-on-behalf-of-others form. An admin who needs to record or fix someone else's
+    // attendance uses Time Correction with the on-behalf-of employee picker (see
+    // attendanceFormFields()'s 'punch' branch) instead of typing straight into a blank record
+    // with no review step.
+    if(admin&&tab===3)return renderEmployeeAttendanceForms();
     var html=baseAttendance();
     // Whichever tab position leads to the self-service catalog above — index 1 for a plain
-    // employee, index 3 for a staff-admin — has to carry the same "Attendance Forms" label
-    // there too. Gating this purely on !admin left a staff-admin seeing "File Attendance" on
-    // the tab bar right up until they click it, at which point the exact same tab re-renders
-    // itself "Attendance Forms" — reads like the click landed on the wrong page.
-    if(!admin||isStaff)html=html.replace('File Attendance','Attendance Forms');
+    // employee, index 3 for any admin — has to carry the same "Attendance Forms" label there
+    // too, even on tabs where baseAttendance() itself still renders (0, 1, 2, 4 for an admin),
+    // since its own tabs array still says "File Attendance" for that position.
+    html=html.replace('File Attendance','Attendance Forms');
     return html;
   };
 
