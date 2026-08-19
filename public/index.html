@@ -14815,6 +14815,32 @@ function pendingApprovalsFor(approverEid){
     .map(l=>({...l,kind:'leave'}));
   return[...pendingAtt,...pendingLeave];
 }
+// Broader than pendingApprovalsFor(): every attendance/leave record this approver has any
+// stake in, regardless of current status — still-pending ones via live chain resolution
+// (same as pendingApprovalsFor), plus already-resolved ones by checking approvalHistory
+// for an entry this approver actually acted on (matched by eid, not by name — records
+// from before that field existed won't retroactively attribute, which is expected).
+// Used by Team View's Pending Approvals tab so a manager can also see what they already
+// approved/rejected, not just what's currently waiting on them.
+function teamViewApprovalItems(approverEid){
+  const relevant=(record,statusField)=>{
+    if(record[statusField]==='pending'){
+      const owner=USERS.find(u=>u.id===record.eid);
+      if(!owner)return false;
+      const chain=getApprovalChain(owner.eid);
+      const layerEntry=chain.find(c=>c.layer===(record.approvalLayer||1));
+      return layerEntry&&layerEntry.approver.eid===approverEid;
+    }
+    return(record.approvalHistory||[]).some(h=>h.byEid===approverEid);
+  };
+  const att=attendanceRecords()
+    .filter(a=>relevant(a,'approvalStatus'))
+    .map(a=>({...a,kind:'attendance',formStatus:a.approvalStatus}));
+  const leave=LEAVES
+    .filter(l=>relevant(l,'status'))
+    .map(l=>({...l,kind:'leave',formStatus:l.status}));
+  return[...att,...leave];
+}
 
 /* ═══════════════════════════════════════════════════════════
    TEAM VIEW — for any employee who currently approves for
@@ -14822,46 +14848,52 @@ function pendingApprovalsFor(approverEid){
    and approval delegation, all scoped to their own team.
    ═══════════════════════════════════════════════════════════ */
 function pgTeamView(){
-  const tabs=['Pending Approvals','Team Schedule','My Delegation'];
+  const tabDefs=[{key:'pending',label:'Pending Approvals'},{key:'schedule',label:'Team Schedule'}];
+  if(hasApproverAccess(user))tabDefs.push({key:'delegate',label:'Delegate My Approvals'});
+  if(tab>=tabDefs.length)tab=0;
+  const activeKey=(tabDefs[tab]||tabDefs[0]).key;
   const teamMembers=USERS.filter(e=>e.role==='employee'&&e.immediateHeadEid===user.eid).sort(cmpEmpName);
   const pendingCount=pendingApprovalsFor(user.eid).length;
-  const body=tab===1?teamViewScheduleTab(teamMembers):tab===2?teamViewDelegationTab():teamViewPendingTab();
+  const body=activeKey==='schedule'?teamViewScheduleTab(teamMembers):activeKey==='delegate'?teamViewDelegationTab():teamViewPendingTab();
   return`<div class="page-header"><div><div class="page-title">Team View</div><div class="page-sub">${teamMembers.length} direct report${teamMembers.length!==1?'s':''} · ${pendingCount} pending approval${pendingCount!==1?'s':''}</div></div></div>
-  <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${esc(t)}${i===0&&pendingCount?redBubble(pendingCount):''}</div>`).join('')}</div>
+  <div class="tabs">${tabDefs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${esc(t.label)}${t.key==='pending'&&pendingCount?redBubble(pendingCount):''}</div>`).join('')}</div>
   <div class="card">${body}</div>`;
 }
 
 function teamViewPendingTab(){
-  if(!window._teamViewFilters)window._teamViewFilters={type:'',from:'',status:''};
+  if(!window._teamViewFilters||!Array.isArray(window._teamViewFilters.types))window._teamViewFilters={types:[],status:'pending'};
   const f=window._teamViewFilters;
-  const typeLabels={...(window.ATTENDANCE_REQUEST_TYPE_LABELS||{daily:'Daily Attendance'}),leave:'Leave'};
+  const enabledFormTypes=(window.ATTENDANCE_FORM_CONFIG||[]).filter(x=>x.visible).map(x=>({key:x.key,label:x.label}));
+  const typeOptions=[{key:'daily',label:'Daily Attendance'},...enabledFormTypes,{key:'leave',label:'Leave'}];
+  const typeLabels=Object.fromEntries(typeOptions.map(t=>[t.key,t.label]));
   const rowType=a=>a.kind==='leave'?'leave':(window.attendanceRecordRequestType?attendanceRecordRequestType(a):'daily');
   const rowDate=a=>a.kind==='leave'?a.s:a.date;
-  let rows=pendingApprovalsFor(user.eid);
-  if(f.from)rows=rows.filter(a=>rowDate(a)>=f.from);
-  if(f.status)rows=rows.filter(a=>a.kind!=='leave'&&a.status===f.status);
-  if(f.type)rows=rows.filter(a=>rowType(a)===f.type);
+  let rows=teamViewApprovalItems(user.eid);
+  if(f.types.length)rows=rows.filter(a=>f.types.includes(rowType(a)));
+  if(f.status)rows=rows.filter(a=>a.formStatus===f.status);
   rows=rows.slice().sort((a,b)=>(rowDate(b)+b.id).localeCompare(rowDate(a)+a.id));
-  const hasFilters=!!(f.type||f.from||f.status);
-  return`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:14px">
-    <div class="field" style="min-width:190px"><label>Type</label>
-      <select class="finput" style="font-size:13px" onchange="window._teamViewFilters.type=this.value;render()">
-        <option value="">All types</option>
-        ${Object.keys(typeLabels).map(k=>`<option value="${k}" ${f.type===k?'selected':''}>${esc(typeLabels[k])}</option>`).join('')}
-      </select>
+  const hasFilters=!!(f.types.length||f.status!=='pending');
+  return`<div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
+    <div>
+      <label style="font-size:12px;font-weight:600;color:var(--txt2);display:block;margin-bottom:6px">Type <span style="font-weight:400;color:var(--txt3)">(select any number)</span></label>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        ${typeOptions.map(t=>{
+          const active=f.types.includes(t.key);
+          return`<button class="btn btn-sm" style="${active?'background:var(--accent);color:#fff;border-color:var(--accent)':''}" onclick="const i=window._teamViewFilters.types.indexOf('${t.key}');if(i>=0)window._teamViewFilters.types.splice(i,1);else window._teamViewFilters.types.push('${t.key}');render()">${esc(t.label)}</button>`;
+        }).join('')}
+      </div>
     </div>
-    <div class="field" style="min-width:150px"><label>From</label>
-      <input type="date" class="finput" style="font-size:13px" value="${esc(f.from)}" onchange="window._teamViewFilters.from=this.value;render()"/>
+    <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap">
+      <div class="field" style="min-width:170px"><label>Status</label>
+        <select class="finput" style="font-size:13px" onchange="window._teamViewFilters.status=this.value;render()">
+          <option value="pending" ${f.status==='pending'?'selected':''}>Pending</option>
+          <option value="approved" ${f.status==='approved'?'selected':''}>Approved</option>
+          <option value="rejected" ${f.status==='rejected'?'selected':''}>Rejected</option>
+          <option value="" ${f.status===''?'selected':''}>All statuses</option>
+        </select>
+      </div>
+      ${hasFilters?`<button class="btn btn-sm" onclick="window._teamViewFilters={types:[],status:'pending'};render()">✕ Clear filters</button>`:''}
     </div>
-    <div class="field" style="min-width:150px"><label>Status <span style="font-weight:400;color:var(--txt3)">(attendance only)</span></label>
-      <select class="finput" style="font-size:13px" onchange="window._teamViewFilters.status=this.value;render()">
-        <option value="">All statuses</option>
-        <option value="present" ${f.status==='present'?'selected':''}>Present</option>
-        <option value="late" ${f.status==='late'?'selected':''}>Late</option>
-        <option value="absent" ${f.status==='absent'?'selected':''}>Absent</option>
-      </select>
-    </div>
-    ${hasFilters?`<button class="btn btn-sm" onclick="window._teamViewFilters={type:'',from:'',status:''};render()">✕ Clear filters</button>`:''}
   </div>
   <div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>Type</th><th>Details</th><th>Status</th><th>Actions</th></tr></thead><tbody>
   ${rows.length?rows.map(a=>{
@@ -14870,17 +14902,19 @@ function teamViewPendingTab(){
     const typeKey=rowType(a);
     const dateCell=isLeave?(a.s+(a.e&&a.e!==a.s?' – '+a.e:'')):a.date;
     const detailsCell=isLeave?`${a.days} day(s) — ${esc(a.type||'')}`:`${a.tin||'—'} – ${a.tout||'—'}`;
-    const statusCell=isLeave?`<span class="badge b-pending">pending</span>`:`<span class="badge b-${a.status}">${esc(a.status)}</span>`;
-    const actionsCell=isLeave
-      ?`<div class="action-row"><button class="btn btn-sm btn-success" onclick="actLeave(${a.id},true)">Approve</button><button class="btn btn-sm btn-danger" onclick="actLeave(${a.id},false)">Reject</button></div>`
-      :`<div class="action-row"><button class="btn btn-sm btn-success" onclick="actAttendance(${a.id},'approved')">Approve</button><button class="btn btn-sm btn-danger" onclick="actAttendance(${a.id},'rejected')">Reject</button></div>`;
+    const statusCell=`<span class="badge b-${a.formStatus}">${esc(a.formStatus)}</span>`;
+    const isPending=a.formStatus==='pending';
+    const actionsCell=!isPending?`<span style="font-size:11px;color:var(--txt3)">${a.reviewedBy?'By '+esc(a.reviewedBy):'—'}</span>`
+      :isLeave
+        ?`<div class="action-row"><button class="btn btn-sm btn-success" onclick="actLeave(${a.id},true)">Approve</button><button class="btn btn-sm btn-danger" onclick="actLeave(${a.id},false)">Reject</button></div>`
+        :`<div class="action-row"><button class="btn btn-sm btn-success" onclick="actAttendance(${a.id},'approved')">Approve</button><button class="btn btn-sm btn-danger" onclick="actAttendance(${a.id},'rejected')">Reject</button></div>`;
     return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?emp.name:'?')}</div><div><div style="font-weight:600">${esc(fmtEmpName(emp)||'?')}</div><div style="font-size:10px;color:var(--txt3)">${esc(emp?emp.eid:'')}</div></div></div></td>
       <td class="mono">${esc(dateCell)}</td>
       <td><span class="badge b-info">${esc(typeLabels[typeKey]||typeKey)}</span></td>
       <td class="mono">${detailsCell}</td>
       <td>${statusCell}</td>
       <td>${actionsCell}</td></tr>`;
-  }).join(''):`<tr><td colspan="6" class="empty-state">${hasFilters?'No pending approvals match these filters.':'No pending attendance or leave approvals right now.'}</td></tr>`}
+  }).join(''):`<tr><td colspan="6" class="empty-state">${hasFilters?'No approvals match these filters.':'No pending attendance or leave approvals right now.'}</td></tr>`}
   </tbody></table></div>`;
 }
 
