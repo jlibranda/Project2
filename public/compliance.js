@@ -926,17 +926,19 @@
       document.getElementById('atin').value, document.getElementById('atout').value, document.getElementById('ast').value,
       parseFloat(document.getElementById('aot').value) || 0, parseFloat(document.getElementById('and').value) || 0,
       document.getElementById('anotes').value.trim(), 'manual');
-    // An admin filing/correcting a record can self-approve it -- but not when it carries
-    // overtime. OT must go through the same approval layers as anyone else's, so an admin
-    // typing hours into this form can't be a silent way to pay OT with no sign-off.
-    var otApproved = isA && !(patch.ot > 0);
+    // Plain attendance (no overtime) doesn't need a human sign-off -- self-approves the same
+    // way biometric and Web Bundy punches already do, regardless of who's filing it. Overtime
+    // still always requires approval, since that's what actually needs sign-off before it can
+    // be paid -- an admin typing hours into this form can't be a silent way to pay OT with no
+    // one reviewing it, and neither can an employee filing it themselves.
+    var otApproved = !(patch.ot > 0);
     upsertAttendance(eid,date,Object.assign(patch, {
       approvalStatus:otApproved ? 'approved' : 'pending',
       filedBy:user.name, filedAt:new Date().toISOString(),
       reviewedBy:otApproved ? user.name : '', reviewedAt:otApproved ? new Date().toISOString() : ''
     }));
     queueSync('Attendance');
-    toast(otApproved ? (duplicate?'Authoritative attendance updated and approved.':'Attendance saved and approved.') : (isA?'Saved — overtime routed for approval before it can be paid.':(duplicate?'Attendance update submitted for approval.':'Attendance submitted for approval.')), 'success');
+    toast(otApproved ? (duplicate?'Authoritative attendance updated and approved.':'Attendance saved and approved.') : (duplicate?'Attendance update submitted — overtime requires approval before it can be paid.':'Attendance submitted — overtime requires approval before it can be paid.'), 'success');
     tab = isA ? 2 : 0;
     render();
   };
