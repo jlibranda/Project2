@@ -3773,7 +3773,8 @@ function closeM(){if(modal&&modal.type==='approvalTransferPicker')window._pendin
 // payslip or leave history, or simple pickers) still close instantly since there's nothing to
 // lose.
 function modalHasEditableDraft(){
-  return !!(modal&&(modal.draft||modal.ae||modal.data||modal.rows||modal.it||modal.group||modal.period||modal.changes));
+  return !!(modal&&(modal.draft||modal.ae||modal.data||modal.rows||modal.it||modal.group||modal.period||modal.changes||
+    (modal.type==='approvalTransferPicker'&&modal.replacementEid)));
 }
 function closeMConfirmed(){
   // The "Log in as user" picker only shows up mid-flow: enterClient() already opened this real
@@ -12479,7 +12480,7 @@ function renderModal(){
         ?`is the approver for <strong>${reportCount}</strong> employee${reportCount!==1?'s':''}, and has <strong>${pending.length}</strong> pending approval${pending.length!==1?'s':''} (attendance and/or leave) across ${affected} employee${affected!==1?'s':''} right now.`
         :`is the approver for <strong>${reportCount}</strong> employee${reportCount!==1?'s':''}. There are no pending approvals right now, but future requests would resolve to them until this is handled.`;
       inner=`<div class="modal-title">🔁 Transfer Approvals Before Deactivating
-        <button class="close-x" onclick="window._pendingTermination=null;closeM()">×</button></div>
+        <button class="close-x" onclick="closeMConfirmed()">×</button></div>
       <div style="padding:10px 12px;background:var(--amber-bg);border:1px solid var(--amber);border-radius:8px;margin-bottom:14px;font-size:13px;color:var(--amber-txt)">
         <strong>${esc(e.name)}</strong> ${summary} Choose who takes over their approver responsibilities before continuing.
       </div>
@@ -14875,7 +14876,7 @@ function teamViewPendingTab(){
   const hasFilters=!!(f.types.length||f.status!=='pending');
   return`<div style="display:flex;flex-direction:column;gap:10px;margin-bottom:14px">
     <div>
-      <label style="font-size:12px;font-weight:600;color:var(--txt2);display:block;margin-bottom:6px">Type <span style="font-weight:400;color:var(--txt3)">(select any number)</span></label>
+      <label style="font-size:12px;font-weight:600;color:var(--txt2);display:block;margin-bottom:6px">Select Attendance Form</label>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         ${typeOptions.map(t=>{
           const active=f.types.includes(t.key);
@@ -16065,38 +16066,35 @@ function confirmApprovalTransferAndFinishSave(){
   if(!e){closeM();return;}
   const replacement=modal.replacementEid?USERS.find(u=>u.eid===modal.replacementEid):null;
   if(replacement)redirectApprovalsFrom(e.eid,replacement.eid);
+  mergeEmpDraft(e,pending.draftToApply,pending.reason,pending.movementInfo);
   e.active=false;e.status='terminated';e.projectedAttrition=false;
-  if(pending.alertOnDisable){
+  if(e.terminationType&&e.terminationType!==''&&e.terminationType!=='N/A'){
     alert(`⚠ Access automatically disabled for ${e.name} — "${e.terminationType}".`+(replacement?`\n\nApprovals transferred to ${replacement.name}.`:''));
   }
   window._pendingTermination=null;
   finishEmpSaveAfterTermination(e,pending.draftToApply);
 }
 
-function applyEmpSave(reason){
-  const e=USERS.find(u=>u.id===detailEmpId);
-  if(!e)return;
-  /* If called from movement modal, restore draft */
-  const draftToApply=modal?.type==='movementReason'?modal.draft:detailDraft;
-  if(draftToApply.rdo!==undefined)draftToApply.rdo=normalizeRdoCode(draftToApply.rdo);
-  /* Record movement if reason provided */
-  if(reason!==null){
-    const movChanges=modal?.type==='movementReason'?modal.changes:detectMovementChanges(e,draftToApply);
-    if(movChanges.length){
-      if(!e.movements)e.movements=[];
-      e.movements.unshift({
-        id:Date.now(),
-        date:today(),                         /* when it was recorded in the system */
-        time:new Date().toLocaleTimeString('en-PH',{hour:'2-digit',minute:'2-digit'}),
-        effectiveDate:modal?.effectiveDate||today(), /* when the change officially takes effect */
-        type:modal?.mType||movementType(movChanges),
-        reason:reason||'No reason provided',
-        changedBy:user?.name||'System',
-        changes:movChanges,
-      });
-    }
+// Shared by applyEmpSave() (synchronous path) and confirmApprovalTransferAndFinishSave()
+// (resumed-from-picker path) so the actual record mutation only ever happens once, in one
+// place. movementInfo is captured by the caller BEFORE any modal reassignment, since by the
+// time the picker-resumed path runs, `modal` has long since been overwritten to the picker
+// itself and modal.changes/mType/effectiveDate from an original movementReason modal would
+// otherwise be lost.
+function mergeEmpDraft(e,draftToApply,reason,movementInfo){
+  if(reason!==null&&reason!==undefined&&movementInfo.changes.length){
+    if(!e.movements)e.movements=[];
+    e.movements.unshift({
+      id:Date.now(),
+      date:today(),                         /* when it was recorded in the system */
+      time:new Date().toLocaleTimeString('en-PH',{hour:'2-digit',minute:'2-digit'}),
+      effectiveDate:movementInfo.effectiveDate||today(), /* when the change officially takes effect */
+      type:movementInfo.mType||movementType(movementInfo.changes),
+      reason:reason||'No reason provided',
+      changedBy:user?.name||'System',
+      changes:movementInfo.changes,
+    });
   }
-  /* Merge draft */
   Object.assign(e,draftToApply);
   e.name=`${e.firstName} ${e.lastName}`.trim();
   e.address=e.permanentAddress||e.city||'';
@@ -16111,31 +16109,52 @@ function applyEmpSave(reason){
     const mgr=USERS.find(u=>u.eid===e.managerId);
     e.managerFirst=mgr?.firstName||'';e.managerLast=mgr?.lastName||'';e.managerTitle=mgr?.pos||'';
   }
+}
+function applyEmpSave(reason){
+  const e=USERS.find(u=>u.id===detailEmpId);
+  if(!e)return;
+  /* If called from movement modal, restore draft */
+  const draftToApply=modal?.type==='movementReason'?modal.draft:detailDraft;
+  if(draftToApply.rdo!==undefined)draftToApply.rdo=normalizeRdoCode(draftToApply.rdo);
+  const movementInfo={
+    changes:modal?.type==='movementReason'?modal.changes:detectMovementChanges(e,draftToApply),
+    mType:modal?.mType,
+    effectiveDate:modal?.effectiveDate,
+  };
+  // Decide whether this save needs to pause for the approval-transfer picker BEFORE
+  // touching the real record at all — evaluated against a preview of what e would look
+  // like after merging draftToApply. Committing any part of the draft (including the
+  // termination fields themselves) ahead of that decision would leave the employee
+  // half-terminated if the picker gets canceled: active would stay true, but
+  // terminationType/effectiveTermDate would already be saved, and checkOffboarding()
+  // would silently finish the "abandoned" termination on the next login/impersonation.
+  const preview={...e,...draftToApply};
+  const tod=today();
+  let willPauseForPicker=false;
+  if(preview.terminationType&&preview.terminationType!==''&&preview.terminationType!=='N/A'){
+    const hasReachedDate=preview.effectiveTermDate&&preview.effectiveTermDate<=tod;
+    if((hasReachedDate||!preview.effectiveTermDate)&&preview.active!==false&&needsApprovalTransferPrompt(e))willPauseForPicker=true;
+  }else if(preview.effectiveTermDate&&preview.effectiveTermDate<=tod&&preview.active!==false&&needsApprovalTransferPrompt(e)){
+    willPauseForPicker=true;
+  }
+  if(willPauseForPicker){
+    window._pendingTermination={empId:e.id,reason,draftToApply,movementInfo};
+    modal={type:'approvalTransferPicker',empId:e.id,replacementEid:''};
+    render();return;
+  }
+  mergeEmpDraft(e,draftToApply,reason,movementInfo);
   /* Termination logic */
   if(e.terminationType&&e.terminationType!==''&&e.terminationType!=='N/A'){
-    const tod=today();
     const hasFutureDate=e.effectiveTermDate&&e.effectiveTermDate>tod;
     const hasReachedDate=e.effectiveTermDate&&e.effectiveTermDate<=tod;
     if(hasFutureDate){
       e.projectedAttrition=true;e.active=true;
       alert(`ℹ Projected Attrition noted for ${e.name}.\n\nEffective date: ${e.effectiveTermDate}\n\nAccess remains active until that date is reached.`);
-    } else if(hasReachedDate||!e.effectiveTermDate){
-      if(e.active!==false){
-        if(needsApprovalTransferPrompt(e)){
-          window._pendingTermination={empId:e.id,draftToApply,alertOnDisable:true};
-          modal={type:'approvalTransferPicker',empId:e.id,replacementEid:''};
-          render();return;
-        }
-        e.active=false;e.status='terminated';e.projectedAttrition=false;
-        alert(`⚠ Access automatically disabled for ${e.name} — "${e.terminationType}".`);
-      }
+    } else if((hasReachedDate||!e.effectiveTermDate)&&e.active!==false){
+      e.active=false;e.status='terminated';e.projectedAttrition=false;
+      alert(`⚠ Access automatically disabled for ${e.name} — "${e.terminationType}".`);
     }
-  } else if(e.effectiveTermDate&&e.effectiveTermDate<=today()&&e.active!==false){
-    if(needsApprovalTransferPrompt(e)){
-      window._pendingTermination={empId:e.id,draftToApply,alertOnDisable:false};
-      modal={type:'approvalTransferPicker',empId:e.id,replacementEid:''};
-      render();return;
-    }
+  } else if(e.effectiveTermDate&&e.effectiveTermDate<=tod&&e.active!==false){
     e.active=false;e.status='terminated';e.projectedAttrition=false;
   }
   finishEmpSaveAfterTermination(e,draftToApply);
