@@ -3764,7 +3764,7 @@ function goView(v){
   if(v==='zksetup')zkRefreshStatus();
 }
 function goTab(i){tab=i;render();}
-function closeM(){modal=null;render();}
+function closeM(){if(modal&&modal.type==='approvalTransferPicker')window._pendingTermination=null;modal=null;render();}
 // ESC and clicking outside the modal used to call closeM() unconditionally — instantly
 // discarding whatever was typed into a multi-field form (Add Employee, Edit Profile, bulk
 // import rows, etc.) with zero warning, unlike the explicit Cancel/× button which is at least
@@ -12466,6 +12466,42 @@ function renderModal(){
       <button class="btn btn-primary" onclick="saveCustomField()">${modal.idx===null?'Add Field':'Save Changes'}</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
+  }else if(modal.type==='approvalTransferPicker'){
+    const e=USERS.find(u=>u.id===modal.empId);
+    if(!e){inner='';closeM();}
+    else{
+      const pending=pendingApprovalsFor(e.eid);
+      const reportCount=USERS.filter(u=>u.immediateHeadEid===e.eid).length;
+      const affected=new Set(pending.map(a=>a.eid)).size;
+      const options=eligibleApprovers(e.eid);
+      const chosen=modal.replacementEid||'';
+      const summary=pending.length
+        ?`is the approver for <strong>${reportCount}</strong> employee${reportCount!==1?'s':''}, and has <strong>${pending.length}</strong> pending approval${pending.length!==1?'s':''} (attendance and/or leave) across ${affected} employee${affected!==1?'s':''} right now.`
+        :`is the approver for <strong>${reportCount}</strong> employee${reportCount!==1?'s':''}. There are no pending approvals right now, but future requests would resolve to them until this is handled.`;
+      inner=`<div class="modal-title">🔁 Transfer Approvals Before Deactivating
+        <button class="close-x" onclick="window._pendingTermination=null;closeM()">×</button></div>
+      <div style="padding:10px 12px;background:var(--amber-bg);border:1px solid var(--amber);border-radius:8px;margin-bottom:14px;font-size:13px;color:var(--amber-txt)">
+        <strong>${esc(e.name)}</strong> ${summary} Choose who takes over their approver responsibilities before continuing.
+      </div>
+      ${options.length?`<div class="field"><label>New Approver <span style="color:var(--red)">*</span></label>
+        <select id="atp-replacement" class="finput" onchange="modal.replacementEid=this.value;render()">
+          <option value="">— Select an approver —</option>
+          ${options.map(o=>`<option value="${esc(o.eid)}" ${chosen===o.eid?'selected':''}>${esc(fmtEmpName(o)||o.name)} (${esc(o.eid)})</option>`).join('')}
+        </select>
+        <div style="font-size:10px;color:var(--txt3);margin-top:4px">Only active users with approver access are listed.</div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button class="btn btn-primary" ${chosen?'':'disabled'} onclick="confirmApprovalTransferAndFinishSave()">✓ Transfer &amp; Deactivate</button>
+        <button class="btn" onclick="window._pendingTermination=null;closeM()">Cancel</button>
+      </div>`:`
+      <div style="padding:10px 12px;background:var(--red-bg);border:1px solid var(--red);border-radius:8px;margin-bottom:14px;font-size:13px;color:var(--red-txt)">
+        No other active user currently has approver access. Proceeding will leave the affected employee(s) without an active approver until you configure one manually in Company Settings &gt; Access &amp; Permissions or &gt; Approval Layers.
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="confirmApprovalTransferAndFinishSave()">Proceed Anyway</button>
+        <button class="btn" onclick="window._pendingTermination=null;closeM()">Cancel</button>
+      </div>`}`;
+    }
   }
   const attDetailMaximized=modal&&modal.type==='attReportDetail'&&modal.maximized;
   const html=`<div class="modal-overlay" onclick="if(event.target===this)closeMConfirmed()"><div class="modal-box" style="${attDetailMaximized?'width:96vw;max-width:96vw;height:90vh;max-height:90vh':modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance'||modal.type==='bulkAttendance'||modal.type==='attReportDetail'||modal.type==='shiftEditor'||modal.type==='personalScheduleEditor'||modal.type==='bulkPersonalSchedule')?'width:1100px;max-width:98vw':''}">${inner}</div></div>`;
@@ -15920,33 +15956,87 @@ function saveEmpEdit(){
   applyEmpSave('');
 }
 
-/* Before deactivating an approver, surface any pending attendance approvals currently
-   awaiting them and let the admin confirm the transfer -- once confirmed, getApprovalChain()
-   automatically routes those (and any future) pending approvals to the next active person up
-   the hierarchy on its own, since it already skips inactive approvers when walking the chain.
-   Declining leaves the employee active for now, so the admin can sort out the pending items
-   first and re-save afterward. Returns true if it's OK to proceed with deactivation. */
-function confirmPendingApprovalTransfer(e){
+/* Before deactivating an approver, check whether they're currently anyone's approver at
+   all (pending items now, or just a live direct report whose future items would resolve
+   to them) — used to decide whether applyEmpSave() should pause for the transfer picker
+   modal instead of deactivating immediately. */
+function needsApprovalTransferPrompt(e){
   const pending=pendingApprovalsFor(e.eid);
   const reportCount=USERS.filter(u=>u.immediateHeadEid===e.eid).length;
-  if(!pending.length&&!reportCount)return true;
-  const successor=USERS.find(u=>u.eid===e.immediateHeadEid);
-  if(!pending.length){
-    /* No pending items right now, but this person is still someone's approver — surface
-       that even though there's nothing to actively move. getApprovalChain() already skips
-       inactive approvers on its own, so any FUTURE request routes around them correctly
-       with no further action needed; this is purely a heads-up, not a mechanism the
-       actual routing depends on. */
-    const msg=successor
-      ?`${e.name} is the approver for ${reportCount} employee(s). There are no pending approvals right now, but future attendance and leave requests will automatically route to ${successor.name} once this record is saved.\n\nProceed with deactivation?`
-      :`${e.name} is the approver for ${reportCount} employee(s). No one is configured above them in the hierarchy — future attendance and leave requests will be left without an active approver until reassigned manually in Company Settings > Approval Layers.\n\nProceed with deactivation anyway?`;
-    return confirm(msg);
+  return pending.length>0||reportCount>0;
+}
+// "Approver access" = a true Admin, someone who already manages at least one direct
+// report, or someone assigned an access level above the base Employee tier (id 5 —
+// Manager, HR Admin, Payroll Admin, etc.) so a fresh promotion can still be picked even
+// before they have any reports of their own yet. The 'teamview' permission alone isn't a
+// useful signal here — it's granted broadly across nearly every access level preset
+// (including the base Employee tier itself), so checking it would match almost every
+// employee in the company rather than just people who plausibly act as an approver.
+function hasApproverAccess(u){
+  if(isAdminUser(u))return true;
+  if(USERS.some(x=>x.immediateHeadEid===u.eid))return true;
+  return!!(u.accessLevelId&&u.accessLevelId!==5);
+}
+function eligibleApprovers(excludeEid){
+  return USERS.filter(u=>u.active!==false&&u.eid!==excludeEid&&hasApproverAccess(u)).sort(cmpEmpName);
+}
+// Redirects every employee whose approval chain currently resolves to fromEid at any
+// layer over to toEid instead, by writing a per-employee, per-layer override — this is
+// what makes the admin's picked replacement stick instead of just falling back to
+// whoever happens to be next in the natural immediateHeadEid hierarchy. Covers both
+// currently-pending items and any future ones, since getApprovalChain() is always
+// resolved live rather than cached per record.
+function redirectApprovalsFrom(fromEid,toEid){
+  USERS.forEach(u=>{
+    if(u.eid===fromEid)return;
+    const chain=getApprovalChain(u.eid);
+    chain.forEach(entry=>{
+      if(entry.approver.eid!==fromEid)return;
+      APPROVAL_CONFIG.perEmployee=APPROVAL_CONFIG.perEmployee||{};
+      APPROVAL_CONFIG.perEmployee[u.eid]=APPROVAL_CONFIG.perEmployee[u.eid]||{};
+      APPROVAL_CONFIG.perEmployee[u.eid].overrides=APPROVAL_CONFIG.perEmployee[u.eid].overrides||{};
+      APPROVAL_CONFIG.perEmployee[u.eid].overrides[String(entry.layer)]=toEid;
+    });
+  });
+}
+// Shared tail for applyEmpSave() — runs whether termination happened synchronously (no
+// prompt needed) or was resumed from the approval-transfer picker modal.
+function finishEmpSaveAfterTermination(e,draftToApply){
+  closeM();
+  detailEdit=false;detailDraft={};
+  toast(e.name+' updated.','success');
+  const criteriaFields=['payType','type','bandLevel','entityName','bu','dept','pos','costCenter','nonMass','status'];
+  const customKeys=(FIELD_CONFIG?.employment?.custom||[]).map(function(f){return f.key;});
+  const allCriteriaFields=criteriaFields.concat(customKeys);
+  const hasCriteriaChange=allCriteriaFields.some(function(f){return f in draftToApply;});
+  if(hasCriteriaChange){
+    const oldGroupId=e.payGroupId;
+    syncGroupMembership(true);
+    const newGroupId=e.payGroupId;
+    if(oldGroupId!==newGroupId){
+      const oldGrp=PAYROLL_GROUPS.find(g=>g.id===oldGroupId);
+      const newGrp=PAYROLL_GROUPS.find(g=>g.id===newGroupId);
+      const changedField=allCriteriaFields.find(function(f){return f in draftToApply;})||'employment data';
+      toast(e.name+' moved from "'+(oldGrp?.name||'no group')+'" to "'+(newGrp?.name||'no group')+'" — '+changedField+' updated.','info');
+    }
   }
-  const affected=new Set(pending.map(a=>a.eid)).size;
-  const msg=successor
-    ?`${e.name} is the approver for ${pending.length} pending approval(s) (attendance and/or leave) across ${affected} employee(s).\n\nTransfer these to ${successor.name} (next in the approval hierarchy)?`
-    :`${e.name} is the approver for ${pending.length} pending approval(s) (attendance and/or leave) across ${affected} employee(s).\n\nNo one is configured above them in the hierarchy — these will be left without an active approver until reassigned manually in Company Settings > Approval Layers.\n\nProceed with deactivation anyway?`;
-  return confirm(msg);
+  if('biometricNo' in draftToApply)zkAutoApplyBiometricMatches();
+  render();queueSync('Employees');
+}
+function confirmApprovalTransferAndFinishSave(){
+  if(!modal||modal.type!=='approvalTransferPicker')return;
+  const pending=window._pendingTermination;
+  if(!pending){closeM();return;}
+  const e=USERS.find(u=>u.id===pending.empId);
+  if(!e){closeM();return;}
+  const replacement=modal.replacementEid?USERS.find(u=>u.eid===modal.replacementEid):null;
+  if(replacement)redirectApprovalsFrom(e.eid,replacement.eid);
+  e.active=false;e.status='terminated';e.projectedAttrition=false;
+  if(pending.alertOnDisable){
+    alert(`⚠ Access automatically disabled for ${e.name} — "${e.terminationType}".`+(replacement?`\n\nApprovals transferred to ${replacement.name}.`:''));
+  }
+  window._pendingTermination=null;
+  finishEmpSaveAfterTermination(e,pending.draftToApply);
 }
 
 function applyEmpSave(reason){
@@ -15996,37 +16086,25 @@ function applyEmpSave(reason){
       e.projectedAttrition=true;e.active=true;
       alert(`ℹ Projected Attrition noted for ${e.name}.\n\nEffective date: ${e.effectiveTermDate}\n\nAccess remains active until that date is reached.`);
     } else if(hasReachedDate||!e.effectiveTermDate){
-      if(e.active!==false&&confirmPendingApprovalTransfer(e)){
+      if(e.active!==false){
+        if(needsApprovalTransferPrompt(e)){
+          window._pendingTermination={empId:e.id,draftToApply,alertOnDisable:true};
+          modal={type:'approvalTransferPicker',empId:e.id,replacementEid:''};
+          render();return;
+        }
         e.active=false;e.status='terminated';e.projectedAttrition=false;
         alert(`⚠ Access automatically disabled for ${e.name} — "${e.terminationType}".`);
       }
     }
-  } else if(e.effectiveTermDate&&e.effectiveTermDate<=today()&&e.active!==false&&confirmPendingApprovalTransfer(e)){
+  } else if(e.effectiveTermDate&&e.effectiveTermDate<=today()&&e.active!==false){
+    if(needsApprovalTransferPrompt(e)){
+      window._pendingTermination={empId:e.id,draftToApply,alertOnDisable:false};
+      modal={type:'approvalTransferPicker',empId:e.id,replacementEid:''};
+      render();return;
+    }
     e.active=false;e.status='terminated';e.projectedAttrition=false;
   }
-  closeM();
-  detailEdit=false;detailDraft={};
-  toast(e.name+' updated.','success');
-  /* Re-sync payroll group membership if any criteria-relevant field changed */
-  const criteriaFields=['payType','type','bandLevel','entityName','bu','dept','pos','costCenter','nonMass','status'];
-  /* Also include any custom employment fields */
-  const customKeys=(FIELD_CONFIG?.employment?.custom||[]).map(function(f){return f.key;});
-  const allCriteriaFields=criteriaFields.concat(customKeys);
-  const hasCriteriaChange=allCriteriaFields.some(function(f){return f in draftToApply;});
-  if(hasCriteriaChange){
-    const oldGroupId=e.payGroupId;
-    /* Always skip explicit priority — criteria rules drive the group assignment */
-    syncGroupMembership(true);
-    const newGroupId=e.payGroupId;
-    if(oldGroupId!==newGroupId){
-      const oldGrp=PAYROLL_GROUPS.find(g=>g.id===oldGroupId);
-      const newGrp=PAYROLL_GROUPS.find(g=>g.id===newGroupId);
-      const changedField=allCriteriaFields.find(function(f){return f in draftToApply;})||'employment data';
-      toast(e.name+' moved from "'+(oldGrp?.name||'no group')+'" to "'+(newGrp?.name||'no group')+'" — '+changedField+' updated.','info');
-    }
-  }
-  if('biometricNo' in draftToApply)zkAutoApplyBiometricMatches();
-  render();queueSync('Employees');
+  finishEmpSaveAfterTermination(e,draftToApply);
 }
 
 /* =========================================================
