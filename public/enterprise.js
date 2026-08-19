@@ -1155,6 +1155,7 @@
       if(saved)f.visible=saved.visible!==false;
     });
   }
+  window.ATTENDANCE_FORM_CONFIG=ATTENDANCE_FORM_CONFIG;
 
   function saveAttendanceFormConfig(){
     COMPANY.attendanceForms=ATTENDANCE_FORM_CONFIG.map(function(f){return {key:f.key,visible:f.visible};});

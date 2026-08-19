@@ -154,10 +154,10 @@
     var actor = user ? user.name : 'Administrator';
     if (decision === 'rejected') {
       row.approvalStatus = 'rejected'; row.reviewedBy = actor; row.reviewedAt = new Date().toISOString();
-      row.approvalHistory = (row.approvalHistory || []).concat([{ layer: currentLayer, decision: 'rejected', by: actor, at: new Date().toISOString() }]);
+      row.approvalHistory = (row.approvalHistory || []).concat([{ layer: currentLayer, decision: 'rejected', by: actor, byEid: (user && user.eid) || null, at: new Date().toISOString() }]);
       return { ok: true, message: 'Attendance rejected.', decision: 'rejected' };
     }
-    row.approvalHistory = (row.approvalHistory || []).concat([{ layer: currentLayer, decision: 'approved', by: actor, at: new Date().toISOString() }]);
+    row.approvalHistory = (row.approvalHistory || []).concat([{ layer: currentLayer, decision: 'approved', by: actor, byEid: (user && user.eid) || null, at: new Date().toISOString() }]);
     if (layerEntry && currentLayer < chain.length) {
       row.approvalLayer = currentLayer + 1;
       return { ok: true, message: 'Approved at Layer '+currentLayer+'. Routed to Layer '+(currentLayer+1)+' ('+chain[currentLayer].approver.name+').', decision: 'approved' };
@@ -186,10 +186,10 @@
     var actor = user ? user.name : 'Administrator';
     if (decision === 'rejected') {
       row.status = 'rejected'; row.reviewedBy = actor; row.reviewedAt = new Date().toISOString();
-      row.approvalHistory = (row.approvalHistory || []).concat([{ layer: currentLayer, decision: 'rejected', by: actor, at: new Date().toISOString() }]);
+      row.approvalHistory = (row.approvalHistory || []).concat([{ layer: currentLayer, decision: 'rejected', by: actor, byEid: (user && user.eid) || null, at: new Date().toISOString() }]);
       return { ok: true, message: 'Leave request rejected.', decision: 'rejected', final: true };
     }
-    row.approvalHistory = (row.approvalHistory || []).concat([{ layer: currentLayer, decision: 'approved', by: actor, at: new Date().toISOString() }]);
+    row.approvalHistory = (row.approvalHistory || []).concat([{ layer: currentLayer, decision: 'approved', by: actor, byEid: (user && user.eid) || null, at: new Date().toISOString() }]);
     if (layerEntry && currentLayer < chain.length) {
       row.approvalLayer = currentLayer + 1;
       return { ok: true, message: 'Approved at Layer '+currentLayer+'. Routed to Layer '+(currentLayer+1)+' ('+chain[currentLayer].approver.name+').', decision: 'approved', final: false };
@@ -227,7 +227,7 @@
     if (!confirm('Force-approve this record, skipping any remaining approval layers?')) return;
     var actor = user.name;
     row.approvalStatus = 'approved'; row.reviewedBy = actor+' (forced)'; row.reviewedAt = new Date().toISOString();
-    row.approvalHistory = (row.approvalHistory || []).concat([{ layer: row.approvalLayer || 1, decision: 'force-approved', by: actor, at: new Date().toISOString() }]);
+    row.approvalHistory = (row.approvalHistory || []).concat([{ layer: row.approvalLayer || 1, decision: 'force-approved', by: actor, byEid: (user && user.eid) || null, at: new Date().toISOString() }]);
     queueSync('Attendance');
     toast('Force-approved.', 'success');
     render();
