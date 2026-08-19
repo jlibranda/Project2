@@ -1216,7 +1216,7 @@ function checkOffboarding(){
       const pending=pendingApprovalsFor(u.eid);
       if(pending.length){
         const successor=USERS.find(h=>h.eid===u.immediateHeadEid);
-        transferNotes.push(`${u.name}'s ${pending.length} pending attendance approval(s) moved to ${successor?successor.name:'no one (no one configured above them in the hierarchy)'}`);
+        transferNotes.push(`${u.name}'s ${pending.length} pending approval(s) (attendance and/or leave) moved to ${successor?successor.name:'no one (no one configured above them in the hierarchy)'}`);
       }
       u.active=false;u.status='terminated';u.projectedAttrition=false;terminated++;
     }else if(u.effectiveTermDate>tod&&u.terminationType&&u.terminationType!=='N/A'){
@@ -6693,8 +6693,9 @@ function pgLeave(){
 function actLeave(id,ok){
   const l=LEAVES.find(x=>x.id===id);
   if(!l)return;
-  l.status=ok?'approved':'rejected';
-  if(ok){
+  const result=applyLeaveDecision(l,ok?'approved':'rejected');
+  if(!result.ok){toast(result.message,'warning');return;}
+  if(result.final&&result.decision==='approved'){
     const emp=USERS.find(u=>u.id===l.eid),t=(COMPANY.leaveTypes||[]).find(x=>x.name===l.type);
     const deductDays=l.paidDays!==undefined?l.paidDays:l.days; /* older records predate the paid/unpaid split — deduct the full amount as before */
     if(emp&&t&&deductDays>0){
@@ -6708,6 +6709,7 @@ function actLeave(id,ok){
     if(emp)markAttendanceForApprovedLeave(l,emp);
   }
   queueSync('Leave_Requests');
+  toast(result.message,result.decision==='approved'?'success':'warning');
   render();
 }
 // Every calendar date from s to e, inclusive — capped so a bad date range can't loop forever.
@@ -6756,7 +6758,7 @@ function submitLeave(){
       if(days>bal.balance&&!confirm('You only have '+bal.balance+' day(s) of '+t.name+' available, but requested '+days+'. File anyway? HR will need to review the shortfall.'))return;
     }
   }
-  LEAVES.push({id:nLeave++,eid:user.id,type,s,e,reason,status:'pending',filed:today(),days,paidDays,unpaidDays,dayType,halfDayLabel:halfLabel});
+  LEAVES.push({id:nLeave++,eid:user.id,type,s,e,reason,status:'pending',filed:today(),days,paidDays,unpaidDays,dayType,halfDayLabel:halfLabel,approvalLayer:1});
   queueSync('Leave_Requests');
   window._leaveDraft=null; /* clear the draft so the next visit to File Leave starts fresh */
   alert('Leave request submitted!'+(unpaidDays>0?' ('+unpaidDays+' day(s) will be unpaid.)':''));
@@ -14762,14 +14764,20 @@ function clearApprovalDelegate(){
 /* Every pending attendance record whose currently-resolved approver (per getApprovalChain)
    is approverEid -- used by the resignation confirm-and-transfer flow below. */
 function pendingApprovalsFor(approverEid){
-  return attendanceRecords().filter(a=>{
-    if(a.approvalStatus!=='pending')return false;
-    const owner=USERS.find(u=>u.id===a.eid);
+  const isMyLayer=(ownerEid,layer)=>{
+    const owner=USERS.find(u=>u.id===ownerEid);
     if(!owner)return false;
     const chain=getApprovalChain(owner.eid);
-    const layerEntry=chain.find(c=>c.layer===(a.approvalLayer||1));
+    const layerEntry=chain.find(c=>c.layer===(layer||1));
     return layerEntry&&layerEntry.approver.eid===approverEid;
-  });
+  };
+  const pendingAtt=attendanceRecords()
+    .filter(a=>a.approvalStatus==='pending'&&isMyLayer(a.eid,a.approvalLayer))
+    .map(a=>({...a,kind:'attendance'}));
+  const pendingLeave=LEAVES
+    .filter(l=>l.status==='pending'&&isMyLayer(l.eid,l.approvalLayer))
+    .map(l=>({...l,kind:'leave'}));
+  return[...pendingAtt,...pendingLeave];
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -14790,12 +14798,14 @@ function pgTeamView(){
 function teamViewPendingTab(){
   if(!window._teamViewFilters)window._teamViewFilters={type:'',from:'',status:''};
   const f=window._teamViewFilters;
+  const typeLabels={...(window.ATTENDANCE_REQUEST_TYPE_LABELS||{daily:'Daily Attendance'}),leave:'Leave'};
+  const rowType=a=>a.kind==='leave'?'leave':(window.attendanceRecordRequestType?attendanceRecordRequestType(a):'daily');
+  const rowDate=a=>a.kind==='leave'?a.s:a.date;
   let rows=pendingApprovalsFor(user.eid);
-  if(f.from)rows=rows.filter(a=>a.date>=f.from);
-  if(f.status)rows=rows.filter(a=>a.status===f.status);
-  if(f.type)rows=rows.filter(a=>(window.attendanceRecordRequestType?attendanceRecordRequestType(a):'daily')===f.type);
-  rows=rows.slice().sort((a,b)=>(b.date+b.id).localeCompare(a.date+a.id));
-  const typeLabels=window.ATTENDANCE_REQUEST_TYPE_LABELS||{daily:'Daily Attendance'};
+  if(f.from)rows=rows.filter(a=>rowDate(a)>=f.from);
+  if(f.status)rows=rows.filter(a=>a.kind!=='leave'&&a.status===f.status);
+  if(f.type)rows=rows.filter(a=>rowType(a)===f.type);
+  rows=rows.slice().sort((a,b)=>(rowDate(b)+b.id).localeCompare(rowDate(a)+a.id));
   const hasFilters=!!(f.type||f.from||f.status);
   return`<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:end;margin-bottom:14px">
     <div class="field" style="min-width:190px"><label>Type</label>
@@ -14807,7 +14817,7 @@ function teamViewPendingTab(){
     <div class="field" style="min-width:150px"><label>From</label>
       <input type="date" class="finput" style="font-size:13px" value="${esc(f.from)}" onchange="window._teamViewFilters.from=this.value;render()"/>
     </div>
-    <div class="field" style="min-width:150px"><label>Status</label>
+    <div class="field" style="min-width:150px"><label>Status <span style="font-weight:400;color:var(--txt3)">(attendance only)</span></label>
       <select class="finput" style="font-size:13px" onchange="window._teamViewFilters.status=this.value;render()">
         <option value="">All statuses</option>
         <option value="present" ${f.status==='present'?'selected':''}>Present</option>
@@ -14817,17 +14827,24 @@ function teamViewPendingTab(){
     </div>
     ${hasFilters?`<button class="btn btn-sm" onclick="window._teamViewFilters={type:'',from:'',status:''};render()">✕ Clear filters</button>`:''}
   </div>
-  <div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>Type</th><th>In / Out</th><th>Work status</th><th>Actions</th></tr></thead><tbody>
+  <div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>Type</th><th>Details</th><th>Status</th><th>Actions</th></tr></thead><tbody>
   ${rows.length?rows.map(a=>{
     const emp=USERS.find(u=>u.id===a.eid);
-    const typeKey=window.attendanceRecordRequestType?attendanceRecordRequestType(a):'daily';
+    const isLeave=a.kind==='leave';
+    const typeKey=rowType(a);
+    const dateCell=isLeave?(a.s+(a.e&&a.e!==a.s?' – '+a.e:'')):a.date;
+    const detailsCell=isLeave?`${a.days} day(s) — ${esc(a.type||'')}`:`${a.tin||'—'} – ${a.tout||'—'}`;
+    const statusCell=isLeave?`<span class="badge b-pending">pending</span>`:`<span class="badge b-${a.status}">${esc(a.status)}</span>`;
+    const actionsCell=isLeave
+      ?`<div class="action-row"><button class="btn btn-sm btn-success" onclick="actLeave(${a.id},true)">Approve</button><button class="btn btn-sm btn-danger" onclick="actLeave(${a.id},false)">Reject</button></div>`
+      :`<div class="action-row"><button class="btn btn-sm btn-success" onclick="actAttendance(${a.id},'approved')">Approve</button><button class="btn btn-sm btn-danger" onclick="actAttendance(${a.id},'rejected')">Reject</button></div>`;
     return`<tr><td><div class="emp-cell"><div class="avatar sm">${ini(emp?emp.name:'?')}</div><div><div style="font-weight:600">${esc(fmtEmpName(emp)||'?')}</div><div style="font-size:10px;color:var(--txt3)">${esc(emp?emp.eid:'')}</div></div></div></td>
-      <td class="mono">${a.date}</td>
+      <td class="mono">${esc(dateCell)}</td>
       <td><span class="badge b-info">${esc(typeLabels[typeKey]||typeKey)}</span></td>
-      <td class="mono">${a.tin||'—'} – ${a.tout||'—'}</td>
-      <td><span class="badge b-${a.status}">${esc(a.status)}</span></td>
-      <td><div class="action-row"><button class="btn btn-sm btn-success" onclick="actAttendance(${a.id},'approved')">Approve</button><button class="btn btn-sm btn-danger" onclick="actAttendance(${a.id},'rejected')">Reject</button></div></td></tr>`;
-  }).join(''):`<tr><td colspan="6" class="empty-state">${hasFilters?'No pending approvals match these filters.':'No pending attendance approvals right now.'}</td></tr>`}
+      <td class="mono">${detailsCell}</td>
+      <td>${statusCell}</td>
+      <td>${actionsCell}</td></tr>`;
+  }).join(''):`<tr><td colspan="6" class="empty-state">${hasFilters?'No pending approvals match these filters.':'No pending attendance or leave approvals right now.'}</td></tr>`}
   </tbody></table></div>`;
 }
 
@@ -15911,12 +15928,24 @@ function saveEmpEdit(){
    first and re-save afterward. Returns true if it's OK to proceed with deactivation. */
 function confirmPendingApprovalTransfer(e){
   const pending=pendingApprovalsFor(e.eid);
-  if(!pending.length)return true;
+  const reportCount=USERS.filter(u=>u.immediateHeadEid===e.eid).length;
+  if(!pending.length&&!reportCount)return true;
   const successor=USERS.find(u=>u.eid===e.immediateHeadEid);
+  if(!pending.length){
+    /* No pending items right now, but this person is still someone's approver — surface
+       that even though there's nothing to actively move. getApprovalChain() already skips
+       inactive approvers on its own, so any FUTURE request routes around them correctly
+       with no further action needed; this is purely a heads-up, not a mechanism the
+       actual routing depends on. */
+    const msg=successor
+      ?`${e.name} is the approver for ${reportCount} employee(s). There are no pending approvals right now, but future attendance and leave requests will automatically route to ${successor.name} once this record is saved.\n\nProceed with deactivation?`
+      :`${e.name} is the approver for ${reportCount} employee(s). No one is configured above them in the hierarchy — future attendance and leave requests will be left without an active approver until reassigned manually in Company Settings > Approval Layers.\n\nProceed with deactivation anyway?`;
+    return confirm(msg);
+  }
   const affected=new Set(pending.map(a=>a.eid)).size;
   const msg=successor
-    ?`${e.name} is the approver for ${pending.length} pending attendance form(s) across ${affected} employee(s).\n\nTransfer these to ${successor.name} (next in the approval hierarchy)?`
-    :`${e.name} is the approver for ${pending.length} pending attendance form(s) across ${affected} employee(s).\n\nNo one is configured above them in the hierarchy — these will be left without an active approver until reassigned manually in Company Settings > Approval Layers.\n\nProceed with deactivation anyway?`;
+    ?`${e.name} is the approver for ${pending.length} pending approval(s) (attendance and/or leave) across ${affected} employee(s).\n\nTransfer these to ${successor.name} (next in the approval hierarchy)?`
+    :`${e.name} is the approver for ${pending.length} pending approval(s) (attendance and/or leave) across ${affected} employee(s).\n\nNo one is configured above them in the hierarchy — these will be left without an active approver until reassigned manually in Company Settings > Approval Layers.\n\nProceed with deactivation anyway?`;
   return confirm(msg);
 }
 

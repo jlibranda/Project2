@@ -167,6 +167,38 @@
   }
   window.applyAttendanceDecision = applyAttendanceDecision;
 
+  // Leave requests now go through the same per-employee approval chain as attendance
+  // (getApprovalChain) instead of being approvable by any admin regardless of who's
+  // actually above the requester — this is what makes auto-transfer-on-resignation and
+  // Team View's pending list apply to leave the same way they already do for attendance.
+  // l.status stays 'pending' through every intermediate layer; only the final layer's
+  // approval flips it to 'approved' (or any layer's rejection flips it to 'rejected').
+  function applyLeaveDecision(row, decision) {
+    var emp = USERS.find(function (u) { return u.id === row.eid; });
+    var chain = (emp && typeof getApprovalChain === 'function') ? getApprovalChain(emp.eid) : [];
+    var currentLayer = row.approvalLayer || 1;
+    var layerEntry = chain.find(function (c) { return c.layer === currentLayer; });
+    var isDesignatedApprover = layerEntry && user && layerEntry.approver.id === user.id;
+    var isAdmin = user && (isAdminUser(user) || isPlatformAdmin);
+    if (layerEntry && !isDesignatedApprover && !isAdmin) {
+      return { ok: false, message: 'Only '+layerEntry.approver.name+' (Layer '+currentLayer+' approver) can act on this request.' };
+    }
+    var actor = user ? user.name : 'Administrator';
+    if (decision === 'rejected') {
+      row.status = 'rejected'; row.reviewedBy = actor; row.reviewedAt = new Date().toISOString();
+      row.approvalHistory = (row.approvalHistory || []).concat([{ layer: currentLayer, decision: 'rejected', by: actor, at: new Date().toISOString() }]);
+      return { ok: true, message: 'Leave request rejected.', decision: 'rejected', final: true };
+    }
+    row.approvalHistory = (row.approvalHistory || []).concat([{ layer: currentLayer, decision: 'approved', by: actor, at: new Date().toISOString() }]);
+    if (layerEntry && currentLayer < chain.length) {
+      row.approvalLayer = currentLayer + 1;
+      return { ok: true, message: 'Approved at Layer '+currentLayer+'. Routed to Layer '+(currentLayer+1)+' ('+chain[currentLayer].approver.name+').', decision: 'approved', final: false };
+    }
+    row.status = 'approved'; row.reviewedBy = actor; row.reviewedAt = new Date().toISOString();
+    return { ok: true, message: 'Leave request approved.', decision: 'approved', final: true };
+  }
+  window.applyLeaveDecision = applyLeaveDecision;
+
   window.actAttendance = function (id, decision) {
     var row = ATT.find(function (a) { return a.id === id; });
     if (!row) return;
