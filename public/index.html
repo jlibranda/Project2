@@ -1739,9 +1739,8 @@ function applyBulkAttendance(){
     if(emp.active===false){errors.push(rowLabel+': '+emp.name+' is inactive — skipped');return;}
     if(!r.date||!/^\d{4}-\d{2}-\d{2}$/.test(r.date)){errors.push(rowLabel+': invalid date "'+r.date+'" (use YYYY-MM-DD)');return;}
     const patch=computedAttendancePatch(emp.id,r.date,r.tin||'',r.tout||'',r.status||'present',parseFloat(r.ot)||0,parseFloat(r.nd)||0,r.notes||'','bulk-import');
-    const otApproved=!(patch.ot>0);
-    upsertAttendance(emp.id,r.date,{...patch,approvalStatus:otApproved?'approved':'pending',
-      reviewedBy:otApproved?user.name:'',reviewedAt:otApproved?new Date().toISOString():''});
+    upsertAttendance(emp.id,r.date,{...patch,approvalStatus:'approved',
+      reviewedBy:user.name,reviewedAt:new Date().toISOString()});
     applied++;
   });
   if(applied>0)queueSync('Attendance');
@@ -2522,8 +2521,8 @@ async function zkImport(){
     const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
     upsertAttendance(g.empId,g.date,{...computed,punches:mergedPunches,
       status:(computed.lwop||computed.incomplete)?'absent':isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),
-      notes:[flagged?'ZKTeco import · Outside scheduled shift window — needs confirmation':'ZKTeco import',policyNote].filter(Boolean).join(' · '),
-      source:'zkteco-import',approvalStatus:(flagged||computed.ot>0)?'pending':'approved',filedBy:'ZKTeco import'});
+      notes:[flagged?'ZKTeco import · Outside scheduled shift window — needs confirmation':'ZKTeco import',policyNote,neutralizedOtNote(computed.ot)].filter(Boolean).join(' · '),
+      ot:0,source:'zkteco-import',approvalStatus:flagged?'pending':'approved',filedBy:'ZKTeco import'});
     added++;
   });
   try{
@@ -6462,8 +6461,18 @@ function attendanceFilingBlocked(dateStr){
 // any other source. 'leave' status is left alone (nothing time-based to compute against); a
 // non-zero OT/ND the admin typed themselves is treated as an explicit override and wins over
 // the computed figure (e.g. pre-authorized OT that doesn't match strict schedule math).
+// Overtime never becomes payable through this function, regardless of what's typed into the
+// Overtime Hours field or computed from punches — an employee must file an actual Overtime
+// Request (or Rest Day/Holiday Overtime) through the request catalog for OT to require
+// approval and become payable; approving that request is what writes a real `ot` value onto
+// the record (see resolveCase() in enterprise.js, `actual.ot=otResult.hours`). Every path
+// through here forces ot to 0 so raw/manual entries can't slip unrequested, unreviewed OT
+// into payroll — payroll pays whatever `ot` sits on an approved record, with no other check.
+function neutralizedOtNote(rawOt){
+  return rawOt>0?rawOt+'h beyond schedule — not payable unless a matching Overtime Request is filed and approved':'';
+}
 function computedAttendancePatch(empId,date,tin,tout,manualStatus,manualOt,manualNd,notes,source){
-  const base={tin,tout,status:manualStatus,ot:manualOt,nd:manualNd,notes,source};
+  const base={tin,tout,status:manualStatus,ot:0,nd:manualNd,notes:[notes,neutralizedOtNote(manualOt)].filter(Boolean).join(' · '),source};
   const emp=USERS.find(u=>u.id===empId);
   if(!emp||manualStatus==='leave')return base;
   const existing=attendanceRecord(empId,date);
@@ -6489,10 +6498,11 @@ function computedAttendancePatch(empId,date,tin,tout,manualStatus,manualOt,manua
   const rawComputed=TimekeepingCore.computeFromPunches(mergedPunches,schedule,isRest,emp&&emp.scheduleType)||{};
   const computed=(isRest||noPolicy)?rawComputed:TimekeepingCore.applyAttendancePolicy(rawComputed,schedule,ATTENDANCE_POLICY);
   const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
+  const rawOt=manualOt>0?manualOt:computed.ot;
   return{...computed,punches:mergedPunches,
     status:(computed.lwop||computed.incomplete)?'absent':(isRest?manualStatus:(computed.lateMinutes>0?'late':'present')),
-    ot:manualOt>0?manualOt:computed.ot,nd:manualNd>0?manualNd:computed.nd,
-    notes:[notes,policyNote].filter(Boolean).join(' · '),source};
+    ot:0,nd:manualNd>0?manualNd:computed.nd,
+    notes:[notes,policyNote,neutralizedOtNote(rawOt)].filter(Boolean).join(' · '),source};
 }
 function submitAtt(isA){
   const eid=isA?parseInt(document.getElementById('ae').value):user.id;
@@ -6523,10 +6533,9 @@ function saveEditAttRow(){
   if(!modal||modal.type!=='editAttRow'||!canEditAttendance())return;
   const d=modal.draft;
   const patch=computedAttendancePatch(modal.eid,modal.date,d.tin,d.tout,d.status,parseFloat(d.ot)||0,parseFloat(d.nd)||0,d.notes,'admin-edit');
-  const otApproved=!(patch.ot>0);
-  upsertAttendance(modal.eid,modal.date,{...patch,approvalStatus:otApproved?'approved':'pending',
-    reviewedBy:otApproved?user.name:'',reviewedAt:otApproved?new Date().toISOString():''});
-  queueSync('Attendance');closeM();toast(otApproved?'Attendance record updated.':'Attendance record updated — overtime routed for approval before it can be paid.','success');
+  upsertAttendance(modal.eid,modal.date,{...patch,approvalStatus:'approved',
+    reviewedBy:user.name,reviewedAt:new Date().toISOString()});
+  queueSync('Attendance');closeM();toast('Attendance record updated.'+(parseFloat(d.ot)>0?' Overtime is not payable from this form — file an Overtime Request instead.':''),'success');
 }
 function openAttHistory(eid,date){
   const rec=attendanceRecord(eid,date);if(!rec)return;
@@ -13717,8 +13726,8 @@ async function doBundy(type){
   const policyNote=computed.policyNotes?computed.policyNotes.join(' · '):'';
   upsertAttendance(user.id,today(),{...computed,punches:mergedPunches,
     status:(computed.lwop||computed.incomplete)?'absent':isRest?(existing?existing.status:'present'):(computed.lateMinutes>0?'late':'present'),
-    notes:['Web Bundy',policyNote].filter(Boolean).join(' · '),source:'web-bundy',
-    approvalStatus:computed.ot>0?'pending':'approved',filedBy:user.name});
+    notes:['Web Bundy',policyNote,neutralizedOtNote(computed.ot)].filter(Boolean).join(' · '),source:'web-bundy',
+    ot:0,approvalStatus:'approved',filedBy:user.name});
   queueSync('Bundy_Logs','Attendance');selfieData=null;
   const zoneNote=entry.withinZone?'\n\u2705 Within office zone':'\n\u26A0 You are outside the office zone';
   alert((type==='in'?'Clocked IN at '+entry.time:'Clocked OUT at '+entry.time)+zoneNote);
