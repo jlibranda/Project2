@@ -14894,7 +14894,7 @@ function teamViewPendingTab(){
       </div>
     </div>
     <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap">
-      <div class="field" style="min-width:170px"><label>Status</label>
+      <div class="field" style="min-width:170px;margin-bottom:0"><label>Status</label>
         <select class="finput" style="font-size:13px" onchange="window._teamViewFilters.status=this.value;render()">
           <option value="pending" ${f.status==='pending'?'selected':''}>Pending</option>
           <option value="approved" ${f.status==='approved'?'selected':''}>Approved</option>
@@ -14902,7 +14902,7 @@ function teamViewPendingTab(){
           <option value="" ${f.status===''?'selected':''}>All statuses</option>
         </select>
       </div>
-      ${hasFilters?`<button class="btn btn-sm" onclick="window._teamViewFilters={types:[],status:'pending'};render()">✕ Clear filters</button>`:''}
+      ${hasFilters?`<button class="btn" style="height:42px;padding:0 14px" onclick="window._teamViewFilters={types:[],status:'pending'};render()">✕ Clear filters</button>`:''}
     </div>
   </div>
   <div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Date</th><th>Type</th><th>Details</th><th>Status</th><th>Actions</th></tr></thead><tbody>
