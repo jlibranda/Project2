@@ -758,6 +758,7 @@ const ACCESS_PRESETS={
 };
 
 let _aclSel=null; /* selected access level ID in the editor */
+let _aclDraft=null; /* {id,perms} — uncommitted edits in progress; null = read-only view */
 
 let ACCESS_LEVELS=[
   {id:1,name:'Super Admin',color:'purple',desc:'Full access to all modules and settings',
@@ -13257,9 +13258,41 @@ function applyLookupBulkAdd(){
 
 /* ========== ACCESS & PERMISSIONS SETUP ========== */
 
+/* Sub-permissions are associated with the nearest preceding sub:false entry within the
+   same group — the same convention the "↳ indented" UI already communicates visually. */
+function permSubKeysOf(parentKey){
+  const idx=PERM_DEFS.findIndex(p=>p.k===parentKey);
+  if(idx<0)return[];
+  const out=[];
+  for(let i=idx+1;i<PERM_DEFS.length;i++){
+    if(!PERM_DEFS[i].sub)break;
+    out.push(PERM_DEFS[i].k);
+  }
+  return out;
+}
+function openAclEdit(alId){
+  const al=ACCESS_LEVELS.find(a=>a.id===alId);if(!al)return;
+  _aclDraft={id:alId,perms:{...al.perms}};
+  render();
+}
+function cancelAclEdit(){
+  _aclDraft=null;render();
+  toast('Changes discarded.','info');
+}
+function saveAclEdit(){
+  if(!_aclDraft)return;
+  if(!confirm('Save changes to this access level\'s permissions?'))return;
+  const al=ACCESS_LEVELS.find(a=>a.id===_aclDraft.id);if(!al)return;
+  al.perms=_aclDraft.perms;
+  _aclDraft=null;
+  render();
+  toast('Permissions saved.','success');
+}
 function pgAccessSetup(){
   const alColors={purple:'#7c3aed',blue:'#2563eb',green:'#059669',amber:'#d97706',gray:'#6b7280',red:'#dc2626',teal:'#0d9488',pink:'#db2777'};
   const sel=ACCESS_LEVELS.find(a=>a.id===_aclSel)||ACCESS_LEVELS[0];
+  const editing=!!(_aclDraft&&sel&&_aclDraft.id===sel.id);
+  const activePerms=editing?_aclDraft.perms:(sel?sel.perms:{});
   const grps=[...new Set(PERM_DEFS.map(p=>p.grp))];
   const permCount=al=>PERM_DEFS.filter(p=>al.perms[p.k]).length;
   return`<div class="page-header">
@@ -13275,7 +13308,7 @@ function pgAccessSetup(){
         const c=alColors[al.color]||'#6b7280';
         const isSel=al.id===sel.id;
         const cnt=USERS.filter(u=>u.accessLevelId===al.id).length;
-        return`<div onclick="_aclSel=${al.id};render()"
+        return`<div onclick="if(_aclDraft&&_aclDraft.id!==${al.id}&&!confirm('Discard unsaved permission changes?'))return;_aclSel=${al.id};_aclDraft=null;render()"
           style="padding:12px 14px;border-radius:10px;border:2px solid ${isSel?c:'var(--border)'};background:${isSel?c+'12':'var(--surface2)'};cursor:pointer;transition:all .15s"
           onmouseover="this.style.borderColor='${c}'" onmouseout="this.style.borderColor='${isSel?c:'var(--border)'}'">
           <div style="display:flex;align-items:center;gap:8px">
@@ -13301,15 +13334,19 @@ function pgAccessSetup(){
           <div style="font-size:12px;color:var(--txt3)">${esc(sel.desc)}</div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <button class="btn btn-sm" onclick="openEditLevel(${sel.id})">✎ Edit</button>
+          ${editing?`
+          <button class="btn btn-sm btn-primary" onclick="saveAclEdit()">💾 Save Changes</button>
+          <button class="btn btn-sm" onclick="cancelAclEdit()">✕ Cancel</button>`:`
+          <button class="btn btn-sm btn-primary" onclick="openAclEdit(${sel.id})">✎ Edit Permissions</button>
+          <button class="btn btn-sm" onclick="openEditLevel(${sel.id})">✎ Rename / Recolor</button>
           <button class="btn btn-sm" onclick="duplicateLevel(${sel.id})">⎘ Duplicate</button>
-          ${sel.id!==1?`<button class="btn btn-sm btn-danger" onclick="delAccessLevel(${sel.id})">✕ Delete</button>`:`<span style="font-size:11px;color:var(--txt3);padding:4px 6px" title="Super Admin cannot be deleted">🔒 Protected</span>`}
+          ${sel.id!==1?`<button class="btn btn-sm btn-danger" onclick="delAccessLevel(${sel.id})">✕ Delete</button>`:`<span style="font-size:11px;color:var(--txt3);padding:4px 6px" title="Super Admin cannot be deleted">🔒 Protected</span>`}`}
         </div>
       </div>
 
       <!-- Presets -->
       <div style="padding:10px 18px;border-bottom:1px solid var(--border);background:var(--surface2)">
-        <div style="font-size:11px;font-weight:600;color:var(--txt3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Quick Presets</div>
+        <div style="font-size:11px;font-weight:600;color:var(--txt3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:6px">Quick Presets ${editing?'':'— starts an edit, still needs Save Changes to apply'}</div>
         <div style="display:flex;gap:5px;flex-wrap:wrap">
           ${Object.keys(ACCESS_PRESETS).map(p=>`<button class="btn btn-sm" style="font-size:11px" onclick="applyPreset(${sel.id},'${p}')">${p}</button>`).join('')}
           <button class="btn btn-sm" style="font-size:11px;color:var(--red);border-color:var(--red)" onclick="applyPreset(${sel.id},'__none__')">Clear All</button>
@@ -13320,26 +13357,26 @@ function pgAccessSetup(){
       <!-- Permissions -->
       <div style="padding:14px 18px;max-height:calc(100vh - 320px);overflow-y:auto">
         <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">
-          <strong style="color:var(--accent)">${permCount(sel)}</strong> of ${PERM_DEFS.length} permissions enabled
-          &nbsp;·&nbsp; Checkboxes save instantly — no Save button needed.
-          &nbsp;·&nbsp; <span style="opacity:.7">Indented items (↳) are sub-permissions of the line above.</span>
+          <strong style="color:var(--accent)">${PERM_DEFS.filter(p=>activePerms[p.k]).length}</strong> of ${PERM_DEFS.length} permissions enabled
+          &nbsp;·&nbsp; ${editing?'<span style="color:var(--accent);font-weight:600">Editing — click Save Changes to apply, or Cancel to discard.</span>':'Read-only — click Edit Permissions above to make changes.'}
+          &nbsp;·&nbsp; <span style="opacity:.7">Indented items (↳) are sub-permissions — checking the line above auto-checks them too.</span>
         </div>
         ${grps.map(grp=>{
           const items=PERM_DEFS.filter(p=>p.grp===grp);
-          const onCnt=items.filter(p=>sel.perms[p.k]).length;
+          const onCnt=items.filter(p=>activePerms[p.k]).length;
           return`<div style="margin-bottom:16px">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;padding-bottom:5px;border-bottom:1px solid var(--border)">
               <div style="font-size:11px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.5px;flex:1">${grp}</div>
               <span style="font-size:10px;color:var(--txt3)">${onCnt}/${items.length}</span>
-              <button style="font-size:9px;padding:1px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);cursor:pointer;color:var(--txt3)" onclick="setGroupPerms(${sel.id},'${grp}',true)">All</button>
-              <button style="font-size:9px;padding:1px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);cursor:pointer;color:var(--txt3)" onclick="setGroupPerms(${sel.id},'${grp}',false)">None</button>
+              <button style="font-size:9px;padding:1px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);cursor:${editing?'pointer':'not-allowed'};color:var(--txt3)" ${editing?'':'disabled'} onclick="setGroupPerms('${grp}',true)">All</button>
+              <button style="font-size:9px;padding:1px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg);cursor:${editing?'pointer':'not-allowed'};color:var(--txt3)" ${editing?'':'disabled'} onclick="setGroupPerms('${grp}',false)">None</button>
             </div>
             <div style="display:grid;gap:4px">
               ${items.map(p=>{
-                const on=!!sel.perms[p.k];
-                return`<label id="aclrow-${sel.id}-${p.k}" style="display:flex;align-items:flex-start;gap:9px;cursor:pointer;padding:6px 8px;border-radius:7px;border:1px solid ${on?'var(--accent)':'transparent'};background:${on?'var(--accent-bg)':'var(--bg)'};${p.sub?'margin-left:18px':''}">
-                  <input id="aclcb-${sel.id}-${p.k}" type="checkbox" style="width:auto;accent-color:var(--accent);flex-shrink:0;margin-top:2px" ${on?'checked':''}
-                    onchange="togglePermFast(${sel.id},'${p.k}',this.checked,this.closest('label'))"/>
+                const on=!!activePerms[p.k];
+                return`<label style="display:flex;align-items:flex-start;gap:9px;${editing?'cursor:pointer':'cursor:default'};padding:6px 8px;border-radius:7px;border:1px solid ${on?'var(--accent)':'transparent'};background:${on?'var(--accent-bg)':'var(--bg)'};${p.sub?'margin-left:18px':''};${editing?'':'opacity:.8'}">
+                  <input type="checkbox" style="width:auto;accent-color:var(--accent);flex-shrink:0;margin-top:2px" ${on?'checked':''} ${editing?'':'disabled'}
+                    onchange="togglePermFast('${p.k}',this.checked)"/>
                   <div style="flex:1;min-width:0">
                     <div style="font-size:12px;font-weight:500;color:${on?'var(--accent-txt)':'var(--txt)'}">${p.sub?'<span style="color:var(--txt3)">↳ </span>':''}${p.l}</div>
                     <div style="font-size:11px;color:var(--txt3);margin-top:1px">${p.desc}</div>
@@ -13405,45 +13442,38 @@ function filterCreds(v){
   if(tb)tb.innerHTML=renderCredRows(v);
 }
 
-function togglePermFast(alId,key,checked,lbl){
-  const al=ACCESS_LEVELS.find(a=>a.id===alId);if(!al)return;
-  if(checked)al.perms[key]=true;else delete al.perms[key];
-  if(lbl){
-    lbl.style.border=checked?'1px solid var(--accent)':'1px solid transparent';
-    lbl.style.background=checked?'var(--accent-bg)':'var(--bg)';
-    const t=lbl.querySelector('div>div:first-child');
-    if(t)t.style.color=checked?'var(--accent-txt)':'var(--txt)';
+/* All three of these edit the in-progress _aclDraft only — nothing touches the real
+   ACCESS_LEVELS entry until saveAclEdit() commits it. Checking a parent (sub:false)
+   permission auto-checks its sub-permissions below it (and unchecking it auto-unchecks
+   them), since a sub-permission is meaningless without its parent. */
+function togglePermFast(key,checked){
+  if(!_aclDraft)return;
+  if(checked){
+    _aclDraft.perms[key]=true;
+    permSubKeysOf(key).forEach(k=>{_aclDraft.perms[k]=true;});
+  }else{
+    delete _aclDraft.perms[key];
+    permSubKeysOf(key).forEach(k=>{delete _aclDraft.perms[k];});
   }
-  /* Update perm count badge */
-  const cnt=ACCESS_LEVELS.find(a=>a.id===alId);
-  const total=PERM_DEFS.filter(p=>cnt&&cnt.perms[p.k]).length;
-  const badge=document.querySelector('[style*="permCount"]');
-  /* Update inline count text */
-  const info=document.querySelector('.perm-count-info');
-  if(info)info.innerHTML=`<strong style="color:var(--accent)">${total}</strong> of ${PERM_DEFS.length} permissions enabled`;
-  toast('Permission updated.','success');
+  render();
 }
 
-function setGroupPerms(alId,grp,enable){
-  const al=ACCESS_LEVELS.find(a=>a.id===alId);if(!al)return;
-  const ks=PERM_DEFS.filter(p=>p.grp===grp).map(p=>p.k);
-  ks.forEach(k=>{
-    if(enable)al.perms[k]=true;else delete al.perms[k];
-    const cb=document.getElementById('aclcb-'+alId+'-'+k);
-    const lbl=document.getElementById('aclrow-'+alId+'-'+k);
-    if(cb)cb.checked=enable;
-    if(lbl){lbl.style.border=enable?'1px solid var(--accent)':'1px solid transparent';lbl.style.background=enable?'var(--accent-bg)':'var(--bg)';const t=lbl.querySelector('div>div:first-child');if(t)t.style.color=enable?'var(--accent-txt)':'var(--txt)';}
+function setGroupPerms(grp,enable){
+  if(!_aclDraft)return;
+  PERM_DEFS.filter(p=>p.grp===grp).forEach(p=>{
+    if(enable)_aclDraft.perms[p.k]=true;else delete _aclDraft.perms[p.k];
   });
-  toast('Group permissions updated.','success');
+  render();
 }
 
 function applyPreset(alId,preset){
   const al=ACCESS_LEVELS.find(a=>a.id===alId);if(!al)return;
-  if(preset==='__none__'){al.perms={};}
-  else if(preset==='__all__'){al.perms=Object.fromEntries(PERM_DEFS.map(p=>[p.k,true]));}
-  else{al.perms={...(ACCESS_PRESETS[preset]||{})};}
+  if(!_aclDraft||_aclDraft.id!==alId)_aclDraft={id:alId,perms:{...al.perms}};
+  if(preset==='__none__'){_aclDraft.perms={};}
+  else if(preset==='__all__'){_aclDraft.perms=Object.fromEntries(PERM_DEFS.map(p=>[p.k,true]));}
+  else{_aclDraft.perms={...(ACCESS_PRESETS[preset]||{})};}
   render();
-  toast('Preset applied.','success');
+  toast('Preset applied — click Save Changes to confirm.','info');
 }
 
 function duplicateLevel(id){
