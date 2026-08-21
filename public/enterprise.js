@@ -1836,24 +1836,18 @@
     return html+((employee&&(isAdminUser(user)||isPlatformAdmin))?renderEmployeeShiftCard(employee):'');
   };
 
-  var baseCompanySettings=window.pgCompanySettings;
-  window.showCompanySettingsTab=function(key){window._companySettingsTab=key;render();};
-  function companySettingsTabs(active){
-    var items=[{key:'general',label:'General & Payroll'},{key:'shifts',label:'Shift Setup'},{key:'holidays',label:'Holiday Calendar'},{key:'leave',label:'Leave Policy'},{key:'attendance',label:'Attendance Forms'}];
-    return '<div class="settings-tabbar" role="tablist" aria-label="Company Settings sections">'+items.map(function(item){return '<button class="settings-tab'+(active===item.key?' active':'')+'" role="tab" aria-selected="'+(active===item.key?'true':'false')+'" onclick="showCompanySettingsTab(\''+item.key+'\')">'+item.label+'</button>';}).join('')+'</div>';
-  }
-  window.pgCompanySettings=pgCompanySettings=function(){
-    var admin=isAdminUser(user)||isPlatformAdmin;
-    if(!admin)return baseCompanySettings();
-    var active=window._companySettingsTab||'general',tabs=companySettingsTabs(active);
-    if(active==='general'){
-      var general=baseCompanySettings(),marker='<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">';
-      return general.indexOf(marker)>=0?general.replace(marker,tabs+marker):tabs+general;
-    }
-    var subtitles={shifts:'Create reusable schedules and manage employee shift assignments.',holidays:'Manage holiday dates so attendance and payroll automatically apply the correct rate.',leave:'Define leave types, entitlement, accrual, and eligibility rules.',attendance:'Choose which attendance request forms employees can access.'};
-    var body=active==='shifts'?renderShiftManager():active==='holidays'?renderHolidayManager():active==='leave'?renderLeavePolicyManager():renderAttendanceFormManager();
-    return '<div class="page-header"><div><div class="page-title">Company Settings</div><div class="page-sub">'+(subtitles[active]||'')+'</div></div></div>'+tabs+body;
-  };
+  // Shift Setup / Holiday Calendar / Leave Policy / Attendance Forms used to be tabs bolted
+  // onto Company Settings here; they now live under their own Time & Attendance →
+  // Timekeeping Settings tabs (pgTimekeepingSettings in index.html), each independently
+  // gated by its own module key so a client's package can turn them on/off individually.
+  // pgCompanySettings itself is no longer monkeypatched — index.html's base version (just
+  // company info + payroll computation defaults + BIR policy) is the live one again. These
+  // render functions stay defined in this closure, so export them for pgTimekeepingSettings
+  // to call.
+  window.renderShiftManager=renderShiftManager;
+  window.renderHolidayManager=renderHolidayManager;
+  window.renderLeavePolicyManager=renderLeavePolicyManager;
+  window.renderAttendanceFormManager=renderAttendanceFormManager;
 
   /* Extend payroll approval: approved runs release payslips and create audit events. */
   var baseApprove=window.approvePayroll;

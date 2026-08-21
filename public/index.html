@@ -645,6 +645,14 @@ const PERM_DEFS=[
   {grp:'Time & Attendance',   k:'leave_approve',      l:'Approve / Reject Leave',           desc:'Review and act on leave requests from other employees',                                sub:true},
   {grp:'Time & Attendance',   k:'leave_credits',      l:'Manage Leave Credits',             desc:'Adjust, grant, or forfeit leave credit balances per employee',                        sub:true},
   {grp:'Time & Attendance',   k:'bundyadmin',         l:'Web Bundy Monitor',                desc:'View live company-wide clock-in status and manage office geofence zones',             sub:false},
+  {grp:'Time & Attendance',   k:'shiftsetup',         l:'Shift Setup',                      desc:'Create shift schedules and manage employee shift assignments',                        sub:false},
+  {grp:'Time & Attendance',   k:'holidaysetup',       l:'Holiday Calendar',                 desc:'Manage holiday dates so attendance and payroll apply the correct rate',                sub:false},
+  {grp:'Time & Attendance',   k:'leavepolicysetup',   l:'Leave Policy',                     desc:'Define leave types, entitlement, accrual, and eligibility rules',                     sub:false},
+  {grp:'Time & Attendance',   k:'attendanceformsetup',l:'Attendance Forms',                 desc:'Choose which attendance request forms employees can access',                          sub:false},
+  {grp:'Time & Attendance',   k:'attendancepolicysetup',l:'Filing Deadline & Deductions',   desc:'Configure attendance filing deadlines, late/absent/undertime deduction rules, and week boundary', sub:false},
+  {grp:'Time & Attendance',   k:'webbundysettings',   l:'Web Bundy Settings',               desc:'Configure Web Bundy public access and selfie requirement',                            sub:false},
+  {grp:'Time & Attendance',   k:'approvalsetup',      l:'Approval Layers',                  desc:'Configure multi-level approval workflows per employee',                                sub:false},
+  {grp:'Time & Attendance',   k:'zksetup',            l:'ZKTeco Biometrics',                desc:'Connect and configure biometric attendance devices',                                   sub:false},
 
   /* ── PAYROLL ──────────────────────────────────────────────── */
   {grp:'Payroll',             k:'payroll',            l:'View & Process Payroll',           desc:'Access the payroll module and process computation',                                    sub:false},
@@ -674,11 +682,9 @@ const PERM_DEFS=[
   {grp:'Administration',      k:'lookupsetup',        l:'Lookup Tables',                    desc:'Edit dropdown values and reference data (departments, positions, etc.)',               sub:false},
   {grp:'Administration',      k:'accesssetup',        l:'Access & Permissions',             desc:'View and manage employee roles and access levels',                                     sub:false},
   {grp:'Administration',      k:'access_manage',      l:'Create / Edit Access Levels',      desc:'Add, modify, or delete permission levels — sensitive action',                          sub:true},
-  {grp:'Administration',      k:'approvalsetup',      l:'Approval Layers',                  desc:'Configure multi-level approval workflows per employee',                                sub:false},
   {grp:'Administration',      k:'fieldconfig',        l:'Field Configuration',              desc:'Show, hide, or make fields required across the system',                                sub:false},
   {grp:'Administration',      k:'company',            l:'Company Settings',                 desc:'Edit company info, payroll policies, and system configuration',                        sub:false},
   {grp:'Administration',      k:'gsheets',            l:'Google Sheets Sync',               desc:'Set up and manage automated data sync with Google Sheets',                            sub:false},
-  {grp:'Administration',      k:'zksetup',            l:'ZKTeco Biometrics',                desc:'Connect and configure biometric attendance devices',                                   sub:false},
 ];
 
 const ACCESS_PRESETS={
@@ -1303,7 +1309,7 @@ let ATTENDANCE_ADJ={
 };
 // Employer-configurable rules layered on top of the raw punch-derived facts (see
 // TimekeepingCore.applyAttendancePolicy) — turned on by default at commonly-used PH values,
-// editable from Payroll → Configuration → Attendance Formula and Overtime Table.
+// editable from Time & Attendance → Timekeeping Settings → Filing Deadline & Deductions.
 let ATTENDANCE_POLICY={
   active:true,
   lateHalfDayMinutes:120,
@@ -2987,18 +2993,24 @@ const ALL_MODULES=[
   {k:'analytics',   l:'Analytics',          grp:'Insights'},
   {k:'reports',     l:'Reports',            grp:'Insights'},
   {k:'assistant',   l:'HR Assistant (AI)',  grp:'Insights'},
+  {k:'shiftsetup',  l:'Shift Setup',         grp:'Time & Attendance'},
+  {k:'holidaysetup',l:'Holiday Calendar',    grp:'Time & Attendance'},
+  {k:'leavepolicysetup',l:'Leave Policy',    grp:'Time & Attendance'},
+  {k:'attendanceformsetup',l:'Attendance Forms',grp:'Time & Attendance'},
+  {k:'attendancepolicysetup',l:'Filing Deadline & Deductions',grp:'Time & Attendance'},
+  {k:'webbundysettings',l:'Web Bundy Settings',grp:'Time & Attendance'},
+  {k:'approvalsetup',l:'Approval Layers',   grp:'Time & Attendance'},
+  {k:'zksetup',     l:'ZKTeco Device',      grp:'Time & Attendance'},
   {k:'orgsetup',    l:'Org Structure',       grp:'Admin'},
   {k:'lookupsetup', l:'Lookup Tables',       grp:'Admin'},
   {k:'accesssetup', l:'Access & Permissions',grp:'Admin'},
-  {k:'approvalsetup',l:'Approval Layers',   grp:'Admin'},
   {k:'fieldconfig', l:'Field Configuration',grp:'Admin'},
   {k:'company',     l:'Company Settings',   grp:'Admin'},
   {k:'gsheets',     l:'Google Sheets Sync', grp:'Integrations'},
-  {k:'zksetup',     l:'ZKTeco Device',      grp:'Integrations'},
 ];
 const PLAN_MODULES={
-  Starter:    ['dashboard','employees','onboarding','attendance','leave','payroll','myslips','orgsetup','lookupsetup','accesssetup','company','teamview'],
-  Professional:['dashboard','employees','onboarding','attendance','leave','webbundy','bundyadmin','payroll','government','myslips','loans','recruitment','analytics','reports','assistant','orgsetup','lookupsetup','accesssetup','approvalsetup','fieldconfig','company','teamview'],
+  Starter:    ['dashboard','employees','onboarding','attendance','leave','payroll','myslips','orgsetup','lookupsetup','accesssetup','company','teamview','shiftsetup','holidaysetup','leavepolicysetup','attendanceformsetup','attendancepolicysetup'],
+  Professional:['dashboard','employees','onboarding','attendance','leave','webbundy','bundyadmin','payroll','government','myslips','loans','recruitment','analytics','reports','assistant','orgsetup','lookupsetup','accesssetup','approvalsetup','fieldconfig','company','teamview','shiftsetup','holidaysetup','leavepolicysetup','attendanceformsetup','attendancepolicysetup','webbundysettings','zksetup'],
   Enterprise: ALL_MODULES.map(m=>m.k),
   Internal:   ALL_MODULES.map(m=>m.k),
 };
@@ -3944,6 +3956,9 @@ function sidebarSections(){
       ...(has('leave')?[{v:'leave',k:'leave',l:'Leave',badge:isA?pendingLeaves():0}]:[]),
       ...(has('bundyadmin')?[{v:'bundyadmin',k:'chart',l:'Web Bundy Monitor'}]:[]),
       ...(has('teamview')?[{v:'teamview',k:'people',l:'Team View',badge:pendingApprovalsFor(user.eid).length}]:[]),
+      ...((has('shiftsetup')||has('holidaysetup')||has('leavepolicysetup')||has('attendanceformsetup')||has('attendancepolicysetup')||has('webbundysettings'))?[{v:'tksettings',k:'settings',l:'Timekeeping Settings'}]:[]),
+      ...(has('approvalsetup')?[{v:'approvalsetup',k:'settings',l:'Approval Layers'}]:[]),
+      ...(has('zksetup')?[{v:'zksetup',k:'clock',l:'ZKTeco Device',badge:ZK.devices.some(d=>d.lastSeen&&(Date.now()-new Date(d.lastSeen).getTime())<5*60*1000)?0:'!'}]:[]),
     ]},
     {title:'Payroll',items:[
       ...(has('payroll')?[{v:'payroll',k:'peso',l:'Payroll'}]:[]),
@@ -3959,8 +3974,6 @@ function sidebarSections(){
       ...(has('orgsetup')?[{v:'orgsetup',k:'settings',l:'Org Structure'}]:[]),
       ...(has('lookupsetup')?[{v:'lookupsetup',k:'settings',l:'Lookup Tables'}]:[]),
       ...(has('accesssetup')?[{v:'accesssetup',k:'shield',l:'Access & Permissions'}]:[]),
-      ...(has('orgsetup')?[{v:'approvalsetup',k:'settings',l:'Approval Layers'}]:[]),
-      ...(has('zksetup')?[{v:'zksetup',k:'clock',l:'ZKTeco Device',badge:ZK.devices.some(d=>d.lastSeen&&(Date.now()-new Date(d.lastSeen).getTime())<5*60*1000)?0:'!'}]:[]),
       ...(has('company')?[{v:'company',k:'settings',l:'Company Settings'}]:[]),
       ...(has('gsheets')?[{v:'gsheets',k:'file',l:'Google Sheets Sync',badge:GS.status==='connected'?0:''}]:[]),
       ...(has('fieldconfig')?[{v:'fieldconfig',k:'edit',l:'Field Configuration'}]:[]),
@@ -7406,7 +7419,7 @@ function pgPayroll(){
   /* ── TAB 7: SETTINGS (Payroll Groups, Pay Calendar, Income/Deduction Types, Attendance Formula/Policy) ── */
   else if(tab===7){
     const cfgTab=window._cfgSub||0;
-    const cfgTabs=['Payroll Groups','Pay Calendar','Income / Deduction Types','Attendance Formula and Overtime Table'];
+    const cfgTabs=['Payroll Groups','Pay Calendar','Income / Deduction Types','Overtime Rate Table'];
     const catLabels={earnings:'Earnings',bonuses:'Bonuses',deminimis:'De Minimis',allowance:'Allowances',deductions:'Deductions',statutory:'Statutory',attendance:'Attendance'};
     body=`
     <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:1rem">
@@ -7556,113 +7569,8 @@ function pgPayroll(){
         </div>`:'');
     })()}`
 
-    /* ── TAB 3: ATTENDANCE ADJUSTMENTS ── */
+    /* ── TAB 3: OVERTIME RATE TABLE ── */
     :cfgTab===3?`
-
-    <!-- ── Attendance Policy Rules ── -->
-    <div class="section-header" style="margin-bottom:.75rem">Attendance Policy Rules</div>
-    <div class="card" style="margin-bottom:1.5rem;padding:.875rem;border-top:3px solid var(--accent)">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-        <span style="font-size:18px">📋</span>
-        <div><div style="font-weight:700;font-size:14px">Automatic attendance rules</div>
-          <div style="font-size:11px;color:var(--txt3)">Applied automatically as time logs come in (biometric device, Web Bundy) — no manual review needed for these cases.</div></div>
-        <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer">
-          <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ATTENDANCE_POLICY.active?'checked':''}
-            onchange="ATTENDANCE_POLICY.active=this.checked;render()"/> Active
-        </label>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.875rem">
-        <div class="field"><label>Late threshold for automatic Half Day</label>
-          <div style="display:flex;align-items:center;gap:6px">
-            <input type="number" class="finput" min="0" step="5" value="${ATTENDANCE_POLICY.lateHalfDayMinutes}" style="font-size:13px;font-weight:700"
-              onchange="ATTENDANCE_POLICY.lateHalfDayMinutes=parseInt(this.value)||0"/>
-            <span style="font-size:11px;color:var(--txt3)">minutes</span>
-          </div>
-          <div style="font-size:10px;color:var(--txt3);margin-top:4px">e.g. 120 = 2 hours late auto-marks the day Half Day and deducts half the shift's hours.</div>
-        </div>
-        <div class="field"><label>Minimum hours worked for a Full Day</label>
-          <div style="display:flex;align-items:center;gap:6px">
-            <input type="number" class="finput" min="0" step="0.5" value="${ATTENDANCE_POLICY.minHoursFullDay}" style="font-size:13px;font-weight:700"
-              onchange="ATTENDANCE_POLICY.minHoursFullDay=parseFloat(this.value)||0"/>
-            <span style="font-size:11px;color:var(--txt3)">hours</span>
-          </div>
-          <div style="font-size:10px;color:var(--txt3);margin-top:4px">Below this, the day is automatically marked LWOP (Leave Without Pay / Absent).</div>
-        </div>
-        <div class="field"><label>Deduct late minutes from OT</label>
-          <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;margin-top:2px">
-            <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ATTENDANCE_POLICY.deductLateFromOT?'checked':''}
-              onchange="ATTENDANCE_POLICY.deductLateFromOT=this.checked;render()"/>
-            <span style="font-size:12px">If an employee was late on a day they also worked OT, subtract the late minutes from that day's OT hours.</span>
-          </label>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── Attendance Filing Deadline ── -->
-    <div class="section-header" style="margin-bottom:.75rem">Attendance Filing Deadline</div>
-    <div class="card" style="margin-bottom:1.5rem;padding:.875rem;border-top:3px solid var(--accent)">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
-        <span style="font-size:18px">⏰</span>
-        <div><div style="font-weight:700;font-size:14px">Lock employees out of filing after a deadline</div>
-          <div style="font-size:11px;color:var(--txt3)">Applies to employee self-service filing only — Admins and HR can still file or correct records after the deadline. Override this for a specific pay period from Pay Calendar.</div></div>
-        <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer">
-          <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ATTENDANCE_POLICY.filingDeadlineEnabled?'checked':''}
-            onchange="ATTENDANCE_POLICY.filingDeadlineEnabled=this.checked;render()"/> Enabled
-        </label>
-      </div>
-      ${ATTENDANCE_POLICY.filingDeadlineEnabled?`
-      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:.875rem">
-        <div class="field"><label>Days after the pay period's attendance window ends</label>
-          <div style="display:flex;align-items:center;gap:6px">
-            <input type="number" class="finput" min="0" step="1" value="${ATTENDANCE_POLICY.filingDeadlineDaysAfterPeriodEnd}" style="font-size:13px;font-weight:700"
-              onchange="ATTENDANCE_POLICY.filingDeadlineDaysAfterPeriodEnd=parseInt(this.value)||0;render()"/>
-            <span style="font-size:11px;color:var(--txt3)">day(s)</span>
-          </div>
-          <div style="font-size:10px;color:var(--txt3);margin-top:4px">e.g. 3 = employees can still file until 3 days after the period's attendance window ends.</div>
-        </div>
-        <div class="field"><label>Deadline time</label>
-          <input type="time" class="finput" value="${ATTENDANCE_POLICY.filingDeadlineTime}" style="font-size:13px;font-weight:700"
-            onchange="ATTENDANCE_POLICY.filingDeadlineTime=this.value;render()"/>
-          <div style="font-size:10px;color:var(--txt3);margin-top:4px">Filing closes at this time on the computed deadline date.</div>
-        </div>
-      </div>`:''}
-    </div>
-
-    <!-- ── Deduction Section ── -->
-    <div class="section-header" style="margin-bottom:.75rem">Deduction Adjustments</div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.875rem;margin-bottom:1.5rem">
-
-      ${/* Absent / Late / Undertime cards */
-      [
-        {key:'absent',  label:'Absent',    icon:'🚫', color:'red',
-         note:'Full day deduction per absent day'},
-        {key:'late',    label:'Late',      icon:'⏰', color:'amber',
-         note:'Per-minute deduction based on 8-hour workday'},
-        {key:'undertime',label:'Undertime',icon:'📉', color:'orange',
-         note:'Per-minute deduction for early departure'},
-      ].map(cfg=>{
-        const d=ATTENDANCE_ADJ[cfg.key];
-        return`<div class="card" style="margin-bottom:0;padding:.875rem;border-top:3px solid var(--${cfg.color})">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
-            <span style="font-size:18px">${cfg.icon}</span>
-            <div><div style="font-weight:700;font-size:14px">${cfg.label}</div>
-              <div style="font-size:11px;color:var(--txt3)">${cfg.note}</div></div>
-            <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer">
-              <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${d.active?'checked':''}
-                onchange="ATTENDANCE_ADJ['${cfg.key}'].active=this.checked;render()"/> Active
-            </label>
-          </div>
-          <div class="field" style="margin-bottom:8px"><label>Code</label>
-            <input class="finput" value="${esc(d.code||cfg.key.toUpperCase())}" style="font-size:12px;text-transform:uppercase;font-family:monospace;font-weight:600"
-              onchange="ATTENDANCE_ADJ['${cfg.key}'].code=this.value.toUpperCase()"/></div>
-          <div class="field" style="margin-bottom:8px"><label>Computation Basis</label>
-            <input class="finput" value="${esc(d.basis)}" style="font-size:12px"
-              onchange="ATTENDANCE_ADJ['${cfg.key}'].basis=this.value"/></div>
-          <div class="field" style="margin-bottom:0"><label>Formula</label>
-            <input class="finput" value="${esc(d.formula)}" style="font-size:11px;font-family:monospace"
-              onchange="ATTENDANCE_ADJ['${cfg.key}'].formula=this.value"/></div>
-        </div>`;}).join('')}
-    </div>
 
     <!-- ── Overtime Rates Section ── -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
@@ -11801,7 +11709,7 @@ function renderModal(){
       </div>
       <div class="field" style="margin-top:8px"><label>Filing Deadline Override <span style="font-weight:400;color:var(--txt3)">(optional)</span></label>
         <input id="epp-filing-deadline" type="datetime-local" class="finput" value="${esc(p.filingDeadlineOverride||'')}"/>
-        <div style="font-size:10px;color:var(--txt3);margin-top:3px">Overrides the global filing deadline rule for this period only. Leave blank to use the global rule (Payroll → Configuration → Attendance Formula and Overtime Table).</div>
+        <div style="font-size:10px;color:var(--txt3);margin-top:3px">Overrides the global filing deadline rule for this period only. Leave blank to use the global rule (Time & Attendance → Timekeeping Settings → Filing Deadline & Deductions).</div>
       </div>
     </div>
     <label style="display:flex;align-items:flex-start;gap:9px;padding:10px 12px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;margin-bottom:10px;cursor:pointer">
@@ -14523,12 +14431,6 @@ function pgCompanySettings(){
           Annual = ₱${numFmt((COMPANY.salaryMultiplier||13))} × Monthly Salary
         </div>
       </div>
-      <div class="field"><label>Start of the Week <span style="font-weight:400;color:var(--txt3);font-size:11px">weekly bucket boundary for Flexible Per Week schedules</span></label>
-        <select id="co-week-start" class="finput" style="width:160px">
-          ${WEEK_START_DAYS.map(d=>`<option value="${d.v}" ${(COMPANY.startOfWeek||'mon')===d.v?'selected':''}>${d.l}</option>`).join('')}
-        </select>
-        <div style="margin-top:6px;font-size:11px;color:var(--txt3)">Determines which 7-day span an employee's weekly Undertime/Overtime is totaled over, for anyone on a Flexible Per Week schedule.</div>
-      </div>
     </div>
 
     <div class="card">
@@ -14550,26 +14452,6 @@ function pgCompanySettings(){
       <div class="form-row"><div class="field"><label>Type of Employer</label><select id="co-bir-type" class="finput"><option value="main" ${COMPANY.employerType!=='secondary'?'selected':''}>Main Employer</option><option value="secondary" ${COMPANY.employerType==='secondary'?'selected':''}>Secondary Employer</option></select></div><div class="field"><label>Authorized Representative / Agent</label><input id="co-bir-agent" class="finput" value="${esc(COMPANY.authorizedAgent||'')}" placeholder="Printed name for signing reference"/></div></div>
       <div class="field"><label>Authorized Representative Title</label><input id="co-bir-agent-title" class="finput" value="${esc(COMPANY.authorizedAgentTitle||'')}" placeholder="e.g. Payroll Manager / HR Director"/></div>
       <div style="font-size:10px;color:var(--amber-txt);background:var(--amber-bg);padding:8px 10px;border-radius:7px">The PDF generator does not create a signature. The authorized employer representative and employee must complete the applicable signature/date sections before issuance.</div>
-    </div>
-
-    <!-- Web Bundy settings -->
-    <div class="card" style="grid-column:span 1">
-      <div class="card-title" style="margin-bottom:1rem">Web Bundy Settings</div>
-      <div style="display:grid;gap:12px">
-        <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer">
-          <div><div style="font-weight:500;font-size:13px">Public Bundy Access</div>
-          <div style="font-size:12px;color:var(--txt3)">Show "Web Bundy" button on login screen (no password needed)</div></div>
-          <div class="toggle-wrap">
-            <input type="checkbox" id="co-public" ${COMPANY.bundyPublicAccess?'checked':''} style="width:auto;accent-color:var(--accent)"/>
-          </div>
-        </label>
-        <div style="border-top:1px solid var(--border);padding-top:10px"></div>
-        <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer">
-          <div><div style="font-weight:500;font-size:13px">Require Selfie</div>
-          <div style="font-size:12px;color:var(--txt3)">Camera is activated for selfie capture during bundy</div></div>
-          <input type="checkbox" id="co-selfie" ${COMPANY.bundySelfie?'checked':''} style="width:auto;accent-color:var(--accent)"/>
-        </label>
-      </div>
     </div>
 
     <!-- SSS MPF Preview -->
@@ -14684,8 +14566,6 @@ function saveCompany(){
   COMPANY.employerType=document.getElementById('co-bir-type')?.value||'main';
   COMPANY.authorizedAgent=document.getElementById('co-bir-agent')?.value?.trim()||'';
   COMPANY.authorizedAgentTitle=document.getElementById('co-bir-agent-title')?.value?.trim()||'';
-  COMPANY.bundyPublicAccess=document.getElementById('co-public')?.checked??COMPANY.bundyPublicAccess;
-  COMPANY.bundySelfie=document.getElementById('co-selfie')?.checked??COMPANY.bundySelfie;
   const divisorInput=document.getElementById('co-divisor')?.value;
   const div=normalizeDailyDivisor(divisorInput,null);
   if(!isDailyDivisorInputValid(divisorInput)){toast('Daily Rate Divisor must be between 1 and 31, with up to 4 decimal places.','warning');return;}
@@ -14695,8 +14575,6 @@ function saveCompany(){
   if(!isNaN(hrs)&&hrs>0)COMPANY.hoursPerDay=hrs;
   const mult=parseFloat(document.getElementById('co-multiplier')?.value);
   if(!isNaN(mult)&&mult>0)COMPANY.salaryMultiplier=mult;
-  const weekStart=document.getElementById('co-week-start')?.value;
-  if(WEEK_START_DAYS.some(d=>d.v===weekStart))COMPANY.startOfWeek=weekStart;
   ensureAnnualizedTaxConfig();
   COMPANY.taxPolicy.annualizationEnabled=document.getElementById('co-tax-annualized')?.checked??COMPANY.taxPolicy.annualizationEnabled;
   COMPANY.taxPolicy.autoSuggestDecember=document.getElementById('co-tax-december')?.checked??COMPANY.taxPolicy.autoSuggestDecember;
@@ -14705,6 +14583,181 @@ function saveCompany(){
   queueSync('Company_Settings');
   toast('Settings saved!','success');
   render();
+}
+
+/* =========================================================
+   TIMEKEEPING SETTINGS — Time & Attendance configuration hub.
+   Each tab is independently gated by its own ALL_MODULES key so a
+   client's package can turn individual features on/off; enterprise.js
+   supplies the Shift/Holiday/Leave-Policy/Attendance-Forms tab bodies.
+   ========================================================= */
+function timekeepingSettingsTabDefs(){
+  return[
+    {key:'shifts',    label:'Shift Setup',                 perm:'shiftsetup'},
+    {key:'holidays',  label:'Holiday Calendar',             perm:'holidaysetup'},
+    {key:'leave',     label:'Leave Policy',                 perm:'leavepolicysetup'},
+    {key:'forms',     label:'Attendance Forms',             perm:'attendanceformsetup'},
+    {key:'policy',    label:'Filing Deadline & Deductions', perm:'attendancepolicysetup'},
+    {key:'webbundy',  label:'Web Bundy Settings',           perm:'webbundysettings'},
+  ].filter(t=>(isAdminUser(user)||isPlatformAdmin||canAccess(t.perm))&&clientHasModule(t.perm));
+}
+window.showTKTab=function(key){window._tkTab=key;render();};
+function pgTimekeepingSettings(){
+  const tabs=timekeepingSettingsTabDefs();
+  if(!tabs.length)return renderAccessDenied('Timekeeping Settings');
+  const active=tabs.some(t=>t.key===window._tkTab)?window._tkTab:tabs[0].key;
+  const tabBar='<div class="settings-tabbar" role="tablist" aria-label="Timekeeping Settings sections">'+tabs.map(t=>`<button class="settings-tab${active===t.key?' active':''}" role="tab" aria-selected="${active===t.key?'true':'false'}" onclick="showTKTab('${t.key}')">${t.label}</button>`).join('')+'</div>';
+  const subtitles={shifts:'Create reusable schedules and manage employee shift assignments.',holidays:'Manage holiday dates so attendance and payroll automatically apply the correct rate.',leave:'Define leave types, entitlement, accrual, and eligibility rules.',forms:'Choose which attendance request forms employees can access.',policy:'Automatic attendance rules, filing deadlines, deduction formulas, and the weekly schedule boundary.',webbundy:'Configure the Web Bundy clock-in feature.'};
+  const bodies={
+    shifts:()=>(typeof renderShiftManager==='function'?renderShiftManager():''),
+    holidays:()=>(typeof renderHolidayManager==='function'?renderHolidayManager():''),
+    leave:()=>(typeof renderLeavePolicyManager==='function'?renderLeavePolicyManager():''),
+    forms:()=>(typeof renderAttendanceFormManager==='function'?renderAttendanceFormManager():''),
+    policy:renderAttendancePolicyManager,
+    webbundy:renderWebBundySettingsManager,
+  };
+  return`<div class="page-header"><div><div class="page-title">Timekeeping Settings</div><div class="page-sub">${subtitles[active]||''}</div></div></div>`+tabBar+(bodies[active]?bodies[active]():'');
+}
+
+function renderAttendancePolicyManager(){
+  return`
+    <!-- ── Attendance Policy Rules ── -->
+    <div class="section-header" style="margin-bottom:.75rem">Attendance Policy Rules</div>
+    <div class="card" style="margin-bottom:1.5rem;padding:.875rem;border-top:3px solid var(--accent)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <span style="font-size:18px">📋</span>
+        <div><div style="font-weight:700;font-size:14px">Automatic attendance rules</div>
+          <div style="font-size:11px;color:var(--txt3)">Applied automatically as time logs come in (biometric device, Web Bundy) — no manual review needed for these cases.</div></div>
+        <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer">
+          <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ATTENDANCE_POLICY.active?'checked':''}
+            onchange="ATTENDANCE_POLICY.active=this.checked;render()"/> Active
+        </label>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.875rem">
+        <div class="field"><label>Late threshold for automatic Half Day</label>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="number" class="finput" min="0" step="5" value="${ATTENDANCE_POLICY.lateHalfDayMinutes}" style="font-size:13px;font-weight:700"
+              onchange="ATTENDANCE_POLICY.lateHalfDayMinutes=parseInt(this.value)||0"/>
+            <span style="font-size:11px;color:var(--txt3)">minutes</span>
+          </div>
+          <div style="font-size:10px;color:var(--txt3);margin-top:4px">e.g. 120 = 2 hours late auto-marks the day Half Day and deducts half the shift's hours.</div>
+        </div>
+        <div class="field"><label>Minimum hours worked for a Full Day</label>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="number" class="finput" min="0" step="0.5" value="${ATTENDANCE_POLICY.minHoursFullDay}" style="font-size:13px;font-weight:700"
+              onchange="ATTENDANCE_POLICY.minHoursFullDay=parseFloat(this.value)||0"/>
+            <span style="font-size:11px;color:var(--txt3)">hours</span>
+          </div>
+          <div style="font-size:10px;color:var(--txt3);margin-top:4px">Below this, the day is automatically marked LWOP (Leave Without Pay / Absent).</div>
+        </div>
+        <div class="field"><label>Deduct late minutes from OT</label>
+          <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;margin-top:2px">
+            <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ATTENDANCE_POLICY.deductLateFromOT?'checked':''}
+              onchange="ATTENDANCE_POLICY.deductLateFromOT=this.checked;render()"/>
+            <span style="font-size:12px">If an employee was late on a day they also worked OT, subtract the late minutes from that day's OT hours.</span>
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Attendance Filing Deadline ── -->
+    <div class="section-header" style="margin-bottom:.75rem">Attendance Filing Deadline</div>
+    <div class="card" style="margin-bottom:1.5rem;padding:.875rem;border-top:3px solid var(--accent)">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <span style="font-size:18px">⏰</span>
+        <div><div style="font-weight:700;font-size:14px">Lock employees out of filing after a deadline</div>
+          <div style="font-size:11px;color:var(--txt3)">Applies to employee self-service filing only — Admins and HR can still file or correct records after the deadline. Override this for a specific pay period from Pay Calendar.</div></div>
+        <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer">
+          <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ATTENDANCE_POLICY.filingDeadlineEnabled?'checked':''}
+            onchange="ATTENDANCE_POLICY.filingDeadlineEnabled=this.checked;render()"/> Enabled
+        </label>
+      </div>
+      ${ATTENDANCE_POLICY.filingDeadlineEnabled?`
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:.875rem">
+        <div class="field"><label>Days after the pay period's attendance window ends</label>
+          <div style="display:flex;align-items:center;gap:6px">
+            <input type="number" class="finput" min="0" step="1" value="${ATTENDANCE_POLICY.filingDeadlineDaysAfterPeriodEnd}" style="font-size:13px;font-weight:700"
+              onchange="ATTENDANCE_POLICY.filingDeadlineDaysAfterPeriodEnd=parseInt(this.value)||0;render()"/>
+            <span style="font-size:11px;color:var(--txt3)">day(s)</span>
+          </div>
+          <div style="font-size:10px;color:var(--txt3);margin-top:4px">e.g. 3 = employees can still file until 3 days after the period's attendance window ends.</div>
+        </div>
+        <div class="field"><label>Deadline time</label>
+          <input type="time" class="finput" value="${ATTENDANCE_POLICY.filingDeadlineTime}" style="font-size:13px;font-weight:700"
+            onchange="ATTENDANCE_POLICY.filingDeadlineTime=this.value;render()"/>
+          <div style="font-size:10px;color:var(--txt3);margin-top:4px">Filing closes at this time on the computed deadline date.</div>
+        </div>
+      </div>`:''}
+    </div>
+
+    <!-- ── Deduction Section ── -->
+    <div class="section-header" style="margin-bottom:.75rem">Deduction Adjustments</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.875rem;margin-bottom:1.5rem">
+
+      ${/* Absent / Late / Undertime cards */
+      [
+        {key:'absent',  label:'Absent',    icon:'🚫', color:'red',
+         note:'Full day deduction per absent day'},
+        {key:'late',    label:'Late',      icon:'⏰', color:'amber',
+         note:'Per-minute deduction based on 8-hour workday'},
+        {key:'undertime',label:'Undertime',icon:'📉', color:'orange',
+         note:'Per-minute deduction for early departure'},
+      ].map(cfg=>{
+        const d=ATTENDANCE_ADJ[cfg.key];
+        return`<div class="card" style="margin-bottom:0;padding:.875rem;border-top:3px solid var(--${cfg.color})">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+            <span style="font-size:18px">${cfg.icon}</span>
+            <div><div style="font-weight:700;font-size:14px">${cfg.label}</div>
+              <div style="font-size:11px;color:var(--txt3)">${cfg.note}</div></div>
+            <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer">
+              <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${d.active?'checked':''}
+                onchange="ATTENDANCE_ADJ['${cfg.key}'].active=this.checked;render()"/> Active
+            </label>
+          </div>
+          <div class="field" style="margin-bottom:8px"><label>Code</label>
+            <input class="finput" value="${esc(d.code||cfg.key.toUpperCase())}" style="font-size:12px;text-transform:uppercase;font-family:monospace;font-weight:600"
+              onchange="ATTENDANCE_ADJ['${cfg.key}'].code=this.value.toUpperCase()"/></div>
+          <div class="field" style="margin-bottom:8px"><label>Computation Basis</label>
+            <input class="finput" value="${esc(d.basis)}" style="font-size:12px"
+              onchange="ATTENDANCE_ADJ['${cfg.key}'].basis=this.value"/></div>
+          <div class="field" style="margin-bottom:0"><label>Formula</label>
+            <input class="finput" value="${esc(d.formula)}" style="font-size:11px;font-family:monospace"
+              onchange="ATTENDANCE_ADJ['${cfg.key}'].formula=this.value"/></div>
+        </div>`;}).join('')}
+    </div>
+
+    <!-- ── Week Boundary ── -->
+    <div class="section-header" style="margin-bottom:.75rem">Week Boundary</div>
+    <div class="card" style="margin-bottom:0;padding:.875rem;border-top:3px solid var(--accent)">
+      <div class="field" style="margin-bottom:0"><label>Start of the Week <span style="font-weight:400;color:var(--txt3);font-size:11px">weekly bucket boundary for Flexible Per Week schedules</span></label>
+        <select class="finput" style="width:160px" onchange="COMPANY.startOfWeek=this.value;render()">
+          ${WEEK_START_DAYS.map(d=>`<option value="${d.v}" ${(COMPANY.startOfWeek||'mon')===d.v?'selected':''}>${d.l}</option>`).join('')}
+        </select>
+        <div style="margin-top:6px;font-size:11px;color:var(--txt3)">Determines which 7-day span an employee's weekly Undertime/Overtime is totaled over, for anyone on a Flexible Per Week schedule.</div>
+      </div>
+    </div>`;
+}
+
+function renderWebBundySettingsManager(){
+  return`
+    <div class="card" style="max-width:520px">
+      <div class="card-title" style="margin-bottom:1rem">Web Bundy Settings</div>
+      <div style="display:grid;gap:12px">
+        <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer">
+          <div><div style="font-weight:500;font-size:13px">Public Bundy Access</div>
+          <div style="font-size:12px;color:var(--txt3)">Show "Web Bundy" button on login screen (no password needed)</div></div>
+          <div class="toggle-wrap">
+            <input type="checkbox" ${COMPANY.bundyPublicAccess?'checked':''} style="width:auto;accent-color:var(--accent)" onchange="COMPANY.bundyPublicAccess=this.checked;queueSync('Company_Settings');render()"/>
+          </div>
+        </label>
+        <div style="border-top:1px solid var(--border);padding-top:10px"></div>
+        <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer">
+          <div><div style="font-weight:500;font-size:13px">Require Selfie</div>
+          <div style="font-size:12px;color:var(--txt3)">Camera is activated for selfie capture during bundy</div></div>
+          <input type="checkbox" ${COMPANY.bundySelfie?'checked':''} style="width:auto;accent-color:var(--accent)" onchange="COMPANY.bundySelfie=this.checked;queueSync('Company_Settings');render()"/>
+        </label>
+      </div>
+    </div>`;
 }
 
 /* =========================================================
@@ -16547,6 +16600,7 @@ function render(){
     else if(view==='webbundy')pg=gate('webbundy','Web Bundy',pgWebBundy);
     else if(view==='bundyadmin')pg=gate('bundyadmin','Web Bundy Monitor',pgBundyAdmin);
     else if(view==='company')pg=gate('company','Company Settings',pgCompanySettings);
+    else if(view==='tksettings')pg=(canAccess('shiftsetup')||canAccess('holidaysetup')||canAccess('leavepolicysetup')||canAccess('attendanceformsetup')||canAccess('attendancepolicysetup')||canAccess('webbundysettings'))?pgTimekeepingSettings():renderAccessDenied('Timekeeping Settings');
     else if(view==='gsheets')pg=gate('gsheets','Google Sheets Sync',pgGoogleSheets);
     else if(view==='fieldconfig')pg=gate('fieldconfig','Field Configuration',pgFieldConfig);
   }catch(err){
