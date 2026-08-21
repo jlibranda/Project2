@@ -8251,6 +8251,11 @@ function buildDraftRow(emp,grp,period){
   const net  =+Math.max(0,gross-totalDed).toFixed(2);
   return{empId:emp.id,name:emp.name,eid:emp.eid,pos:emp.pos,payType:emp.payType,
     basic,ot,nd,gross,sss,ph,pi,tax,loan,attendanceDeduction,totalDed,net,
+    // pr/otH/ndH/lded/aded mirror the historical field names the Payslip modal
+    // (renderModal type==='slip') and the payroll-run summary modal read directly —
+    // both index into these on every real payroll run, not just previews.
+    pr:attendance.presentDays,otH:attendance.otHours,ndH:attendance.ndHours,
+    lded:+(lateDeduction+undertimeDeduction).toFixed(2),aded:+absentDeduction.toFixed(2),
     attendanceSummary:attendance,applyStatutory,taxFreq,ms,_edited:false};
 }
 
