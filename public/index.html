@@ -1248,10 +1248,13 @@ const THEMES={
   custom:  {accent:'#4f46e5',dark:'#3730a3',bg:'#eef2ff'},
 };
 
+// Pure CSS side effect only — does NOT touch COMPANY. The Company Settings theme picker
+// stages its choice in _pendingBrand and only commits to COMPANY.themeKey/accentHex when
+// "Save Settings" is clicked (saveCompany() does that via Object.assign, then calls this
+// again just to reapply the now-committed CSS); this lets the live swatch preview + Discard
+// button work without prematurely persisting an unsaved theme choice.
 function applyTheme(key,hex){
-  COMPANY.themeKey=key;
   const t=key==='custom'?{accent:hex||COMPANY.accentHex,dark:shadeColor(hex||COMPANY.accentHex,-15),bg:hexToAlpha(hex||COMPANY.accentHex,0.12)}:THEMES[key]||THEMES.indigo;
-  if(key==='custom'&&hex)COMPANY.accentHex=hex;
   const r=document.documentElement.style;
   r.setProperty('--accent',t.accent);
   r.setProperty('--accent2',t.dark);
@@ -6972,6 +6975,19 @@ function setPayrollSelection(mode,groupId){
   updatePayrollSelectionCount();
 }
 
+let _otRatesDraft=null; /* uncommitted OT_RATES array while editing */
+function openOtRatesEdit(){_otRatesDraft=JSON.parse(JSON.stringify(OT_RATES));render();}
+function cancelOtRatesEdit(){_otRatesDraft=null;render();toast('Changes discarded.','info');}
+function saveOtRatesEdit(){
+  if(!_otRatesDraft)return;
+  if(!confirm('Save changes to the overtime rate table?'))return;
+  OT_RATES.length=0;
+  OT_RATES.push(..._otRatesDraft);
+  _otRatesDraft=null;
+  queueSync('OT_Rates');
+  render();
+  toast('Overtime rate table saved.','success');
+}
 function pgPayroll(){
   ensureAnnualizedTaxConfig();
   const tabs=['Dashboard','Compute','Adjustments','13th Month','Final Pay','Reports','Rulebook','Settings'];
@@ -7547,7 +7563,7 @@ function pgPayroll(){
           <td>${linkedPreview(t)}</td>
           <td><div style="display:flex;gap:4px">
             <button class="btn btn-sm" onclick="modal={type:'editIT',it:JSON.parse(JSON.stringify(INCOME_TYPES.find(x=>x.id===${t.id})))};render()">✎</button>
-            ${showDelete&&!t.builtIn?`<button class="btn btn-sm btn-danger" onclick="INCOME_TYPES.splice(INCOME_TYPES.findIndex(x=>x.id===${t.id}),1);render()">✕</button>`:''}
+            ${showDelete&&!t.builtIn?`<button class="btn btn-sm btn-danger" onclick="if(confirm('Delete \\'${esc(t.name).replace(/'/g,"\\\\'")}\\'?')){INCOME_TYPES.splice(INCOME_TYPES.findIndex(x=>x.id===${t.id}),1);render()}">✕</button>`:''}
           </div></td>
         </tr>`).join('')}</tbody></table>`;
 
@@ -7571,12 +7587,15 @@ function pgPayroll(){
     })()}`
 
     /* ── TAB 3: OVERTIME RATE TABLE ── */
-    :cfgTab===3?`
-
+    :cfgTab===3?(()=>{
+      const editingOT=!!_otRatesDraft;
+      const rates=editingOT?_otRatesDraft:OT_RATES;
+      const disOT=editingOT?'':'disabled';
+      return editSaveBar(editingOT,'openOtRatesEdit','saveOtRatesEdit','cancelOtRatesEdit','Edit Overtime Rates')+`
     <!-- ── Overtime Rates Section ── -->
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.75rem">
       <div class="section-header" style="margin-bottom:0">Overtime & Premium Rates</div>
-      <button class="btn btn-primary btn-sm" onclick="OT_RATES.push({id:nOT++,code:'OT_CUSTOM',name:'New OT Rate',rate:125,formula:'HR × 1.25',rateNote:'+25%',active:true,builtIn:false});render()">+ Add Rate</button>
+      <button class="btn btn-primary btn-sm" ${disOT} onclick="_otRatesDraft.push({id:nOT++,code:'OT_CUSTOM',name:'New OT Rate',rate:125,formula:'HR × 1.25',rateNote:'+25%',active:true,builtIn:false});render()">+ Add Rate</button>
     </div>
     <table><thead><tr>
       <th>Code</th><th>Scenario</th><th>Rate (%)</th><th>Formula</th><th>Rate Note</th><th>Status</th><th></th>
@@ -7584,7 +7603,7 @@ function pgPayroll(){
     <tbody>${(()=>{
       const rows=[];
       let lastGrp='';
-      OT_RATES.forEach((r,i)=>{
+      rates.forEach((r,i)=>{
         if(r.grp!==lastGrp){
           lastGrp=r.grp;
           const grpColors={'Regular Day':'var(--accent)','Rest Day':'var(--orange)','Special Non-Working Holiday':'var(--amber)','Special Holiday + Rest Day':'var(--purple)','Regular Holiday':'var(--green)','Regular Holiday + Rest Day':'var(--blue)','Double Holiday':'var(--red)'};
@@ -7593,42 +7612,43 @@ function pgPayroll(){
         }
         rows.push(`<tr style="${!r.active?'opacity:.5':''}">
           <td>
-            <input class="finput" value="${esc(r.code)}" style="font-size:11px;padding:3px 7px;width:110px;text-transform:uppercase"
-              onchange="OT_RATES[${i}].code=this.value.toUpperCase()"/>
+            <input class="finput" ${disOT} value="${esc(r.code)}" style="font-size:11px;padding:3px 7px;width:110px;text-transform:uppercase"
+              onchange="_otRatesDraft[${i}].code=this.value.toUpperCase()"/>
           </td>
           <td>
-            <input class="finput" value="${esc(r.name)}" style="font-size:12px;padding:4px 8px;min-width:260px"
-              onchange="OT_RATES[${i}].name=this.value"/>
+            <input class="finput" ${disOT} value="${esc(r.name)}" style="font-size:12px;padding:4px 8px;min-width:260px"
+              onchange="_otRatesDraft[${i}].name=this.value"/>
           </td>
           <td>
             <div style="display:flex;align-items:center;gap:6px">
-              <input type="number" class="finput" value="${r.rate}" step="0.1" min="0" style="font-size:13px;font-weight:700;padding:4px 8px;width:75px;color:var(--accent)"
-                onchange="OT_RATES[${i}].rate=parseFloat(this.value)||0"/>
+              <input type="number" class="finput" ${disOT} value="${r.rate}" step="0.1" min="0" style="font-size:13px;font-weight:700;padding:4px 8px;width:75px;color:var(--accent)"
+                onchange="_otRatesDraft[${i}].rate=parseFloat(this.value)||0"/>
               <span style="font-size:11px;color:var(--txt3)">%</span>
             </div>
           </td>
           <td>
-            <input class="finput" value="${esc(r.formula||r.base||'')}" style="font-size:11px;padding:3px 7px;min-width:160px;color:var(--txt3);font-family:monospace"
-              onchange="OT_RATES[${i}].formula=this.value"/>
+            <input class="finput" ${disOT} value="${esc(r.formula||r.base||'')}" style="font-size:11px;padding:3px 7px;min-width:160px;color:var(--txt3);font-family:monospace"
+              onchange="_otRatesDraft[${i}].formula=this.value"/>
           </td>
           <td>
-            <input class="finput" value="${esc(r.rateNote)}" style="font-size:11px;padding:3px 7px;min-width:160px;color:var(--txt3)"
-              onchange="OT_RATES[${i}].rateNote=this.value"/>
+            <input class="finput" ${disOT} value="${esc(r.rateNote)}" style="font-size:11px;padding:3px 7px;min-width:160px;color:var(--txt3)"
+              onchange="_otRatesDraft[${i}].rateNote=this.value"/>
           </td>
           <td>
-            <label style="display:flex;align-items:center;gap:5px;cursor:pointer;font-size:12px">
-              <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${r.active?'checked':''}
-                onchange="OT_RATES[${i}].active=this.checked;render()"/>
+            <label style="display:flex;align-items:center;gap:5px;${editingOT?'cursor:pointer':''};font-size:12px">
+              <input type="checkbox" ${disOT} style="width:auto;accent-color:var(--accent)" ${r.active?'checked':''}
+                onchange="_otRatesDraft[${i}].active=this.checked;render()"/>
               <span class="badge ${r.active?'b-approved':'b-absent'}" style="font-size:10px">${r.active?'Active':'Off'}</span>
             </label>
           </td>
           <td>
-            <button class="btn btn-sm btn-danger" onclick="OT_RATES.splice(${i},1);render()">✕</button>
+            <button class="btn btn-sm btn-danger" ${disOT} onclick="if(confirm('Delete this OT rate?')){_otRatesDraft.splice(${i},1);render()}">✕</button>
           </td>
         </tr>`);
       });
       return rows.join('');
-    })()}</tbody></table>`
+    })()}</tbody></table>`;
+    })()
     :``}`;
   }
 
@@ -8708,11 +8728,18 @@ function pgGovernment(){
 
   if(tab===1){
     const r=GOVT_RATES;
+    const gd=_govtRatesDraft;
+    const sssTable=gd?gd.sssFullTable:r.sss.fullTable;
+    const sssMax=gd?gd.sssMaxContrib:r.sss.maxContrib;
+    const piTiers=gd?gd.piTiers:r.pagibig.tiers;
     const cfgSub=window._grpCfg||'sss';
     const cfgTabs=[['sss','SSS'],['philhealth','PhilHealth'],['pagibig','Pag-IBIG (HDMF)']];
     return`<div class="page-header" style="align-items:center">
       <div><div class="page-title">Contribution Rates</div><div class="page-sub">Edit statutory tables · Changes apply to all future payroll computations</div></div>
+      <div style="display:flex;gap:8px">
+      ${gd?'<button class="btn" onclick="discardGovtDraft()">↺ Discard Table Changes</button>':''}
       <button class="btn btn-success" onclick="applyGovtTables()">✓ Save & Apply All Changes</button>
+      </div>
     </div>
     ${tabBar}
     <!-- Agency sub-tabs -->
@@ -8743,7 +8770,7 @@ function pgGovernment(){
     <div class="card" style="padding:.875rem">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
         <div>
-          <div class="card-title">Full SSS Contribution Schedule (${r.sss.fullTable?.length||0} rows)</div>
+          <div class="card-title">Full SSS Contribution Schedule (${sssTable?.length||0} rows)</div>
           <div class="card-sub">All columns editable · Add rows for future MSC range expansions</div>
         </div>
         <button class="btn btn-sm btn-primary" onclick="addSSSRow()">+ Add Row</button>
@@ -8757,19 +8784,19 @@ function pgGovernment(){
         <th style="background:var(--blue-bg,#dbeafe);color:var(--blue-txt,#1e40af)">Total ER</th>
         <th></th>
       </tr></thead>
-      <tbody>${(r.sss.fullTable||[]).map((row,i)=>{
+      <tbody>${(sssTable||[]).map((row,i)=>{
         const totalEE=row.ee+(row.mpfEE||0);
         const totalER=row.er+(row.ec||0)+(row.mpfER||0);
         const hasMPF=(row.mpfEE||0)>0;
         return`<tr style="${hasMPF?'background:var(--accent-bg);':i%2===0?'':'background:var(--bg)'}">
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:90px" value="${row.salFrom}" onchange="GOVT_RATES.sss.fullTable[${i}].salFrom=+this.value"/></td>
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:90px" value="${row.salTo>=9999999?'':row.salTo}" placeholder="(max)" onchange="GOVT_RATES.sss.fullTable[${i}].salTo=+this.value||9999999"/></td>
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:80px;font-weight:600" value="${row.msc}" onchange="GOVT_RATES.sss.fullTable[${i}].msc=+this.value"/></td>
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--red);font-weight:600" value="${row.ee}" onchange="GOVT_RATES.sss.fullTable[${i}].ee=+this.value"/></td>
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--blue)" value="${row.er}" onchange="GOVT_RATES.sss.fullTable[${i}].er=+this.value"/></td>
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:50px;color:var(--purple)" value="${row.ec||0}" onchange="GOVT_RATES.sss.fullTable[${i}].ec=+this.value"/></td>
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--red)" value="${row.mpfEE||0}" onchange="GOVT_RATES.sss.fullTable[${i}].mpfEE=+this.value"/></td>
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--blue)" value="${row.mpfER||0}" onchange="GOVT_RATES.sss.fullTable[${i}].mpfER=+this.value"/></td>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:90px" value="${row.salFrom}" onchange="ensureGovtDraft().sssFullTable[${i}].salFrom=+this.value"/></td>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:90px" value="${row.salTo>=9999999?'':row.salTo}" placeholder="(max)" onchange="ensureGovtDraft().sssFullTable[${i}].salTo=+this.value||9999999"/></td>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:80px;font-weight:600" value="${row.msc}" onchange="ensureGovtDraft().sssFullTable[${i}].msc=+this.value"/></td>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--red);font-weight:600" value="${row.ee}" onchange="ensureGovtDraft().sssFullTable[${i}].ee=+this.value"/></td>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--blue)" value="${row.er}" onchange="ensureGovtDraft().sssFullTable[${i}].er=+this.value"/></td>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:50px;color:var(--purple)" value="${row.ec||0}" onchange="ensureGovtDraft().sssFullTable[${i}].ec=+this.value"/></td>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--red)" value="${row.mpfEE||0}" onchange="ensureGovtDraft().sssFullTable[${i}].mpfEE=+this.value"/></td>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--blue)" value="${row.mpfER||0}" onchange="ensureGovtDraft().sssFullTable[${i}].mpfER=+this.value"/></td>
           <td class="mono" style="font-weight:700;color:var(--accent);text-align:right;font-size:11px">₱${totalEE.toFixed(2)}</td>
           <td class="mono" style="font-weight:700;color:var(--blue-txt,var(--blue));text-align:right;font-size:11px">₱${totalER.toFixed(2)}</td>
           <td><button onclick="removeSSSRow(${i})" class="btn btn-sm btn-danger" style="padding:2px 6px;font-size:10px">✕</button></td>
@@ -8777,7 +8804,7 @@ function pgGovernment(){
       </tbody>
       <tfoot><tr style="background:var(--surface2)">
         <td colspan="3" style="font-weight:700;padding:8px 12px;font-size:12px">Max (above table)</td>
-        <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--red);font-weight:700" value="${r.sss.maxContrib}" id="sss-max" onchange="GOVT_RATES.sss.maxContrib=+this.value"/></td>
+        <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--red);font-weight:700" value="${sssMax}" id="sss-max" onchange="ensureGovtDraft().sssMaxContrib=+this.value"/></td>
         <td colspan="7"></td>
       </tr></tfoot></table>
       </div>
@@ -8856,13 +8883,13 @@ function pgGovernment(){
           <th>Salary From</th><th>Salary To</th><th>EE Rate (%)</th><th>ER Rate (%)</th>
           <th>Max EE (₱)</th><th>Max ER (₱)</th><th></th>
         </tr></thead>
-        <tbody>${(r.pagibig.tiers||[]).map((tier,i)=>`<tr>
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:80px" value="${tier.salFrom}" onchange="GOVT_RATES.pagibig.tiers[${i}].salFrom=+this.value"/></td>
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:80px" value="${tier.salTo>=9999999?'':tier.salTo}" placeholder="(max)" onchange="GOVT_RATES.pagibig.tiers[${i}].salTo=+this.value||9999999"/></td>
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:60px;color:var(--red)" value="${tier.eeRate}" step="0.5" onchange="GOVT_RATES.pagibig.tiers[${i}].eeRate=+this.value"/></td>
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:60px;color:var(--blue)" value="${tier.erRate}" step="0.5" onchange="GOVT_RATES.pagibig.tiers[${i}].erRate=+this.value"/></td>
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--red)" value="${tier.maxEE}" onchange="GOVT_RATES.pagibig.tiers[${i}].maxEE=+this.value"/></td>
-          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--blue)" value="${tier.maxER}" onchange="GOVT_RATES.pagibig.tiers[${i}].maxER=+this.value"/></td>
+        <tbody>${(piTiers||[]).map((tier,i)=>`<tr>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:80px" value="${tier.salFrom}" onchange="ensureGovtDraft().piTiers[${i}].salFrom=+this.value"/></td>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:80px" value="${tier.salTo>=9999999?'':tier.salTo}" placeholder="(max)" onchange="ensureGovtDraft().piTiers[${i}].salTo=+this.value||9999999"/></td>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:60px;color:var(--red)" value="${tier.eeRate}" step="0.5" onchange="ensureGovtDraft().piTiers[${i}].eeRate=+this.value"/></td>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:60px;color:var(--blue)" value="${tier.erRate}" step="0.5" onchange="ensureGovtDraft().piTiers[${i}].erRate=+this.value"/></td>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--red)" value="${tier.maxEE}" onchange="ensureGovtDraft().piTiers[${i}].maxEE=+this.value"/></td>
+          <td><input type="number" class="finput" style="font-size:11px;padding:3px 6px;width:70px;color:var(--blue)" value="${tier.maxER}" onchange="ensureGovtDraft().piTiers[${i}].maxER=+this.value"/></td>
           <td><button onclick="removePITier(${i})" class="btn btn-sm btn-danger" style="padding:2px 6px;font-size:10px" ${i===0?'disabled':''}>✕</button></td>
         </tr>`).join('')}</tbody></table>
         <div style="margin-top:8px">
@@ -8906,7 +8933,7 @@ function pgGovernment(){
     const periods={'monthly':'/mo','semi-monthly':'/semi-mo','weekly':'/wk','daily':'/day','annual':'/yr'};
     return`<div class="page-header" style="align-items:center">
       <div><div class="page-title">BIR Withholding Tax Versions</div><div class="page-sub">Effective-dated tables preserve historical payroll while allowing future BIR changes.</div></div>
-      <div style="display:flex;gap:7px"><button class="btn" onclick="cloneBIRTaxVersion()">+ Clone New Version</button>${editable?`<button class="btn btn-danger" onclick="deleteBIRTaxDraft('${version.id}')">Delete Draft</button><button class="btn btn-success" onclick="applyBIRTables()">Save Draft</button><button class="btn btn-primary" onclick="activateBIRTaxVersion('${version.id}')">Activate Version</button>`:''}</div>
+      <div style="display:flex;gap:7px"><button class="btn" onclick="cloneBIRTaxVersion()">+ Clone New Version</button>${editable?`<button class="btn btn-danger" onclick="deleteBIRTaxDraft('${version.id}')">Delete Draft</button>${_birBracketSnapshot&&_birBracketSnapshot.versionId===version.id?`<button class="btn" onclick="discardBirBracketChanges()">↺ Discard Bracket Changes</button>`:''}<button class="btn btn-success" onclick="applyBIRTables()">Save Draft</button><button class="btn btn-primary" onclick="activateBIRTaxVersion('${version.id}')">Activate Version</button>`:''}</div>
     </div>
     ${tabBar}
     <div class="card" style="padding:.875rem;margin-bottom:1rem;border-left:3px solid ${editable?'var(--amber)':'var(--green)'}">
@@ -8951,14 +8978,14 @@ function pgGovernment(){
         const sampleTax=inBracket?+(br.base+(sample-br.from)*(br.rate/100)).toFixed(2):null;
         return`<tr style="${inBracket?'background:var(--accent-bg)':i%2===0?'':'background:var(--bg)'}">
           <td><input type="number" class="finput" style="font-size:12px;padding:5px 8px" value="${br.from}"
-            ${editable?'':'disabled'} onchange="birTaxVersionById(window._birVersionId).tables['${selFreq}'][${i}].from=+this.value"/></td>
+            ${editable?'':'disabled'} onchange="ensureBirBracketSnapshot(birTaxVersionById(window._birVersionId)).tables['${selFreq}'][${i}].from=+this.value"/></td>
           <td><input type="number" class="finput" style="font-size:12px;padding:5px 8px" value="${br.to>=999999998?'':br.to}" placeholder="(no limit)"
-            ${editable?'':'disabled'} onchange="birTaxVersionById(window._birVersionId).tables['${selFreq}'][${i}].to=+this.value||999999999"/></td>
+            ${editable?'':'disabled'} onchange="ensureBirBracketSnapshot(birTaxVersionById(window._birVersionId)).tables['${selFreq}'][${i}].to=+this.value||999999999"/></td>
           <td><input type="number" class="finput" style="font-size:12px;padding:5px 8px;color:var(--accent-txt)" value="${br.base}" step="0.01"
-            ${editable?'':'disabled'} onchange="birTaxVersionById(window._birVersionId).tables['${selFreq}'][${i}].base=+this.value"/></td>
+            ${editable?'':'disabled'} onchange="ensureBirBracketSnapshot(birTaxVersionById(window._birVersionId)).tables['${selFreq}'][${i}].base=+this.value"/></td>
           <td><div style="display:flex;align-items:center;gap:6px">
             <input type="number" class="finput" style="font-size:12px;padding:5px 8px;width:70px" value="${br.rate}" step="1" min="0" max="100"
-              ${editable?'':'disabled'} onchange="birTaxVersionById(window._birVersionId).tables['${selFreq}'][${i}].rate=+this.value"/>
+              ${editable?'':'disabled'} onchange="ensureBirBracketSnapshot(birTaxVersionById(window._birVersionId)).tables['${selFreq}'][${i}].rate=+this.value"/>
             <span class="badge ${br.rate===0?'b-approved':br.rate<=25?'b-info':br.rate<=30?'b-pending':'b-absent'}" style="font-size:10px">${br.rate}%</span>
           </div></td>
           <td class="mono" style="font-weight:${inBracket?'800':'400'};color:${inBracket?'var(--accent)':'var(--txt3)'};font-size:12px;text-align:right">${inBracket&&sampleTax!==null?fmt(sampleTax):'—'}</td>
@@ -9068,7 +9095,23 @@ function pgGovernment(){
    ════════════════════════════════════════════════════════════════ */
 
 /* ── SSS ─────────────────────────────────────────────────────── */
+let _govtRatesDraft=null; /* uncommitted {sssFullTable,sssMaxContrib,piTiers} — table edits stage here until Save & Apply */
+function ensureGovtDraft(){
+  if(!_govtRatesDraft)_govtRatesDraft={
+    sssFullTable:JSON.parse(JSON.stringify(GOVT_RATES.sss.fullTable||[])),
+    sssMaxContrib:GOVT_RATES.sss.maxContrib,
+    piTiers:JSON.parse(JSON.stringify(GOVT_RATES.pagibig.tiers||[])),
+  };
+  return _govtRatesDraft;
+}
+function discardGovtDraft(){_govtRatesDraft=null;render();toast('Table changes discarded.','info');}
 function applyGovtTables(){
+  if(_govtRatesDraft){
+    GOVT_RATES.sss.fullTable=_govtRatesDraft.sssFullTable;
+    GOVT_RATES.sss.maxContrib=_govtRatesDraft.sssMaxContrib;
+    GOVT_RATES.pagibig.tiers=_govtRatesDraft.piTiers;
+    _govtRatesDraft=null;
+  }
   /* Sync rate params from DOM inputs */
   const gn=id=>{ const el=document.getElementById(id); return el?parseFloat(el.value)||0:0; };
   const gs=id=>{ const el=document.getElementById(id); return el?el.value:''; };
@@ -9110,30 +9153,34 @@ function syncSSSBrackets(){
     .slice(-1)[0]?.ee || 1000;
 }
 function addSSSRow(){
-  const t=GOVT_RATES.sss.fullTable;
+  const t=ensureGovtDraft().sssFullTable;
   const last=t[t.length-1]||{salTo:34749,msc:35000,ee:1000,er:2000,ec:30,mpfEE:750,mpfER:1500};
   t.push({salFrom:last.salTo+1,salTo:last.salTo+500,msc:last.msc+500,
     ee:last.ee,er:last.er,ec:last.ec,mpfEE:+(last.mpfEE+25).toFixed(2),mpfER:+(last.mpfER+50).toFixed(2)});
   render();
 }
 function removeSSSRow(i){
-  if(GOVT_RATES.sss.fullTable.length<=1){toast('Need at least one row','warning');return;}
-  GOVT_RATES.sss.fullTable.splice(i,1);
+  const t=ensureGovtDraft().sssFullTable;
+  if(t.length<=1){toast('Need at least one row','warning');return;}
+  if(!confirm('Remove this SSS schedule row?'))return;
+  t.splice(i,1);
   render();
 }
 function addSSSCol(){toast('Column management: edit the fullTable object structure directly for custom columns.','info');}
 
 /* ── Pag-IBIG ────────────────────────────────────────────────── */
 function addPITier(){
-  const t=GOVT_RATES.pagibig.tiers;
+  const t=ensureGovtDraft().piTiers;
   const last=t[t.length-1]||{salFrom:0,salTo:9999999,eeRate:2,erRate:2,maxFundSal:10000,maxEE:200,maxER:200,note:''};
   t.push({id:t.length+1,salFrom:last.salTo+1,salTo:9999999,eeRate:last.eeRate,erRate:last.erRate,
     maxFundSal:last.maxFundSal,maxEE:last.maxEE,maxER:last.maxER,note:''});
   render();
 }
 function removePITier(i){
-  if(GOVT_RATES.pagibig.tiers.length<=1){toast('Need at least one tier','warning');return;}
-  GOVT_RATES.pagibig.tiers.splice(i,1);
+  const t=ensureGovtDraft().piTiers;
+  if(t.length<=1){toast('Need at least one tier','warning');return;}
+  if(!confirm('Remove this Pag-IBIG tier?'))return;
+  t.splice(i,1);
   render();
 }
 function syncPIFromTiers(){
@@ -9147,6 +9194,22 @@ function syncPIFromTiers(){
 }
 
 /* ── BIR ─────────────────────────────────────────────────────── */
+let _birBracketSnapshot=null; /* {versionId,tables} — captured on first bracket edit so it can be discarded */
+function ensureBirBracketSnapshot(version){
+  if(!_birBracketSnapshot||_birBracketSnapshot.versionId!==version.id){
+    _birBracketSnapshot={versionId:version.id,tables:JSON.parse(JSON.stringify(version.tables))};
+  }
+  return version;
+}
+function discardBirBracketChanges(){
+  const version=birTaxVersionById(window._birVersionId);
+  if(!version||!_birBracketSnapshot||_birBracketSnapshot.versionId!==version.id)return;
+  if(!confirm('Discard unsaved changes to this tax table\'s brackets?'))return;
+  version.tables=JSON.parse(JSON.stringify(_birBracketSnapshot.tables));
+  _birBracketSnapshot=null;
+  render();
+  toast('Bracket changes discarded.','info');
+}
 function applyBIRTables(){
   const version=birTaxVersionById(window._birVersionId);
   if(!version||version.status!=='draft'){toast('Active tax-table versions are read-only. Clone a new version first.','warning');return;}
@@ -9159,6 +9222,7 @@ function applyBIRTables(){
   if(issues.length){toast(issues[0],'warning');return;}
   version.updatedAt=new Date().toISOString();version.updatedBy=user?.name||'Administrator';
   PAYROLL_AUDIT.push({action:'bir_tax_version_saved',versionId:version.id,by:user?.name||'Administrator',at:version.updatedAt,notes:version.name+' · '+version.effectiveFrom});
+  if(_birBracketSnapshot&&_birBracketSnapshot.versionId===version.id)_birBracketSnapshot=null;
   queueSync('governmentRates');
   toast('BIR tax-table draft validated and saved.','success');
   render();
@@ -9194,6 +9258,7 @@ function activateBIRTaxVersion(id){
 }
 function addBIRRow(freq){
   const version=birTaxVersionById(window._birVersionId);if(!version||version.status!=='draft')return;
+  ensureBirBracketSnapshot(version);
   const tbl=version.tables[freq];
   const last=tbl[tbl.length-1]||{from:0,to:999999999,base:0,rate:35};
   /* Insert before the last row (which is usually the top bracket) */
@@ -9207,6 +9272,8 @@ function removeBIRRow(freq,i){
   const version=birTaxVersionById(window._birVersionId);if(!version||version.status!=='draft')return;
   const tbl=version.tables[freq];
   if(tbl.length<=2){toast('Need at least two brackets','warning');return;}
+  if(!confirm('Remove this tax bracket?'))return;
+  ensureBirBracketSnapshot(version);
   tbl.splice(i,1);
   render();
 }
@@ -12928,9 +12995,27 @@ function startRealtime(){
 }
 function stopRealtime(){if(realtimeTimer){clearInterval(realtimeTimer);realtimeTimer=null;}}
 
+let _approvalGlobalDraft=null; /* uncommitted {maxLayers,defaultLayers} while editing */
+function openApprovalGlobalEdit(){
+  _approvalGlobalDraft={maxLayers:APPROVAL_CONFIG.maxLayers||4,defaultLayers:APPROVAL_CONFIG.defaultLayers||1};
+  render();
+}
+function cancelApprovalGlobalEdit(){_approvalGlobalDraft=null;render();toast('Changes discarded.','info');}
+function saveApprovalGlobalEdit(){
+  if(!_approvalGlobalDraft)return;
+  if(!confirm('Save changes to global approval layer settings?'))return;
+  APPROVAL_CONFIG.maxLayers=_approvalGlobalDraft.maxLayers;
+  APPROVAL_CONFIG.defaultLayers=_approvalGlobalDraft.defaultLayers;
+  _approvalGlobalDraft=null;
+  queueSync('Approval_Config');
+  render();
+  toast('Global approval layer settings saved.','success');
+}
 function pgApprovalSetup(){
   const activeEmps=USERS.filter(u=>u.active!==false&&u.role!=='admin');
-  const maxG=APPROVAL_CONFIG.maxLayers||4;
+  const editingGlobal=!!_approvalGlobalDraft;
+  const gv=editingGlobal?_approvalGlobalDraft:{maxLayers:APPROVAL_CONFIG.maxLayers||4,defaultLayers:APPROVAL_CONFIG.defaultLayers||1};
+  const maxG=gv.maxLayers;
 
   /* Compact chain badge row */
   const chainBadges=(chain)=>{
@@ -12971,24 +13056,27 @@ function pgApprovalSetup(){
   </div>
 
   <!-- Global cap -->
-  <div class="card" style="margin-bottom:1rem;padding:12px 16px;display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
+  <div class="card" style="margin-bottom:1rem;padding:12px 16px">
+    ${editSaveBar(editingGlobal,'openApprovalGlobalEdit','saveApprovalGlobalEdit','cancelApprovalGlobalEdit','Edit Global Settings')}
+    <div style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap">
     <div style="flex:1;min-width:200px">
       <div style="font-weight:600;font-size:13px">Global Maximum Layers</div>
       <div style="font-size:12px;color:var(--txt3);margin-top:2px">No employee's chain can exceed this, regardless of individual settings</div>
     </div>
     <div style="display:flex;align-items:center;gap:10px">
-      <select class="finput" style="font-size:13px;width:80px"
-        onchange="APPROVAL_CONFIG.maxLayers=parseInt(this.value);queueSync('Approval_Config');render();toast('Maximum layers updated.','success')">
+      <select class="finput" ${editingGlobal?'':'disabled'} style="font-size:13px;width:80px"
+        onchange="_approvalGlobalDraft.maxLayers=parseInt(this.value);render()">
         ${[1,2,3,4,5,6].map(n=>`<option value="${n}" ${maxG===n?'selected':''}>${n}</option>`).join('')}
       </select>
       <span style="font-size:12px;color:var(--txt3)">layers max</span>
     </div>
     <div style="font-size:12px;color:var(--accent-txt);padding:6px 10px;background:var(--accent-bg);border-radius:6px">
-      Default for unconfigured employees: <strong>${APPROVAL_CONFIG.defaultLayers||1} layer</strong>
-      <select style="margin-left:8px;font-size:12px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg);color:var(--txt)"
-        onchange="APPROVAL_CONFIG.defaultLayers=parseInt(this.value);queueSync('Approval_Config');render();toast('Default layers updated.','success')">
-        ${Array.from({length:maxG},(_,i)=>i+1).map(n=>`<option value="${n}" ${(APPROVAL_CONFIG.defaultLayers||1)===n?'selected':''}>${n}</option>`).join('')}
+      Default for unconfigured employees: <strong>${gv.defaultLayers} layer</strong>
+      <select ${editingGlobal?'':'disabled'} style="margin-left:8px;font-size:12px;border:1px solid var(--border);border-radius:4px;padding:2px 6px;background:var(--bg);color:var(--txt)"
+        onchange="_approvalGlobalDraft.defaultLayers=parseInt(this.value);render()">
+        ${Array.from({length:maxG},(_,i)=>i+1).map(n=>`<option value="${n}" ${gv.defaultLayers===n?'selected':''}>${n}</option>`).join('')}
       </select>
+    </div>
     </div>
   </div>
 
@@ -13112,7 +13200,25 @@ function editSubteam(bid,did,tid,si){const bu=ORG.find(b=>b.id===bid);const d=bu
 function delSubteam(bid,did,tid,si){const bu=ORG.find(b=>b.id===bid);const d=bu.depts.find(x=>x.id===did);const t=d.teams.find(x=>x.id===tid);if(!confirm(`Delete subteam "${t.subteams[si]}"?`))return;t.subteams.splice(si,1);render();toast('Subteam deleted.','success');}
 
 
+let _lookupsDraft=null; /* uncommitted cell edits: {key:[{...row}]} while editing */
+function openLookupsEdit(){
+  _lookupsDraft=JSON.parse(JSON.stringify(LOOKUPS));
+  render();
+}
+function cancelLookupsEdit(){_lookupsDraft=null;render();toast('Changes discarded.','info');}
+function saveLookupsEdit(){
+  if(!_lookupsDraft)return;
+  if(!confirm('Save changes to all lookup tables?'))return;
+  Object.keys(_lookupsDraft).forEach(k=>{LOOKUPS[k]=_lookupsDraft[k];});
+  _lookupsDraft=null;
+  queueSync('Lookup_Tables');
+  render();
+  toast('Lookup tables saved.','success');
+}
 function pgLookupSetup(){
+  const editing=!!_lookupsDraft;
+  const data=editing?_lookupsDraft:LOOKUPS;
+  const dis=editing?'':'disabled';
   const sections=[
     {key:'bandLevels',label:'Band / Level',desc:'Job grades and levels (e.g. IC1, L2, M1). Used in 201 files and employee records.',hasCode:true,
      cols:['Code','Label']},
@@ -13136,40 +13242,38 @@ function pgLookupSetup(){
      cols:['Code','Label']},
   ];
   function rows(key,hasCode,hasGroup){
-    return LOOKUPS[key].map((item,i)=>hasCode?`
+    return data[key].map((item,i)=>hasCode?`
     <tr>
-      <td><input class="finput" style="font-size:12px" value="${esc(item.code)}" onchange="updateLookupCell('${key}',${i},'code',this.value)"/></td>
-      <td><input class="finput" style="font-size:12px" value="${esc(item.label)}" onchange="updateLookupCell('${key}',${i},'label',this.value)"/></td>
-      ${hasGroup?`<td><select class="finput" style="font-size:12px" onchange="updateLookupCell('${key}',${i},'group',this.value)">
+      <td><input class="finput" ${dis} style="font-size:12px" value="${esc(item.code)}" onchange="updateLookupCell('${key}',${i},'code',this.value)"/></td>
+      <td><input class="finput" ${dis} style="font-size:12px" value="${esc(item.label)}" onchange="updateLookupCell('${key}',${i},'label',this.value)"/></td>
+      ${hasGroup?`<td><select class="finput" ${dis} style="font-size:12px" onchange="updateLookupCell('${key}',${i},'group',this.value)">
         <option value="voluntary" ${item.group==='voluntary'?'selected':''}>Voluntary</option>
         <option value="involuntary" ${item.group==='involuntary'?'selected':''}>Involuntary</option>
       </select></td>`:''}
-      <td><button class="btn btn-sm btn-danger" style="padding:3px 8px" onclick="delLookup('${key}',${i})">✕</button></td>
+      <td><button class="btn btn-sm btn-danger" style="padding:3px 8px" ${editing?'disabled title="Save or cancel the current edit first"':''} onclick="delLookup('${key}',${i})">✕</button></td>
     </tr>`:`
     <tr>
-      <td><input class="finput" style="font-size:12px" value="${esc(item.name)}" onchange="updateLookupCell('${key}',${i},'name',this.value)"/></td>
-      <td><button class="btn btn-sm btn-danger" style="padding:3px 8px" onclick="delLookup('${key}',${i})">✕</button></td>
+      <td><input class="finput" ${dis} style="font-size:12px" value="${esc(item.name)}" onchange="updateLookupCell('${key}',${i},'name',this.value)"/></td>
+      <td><button class="btn btn-sm btn-danger" style="padding:3px 8px" ${editing?'disabled title="Save or cancel the current edit first"':''} onclick="delLookup('${key}',${i})">✕</button></td>
     </tr>`).join('');
   }
   return`<div class="page-header"><div><div class="page-title">Lookup Tables</div><div class="page-sub">Manage dropdown values for Band Level, Cost Center, Pod, Discipline, and Employment Type</div></div></div>
   <div style="background:var(--accent-bg);border-radius:10px;padding:12px 16px;margin-bottom:1rem;font-size:13px;color:var(--accent-txt)">
-    <strong>Tip:</strong> Changes here update dropdown options everywhere — the Add Employee form, 201 files, and search filters. Edit cells inline, then click <strong>Save All</strong>.
+    <strong>Tip:</strong> Changes here update dropdown options everywhere — the Add Employee form, 201 files, and search filters. Click <strong>Edit</strong>, update cells inline, then <strong>Save Changes</strong>.
   </div>
+  ${editSaveBar(editing,'openLookupsEdit','saveLookupsEdit','cancelLookupsEdit','Edit Lookup Tables')}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
   ${sections.map(s=>`<div class="card">
     <div class="card-hd">
       <div><div class="card-title">${s.label}</div><div class="card-sub">${s.desc}</div></div>
       <div style="display:flex;gap:6px;flex-shrink:0">
-        <button class="btn btn-sm" onclick="openLookupBulkAdd('${s.key}',${s.hasCode},'${esc(s.label)}',${!!s.hasGroup})" title="Paste multiple rows at once">⇅ Bulk Add</button>
-        <button class="btn btn-sm btn-primary" onclick="addLookup('${s.key}',${s.hasCode},${!!s.hasGroup})">+ Add</button>
+        <button class="btn btn-sm" ${editing?'disabled title="Save or cancel the current edit first"':''} onclick="openLookupBulkAdd('${s.key}',${s.hasCode},'${esc(s.label)}',${!!s.hasGroup})" title="Paste multiple rows at once">⇅ Bulk Add</button>
+        <button class="btn btn-sm btn-primary" ${editing?'disabled title="Save or cancel the current edit first"':''} onclick="addLookup('${s.key}',${s.hasCode},${!!s.hasGroup})">+ Add</button>
       </div>
     </div>
     <table><thead><tr>${s.cols.map(c=>`<th>${c}</th>`).join('')}<th></th></tr></thead>
     <tbody>${rows(s.key,s.hasCode,s.hasGroup)}</tbody></table>
   </div>`).join('')}
-  </div>
-  <div style="margin-top:4px;text-align:right">
-    <button class="btn btn-success" onclick="alert('All lookup changes are saved automatically as you type!')">✓ Changes auto-saved</button>
   </div>`;
 }
 function addLookup(key,hasCode,hasGroup){
@@ -13197,8 +13301,8 @@ function delLookup(key,idx){
   toast('Lookup value deleted.','success');
 }
 function updateLookupCell(key,idx,field,value){
-  LOOKUPS[key][idx][field]=value;
-  toast('Saved.','success');
+  if(!_lookupsDraft)return;
+  _lookupsDraft[key][idx][field]=value;
 }
 
 /* ── Bulk Add for Lookup Tables — paste multiple rows at once instead of
@@ -14296,11 +14400,30 @@ const SHEET_DEFS_PREVIEW={
   Employees:{length:60},
 };
 
+/* Logo/theme/wallpaper used to mutate COMPANY the instant a file was picked or a swatch
+   clicked — this stages them in _pendingBrand instead, same as every other field on this
+   page which only commits when "Save Settings" is clicked. applyTheme() is still called
+   live for a genuine on-screen preview (pure CSS, nothing persisted), and gets reverted on
+   Discard. */
+let _pendingBrand=null; /* uncommitted {logo,themeKey,accentHex,wallpaper,wallpaperMode,wallpaperOpacity,wallpaperVeil} */
+function ensureBrandDraft(){
+  if(!_pendingBrand)_pendingBrand={logo:COMPANY.logo,themeKey:COMPANY.themeKey,accentHex:COMPANY.accentHex,wallpaper:COMPANY.wallpaper,wallpaperMode:COMPANY.wallpaperMode,wallpaperOpacity:COMPANY.wallpaperOpacity,wallpaperVeil:COMPANY.wallpaperVeil};
+  return _pendingBrand;
+}
+function discardBrandDraft(){
+  _pendingBrand=null;
+  applyTheme(COMPANY.themeKey,COMPANY.accentHex);
+  render();
+  toast('Branding changes discarded.','info');
+}
 function pgCompanySettings(){
   ensureAnnualizedTaxConfig();
-  const themeColors={indigo:'#4f46e5',emerald:'#059669',blue:'#2563eb',rose:'#e11d48',amber:'#d97706',violet:'#7c3aed',teal:'#0d9488',slate:'#475569',custom:COMPANY.accentHex};
+  const b=_pendingBrand||COMPANY;
+  const themeColors={indigo:'#4f46e5',emerald:'#059669',blue:'#2563eb',rose:'#e11d48',amber:'#d97706',violet:'#7c3aed',teal:'#0d9488',slate:'#475569',custom:b.accentHex};
   return`<div class="page-header"><div class="page-title">Company Settings</div>
-  <button class="btn btn-primary" onclick="saveCompany()">✓ Save Settings</button></div>
+  <div style="display:flex;gap:8px">
+  ${_pendingBrand?'<button class="btn" onclick="discardBrandDraft()">↺ Discard Branding Changes</button>':''}
+  <button class="btn btn-primary" onclick="saveCompany()">✓ Save Settings</button></div></div>
 
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
 
@@ -14313,8 +14436,8 @@ function pgCompanySettings(){
           <div style="font-weight:600;font-size:13px;margin-bottom:8px">Company Logo</div>
           <div style="display:flex;gap:14px;align-items:center;margin-bottom:10px">
             <div id="logo-preview" style="width:80px;height:80px;border-radius:12px;border:2px dashed var(--border);display:flex;align-items:center;justify-content:center;overflow:hidden;background:var(--bg);flex-shrink:0">
-              ${COMPANY.logo
-                ? `<img src="${COMPANY.logo}" style="width:100%;height:100%;object-fit:contain" alt="logo"/>`
+              ${b.logo
+                ? `<img src="${b.logo}" style="width:100%;height:100%;object-fit:contain" alt="logo"/>`
                 : `<div style="text-align:center;color:var(--txt3);font-size:11px">No<br>logo</div>`}
             </div>
             <div>
@@ -14322,7 +14445,7 @@ function pgCompanySettings(){
               <input type="file" id="co-logo-file" accept="image/*" style="display:none" onchange="handleLogoUpload(this)"/>
               <div style="display:flex;gap:6px;flex-wrap:wrap">
                 <label for="co-logo-file" class="btn btn-sm" style="cursor:pointer;font-size:12px">📁 Choose File</label>
-                ${COMPANY.logo?`<button class="btn btn-sm btn-danger" style="font-size:12px" onclick="COMPANY.logo=null;render();toast('Logo removed','info')">✕ Remove</button>`:''}
+                ${b.logo?`<button class="btn btn-sm btn-danger" style="font-size:12px" onclick="ensureBrandDraft().logo=null;render();toast('Logo removed from draft — click Save to apply.','info')">✕ Remove</button>`:''}
               </div>
             </div>
           </div>
@@ -14340,32 +14463,33 @@ function pgCompanySettings(){
       <!-- Live preview -->
       <div style="margin-top:14px;padding:12px 16px;border-radius:10px;background:var(--bg);border:1px solid var(--border);display:flex;align-items:center;gap:12px">
         <div style="font-size:11px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.4px;margin-right:4px;white-space:nowrap">Preview:</div>
-        <div style="width:32px;height:32px;border-radius:9px;background:${COMPANY.logo?'transparent':'var(--accent)'};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px;overflow:hidden;flex-shrink:0">
-          ${COMPANY.logo?`<img src="${COMPANY.logo}" style="width:100%;height:100%;object-fit:contain" alt="logo"/>`:`<span id="co-preview-ini">${esc(COMPANY.initials)}</span>`}
+        <div style="width:32px;height:32px;border-radius:9px;background:${b.logo?'transparent':'var(--accent)'};display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px;overflow:hidden;flex-shrink:0">
+          ${b.logo?`<img src="${b.logo}" style="width:100%;height:100%;object-fit:contain" alt="logo"/>`:`<span id="co-preview-ini">${esc(COMPANY.initials)}</span>`}
         </div>
         <div>
           <div style="font-weight:700;font-size:14px" id="co-preview-name">${esc(COMPANY.name)}</div>
           <div style="font-size:11px;color:var(--txt3)" id="co-preview-tag">${esc(COMPANY.tagline)}</div>
         </div>
       </div>
+      ${_pendingBrand?'<div style="margin-top:10px;font-size:11px;color:var(--amber-txt);background:var(--amber-bg);padding:6px 10px;border-radius:6px">Logo/theme/wallpaper changes are staged — click Save Settings above to apply, or Discard Branding Changes to revert.</div>':''}
     </div>
 
     <!-- Theme (full-width) -->
     <div class="card" style="grid-column:span 2">
       <div class="card-title" style="margin-bottom:4px">Color Theme</div>
-      <div style="font-size:12px;color:var(--txt3);margin-bottom:14px">Choosing a color updates the entire interface — buttons, active states, highlights, and accents — instantly.</div>
+      <div style="font-size:12px;color:var(--txt3);margin-bottom:14px">Choosing a color previews the entire interface — buttons, active states, highlights, and accents — instantly; click Save Settings to keep it.</div>
       <div style="display:grid;grid-template-columns:repeat(8,1fr);gap:8px;margin-bottom:14px">
         ${Object.entries(themeColors).filter(([k])=>k!=='custom').map(([k,c])=>`
-        <div onclick="selectTheme('${k}')" style="cursor:pointer;border-radius:8px;padding:8px 4px;text-align:center;border:2px solid ${COMPANY.themeKey===k?c:'var(--border)'};background:${COMPANY.themeKey===k?c+'15':'var(--bg)'}">
+        <div onclick="selectTheme('${k}')" style="cursor:pointer;border-radius:8px;padding:8px 4px;text-align:center;border:2px solid ${b.themeKey===k?c:'var(--border)'};background:${b.themeKey===k?c+'15':'var(--bg)'}">
           <div style="width:28px;height:28px;border-radius:50%;background:${c};margin:0 auto 5px"></div>
-          <div style="font-size:10px;font-weight:500;color:${COMPANY.themeKey===k?c:'var(--txt3)'};text-transform:capitalize">${k}</div>
+          <div style="font-size:10px;font-weight:500;color:${b.themeKey===k?c:'var(--txt3)'};text-transform:capitalize">${k}</div>
         </div>`).join('')}
       </div>
       <div class="field" style="max-width:380px">
         <label>Custom color</label>
         <div style="display:flex;gap:8px;align-items:center">
-          <input type="color" id="co-color" value="${COMPANY.accentHex}" style="width:48px;height:36px;padding:2px;border-radius:6px;cursor:pointer" onchange="selectTheme('custom',this.value)"/>
-          <input id="co-hex" value="${COMPANY.accentHex}" class="finput" style="width:110px;font-family:'JetBrains Mono',monospace;font-size:13px" onchange="selectTheme('custom',this.value)" placeholder="#4f46e5"/>
+          <input type="color" id="co-color" value="${b.accentHex}" style="width:48px;height:36px;padding:2px;border-radius:6px;cursor:pointer" onchange="selectTheme('custom',this.value)"/>
+          <input id="co-hex" value="${b.accentHex}" class="finput" style="width:110px;font-family:'JetBrains Mono',monospace;font-size:13px" onchange="selectTheme('custom',this.value)" placeholder="#4f46e5"/>
           <span style="font-size:12px;color:var(--txt3)">Any hex color</span>
         </div>
       </div>
@@ -14378,13 +14502,13 @@ function pgCompanySettings(){
     <!-- Wallpaper / Watermark -->
     <div class="card" style="grid-column:span 2">
       <div class="card-title" style="margin-bottom:4px">Background Wallpaper &amp; Watermark</div>
-      <div style="font-size:12px;color:var(--txt3);margin-bottom:14px">Upload an image that appears as a subtle watermark behind all pages — great for company logos or branded patterns.</div>
+      <div style="font-size:12px;color:var(--txt3);margin-bottom:14px">Upload an image that appears as a subtle watermark behind all pages — great for company logos or branded patterns. Staged here until you click Save Settings.</div>
       <div style="display:grid;grid-template-columns:auto 1fr;gap:1.5rem;align-items:start">
         <!-- Preview -->
         <div style="width:140px;height:100px;border-radius:10px;border:2px dashed var(--border);overflow:hidden;background:var(--bg);position:relative;flex-shrink:0">
-          ${COMPANY.wallpaper
-            ? `<div style="position:absolute;inset:0;background-image:url(${COMPANY.wallpaper});background-repeat:${COMPANY.wallpaperMode==='cover'||COMPANY.wallpaperMode==='contain'?'no-repeat':'repeat'};background-size:${COMPANY.wallpaperMode==='tile-large'?'60px':'40px'};background-position:center;opacity:${COMPANY.wallpaperOpacity}"></div>
-               <div style="position:absolute;inset:0;background:var(--bg);opacity:${COMPANY.wallpaperVeil||0.82}"></div>
+          ${b.wallpaper
+            ? `<div style="position:absolute;inset:0;background-image:url(${b.wallpaper});background-repeat:${b.wallpaperMode==='cover'||b.wallpaperMode==='contain'?'no-repeat':'repeat'};background-size:${b.wallpaperMode==='tile-large'?'60px':'40px'};background-position:center;opacity:${b.wallpaperOpacity}"></div>
+               <div style="position:absolute;inset:0;background:var(--bg);opacity:${b.wallpaperVeil||0.82}"></div>
                <div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px">
                  <div style="font-size:10px;font-weight:700;color:var(--txt)">Sample Text</div>
                  <div style="width:60%;height:4px;border-radius:2px;background:var(--accent);opacity:.8"></div>
@@ -14398,30 +14522,30 @@ function pgCompanySettings(){
             <input type="file" id="co-wp-file" accept="image/*" style="display:none" onchange="handleWallpaperUpload(this)"/>
             <label for="co-wp-file" class="btn btn-sm" style="cursor:pointer;font-size:12px">🖼 Upload Wallpaper</label>
             <button class="btn btn-sm" style="font-size:12px" onclick="
-              if(COMPANY.logo){COMPANY.wallpaper=COMPANY.logo;COMPANY.wallpaperMode='tile-large';applyWallpaperPreview();toast('Logo set as watermark','success');render();}
+              if(b.logo){const d=ensureBrandDraft();d.wallpaper=d.logo;d.wallpaperMode='tile-large';toast('Logo staged as watermark — click Save to apply.','info');render();}
               else toast('Upload a logo first.','warning')">
               ♻ Use Logo as Watermark
             </button>
-            ${COMPANY.wallpaper?`<button class="btn btn-sm btn-danger" style="font-size:12px" onclick="COMPANY.wallpaper=null;render();toast('Wallpaper removed','info')">✕ Remove</button>`:''}
+            ${b.wallpaper?`<button class="btn btn-sm btn-danger" style="font-size:12px" onclick="ensureBrandDraft().wallpaper=null;render();toast('Wallpaper removed from draft — click Save to apply.','info')">✕ Remove</button>`:''}
           </div>
-          ${COMPANY.wallpaper?`
+          ${b.wallpaper?`
           <div class="field" style="margin:0">
-            <label>Watermark Strength <span id="wp-str-lbl" style="color:var(--accent);font-weight:700">${Math.round((COMPANY.wallpaperOpacity||0.12)*100)}%</span> <span style="font-weight:400;font-size:11px;color:var(--txt3)">— how visible the pattern is</span></label>
+            <label>Watermark Strength <span id="wp-str-lbl" style="color:var(--accent);font-weight:700">${Math.round((b.wallpaperOpacity||0.12)*100)}%</span> <span style="font-weight:400;font-size:11px;color:var(--txt3)">— how visible the pattern is</span></label>
             <div style="display:flex;align-items:center;gap:10px">
-              <input type="range" min="3" max="30" value="${Math.round((COMPANY.wallpaperOpacity||0.12)*100)}" style="flex:1;accent-color:var(--accent)"
-                oninput="COMPANY.wallpaperOpacity=this.value/100;applyWallpaperPreview();this.nextElementSibling.textContent=this.value+'%';const l=document.getElementById('wp-str-lbl');if(l)l.textContent=this.value+'%';"/>
-              <span style="font-size:12px;color:var(--txt3);min-width:32px">${Math.round((COMPANY.wallpaperOpacity||0.12)*100)}%</span>
+              <input type="range" min="3" max="30" value="${Math.round((b.wallpaperOpacity||0.12)*100)}" style="flex:1;accent-color:var(--accent)"
+                oninput="ensureBrandDraft().wallpaperOpacity=this.value/100;this.nextElementSibling.textContent=this.value+'%';const l=document.getElementById('wp-str-lbl');if(l)l.textContent=this.value+'%';"/>
+              <span style="font-size:12px;color:var(--txt3);min-width:32px">${Math.round((b.wallpaperOpacity||0.12)*100)}%</span>
             </div>
             <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--txt3);margin-top:3px;padding:0 2px">
               <span>← Ghost watermark</span><span>Bold pattern →</span>
             </div>
           </div>
           <div class="field" style="margin:0">
-            <label>Content Readability <span id="wp-veil-lbl" style="color:var(--accent);font-weight:700">${Math.round((COMPANY.wallpaperVeil||0.88)*100)}%</span> <span style="font-weight:400;font-size:11px;color:var(--txt3)">— opacity of the content surface</span></label>
+            <label>Content Readability <span id="wp-veil-lbl" style="color:var(--accent);font-weight:700">${Math.round((b.wallpaperVeil||0.88)*100)}%</span> <span style="font-weight:400;font-size:11px;color:var(--txt3)">— opacity of the content surface</span></label>
             <div style="display:flex;align-items:center;gap:10px">
-              <input type="range" min="60" max="98" value="${Math.round((COMPANY.wallpaperVeil||0.88)*100)}" style="flex:1;accent-color:var(--accent)"
-                oninput="COMPANY.wallpaperVeil=this.value/100;applyWallpaperPreview();this.nextElementSibling.textContent=this.value+'%';const l=document.getElementById('wp-veil-lbl');if(l)l.textContent=this.value+'%';"/>
-              <span style="font-size:12px;color:var(--txt3);min-width:32px">${Math.round((COMPANY.wallpaperVeil||0.88)*100)}%</span>
+              <input type="range" min="60" max="98" value="${Math.round((b.wallpaperVeil||0.88)*100)}" style="flex:1;accent-color:var(--accent)"
+                oninput="ensureBrandDraft().wallpaperVeil=this.value/100;this.nextElementSibling.textContent=this.value+'%';const l=document.getElementById('wp-veil-lbl');if(l)l.textContent=this.value+'%';"/>
+              <span style="font-size:12px;color:var(--txt3);min-width:32px">${Math.round((b.wallpaperVeil||0.88)*100)}%</span>
             </div>
             <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--txt3);margin-top:3px;padding:0 2px">
               <span>← More visible</span>
@@ -14432,7 +14556,7 @@ function pgCompanySettings(){
             <label>Display Mode</label>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
               ${[['repeat','🔁 Tile Small'],['tile-large','🔳 Tile Large'],['cover','⬛ Cover'],['contain','📐 Contain']].map(([m,l])=>`
-              <button class="btn btn-sm ${COMPANY.wallpaperMode===m?'btn-primary':''}" style="font-size:11px" onclick="COMPANY.wallpaperMode='${m}';render();">${l}</button>`).join('')}
+              <button class="btn btn-sm ${b.wallpaperMode===m?'btn-primary':''}" style="font-size:11px" onclick="ensureBrandDraft().wallpaperMode='${m}';render();">${l}</button>`).join('')}
             </div>
           </div>`:''}
         </div>
@@ -14502,12 +14626,13 @@ function pgCompanySettings(){
 }
 
 function selectTheme(k,hex){
-  COMPANY.themeKey=k;
-  if(hex)COMPANY.accentHex=hex;
-  applyTheme(k,hex||COMPANY.accentHex);
+  const d=ensureBrandDraft();
+  d.themeKey=k;
+  if(hex)d.accentHex=hex;
+  applyTheme(k,hex||d.accentHex); // live CSS preview only — reverted by discardBrandDraft() if not saved
   // Update color picker and hex field
-  const cp=document.getElementById('co-color');if(cp)cp.value=hex||THEMES[k]?.accent||COMPANY.accentHex;
-  const hx=document.getElementById('co-hex');if(hx)hx.value=hex||THEMES[k]?.accent||COMPANY.accentHex;
+  const cp=document.getElementById('co-color');if(cp)cp.value=hex||THEMES[k]?.accent||d.accentHex;
+  const hx=document.getElementById('co-hex');if(hx)hx.value=hex||THEMES[k]?.accent||d.accentHex;
   render();
 }
 
@@ -14517,9 +14642,9 @@ function handleLogoUpload(input){
   if(file.size>2*1024*1024){toast('Logo file must be under 2MB.','warning');return;}
   const reader=new FileReader();
   reader.onload=function(e){
-    COMPANY.logo=e.target.result;
+    ensureBrandDraft().logo=e.target.result;
     render();
-    toast('Logo uploaded!','success');
+    toast('Logo staged — click Save Settings to apply.','info');
   };
   reader.readAsDataURL(file);
 }
@@ -14530,11 +14655,12 @@ function handleWallpaperUpload(input){
   if(file.size>5*1024*1024){toast('Wallpaper file must be under 5MB.','warning');return;}
   const reader=new FileReader();
   reader.onload=function(e){
-    COMPANY.wallpaper=e.target.result;
-    if(!COMPANY.wallpaperMode)COMPANY.wallpaperMode='repeat';
-    if(!COMPANY.wallpaperOpacity)COMPANY.wallpaperOpacity=0.06;
+    const d=ensureBrandDraft();
+    d.wallpaper=e.target.result;
+    if(!d.wallpaperMode)d.wallpaperMode='repeat';
+    if(!d.wallpaperOpacity)d.wallpaperOpacity=0.06;
     render();
-    toast('Wallpaper uploaded!','success');
+    toast('Wallpaper staged — click Save Settings to apply.','info');
   };
   reader.readAsDataURL(file);
 }
@@ -14609,6 +14735,12 @@ function saveCompany(){
   COMPANY.taxPolicy.annualizationEnabled=document.getElementById('co-tax-annualized')?.checked??COMPANY.taxPolicy.annualizationEnabled;
   COMPANY.taxPolicy.autoSuggestDecember=document.getElementById('co-tax-december')?.checked??COMPANY.taxPolicy.autoSuggestDecember;
   COMPANY.taxPolicy.requireConfirmedTaxRecord=document.getElementById('co-tax-confirm')?.checked??COMPANY.taxPolicy.requireConfirmedTaxRecord;
+  if(_pendingBrand){
+    Object.assign(COMPANY,_pendingBrand);
+    _pendingBrand=null;
+    applyTheme(COMPANY.themeKey,COMPANY.accentHex);
+    applyWallpaperPreview();
+  }
   document.title=COMPANY.name+' — HR & Payroll';
   queueSync('Company_Settings');
   toast('Settings saved!','success');
@@ -14649,8 +14781,58 @@ function pgTimekeepingSettings(){
   return`<div class="page-header"><div><div class="page-title">Timekeeping Settings</div><div class="page-sub">${subtitles[active]||''}</div></div></div>`+tabBar+(bodies[active]?bodies[active]():'');
 }
 
+/* Shared Edit/Save/Cancel action row for settings screens converted off instant auto-save —
+   mirrors the Access & Permissions pattern: read-only by default, an Edit button stages a
+   draft, Save Changes commits with a confirm prompt, Cancel discards. */
+function editSaveBar(editing,openFn,saveFn,cancelFn,label){
+  return editing
+    ?`<div style="display:flex;gap:8px;margin-bottom:14px">
+        <button class="btn btn-sm btn-primary" onclick="${saveFn}()">💾 Save Changes</button>
+        <button class="btn btn-sm" onclick="${cancelFn}()">✕ Cancel</button>
+      </div>`
+    :`<div style="display:flex;gap:8px;margin-bottom:14px">
+        <button class="btn btn-sm btn-primary" onclick="${openFn}()">✎ ${label||'Edit'}</button>
+      </div>`;
+}
+
+let _tkPolicyDraft=null; /* uncommitted edits for Filing Deadline & Deductions */
+function openTkPolicyEdit(){
+  _tkPolicyDraft={
+    active:ATTENDANCE_POLICY.active,
+    lateHalfDayMinutes:ATTENDANCE_POLICY.lateHalfDayMinutes,
+    minHoursFullDay:ATTENDANCE_POLICY.minHoursFullDay,
+    deductLateFromOT:ATTENDANCE_POLICY.deductLateFromOT,
+    filingDeadlineEnabled:ATTENDANCE_POLICY.filingDeadlineEnabled,
+    filingDeadlineDaysAfterPeriodEnd:ATTENDANCE_POLICY.filingDeadlineDaysAfterPeriodEnd,
+    filingDeadlineTime:ATTENDANCE_POLICY.filingDeadlineTime,
+    adj:{absent:{...ATTENDANCE_ADJ.absent},late:{...ATTENDANCE_ADJ.late},undertime:{...ATTENDANCE_ADJ.undertime}},
+    startOfWeek:COMPANY.startOfWeek||'mon',
+  };
+  render();
+}
+function cancelTkPolicyEdit(){_tkPolicyDraft=null;render();toast('Changes discarded.','info');}
+function saveTkPolicyEdit(){
+  if(!_tkPolicyDraft)return;
+  if(!confirm('Save changes to attendance policy and deduction settings?'))return;
+  const d=_tkPolicyDraft;
+  Object.assign(ATTENDANCE_POLICY,{active:d.active,lateHalfDayMinutes:d.lateHalfDayMinutes,minHoursFullDay:d.minHoursFullDay,deductLateFromOT:d.deductLateFromOT,filingDeadlineEnabled:d.filingDeadlineEnabled,filingDeadlineDaysAfterPeriodEnd:d.filingDeadlineDaysAfterPeriodEnd,filingDeadlineTime:d.filingDeadlineTime});
+  ['absent','late','undertime'].forEach(k=>{Object.assign(ATTENDANCE_ADJ[k],d.adj[k]);});
+  COMPANY.startOfWeek=d.startOfWeek;
+  _tkPolicyDraft=null;
+  queueSync('Company_Settings');
+  render();
+  toast('Attendance policy settings saved.','success');
+}
 function renderAttendancePolicyManager(){
-  return`
+  const editing=!!_tkPolicyDraft;
+  const v=editing?_tkPolicyDraft:{
+    active:ATTENDANCE_POLICY.active,lateHalfDayMinutes:ATTENDANCE_POLICY.lateHalfDayMinutes,minHoursFullDay:ATTENDANCE_POLICY.minHoursFullDay,
+    deductLateFromOT:ATTENDANCE_POLICY.deductLateFromOT,filingDeadlineEnabled:ATTENDANCE_POLICY.filingDeadlineEnabled,
+    filingDeadlineDaysAfterPeriodEnd:ATTENDANCE_POLICY.filingDeadlineDaysAfterPeriodEnd,filingDeadlineTime:ATTENDANCE_POLICY.filingDeadlineTime,
+    adj:ATTENDANCE_ADJ,startOfWeek:COMPANY.startOfWeek||'mon',
+  };
+  const dis=editing?'':'disabled';
+  return editSaveBar(editing,'openTkPolicyEdit','saveTkPolicyEdit','cancelTkPolicyEdit','Edit Policy & Deductions')+`
     <!-- ── Attendance Policy Rules ── -->
     <div class="section-header" style="margin-bottom:.75rem">Attendance Policy Rules</div>
     <div class="card" style="margin-bottom:1.5rem;padding:.875rem;border-top:3px solid var(--accent)">
@@ -14658,32 +14840,32 @@ function renderAttendancePolicyManager(){
         <span style="font-size:18px">📋</span>
         <div><div style="font-weight:700;font-size:14px">Automatic attendance rules</div>
           <div style="font-size:11px;color:var(--txt3)">Applied automatically as time logs come in (biometric device, Web Bundy) — no manual review needed for these cases.</div></div>
-        <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer">
-          <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ATTENDANCE_POLICY.active?'checked':''}
-            onchange="ATTENDANCE_POLICY.active=this.checked;render()"/> Active
+        <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;${editing?'cursor:pointer':''}">
+          <input type="checkbox" ${dis} style="width:auto;accent-color:var(--accent)" ${v.active?'checked':''}
+            onchange="_tkPolicyDraft.active=this.checked;render()"/> Active
         </label>
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.875rem">
         <div class="field"><label>Late threshold for automatic Half Day</label>
           <div style="display:flex;align-items:center;gap:6px">
-            <input type="number" class="finput" min="0" step="5" value="${ATTENDANCE_POLICY.lateHalfDayMinutes}" style="font-size:13px;font-weight:700"
-              onchange="ATTENDANCE_POLICY.lateHalfDayMinutes=parseInt(this.value)||0"/>
+            <input type="number" ${dis} class="finput" min="0" step="5" value="${v.lateHalfDayMinutes}" style="font-size:13px;font-weight:700"
+              onchange="_tkPolicyDraft.lateHalfDayMinutes=parseInt(this.value)||0"/>
             <span style="font-size:11px;color:var(--txt3)">minutes</span>
           </div>
           <div style="font-size:10px;color:var(--txt3);margin-top:4px">e.g. 120 = 2 hours late auto-marks the day Half Day and deducts half the shift's hours.</div>
         </div>
         <div class="field"><label>Minimum hours worked for a Full Day</label>
           <div style="display:flex;align-items:center;gap:6px">
-            <input type="number" class="finput" min="0" step="0.5" value="${ATTENDANCE_POLICY.minHoursFullDay}" style="font-size:13px;font-weight:700"
-              onchange="ATTENDANCE_POLICY.minHoursFullDay=parseFloat(this.value)||0"/>
+            <input type="number" ${dis} class="finput" min="0" step="0.5" value="${v.minHoursFullDay}" style="font-size:13px;font-weight:700"
+              onchange="_tkPolicyDraft.minHoursFullDay=parseFloat(this.value)||0"/>
             <span style="font-size:11px;color:var(--txt3)">hours</span>
           </div>
           <div style="font-size:10px;color:var(--txt3);margin-top:4px">Below this, the day is automatically marked LWOP (Leave Without Pay / Absent).</div>
         </div>
         <div class="field"><label>Deduct late minutes from OT</label>
-          <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;cursor:pointer;margin-top:2px">
-            <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ATTENDANCE_POLICY.deductLateFromOT?'checked':''}
-              onchange="ATTENDANCE_POLICY.deductLateFromOT=this.checked;render()"/>
+          <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;${editing?'cursor:pointer':''};margin-top:2px">
+            <input type="checkbox" ${dis} style="width:auto;accent-color:var(--accent)" ${v.deductLateFromOT?'checked':''}
+              onchange="_tkPolicyDraft.deductLateFromOT=this.checked;render()"/>
             <span style="font-size:12px">If an employee was late on a day they also worked OT, subtract the late minutes from that day's OT hours.</span>
           </label>
         </div>
@@ -14697,24 +14879,24 @@ function renderAttendancePolicyManager(){
         <span style="font-size:18px">⏰</span>
         <div><div style="font-weight:700;font-size:14px">Lock employees out of filing after a deadline</div>
           <div style="font-size:11px;color:var(--txt3)">Applies to employee self-service filing only — Admins and HR can still file or correct records after the deadline. Override this for a specific pay period from Pay Calendar.</div></div>
-        <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer">
-          <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${ATTENDANCE_POLICY.filingDeadlineEnabled?'checked':''}
-            onchange="ATTENDANCE_POLICY.filingDeadlineEnabled=this.checked;render()"/> Enabled
+        <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;${editing?'cursor:pointer':''}">
+          <input type="checkbox" ${dis} style="width:auto;accent-color:var(--accent)" ${v.filingDeadlineEnabled?'checked':''}
+            onchange="_tkPolicyDraft.filingDeadlineEnabled=this.checked;render()"/> Enabled
         </label>
       </div>
-      ${ATTENDANCE_POLICY.filingDeadlineEnabled?`
+      ${v.filingDeadlineEnabled?`
       <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:.875rem">
         <div class="field"><label>Days after the pay period's attendance window ends</label>
           <div style="display:flex;align-items:center;gap:6px">
-            <input type="number" class="finput" min="0" step="1" value="${ATTENDANCE_POLICY.filingDeadlineDaysAfterPeriodEnd}" style="font-size:13px;font-weight:700"
-              onchange="ATTENDANCE_POLICY.filingDeadlineDaysAfterPeriodEnd=parseInt(this.value)||0;render()"/>
+            <input type="number" ${dis} class="finput" min="0" step="1" value="${v.filingDeadlineDaysAfterPeriodEnd}" style="font-size:13px;font-weight:700"
+              onchange="_tkPolicyDraft.filingDeadlineDaysAfterPeriodEnd=parseInt(this.value)||0;render()"/>
             <span style="font-size:11px;color:var(--txt3)">day(s)</span>
           </div>
           <div style="font-size:10px;color:var(--txt3);margin-top:4px">e.g. 3 = employees can still file until 3 days after the period's attendance window ends.</div>
         </div>
         <div class="field"><label>Deadline time</label>
-          <input type="time" class="finput" value="${ATTENDANCE_POLICY.filingDeadlineTime}" style="font-size:13px;font-weight:700"
-            onchange="ATTENDANCE_POLICY.filingDeadlineTime=this.value;render()"/>
+          <input type="time" ${dis} class="finput" value="${v.filingDeadlineTime}" style="font-size:13px;font-weight:700"
+            onchange="_tkPolicyDraft.filingDeadlineTime=this.value;render()"/>
           <div style="font-size:10px;color:var(--txt3);margin-top:4px">Filing closes at this time on the computed deadline date.</div>
         </div>
       </div>`:''}
@@ -14733,26 +14915,26 @@ function renderAttendancePolicyManager(){
         {key:'undertime',label:'Undertime',icon:'📉', color:'orange',
          note:'Per-minute deduction for early departure'},
       ].map(cfg=>{
-        const d=ATTENDANCE_ADJ[cfg.key];
+        const d=v.adj[cfg.key];
         return`<div class="card" style="margin-bottom:0;padding:.875rem;border-top:3px solid var(--${cfg.color})">
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
             <span style="font-size:18px">${cfg.icon}</span>
             <div><div style="font-weight:700;font-size:14px">${cfg.label}</div>
               <div style="font-size:11px;color:var(--txt3)">${cfg.note}</div></div>
-            <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;cursor:pointer">
-              <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${d.active?'checked':''}
-                onchange="ATTENDANCE_ADJ['${cfg.key}'].active=this.checked;render()"/> Active
+            <label style="margin-left:auto;display:flex;align-items:center;gap:5px;font-size:11px;${editing?'cursor:pointer':''}">
+              <input type="checkbox" ${dis} style="width:auto;accent-color:var(--accent)" ${d.active?'checked':''}
+                onchange="_tkPolicyDraft.adj['${cfg.key}'].active=this.checked;render()"/> Active
             </label>
           </div>
           <div class="field" style="margin-bottom:8px"><label>Code</label>
-            <input class="finput" value="${esc(d.code||cfg.key.toUpperCase())}" style="font-size:12px;text-transform:uppercase;font-family:monospace;font-weight:600"
-              onchange="ATTENDANCE_ADJ['${cfg.key}'].code=this.value.toUpperCase()"/></div>
+            <input ${dis} class="finput" value="${esc(d.code||cfg.key.toUpperCase())}" style="font-size:12px;text-transform:uppercase;font-family:monospace;font-weight:600"
+              onchange="_tkPolicyDraft.adj['${cfg.key}'].code=this.value.toUpperCase()"/></div>
           <div class="field" style="margin-bottom:8px"><label>Computation Basis</label>
-            <input class="finput" value="${esc(d.basis)}" style="font-size:12px"
-              onchange="ATTENDANCE_ADJ['${cfg.key}'].basis=this.value"/></div>
+            <input ${dis} class="finput" value="${esc(d.basis)}" style="font-size:12px"
+              onchange="_tkPolicyDraft.adj['${cfg.key}'].basis=this.value"/></div>
           <div class="field" style="margin-bottom:0"><label>Formula</label>
-            <input class="finput" value="${esc(d.formula)}" style="font-size:11px;font-family:monospace"
-              onchange="ATTENDANCE_ADJ['${cfg.key}'].formula=this.value"/></div>
+            <input ${dis} class="finput" value="${esc(d.formula)}" style="font-size:11px;font-family:monospace"
+              onchange="_tkPolicyDraft.adj['${cfg.key}'].formula=this.value"/></div>
         </div>`;}).join('')}
     </div>
 
@@ -14760,31 +14942,47 @@ function renderAttendancePolicyManager(){
     <div class="section-header" style="margin-bottom:.75rem">Week Boundary</div>
     <div class="card" style="margin-bottom:0;padding:.875rem;border-top:3px solid var(--accent)">
       <div class="field" style="margin-bottom:0"><label>Start of the Week <span style="font-weight:400;color:var(--txt3);font-size:11px">weekly bucket boundary for Flexible Per Week schedules</span></label>
-        <select class="finput" style="width:160px" onchange="COMPANY.startOfWeek=this.value;render()">
-          ${WEEK_START_DAYS.map(d=>`<option value="${d.v}" ${(COMPANY.startOfWeek||'mon')===d.v?'selected':''}>${d.l}</option>`).join('')}
+        <select ${dis} class="finput" style="width:160px" onchange="_tkPolicyDraft.startOfWeek=this.value;render()">
+          ${WEEK_START_DAYS.map(d=>`<option value="${d.v}" ${v.startOfWeek===d.v?'selected':''}>${d.l}</option>`).join('')}
         </select>
         <div style="margin-top:6px;font-size:11px;color:var(--txt3)">Determines which 7-day span an employee's weekly Undertime/Overtime is totaled over, for anyone on a Flexible Per Week schedule.</div>
       </div>
     </div>`;
 }
 
+let _tkBundyDraft=null; /* uncommitted edits for Web Bundy Settings */
+function openTkBundyEdit(){_tkBundyDraft={bundyPublicAccess:COMPANY.bundyPublicAccess,bundySelfie:COMPANY.bundySelfie};render();}
+function cancelTkBundyEdit(){_tkBundyDraft=null;render();toast('Changes discarded.','info');}
+function saveTkBundyEdit(){
+  if(!_tkBundyDraft)return;
+  if(!confirm('Save changes to Web Bundy settings?'))return;
+  COMPANY.bundyPublicAccess=_tkBundyDraft.bundyPublicAccess;
+  COMPANY.bundySelfie=_tkBundyDraft.bundySelfie;
+  _tkBundyDraft=null;
+  queueSync('Company_Settings');
+  render();
+  toast('Web Bundy settings saved.','success');
+}
 function renderWebBundySettingsManager(){
-  return`
+  const editing=!!_tkBundyDraft;
+  const v=editing?_tkBundyDraft:{bundyPublicAccess:COMPANY.bundyPublicAccess,bundySelfie:COMPANY.bundySelfie};
+  const dis=editing?'':'disabled';
+  return editSaveBar(editing,'openTkBundyEdit','saveTkBundyEdit','cancelTkBundyEdit','Edit Web Bundy Settings')+`
     <div class="card" style="max-width:520px">
       <div class="card-title" style="margin-bottom:1rem">Web Bundy Settings</div>
       <div style="display:grid;gap:12px">
-        <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer">
+        <label style="display:flex;align-items:center;justify-content:space-between;${editing?'cursor:pointer':''}">
           <div><div style="font-weight:500;font-size:13px">Public Bundy Access</div>
           <div style="font-size:12px;color:var(--txt3)">Show "Web Bundy" button on login screen (no password needed)</div></div>
           <div class="toggle-wrap">
-            <input type="checkbox" ${COMPANY.bundyPublicAccess?'checked':''} style="width:auto;accent-color:var(--accent)" onchange="COMPANY.bundyPublicAccess=this.checked;queueSync('Company_Settings');render()"/>
+            <input type="checkbox" ${dis} ${v.bundyPublicAccess?'checked':''} style="width:auto;accent-color:var(--accent)" onchange="_tkBundyDraft.bundyPublicAccess=this.checked;render()"/>
           </div>
         </label>
         <div style="border-top:1px solid var(--border);padding-top:10px"></div>
-        <label style="display:flex;align-items:center;justify-content:space-between;cursor:pointer">
+        <label style="display:flex;align-items:center;justify-content:space-between;${editing?'cursor:pointer':''}">
           <div><div style="font-weight:500;font-size:13px">Require Selfie</div>
           <div style="font-size:12px;color:var(--txt3)">Camera is activated for selfie capture during bundy</div></div>
-          <input type="checkbox" ${COMPANY.bundySelfie?'checked':''} style="width:auto;accent-color:var(--accent)" onchange="COMPANY.bundySelfie=this.checked;queueSync('Company_Settings');render()"/>
+          <input type="checkbox" ${dis} ${v.bundySelfie?'checked':''} style="width:auto;accent-color:var(--accent)" onchange="_tkBundyDraft.bundySelfie=this.checked;render()"/>
         </label>
       </div>
     </div>`;
@@ -16260,10 +16458,37 @@ function applyEmpSave(reason){
 /* =========================================================
    FIELD CONFIGURATION — toggle visibility + custom fields
    ========================================================= */
+let _fieldConfigDraft=null; /* uncommitted {fieldConfig,statutoryConfig,empNumConfig} while editing */
+function openFieldConfigEdit(){
+  _fieldConfigDraft={
+    fieldConfig:JSON.parse(JSON.stringify(FIELD_CONFIG)),
+    statutoryConfig:JSON.parse(JSON.stringify(STATUTORY_CONFIG)),
+    empNumConfig:JSON.parse(JSON.stringify(EMP_NUM_CONFIG)),
+  };
+  render();
+}
+function cancelFieldConfigEdit(){_fieldConfigDraft=null;render();toast('Changes discarded.','info');}
+function saveFieldConfigEdit(){
+  if(!_fieldConfigDraft)return;
+  if(!confirm('Save changes to field configuration?'))return;
+  Object.keys(_fieldConfigDraft.fieldConfig).forEach(k=>{FIELD_CONFIG[k]=_fieldConfigDraft.fieldConfig[k];});
+  Object.assign(STATUTORY_CONFIG,_fieldConfigDraft.statutoryConfig);
+  Object.assign(EMP_NUM_CONFIG,_fieldConfigDraft.empNumConfig);
+  _fieldConfigDraft=null;
+  queueSync('Field_Config','Field_Visibility');
+  render();
+  toast('Field configuration saved.','success');
+}
 function pgFieldConfig(){
   const tabNames=['Personal','Employment','Compensation','Statutory'];
   const tabKeys=['personal','employment','compensation','statutory'];
   const key=tabKeys[tab]||'personal';
+  const editing=!!_fieldConfigDraft;
+  const STAT=editing?_fieldConfigDraft.statutoryConfig:STATUTORY_CONFIG;
+  const FCFG=editing?_fieldConfigDraft.fieldConfig:FIELD_CONFIG;
+  const ENC=editing?_fieldConfigDraft.empNumConfig:EMP_NUM_CONFIG;
+  const dis=editing?'':'disabled';
+  const editBar=editSaveBar(editing,'openFieldConfigEdit','saveFieldConfigEdit','cancelFieldConfigEdit','Edit Field Configuration');
 
   /* ── Statutory tab (tab === 3) ── */
   if(tab===3){
@@ -16273,7 +16498,7 @@ function pgFieldConfig(){
       <div class="page-sub">Configure statutory deductions shown in the Compensation tab</div></div>
     </div>
     <div class="tabs">${tabNames.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
-
+    ${editBar}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
       <!-- Statutory items list -->
       <div class="card">
@@ -16282,14 +16507,14 @@ function pgFieldConfig(){
             <div class="card-title">Deduction Items</div>
             <div style="font-size:12px;color:var(--txt3);margin-top:2px">Toggle visibility per item</div>
           </div>
-          <button class="btn btn-primary btn-sm" onclick="addStatItem()">+ Add item</button>
+          <button class="btn btn-primary btn-sm" ${dis} onclick="addStatItem()">+ Add item</button>
         </div>
         <!-- Column headers -->
         <div style="display:grid;grid-template-columns:1fr 48px 80px;gap:6px;padding:4px 6px;font-size:11px;font-weight:600;color:var(--txt3);text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid var(--border);margin-bottom:6px">
           <span>Item</span><span style="text-align:center">Show</span><span style="text-align:center">Action</span>
         </div>
         <div style="display:grid;gap:4px">
-          ${STATUTORY_CONFIG.items.map((it,i)=>`
+          ${STAT.items.map((it,i)=>`
           <div style="display:grid;grid-template-columns:1fr 48px 80px;align-items:center;gap:6px;padding:8px 6px;border-radius:7px;background:var(--bg);border:1px solid ${it.visible?'var(--border)':'transparent'}">
             <div>
               <div style="display:flex;align-items:center;gap:6px">
@@ -16300,12 +16525,12 @@ function pgFieldConfig(){
               ${it.builtin?`<div style="font-size:11px;color:var(--txt3);margin-top:2px">Built-in · auto-computed</div>`:`<div style="font-size:11px;color:var(--amber);margin-top:2px">Custom · rate not configured</div>`}
             </div>
             <div style="text-align:center">
-              <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${it.visible?'checked':''}
-                onchange="STATUTORY_CONFIG.items[${i}].visible=this.checked;queueSync('Field_Config');render();toast('Saved.','success')"/>
+              <input type="checkbox" ${editing?'':'disabled'} style="width:auto;accent-color:var(--accent)" ${it.visible?'checked':''}
+                onchange="${editing?`_fieldConfigDraft.statutoryConfig.items[${i}].visible=this.checked;render()`:''}"/>
             </div>
             <div style="display:flex;gap:4px;justify-content:center">
-              <button class="btn btn-sm" onclick="editStatItem(${i})">✎</button>
-              ${!it.builtin?`<button class="btn btn-sm btn-danger" onclick="if(confirm('Remove?')){STATUTORY_CONFIG.items.splice(${i},1);queueSync('Field_Config');render();toast('Item removed.','success')}">✕</button>`:'<div style="width:28px"></div>'}
+              <button class="btn btn-sm" ${dis} onclick="editStatItem(${i})">✎</button>
+              ${!it.builtin?`<button class="btn btn-sm btn-danger" ${dis} onclick="if(confirm('Remove?')){STATUTORY_CONFIG.items.splice(${i},1);queueSync('Field_Config');render();toast('Item removed.','success')}">✕</button>`:'<div style="width:28px"></div>'}
             </div>
           </div>`).join('')}
         </div>
@@ -16316,8 +16541,8 @@ function pgFieldConfig(){
         <div class="card" style="margin-bottom:1rem">
           <div class="card-title" style="margin-bottom:1rem">Section Settings</div>
           <div class="field"><label>Section Label</label>
-            <input class="finput" value="${esc(STATUTORY_CONFIG.sectionLabel)}" style="font-size:13px"
-              oninput="STATUTORY_CONFIG.sectionLabel=this.value"/>
+            <input class="finput" ${dis} value="${esc(STAT.sectionLabel)}" style="font-size:13px"
+              oninput="${editing?`_fieldConfigDraft.statutoryConfig.sectionLabel=this.value`:''}"/>
           </div>
           <div style="padding:10px 12px;background:var(--accent-bg);border-radius:8px;font-size:12px;color:var(--accent-txt)">
             Items marked <strong>Show ✓</strong> appear in the Compensation tab. Unmarked items are not displayed.
@@ -16343,7 +16568,7 @@ function pgFieldConfig(){
   }
 
   const defaults=DEFAULT_FIELDS[key]||[];
-  const cfg=FIELD_CONFIG[key];
+  const cfg=FCFG[key];
   const typeIcons={text:'Aa',number:'#',date:'📅',select:'▾',amount:'₱'};
   const typeColors={text:'var(--blue)',number:'var(--green)',date:'var(--amber)',select:'var(--purple)',amount:'var(--green)'};
 
@@ -16352,7 +16577,7 @@ function pgFieldConfig(){
     <div class="page-sub">Configure which fields appear in employee profiles and the Add Employee form</div></div>
   </div>
   <div class="tabs">${tabNames.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
-
+  ${editBar}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
 
     <!-- Default Fields -->
@@ -16360,8 +16585,8 @@ function pgFieldConfig(){
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
         <div class="card-title">Default Fields</div>
         <div style="display:flex;gap:5px">
-          <button class="btn btn-sm" onclick="Object.keys(FIELD_CONFIG['${key}'].visible).forEach(k=>{if(!DEFAULT_FIELDS['${key}'].find(f=>f.locked&&f.key===k))FIELD_CONFIG['${key}'].visible[k]=true;});render();toast('All fields shown.','success')">Show all</button>
-          <button class="btn btn-sm" onclick="Object.keys(FIELD_CONFIG['${key}'].visible).forEach(k=>{if(!DEFAULT_FIELDS['${key}'].find(f=>f.locked&&f.key===k))FIELD_CONFIG['${key}'].visible[k]=false;});render();toast('All fields hidden.','success')">Hide all</button>
+          <button class="btn btn-sm" ${dis} onclick="Object.keys(_fieldConfigDraft.fieldConfig['${key}'].visible).forEach(k=>{if(!DEFAULT_FIELDS['${key}'].find(f=>f.locked&&f.key===k))_fieldConfigDraft.fieldConfig['${key}'].visible[k]=true;});render()">Show all</button>
+          <button class="btn btn-sm" ${dis} onclick="Object.keys(_fieldConfigDraft.fieldConfig['${key}'].visible).forEach(k=>{if(!DEFAULT_FIELDS['${key}'].find(f=>f.locked&&f.key===k))_fieldConfigDraft.fieldConfig['${key}'].visible[k]=false;});render()">Hide all</button>
         </div>
       </div>
       <!-- Column headers -->
@@ -16376,15 +16601,15 @@ function pgFieldConfig(){
             ${f.locked?`<span style="font-size:10px;background:var(--bg);border:1px solid var(--border);padding:1px 5px;border-radius:4px;color:var(--txt3);margin-left:5px">locked</span>`:''}
           </div>
           <div style="text-align:center">
-            <label style="cursor:${f.locked?'default':'pointer'};display:inline-flex">
+            <label style="cursor:${(!f.locked&&editing)?'pointer':'default'};display:inline-flex">
               <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${cfg.visible[f.key]?'checked':''}
-                ${f.locked?'disabled':''} onchange="FIELD_CONFIG['${key}'].visible['${f.key}']=this.checked;queueSync('Field_Visibility');render();toast('Saved.','success')"/>
+                ${(f.locked||!editing)?'disabled':''} onchange="_fieldConfigDraft.fieldConfig['${key}'].visible['${f.key}']=this.checked;render()"/>
             </label>
           </div>
           <div style="text-align:center">
-            <label style="cursor:pointer;display:inline-flex" title="${f.locked?'Always required (locked)':'Toggle required'}">
+            <label style="cursor:${editing?'pointer':'default'};display:inline-flex" title="${f.locked?'Always required (locked)':'Toggle required'}">
               <input type="checkbox" style="width:auto;accent-color:var(--red)" ${cfg.required[f.key]?'checked':''}
-                ${f.locked?'disabled':''} onchange="FIELD_CONFIG['${key}'].required['${f.key}']=this.checked;queueSync('Field_Visibility');render();toast('Saved.','success')"/>
+                ${(f.locked||!editing)?'disabled':''} onchange="_fieldConfigDraft.fieldConfig['${key}'].required['${f.key}']=this.checked;render()"/>
             </label>
           </div>
         </div>`).join('')}
@@ -16395,7 +16620,7 @@ function pgFieldConfig(){
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
         <div class="card-title">Custom Fields</div>
-        <button class="btn btn-primary btn-sm" onclick="addCustomField('${key}')">+ Add field</button>
+        <button class="btn btn-primary btn-sm" ${dis} onclick="addCustomField('${key}')">+ Add field</button>
       </div>
       ${cfg.custom.length?`<div style="display:grid;gap:8px">
         ${cfg.custom.map((f,i)=>`<div style="padding:10px 12px;border-radius:9px;border:1px solid var(--border);background:var(--bg)">
@@ -16411,8 +16636,8 @@ function pgFieldConfig(){
                 ${f.type==='select'?` · Options: ${(f.options||[]).map(o=>`<span style="background:var(--border);padding:1px 5px;border-radius:3px;font-size:10px">${esc(o)}</span>`).join(' ')}`:''}</div>
             </div>
             <div style="display:flex;gap:4px;flex-shrink:0">
-              <button class="btn btn-sm" onclick="editCustomField('${key}',${i})">✎ Edit</button>
-              <button class="btn btn-sm btn-danger" onclick="if(confirm('Delete this field?')){FIELD_CONFIG['${key}'].custom.splice(${i},1);queueSync('Field_Config');render();toast('Custom field deleted.','success')}">✕</button>
+              <button class="btn btn-sm" ${dis} onclick="editCustomField('${key}',${i})">✎ Edit</button>
+              <button class="btn btn-sm btn-danger" ${dis} onclick="if(confirm('Delete this field?')){FIELD_CONFIG['${key}'].custom.splice(${i},1);queueSync('Field_Config');render();toast('Custom field deleted.','success')}">✕</button>
             </div>
           </div>
         </div>`).join('')}
@@ -16434,24 +16659,24 @@ function pgFieldConfig(){
         <div class="field"><label>Mode</label>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px">
             ${[{v:'auto',l:'Auto-generate',desc:'Sequential IDs generated automatically'},{v:'manual',l:'Manual entry',desc:'HR types the employee ID manually'}].map(m=>`
-            <label style="display:flex;gap:10px;padding:10px 12px;border-radius:8px;cursor:pointer;border:1.5px solid ${(!EMP_NUM_CONFIG.manual&&m.v==='auto')||(EMP_NUM_CONFIG.manual&&m.v==='manual')?'var(--accent)':'var(--border)'};background:${(!EMP_NUM_CONFIG.manual&&m.v==='auto')||(EMP_NUM_CONFIG.manual&&m.v==='manual')?'var(--accent-bg)':'var(--bg)'}" onclick="EMP_NUM_CONFIG.manual=(${m.v==='manual'});render()">
-              <input type="radio" style="width:auto;accent-color:var(--accent);margin-top:2px" ${(!EMP_NUM_CONFIG.manual&&m.v==='auto')||(EMP_NUM_CONFIG.manual&&m.v==='manual')?'checked':''}/>
+            <label style="display:flex;gap:10px;padding:10px 12px;border-radius:8px;${editing?'cursor:pointer':''};border:1.5px solid ${(!ENC.manual&&m.v==='auto')||(ENC.manual&&m.v==='manual')?'var(--accent)':'var(--border)'};background:${(!ENC.manual&&m.v==='auto')||(ENC.manual&&m.v==='manual')?'var(--accent-bg)':'var(--bg)'}" ${editing?`onclick="_fieldConfigDraft.empNumConfig.manual=(${m.v==='manual'});render()"`:''}>
+              <input type="radio" ${dis} style="width:auto;accent-color:var(--accent);margin-top:2px" ${(!ENC.manual&&m.v==='auto')||(ENC.manual&&m.v==='manual')?'checked':''}/>
               <div><div style="font-weight:600;font-size:13px">${m.l}</div><div style="font-size:11px;color:var(--txt3)">${m.desc}</div></div>
             </label>`).join('')}
           </div>
         </div>
       </div>
-      ${!EMP_NUM_CONFIG.manual?`<div>
+      ${!ENC.manual?`<div>
         <div class="form-row">
-          <div class="field"><label>Prefix</label><input class="finput" value="${esc(EMP_NUM_CONFIG.prefix)}" oninput="EMP_NUM_CONFIG.prefix=this.value" placeholder="EMP"/></div>
-          <div class="field"><label>Separator</label><input class="finput" value="${esc(EMP_NUM_CONFIG.separator)}" maxlength="2" oninput="EMP_NUM_CONFIG.separator=this.value" style="width:60px"/></div>
+          <div class="field"><label>Prefix</label><input class="finput" ${dis} value="${esc(ENC.prefix)}" oninput="_fieldConfigDraft.empNumConfig.prefix=this.value" placeholder="EMP"/></div>
+          <div class="field"><label>Separator</label><input class="finput" ${dis} value="${esc(ENC.separator)}" maxlength="2" oninput="_fieldConfigDraft.empNumConfig.separator=this.value" style="width:60px"/></div>
         </div>
         <div class="form-row">
-          <div class="field"><label>Digits (zero-padded)</label><input class="finput" type="number" min="1" max="8" value="${EMP_NUM_CONFIG.digits}" oninput="EMP_NUM_CONFIG.digits=parseInt(this.value)||3" style="width:80px"/></div>
-          <div class="field"><label>Next sequence</label><input class="finput" type="number" min="1" value="${EMP_NUM_CONFIG.nextSeq}" oninput="EMP_NUM_CONFIG.nextSeq=parseInt(this.value)||1" style="width:100px"/></div>
+          <div class="field"><label>Digits (zero-padded)</label><input class="finput" ${dis} type="number" min="1" max="8" value="${ENC.digits}" oninput="_fieldConfigDraft.empNumConfig.digits=parseInt(this.value)||3" style="width:80px"/></div>
+          <div class="field"><label>Next sequence</label><input class="finput" ${dis} type="number" min="1" value="${ENC.nextSeq}" oninput="_fieldConfigDraft.empNumConfig.nextSeq=parseInt(this.value)||1" style="width:100px"/></div>
         </div>
         <div style="padding:10px 12px;background:var(--accent-bg);border-radius:8px;font-size:13px;color:var(--accent-txt)">
-          Next ID: <strong style="font-family:'JetBrains Mono',monospace">${genEIDPreview()}</strong>
+          Next ID: <strong style="font-family:'JetBrains Mono',monospace">${esc(ENC.prefix)}${esc(ENC.separator)}${String(ENC.nextSeq).padStart(ENC.digits,'0')}</strong>
         </div>
       </div>`:`<div style="padding:14px;background:var(--amber-bg);border-radius:8px;font-size:13px;color:var(--amber-txt)">
         Manual mode — HR staff will type the Employee ID when adding a new employee. Make sure IDs are unique.
