@@ -1162,33 +1162,51 @@
     queueSync('Attendance_Form_Config');
   }
 
-  window.toggleAttendanceForm=function(key){
+  var _formsDraft=null; /* uncommitted [{key,visible}] while editing */
+  window.openFormsEdit=function(){
     if(!(isAdminUser(user)||isPlatformAdmin)){toast('Only administrators can change form visibility.','warning');return;}
-    var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===key;});
-    if(!form)return;
-    form.visible=!form.visible;
-    saveAttendanceFormConfig();
-    toast(form.label+' is now '+(form.visible?'visible':'hidden')+' to employees.','success');
+    _formsDraft=ATTENDANCE_FORM_CONFIG.map(function(f){return {key:f.key,visible:f.visible};});
     render();
   };
-
-  window.setAttendanceFormVisibility=function(visible){
+  window.cancelFormsEdit=function(){_formsDraft=null;render();toast('Changes discarded.','info');};
+  window.saveFormsEdit=function(){
+    if(!_formsDraft)return;
     if(!(isAdminUser(user)||isPlatformAdmin)){toast('Only administrators can change form visibility.','warning');return;}
-    ATTENDANCE_FORM_CONFIG.forEach(function(f){f.visible=!!visible;});
+    if(!confirm('Save changes to attendance form visibility?'))return;
+    _formsDraft.forEach(function(d){
+      var f=ATTENDANCE_FORM_CONFIG.find(function(x){return x.key===d.key;});
+      if(f)f.visible=d.visible;
+    });
     saveAttendanceFormConfig();
-    toast(visible?'All attendance forms are visible.':'All attendance forms are hidden.','success');
+    _formsDraft=null;
+    render();
+    toast('Attendance form visibility saved.','success');
+  };
+  window.toggleAttendanceForm=function(key){
+    if(!_formsDraft)return;
+    var d=_formsDraft.find(function(x){return x.key===key;});
+    if(d)d.visible=!d.visible;
+    render();
+  };
+  window.setAttendanceFormVisibility=function(visible){
+    if(!_formsDraft)return;
+    _formsDraft.forEach(function(d){d.visible=!!visible;});
     render();
   };
 
   function renderAttendanceFormManager(){
-    var visible=ATTENDANCE_FORM_CONFIG.filter(function(f){return f.visible;}).length;
-    return '<div class="card attendance-form-manager" style="margin-top:1rem">'+
-      '<div class="card-hd"><div><div class="card-title">Attendance Form Visibility</div><div class="card-sub">Admin-only configuration · '+visible+' of '+ATTENDANCE_FORM_CONFIG.length+' forms visible to employees</div></div>'+
-      '<div class="action-row"><button class="btn btn-sm" onclick="setAttendanceFormVisibility(true)">Show all</button><button class="btn btn-sm" onclick="setAttendanceFormVisibility(false)">Hide all</button></div></div>'+
-      '<div class="attendance-form-grid">'+ATTENDANCE_FORM_CONFIG.map(function(f){
+    var editing=!!_formsDraft;
+    var list=editing?_formsDraft.map(function(d){var f=ATTENDANCE_FORM_CONFIG.find(function(x){return x.key===d.key;});return Object.assign({},f,{visible:d.visible});}):ATTENDANCE_FORM_CONFIG;
+    var visible=list.filter(function(f){return f.visible;}).length;
+    var dis=editing?'':'disabled';
+    return editSaveBar(editing,'openFormsEdit','saveFormsEdit','cancelFormsEdit','Edit Form Visibility')+
+      '<div class="card attendance-form-manager" style="margin-top:0">'+
+      '<div class="card-hd"><div><div class="card-title">Attendance Form Visibility</div><div class="card-sub">Admin-only configuration · '+visible+' of '+list.length+' forms visible to employees</div></div>'+
+      '<div class="action-row"><button class="btn btn-sm" '+dis+' onclick="setAttendanceFormVisibility(true)">Show all</button><button class="btn btn-sm" '+dis+' onclick="setAttendanceFormVisibility(false)">Hide all</button></div></div>'+
+      '<div class="attendance-form-grid">'+list.map(function(f){
         return '<div class="attendance-form-setting '+(f.visible?'is-visible':'is-hidden')+'"><div class="attendance-form-mark">'+f.short+'</div>'+
           '<div style="flex:1"><div style="font-weight:700">'+esc(f.label)+'</div><div class="card-sub">'+esc(f.description)+'</div></div>'+
-          '<label class="attendance-switch" title="'+(f.visible?'Hide':'Show')+' '+esc(f.label)+'"><input type="checkbox" '+(f.visible?'checked':'')+' onchange="toggleAttendanceForm(\''+f.key+'\')"><span></span></label>'+
+          '<label class="attendance-switch" title="'+(f.visible?'Hide':'Show')+' '+esc(f.label)+'"><input type="checkbox" '+dis+' '+(f.visible?'checked':'')+' onchange="toggleAttendanceForm(\''+f.key+'\')"><span></span></label>'+
           '<span class="badge '+(f.visible?'b-approved':'b-rejected')+'">'+(f.visible?'Visible':'Hidden')+'</span></div>';
       }).join('')+'</div>'+
       '<div style="font-size:11px;color:var(--txt3);margin-top:12px">Visibility only affects the employee filing catalog. Existing requests and attendance records remain available to administrators and approvers.</div></div>';
