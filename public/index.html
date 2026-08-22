@@ -1433,19 +1433,13 @@ function ensureAnnualizedTaxConfig(){
   USERS.filter(e=>e.role==='employee').forEach(e=>{if(!Array.isArray(e.taxYearRecords))e.taxYearRecords=[];});
   COMPANY.basicPayProrationPolicy=Object.assign({mode:'single-basis',thresholdDays:null,reconcileThresholdRate:true},COMPANY.basicPayProrationPolicy||{});
 }
-// Partial-period basic pay (new hire / resigned / LWOP cutoff) under the company's chosen proration policy.
-// 'single-basis' derives everything from Monthly Salary, so it is always continuous — no jump at any day count.
-// 'threshold' pays the daily-rate proration below the threshold and the full Monthly Salary at/above it;
-// reconcileThresholdRate re-derives the per-day rate as Monthly Salary ÷ Period Days (instead of the
-// company/employee's general Daily Rate) so the two branches meet exactly at the threshold with no cliff.
-function computePartialPeriodBasicPay(monthlySalary,dailyRate,daysPresent,periodDays,policy){
+// Partial-period basic pay (new hire / resigned / LWOP cutoff) under the company's chosen proration
+// policy. Thin wrapper around PayrollRuleEngine.partialPeriodBasicPay — the same function the live
+// payroll engine uses for the Unpaid Absence deduction line (see payroll-rule-engine.js) — so the
+// Company Settings "Try It" calculator always matches what a real payroll run actually computes.
+function computePartialPeriodBasicPay(periodBasePay,dailyRate,daysPresent,periodDays,policy){
   policy=policy||COMPANY.basicPayProrationPolicy||{mode:'single-basis'};
-  if(policy.mode==='threshold'){
-    const threshold=policy.thresholdDays>0?policy.thresholdDays:periodDays/2;
-    const rate=policy.reconcileThresholdRate!==false?monthlySalary/periodDays:dailyRate;
-    return daysPresent<threshold?+(rate*daysPresent).toFixed(2):+monthlySalary.toFixed(2);
-  }
-  return +(monthlySalary*daysPresent/periodDays).toFixed(2);
+  return PayrollRuleEngine.partialPeriodBasicPay(periodBasePay,dailyRate,daysPresent,periodDays,policy);
 }
 function previewPartialPay(){
   const resultEl=document.getElementById('co-bp-result'),formulaEl=document.getElementById('co-bp-formula');
@@ -8202,6 +8196,17 @@ function processAdjustmentPayroll(periodId){
 
 /* ── 13TH MONTH PAYROLL RUN ─────────────────────────────────────────────── */
 /* ── Basic pay per period based on group frequency ─────────────────────── */
+/* Actual working days (Mon-Fri) within a pay period; falls back to the company's
+   configured Daily Rate Divisor when no concrete period range is available. */
+function workingDaysInPeriod(period){
+  if(period&&period.from&&period.to){
+    let days=0;
+    const d=new Date(period.from),end=new Date(period.to);
+    while(d<=end){if(d.getDay()!==0&&d.getDay()!==6)days++;d.setDate(d.getDate()+1);}
+    return days||1;
+  }
+  return COMPANY.dailyDivisor||22;
+}
 function computeBasicByPayType(emp,grp,period){
   const freq=grp.freq||'monthly';
   const pm=emp.salaryPM||(emp.rate*(emp.dailyDivisor||COMPANY.dailyDivisor||22));
@@ -8209,15 +8214,7 @@ function computeBasicByPayType(emp,grp,period){
   if(freq==='semi-monthly') return +(pm/2).toFixed(2);
   if(freq==='weekly')    return +(pm*12/52).toFixed(2);
   if(freq==='bi-weekly') return +(pm*12/26).toFixed(2);
-  if(freq==='daily'){
-    /* Count working days in period */
-    let days=0;
-    if(period&&period.from&&period.to){
-      const d=new Date(period.from),end=new Date(period.to);
-      while(d<=end){if(d.getDay()!==0&&d.getDay()!==6)days++;d.setDate(d.getDate()+1);}
-    }else{days=22;}
-    return +(emp.rate*(days||22)).toFixed(2);
-  }
+  if(freq==='daily')     return +(emp.rate*workingDaysInPeriod(period)).toFixed(2);
   return +pm.toFixed(2);
 }
 

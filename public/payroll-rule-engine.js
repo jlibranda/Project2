@@ -7,6 +7,23 @@
 
   function money(value) { return Math.round((Number(value) || 0) * 100) / 100; }
   function number(value) { return Number(value) || 0; }
+  // Partial-period basic pay under the company's configured proration policy (Company Settings ->
+  // Partial-Period Basic Pay Policy). 'single-basis' is continuous by construction -- one more day
+  // present always means proportionally more pay, no matter where in the period it falls.
+  // 'threshold' pays the daily-rate proration below a day-count threshold and the full periodBasePay
+  // at/above it; reconcileThresholdRate (on by default) re-derives the below-threshold rate as
+  // periodBasePay / periodDays for this specific cutoff instead of the employee's general daily rate,
+  // so the two branches meet exactly at the threshold with no jump in pay.
+  function partialPeriodBasicPay(periodBasePay, dailyRate, daysPresent, periodDays, policy) {
+    policy = policy || { mode: 'single-basis' };
+    periodDays = periodDays || 1;
+    if (policy.mode === 'threshold') {
+      var threshold = policy.thresholdDays > 0 ? policy.thresholdDays : periodDays / 2;
+      var rate = policy.reconcileThresholdRate !== false ? periodBasePay / periodDays : dailyRate;
+      return daysPresent < threshold ? money(rate * daysPresent) : money(periodBasePay);
+    }
+    return money(periodBasePay * daysPresent / periodDays);
+  }
   function dateApplies(rule, date) {
     return (!rule.effectiveFrom || rule.effectiveFrom <= date) && (!rule.effectiveTo || rule.effectiveTo >= date);
   }
@@ -244,7 +261,22 @@
     });
 
     var absentRule = ruleValue(rules,'ABSENCE_DEDUCTION',date,context,1);
-    if (attendance.absentDays) addLine(lines,Object.assign({code:'ABSENT',name:'Unpaid Absence',type:'deduction',quantity:attendance.absentDays,rate:daily,multiplier:absentRule.value,amount:daily*attendance.absentDays*absentRule.value,formula:'Daily rate × unpaid absence days'},lineFromRule(absentRule.rule,'ABSENCE_DEDUCTION','Labor standards / company attendance policy')));
+    if (attendance.absentDays) {
+      var prorationPolicy = input.basicPayProrationPolicy || {mode:'single-basis'};
+      var periodDaysForProration = number(input.periodDays) || configuredDailyDivisor;
+      var daysPresentForProration = Math.max(0, periodDaysForProration - attendance.absentDays);
+      var proratedBasic = partialPeriodBasicPay(baseBasic, daily, daysPresentForProration, periodDaysForProration, prorationPolicy);
+      var absentAmount = money((baseBasic - proratedBasic) * absentRule.value);
+      var absentFormula = prorationPolicy.mode === 'threshold'
+        ? 'Period Base Pay minus the threshold-rule prorated amount (Partial-Period Basic Pay Policy)'
+        : 'Period Base Pay × (unpaid absence days ÷ period days), per the Partial-Period Basic Pay Policy';
+      // lineFromRule's own `formula` (pulled from the matched PAYROLL_RULEBOOK rule) otherwise wins
+      // over the object's own formula key above, since it's spread in second -- same gotcha as the
+      // OT_REG override above, so absentFormula is set explicitly after the merge instead.
+      var absentLine=Object.assign({code:'ABSENT',name:'Unpaid Absence',type:'deduction',quantity:attendance.absentDays,rate:daily,multiplier:absentRule.value,amount:absentAmount,formula:absentFormula},lineFromRule(absentRule.rule,'ABSENCE_DEDUCTION','Labor standards / company attendance policy'));
+      absentLine.formula=absentFormula;
+      addLine(lines,absentLine);
+    }
     var lateRounding = ruleValue(rules,'LATE_ROUNDING_MINUTES',date,context,1).value;
     var lateMinutes = lateRounding>1?Math.ceil(number(attendance.lateMinutes)/lateRounding)*lateRounding:number(attendance.lateMinutes);
     // exemptLateDeduction/exemptUndertimeDeduction are a per-employee payroll exception,
@@ -286,5 +318,5 @@
       taxableCompensation:money(taxableCompensation),annualBenefitQualified:money(annualBenefitQualified),annualBenefitExempt:money(annualBenefitExempt),annualBenefitTaxable:money(annualBenefitTaxable),annualBenefitUsedBefore:money(benefitUsedBefore),annualBenefitRemaining:money(Math.max(0,benefitLimit-benefitUsedBefore-annualBenefitExempt)),employerContributions:employerContributions,employerCost:money(credits+employerContributions),statutoryFactor:statFactor
     };
   }
-  return { money:money, selectRule:selectRule, frequencyFactor:frequencyFactor, cutoffNumber:cutoffNumber, statutoryFactor:statutoryFactor, recurringAllowanceFactor:recurringAllowanceFactor, validateEmployee:validateEmployee, validateAttendance:validateAttendance, calculate:calculate };
+  return { money:money, selectRule:selectRule, frequencyFactor:frequencyFactor, cutoffNumber:cutoffNumber, statutoryFactor:statutoryFactor, recurringAllowanceFactor:recurringAllowanceFactor, partialPeriodBasicPay:partialPeriodBasicPay, validateEmployee:validateEmployee, validateAttendance:validateAttendance, calculate:calculate };
 });
