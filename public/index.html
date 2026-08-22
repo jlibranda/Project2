@@ -148,6 +148,31 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--txt);min-he
 .btn{display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:8px;font-size:13px;font-weight:500;cursor:pointer;border:1px solid var(--border);background:var(--surface);color:var(--txt);font-family:'Inter',sans-serif;transition:all .1s;white-space:nowrap}
 .btn:hover{background:var(--bg);border-color:var(--border2)}
 .btn:disabled,.btn:disabled:hover{opacity:.45;cursor:not-allowed;filter:grayscale(.3)}
+/* Browsers render disabled checkboxes with a washed-out fill regardless of accent-color,
+   which makes an already-checked box in a read-only "view before Edit" screen nearly
+   impossible to tell apart from an unchecked one. Scoped to :disabled:checked only — every
+   enabled checkbox and every disabled-but-unchecked checkbox elsewhere in the app keeps its
+   normal native rendering. */
+input[type=checkbox]:disabled{cursor:default}
+input[type=checkbox]:disabled:checked{
+  appearance:none;-webkit-appearance:none;
+  width:16px !important;height:16px !important;
+  background:var(--accent) !important;
+  border:1.5px solid var(--accent) !important;
+  border-radius:4px;
+  position:relative;
+  opacity:1 !important;
+  flex-shrink:0;
+}
+input[type=checkbox]:disabled:checked::after{
+  content:'';
+  position:absolute;
+  left:5px;top:1px;
+  width:4px;height:8px;
+  border:solid #fff;
+  border-width:0 2px 2px 0;
+  transform:rotate(45deg);
+}
 .btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
 .btn-primary:hover{background:#4338ca}
 .btn-primary:disabled,.btn-primary:disabled:hover{background:var(--accent)}
