@@ -7842,7 +7842,7 @@ function computeFinalPay(e,options={}){
   const nonTaxable13th=benefitAllocation.exempt;
   const taxableFinal=+(proratedLastMonth+Math.max(0,t13Pro-nonTaxable13th)).toFixed(2);
   const taxProfileIssues=BIRAnnualizationCore.validateProfile(taxProfile,Number(releaseYear),COMPANY.taxPolicy?.requireConfirmedTaxRecord!==false).concat(window.BIRTaxVersionCore?BIRTaxVersionCore.validatePreviousEmployer(taxProfile):[]);
-  const annualized=BIRAnnualizationCore.reconcile({priorTaxable,finalTaxable,currentTaxable:taxableFinal,ytdTaxable:priorTaxable,ytdTaxWithheld:priorTaxWithheld,openingYtdTaxable:taxProfile.openingYtdTaxable,openingYtdTaxWithheld:taxProfile.openingYtdTaxWithheld,previousEmployerTaxable:taxProfile.previousEmployerTaxable,previousEmployerTaxWithheld:taxProfile.previousEmployerTaxWithheld,taxFunction:income=>birTaxByFreq(income,'annual',releaseDate)});
+  const annualized=BIRAnnualizationCore.reconcile({currentTaxable:taxableFinal,ytdTaxable:priorTaxable,ytdTaxWithheld:priorTaxWithheld,openingYtdTaxable:taxProfile.openingYtdTaxable,openingYtdTaxWithheld:taxProfile.openingYtdTaxWithheld,previousEmployerTaxable:taxProfile.previousEmployerTaxable,previousEmployerTaxWithheld:taxProfile.previousEmployerTaxWithheld,taxFunction:income=>birTaxByFreq(income,'annual',releaseDate)});
   const earnings=[
     {label:'Last Salary (prorated)',amount:proratedLastMonth},
     {label:'13th Month Pay (pro-rated)',amount:t13Pro},
