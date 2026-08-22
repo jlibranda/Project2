@@ -1431,7 +1431,6 @@ function ensureAnnualizedTaxConfig(){
   COMPANY.taxPolicy=Object.assign({annualizationEnabled:true,autoSuggestDecember:true,requireConfirmedTaxRecord:true,taxTableVersion:'BIR RR 11-2018 Annex E · 2023 onwards'},COMPANY.taxPolicy||{});
   PAY_PERIODS.forEach(p=>{if(!p.taxEvent)p.taxEvent='regular';if(!p.taxYear)p.taxYear=Number(String(p.bir1601CMonth||p.to||today()).slice(0,4));});
   USERS.filter(e=>e.role==='employee').forEach(e=>{if(!Array.isArray(e.taxYearRecords))e.taxYearRecords=[];});
-  COMPANY.basicPayProrationPolicy=Object.assign({mode:'single-basis',thresholdDays:null},COMPANY.basicPayProrationPolicy||{});
 }
 function taxEventLabel(value){return {'regular':'Regular withholding','annualized-year-end':'Annualized · Year-end','annualized-final-pay':'Annualized · Final pay'}[value]||'Regular withholding';}
 function employeeTaxRecord(emp,year,create=false){
@@ -14630,22 +14629,6 @@ function pgCompanySettings(){
     </div>
 
     <div class="card">
-      <div class="card-title" style="margin-bottom:4px">Partial-Period Basic Pay Policy</div>
-      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">How basic pay is prorated for an incomplete cutoff — new hire, resignation, or an unpaid-leave period. Applies per pay run, so it works the same for a monthly or a semi-monthly cutoff.</div>
-      <div class="field">
-        <label style="display:flex;align-items:center;justify-content:space-between;gap:12px">
-          <span><strong style="font-size:12px">Explain as "Days Worked" (Split by Day Count)</strong><br><span style="font-size:10.5px;color:var(--txt3)">Same computation, same peso result either way — every absence is always charged proportionally, no matter which side is active. This only changes how the formula reads in the payslip and audit trail. <strong>Deactivated:</strong> "Period Base Pay × (Days Present ÷ Period Days)." <strong>Activated:</strong> "days present × daily rate" at/below a configurable day count, or "Period Base Pay minus days absent × daily rate" above it — easier to explain to an employee, at the cost of a possible one-centavo rounding difference.</span></span>
-          <input id="co-bp-mode" type="checkbox" style="width:auto;accent-color:var(--accent);flex:none" ${COMPANY.basicPayProrationPolicy?.mode==='split-basis'?'checked':''} onchange="document.getElementById('co-bp-threshold-row').style.display=this.checked?'':'none';"/>
-        </label>
-      </div>
-      <div id="co-bp-threshold-row" style="display:${COMPANY.basicPayProrationPolicy?.mode==='split-basis'?'':'none'}">
-        <div class="field"><label id="co-bp-threshold-label">Split Point (days present) <span style="font-weight:400;color:var(--txt3);font-size:11px">leave blank to auto-use half the period</span></label>
-          <input id="co-bp-threshold" class="finput" type="number" min="0" step="0.5" value="${COMPANY.basicPayProrationPolicy?.thresholdDays||''}" placeholder="auto" style="width:120px"/>
-        </div>
-      </div>
-    </div>
-
-    <div class="card">
       <div class="card-title" style="margin-bottom:4px">BIR Tax & Annualization Policy</div>
       <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">Controls year-end and termination reconciliation. The payroll calendar selects the tax event for each run.</div>
       <label style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px"><span><strong style="font-size:12px">Enable annualized withholding</strong><br><span style="font-size:10px;color:var(--txt3)">Allows BIR year-end and final-pay annualization events.</span></span><input id="co-tax-annualized" type="checkbox" style="width:auto;accent-color:var(--accent)" ${COMPANY.taxPolicy.annualizationEnabled?'checked':''}/></label>
@@ -14794,9 +14777,6 @@ function saveCompany(){
   COMPANY.taxPolicy.annualizationEnabled=document.getElementById('co-tax-annualized')?.checked??COMPANY.taxPolicy.annualizationEnabled;
   COMPANY.taxPolicy.autoSuggestDecember=document.getElementById('co-tax-december')?.checked??COMPANY.taxPolicy.autoSuggestDecember;
   COMPANY.taxPolicy.requireConfirmedTaxRecord=document.getElementById('co-tax-confirm')?.checked??COMPANY.taxPolicy.requireConfirmedTaxRecord;
-  COMPANY.basicPayProrationPolicy.mode=document.getElementById('co-bp-mode')?.checked?'split-basis':'single-basis';
-  const bpThreshold=document.getElementById('co-bp-threshold')?.value;
-  COMPANY.basicPayProrationPolicy.thresholdDays=bpThreshold?Number(bpThreshold):null;
   if(_pendingBrand){
     Object.assign(COMPANY,_pendingBrand);
     _pendingBrand=null;
