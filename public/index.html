@@ -2852,7 +2852,25 @@ function compute(emp,pr,la,ab,otH,ndH,extras){
     extraEarnings,extraDeductions,taxableExtras,nonTaxExtras,deminimisTotal,
     extras:extras||[]};
 }
-function thirteenth(emp){const monthly=Number(emp.salaryPM||emp.rate*(emp.dailyDivisor||COMPANY.dailyDivisor||22));return +monthly.toFixed(2);}
+function isLeapYear(y){return (y%4===0&&y%100!==0)||y%400===0;}
+function daysBetweenInclusive(from,to){return Math.round((new Date(to+'T00:00:00Z')-new Date(from+'T00:00:00Z'))/86400000)+1;}
+function unpaidAbsenceDaysInRange(empId,from,to){return ATT.filter(a=>a.eid===empId&&a.status==='absent'&&a.date>=from&&a.date<=to).length;}
+// DOLE PD 851: 13th month pay = total basic salary actually earned in the calendar year ÷ 12,
+// expressed here as monthly salary × (calendar days actually earned, minus unpaid absences) ÷ days in year.
+function earnedThirteenthMonth(emp,periodEnd){
+  const monthly=Number(emp.salaryPM||emp.rate*(emp.dailyDivisor||COMPANY.dailyDivisor||22));
+  const year=Number(String(periodEnd).slice(0,4));
+  const yearStart=year+'-01-01';
+  const hired=emp.hired||yearStart;
+  const periodStart=hired>yearStart?hired:yearStart;
+  if(periodStart>periodEnd)return 0;
+  const totalDays=daysBetweenInclusive(periodStart,periodEnd);
+  const absentDays=unpaidAbsenceDaysInRange(emp.id,periodStart,periodEnd);
+  const payableDays=Math.max(0,totalDays-absentDays);
+  const yearDays=isLeapYear(year)?366:365;
+  return +(monthly*payableDays/yearDays).toFixed(2);
+}
+function thirteenth(emp,asOfDate){return earnedThirteenthMonth(emp,asOfDate||(String(today()).slice(0,4)+'-12-31'));}
 
 /* ========== CLAUDE ========== */
 async function askClaude(q){
@@ -7313,7 +7331,8 @@ function pgPayroll(){
     if(!window._13period&&openPeriods.length)window._13period=openPeriods[0].id;
     const selected13Period=openPeriods.find(p=>p.id===Number(window._13period))||openPeriods[0];
     const benefitYear=Number(String(selected13Period?.taxYear||selected13Period?.bir1601CMonth||selected13Period?.to||today()).slice(0,4));
-    const totalT13=emps.reduce((s,e)=>s+thirteenth(e),0);
+    const t13PeriodEnd=e=>releaseType==='pro-rated'?(e.effectiveTermDate||benefitYear+'-12-31'):benefitYear+'-12-31';
+    const totalT13=emps.reduce((s,e)=>s+earnedThirteenthMonth(e,t13PeriodEnd(e)),0);
     const taxExemptLimit=90000;
     body=`
     <div style="padding:10px 14px;background:var(--amber-bg);border-radius:8px;font-size:12px;color:var(--amber-txt);margin-bottom:1rem;border-left:3px solid var(--amber)">
@@ -7328,10 +7347,10 @@ function pgPayroll(){
     </div>
     <table><thead><tr><th>Employee</th><th>Position</th><th>Daily Rate</th><th>Monthly Basic</th><th>Months Worked</th><th>13th Month</th><th>Tax-Exempt Limit</th><th>Taxable Excess</th></tr></thead>
     <tbody>${emps.map(e=>{
-      const ms=e.rate*(COMPANY.dailyDivisor||22);
+      const ms=Number(e.salaryPM||e.rate*(e.dailyDivisor||COMPANY.dailyDivisor||22));
       const hired=e.hired||'2024-01-01';
       const monthsWorked=Math.min(12,Math.max(1,Math.ceil((new Date(benefitYear+'-12-31')-new Date(hired))/(30.44*24*3600*1000))));
-      const t13=releaseType==='pro-rated'?+(ms*monthsWorked/12).toFixed(2):thirteenth(e);
+      const t13=earnedThirteenthMonth(e,t13PeriodEnd(e));
       const taxProfile=employeeTaxRecord(e,benefitYear,false)||{};const ytdBenefits=employeeYtdBenefitSnapshot(e.id,benefitYear,selected13Period?.bir1601CMonth||'');
       const allocation=BIRTaxVersionCore.allocateAnnualBenefit({limit:taxExemptLimit,previousEmployerNonTaxable:taxProfile.previousEmployerNonTaxableBenefits,currentEmployerYtdNonTaxable:ytdBenefits.exempt,currentQualified:t13});
       const excess=allocation.taxable;
@@ -7349,7 +7368,7 @@ function pgPayroll(){
       <td colspan="5" style="text-align:right;font-weight:700;padding:10px 12px;font-size:13px">TOTAL 13TH MONTH:</td>
       <td class="mono" style="font-weight:800;color:var(--green);font-size:14px;padding:10px 12px">${fmt(totalT13)}</td>
       <td></td>
-      <td class="mono" style="font-weight:700;color:var(--red);padding:10px 12px">${fmt(emps.reduce((s,e)=>{const profile=employeeTaxRecord(e,benefitYear,false)||{},ytd=employeeYtdBenefitSnapshot(e.id,benefitYear,selected13Period?.bir1601CMonth||'');return s+BIRTaxVersionCore.allocateAnnualBenefit({limit:taxExemptLimit,previousEmployerNonTaxable:profile.previousEmployerNonTaxableBenefits,currentEmployerYtdNonTaxable:ytd.exempt,currentQualified:thirteenth(e)}).taxable;},0))}</td>
+      <td class="mono" style="font-weight:700;color:var(--red);padding:10px 12px">${fmt(emps.reduce((s,e)=>{const profile=employeeTaxRecord(e,benefitYear,false)||{},ytd=employeeYtdBenefitSnapshot(e.id,benefitYear,selected13Period?.bir1601CMonth||'');return s+BIRTaxVersionCore.allocateAnnualBenefit({limit:taxExemptLimit,previousEmployerNonTaxable:profile.previousEmployerNonTaxableBenefits,currentEmployerYtdNonTaxable:ytd.exempt,currentQualified:earnedThirteenthMonth(e,t13PeriodEnd(e))}).taxable;},0))}</td>
     </tr></tfoot></table>`;
   }
 
@@ -7820,15 +7839,11 @@ function computeFinalPay(e,options={}){
   const releaseDate=options.releaseDate||today();
   const releaseYear=releaseDate.slice(0,4);
   const ms=e.rate*(COMPANY.dailyDivisor||22);
-  const hired=e.hired||'2024-01-01';
   const separated=e.effectiveTermDate||today();
   // Days in last partial month
   const lastMonthDays=Math.max(1,Math.ceil((new Date(separated)-new Date(separated.slice(0,8)+'01'))/(24*3600*1000)));
   const proratedLastMonth=+(ms*(lastMonthDays/30)).toFixed(2);
-  const benefitYear=separated.slice(0,4),benefitYearStart=benefitYear+'-01-01';
-  const benefitServiceStart=hired>benefitYearStart?hired:benefitYearStart;
-  const monthsWorked=Math.min(12,Math.max(1,Math.ceil((new Date(separated)-new Date(benefitServiceStart))/(30.44*24*3600*1000))));
-  const t13Pro=+(ms*monthsWorked/12).toFixed(2);
+  const t13Pro=earnedThirteenthMonth(e,separated);
   const leaveConversion=5*e.rate; // private employee; within RR 29-2025 12-day de minimis ceiling
   const loans=LOANS.filter(l=>l.eid===e.id&&l.status==='active').reduce((s,l)=>s+(l.balance||0),0);
   const priorRuns=PAYROLLS.filter(r=>(r.status==='approved'||r.status==='locked')&&String(r.bir1601CMonth||reportingMonthFromDate(r.releaseDate||r.on||r.to)).startsWith(releaseYear)&&String(r.releaseDate||r.on||r.to)<=releaseDate);
@@ -8726,10 +8741,8 @@ function stage13thMonthPayroll(){
   let added=0;
   employees.forEach(emp=>{
     if(PAYROLL_ADJ.some(a=>a.empId===emp.id&&a.payPeriodId===period.id&&a.payItemCode==='13TH'&&a.processStatus!=='voided'))return;
-    const monthly=Number(emp.salaryPM||emp.rate*(emp.dailyDivisor||COMPANY.dailyDivisor||22));
-    const hired=emp.hired||taxYear+'-01-01';
-    const monthsWorked=Math.min(12,Math.max(1,Math.ceil((new Date(taxYear+'-12-31')-new Date(hired))/(30.44*24*3600*1000))));
-    const amount=(window._13type==='pro-rated'?monthly*monthsWorked/12:thirteenth(emp));
+    const periodEnd=window._13type==='pro-rated'?(emp.effectiveTermDate||taxYear+'-12-31'):taxYear+'-12-31';
+    const amount=earnedThirteenthMonth(emp,periodEnd);
     PAYROLL_ADJ.push({id:nAdj++,empId:emp.id,adjType:type.name,payItemCode:type.code,category:type.cat,taxable:false,benefitTreatment:'annual-benefit-bucket',direction:'income',amount:+amount.toFixed(2),reason:'13th month pay · '+taxYear+' · '+(window._13type||'year-end'),effectiveDate:period.releaseDate||period.to,payPeriodId:period.id,payPeriodLabel:period.label,addedBy:user.name,status:'ready',processStatus:'ready',createdAt:today()});added++;
   });
   if(!added){toast('13th month entries already exist for this payroll period.','warning');return;}
