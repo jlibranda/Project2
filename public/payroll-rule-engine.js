@@ -14,20 +14,23 @@
   // configurable day count (reuses thresholdDays as the split point): at/below the split, pay is
   // "days present x daily rate"; above it, pay is "period base pay minus days absent x daily rate".
   // It keeps deducting on both sides of the split -- it's just anchored from a different side of the
-  // calculation depending on attendance level. With reconcileThresholdRate on (recommended) it matches
-  // single-basis to the peso, aside from a possible one-centavo rounding difference from rounding the
-  // daily rate before multiplying.
+  // calculation depending on attendance level. The rate used is always periodBasePay / periodDays for
+  // this specific cutoff (never the employee's general Daily Rate, which can be calibrated on a
+  // different divisor) so it matches single-basis to the peso, aside from a possible one-centavo
+  // rounding difference from rounding the daily rate before multiplying.
   // A prior 'threshold' mode (full periodBasePay at/above a day-count threshold, zero further
   // deduction for any remaining absences past it) was removed: it created a "forgiveness cliff" where
   // an employee just past the threshold could take home the same pay as one with near-perfect
   // attendance, which doesn't reflect actual days worked. Any stored policy still referencing
-  // 'threshold' falls through to single-basis below rather than erroring.
+  // 'threshold' falls through to single-basis below rather than erroring. A prior
+  // reconcileThresholdRate toggle (letting the split-basis rate fall back to the employee's general
+  // Daily Rate) was removed for the same reason -- it only ever reintroduced that same mismatch risk.
   function partialPeriodBasicPay(periodBasePay, dailyRate, daysPresent, periodDays, policy) {
     policy = policy || { mode: 'single-basis' };
     periodDays = periodDays || 1;
     if (policy.mode === 'split-basis') {
       var splitPoint = policy.thresholdDays > 0 ? policy.thresholdDays : periodDays / 2;
-      var splitRate = money(policy.reconcileThresholdRate !== false ? periodBasePay / periodDays : dailyRate);
+      var splitRate = money(periodBasePay / periodDays);
       if (daysPresent <= splitPoint) return money(splitRate * daysPresent);
       var daysAbsent = periodDays - daysPresent;
       return money(periodBasePay - money(splitRate * daysAbsent));

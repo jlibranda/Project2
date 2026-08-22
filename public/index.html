@@ -1431,7 +1431,7 @@ function ensureAnnualizedTaxConfig(){
   COMPANY.taxPolicy=Object.assign({annualizationEnabled:true,autoSuggestDecember:true,requireConfirmedTaxRecord:true,taxTableVersion:'BIR RR 11-2018 Annex E · 2023 onwards'},COMPANY.taxPolicy||{});
   PAY_PERIODS.forEach(p=>{if(!p.taxEvent)p.taxEvent='regular';if(!p.taxYear)p.taxYear=Number(String(p.bir1601CMonth||p.to||today()).slice(0,4));});
   USERS.filter(e=>e.role==='employee').forEach(e=>{if(!Array.isArray(e.taxYearRecords))e.taxYearRecords=[];});
-  COMPANY.basicPayProrationPolicy=Object.assign({mode:'single-basis',thresholdDays:null,reconcileThresholdRate:true},COMPANY.basicPayProrationPolicy||{});
+  COMPANY.basicPayProrationPolicy=Object.assign({mode:'single-basis',thresholdDays:null},COMPANY.basicPayProrationPolicy||{});
 }
 function taxEventLabel(value){return {'regular':'Regular withholding','annualized-year-end':'Annualized · Year-end','annualized-final-pay':'Annualized · Final pay'}[value]||'Regular withholding';}
 function employeeTaxRecord(emp,year,create=false){
@@ -14642,10 +14642,6 @@ function pgCompanySettings(){
         <div class="field"><label id="co-bp-threshold-label">Split Point (days present) <span style="font-weight:400;color:var(--txt3);font-size:11px">leave blank to auto-use half the period</span></label>
           <input id="co-bp-threshold" class="finput" type="number" min="0" step="0.5" value="${COMPANY.basicPayProrationPolicy?.thresholdDays||''}" placeholder="auto" style="width:120px"/>
         </div>
-        <label style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:4px">
-          <span><strong style="font-size:12px">Reconcile daily rate to the period</strong><br><span id="co-bp-reconcile-desc" style="font-size:10px;color:var(--txt3)">Recommended. Derives the daily rate as Period Base Pay ÷ Period Days for that cutoff, instead of the employee's general Daily Rate — so both sides of the split match the deactivated computation to the peso (aside from rounding).</span></span>
-          <input id="co-bp-reconcile" type="checkbox" style="width:auto;accent-color:var(--accent)" ${COMPANY.basicPayProrationPolicy?.reconcileThresholdRate!==false?'checked':''}/>
-        </label>
       </div>
     </div>
 
@@ -14801,7 +14797,6 @@ function saveCompany(){
   COMPANY.basicPayProrationPolicy.mode=document.getElementById('co-bp-mode')?.checked?'split-basis':'single-basis';
   const bpThreshold=document.getElementById('co-bp-threshold')?.value;
   COMPANY.basicPayProrationPolicy.thresholdDays=bpThreshold?Number(bpThreshold):null;
-  COMPANY.basicPayProrationPolicy.reconcileThresholdRate=document.getElementById('co-bp-reconcile')?.checked??COMPANY.basicPayProrationPolicy.reconcileThresholdRate;
   if(_pendingBrand){
     Object.assign(COMPANY,_pendingBrand);
     _pendingBrand=null;
