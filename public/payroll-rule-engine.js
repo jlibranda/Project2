@@ -11,9 +11,17 @@
   // Partial-Period Basic Pay Policy). 'single-basis' is continuous by construction -- one more day
   // present always means proportionally more pay, no matter where in the period it falls.
   // 'threshold' pays the daily-rate proration below a day-count threshold and the full periodBasePay
-  // at/above it; reconcileThresholdRate (on by default) re-derives the below-threshold rate as
-  // periodBasePay / periodDays for this specific cutoff instead of the employee's general daily rate,
-  // so the two branches meet exactly at the threshold with no jump in pay.
+  // at/above it (a "forgiveness cliff" -- once at/above the threshold, further absences within the
+  // period cost nothing more); reconcileThresholdRate (on by default) re-derives the below-threshold
+  // rate as periodBasePay / periodDays for this specific cutoff instead of the employee's general
+  // daily rate, so the two branches meet exactly at the threshold with no jump in pay.
+  // 'split-basis' is an easier-to-explain framing of the SAME math as single-basis, split at a
+  // configurable day count (reuses thresholdDays as the split point): at/below the split, pay is
+  // "days present x daily rate"; above it, pay is "period base pay minus days absent x daily rate".
+  // Unlike 'threshold' it never stops charging for absences -- it keeps deducting on both sides of
+  // the split, it's just anchored from a different side of the calculation depending on attendance
+  // level. With reconcileThresholdRate on (recommended) it matches single-basis to the peso, aside
+  // from a possible one-centavo rounding difference from rounding the daily rate before multiplying.
   function partialPeriodBasicPay(periodBasePay, dailyRate, daysPresent, periodDays, policy) {
     policy = policy || { mode: 'single-basis' };
     periodDays = periodDays || 1;
@@ -21,6 +29,13 @@
       var threshold = policy.thresholdDays > 0 ? policy.thresholdDays : periodDays / 2;
       var rate = policy.reconcileThresholdRate !== false ? periodBasePay / periodDays : dailyRate;
       return daysPresent < threshold ? money(rate * daysPresent) : money(periodBasePay);
+    }
+    if (policy.mode === 'split-basis') {
+      var splitPoint = policy.thresholdDays > 0 ? policy.thresholdDays : periodDays / 2;
+      var splitRate = money(policy.reconcileThresholdRate !== false ? periodBasePay / periodDays : dailyRate);
+      if (daysPresent <= splitPoint) return money(splitRate * daysPresent);
+      var daysAbsent = periodDays - daysPresent;
+      return money(periodBasePay - money(splitRate * daysAbsent));
     }
     return money(periodBasePay * daysPresent / periodDays);
   }
@@ -269,6 +284,8 @@
       var absentAmount = money((baseBasic - proratedBasic) * absentRule.value);
       var absentFormula = prorationPolicy.mode === 'threshold'
         ? 'Period Base Pay minus the threshold-rule prorated amount (Partial-Period Basic Pay Policy)'
+        : prorationPolicy.mode === 'split-basis'
+        ? 'Days present × daily rate at/below the split, or Period Base Pay minus days absent × daily rate above it (Partial-Period Basic Pay Policy)'
         : 'Period Base Pay × (unpaid absence days ÷ period days), per the Partial-Period Basic Pay Policy';
       // lineFromRule's own `formula` (pulled from the matched PAYROLL_RULEBOOK rule) otherwise wins
       // over the object's own formula key above, since it's spread in second -- same gotcha as the
