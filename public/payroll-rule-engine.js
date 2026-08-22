@@ -10,26 +10,21 @@
   // Partial-period basic pay under the company's configured proration policy (Company Settings ->
   // Partial-Period Basic Pay Policy). 'single-basis' is continuous by construction -- one more day
   // present always means proportionally more pay, no matter where in the period it falls.
-  // 'threshold' pays the daily-rate proration below a day-count threshold and the full periodBasePay
-  // at/above it (a "forgiveness cliff" -- once at/above the threshold, further absences within the
-  // period cost nothing more); reconcileThresholdRate (on by default) re-derives the below-threshold
-  // rate as periodBasePay / periodDays for this specific cutoff instead of the employee's general
-  // daily rate, so the two branches meet exactly at the threshold with no jump in pay.
   // 'split-basis' is an easier-to-explain framing of the SAME math as single-basis, split at a
   // configurable day count (reuses thresholdDays as the split point): at/below the split, pay is
   // "days present x daily rate"; above it, pay is "period base pay minus days absent x daily rate".
-  // Unlike 'threshold' it never stops charging for absences -- it keeps deducting on both sides of
-  // the split, it's just anchored from a different side of the calculation depending on attendance
-  // level. With reconcileThresholdRate on (recommended) it matches single-basis to the peso, aside
-  // from a possible one-centavo rounding difference from rounding the daily rate before multiplying.
+  // It keeps deducting on both sides of the split -- it's just anchored from a different side of the
+  // calculation depending on attendance level. With reconcileThresholdRate on (recommended) it matches
+  // single-basis to the peso, aside from a possible one-centavo rounding difference from rounding the
+  // daily rate before multiplying.
+  // A prior 'threshold' mode (full periodBasePay at/above a day-count threshold, zero further
+  // deduction for any remaining absences past it) was removed: it created a "forgiveness cliff" where
+  // an employee just past the threshold could take home the same pay as one with near-perfect
+  // attendance, which doesn't reflect actual days worked. Any stored policy still referencing
+  // 'threshold' falls through to single-basis below rather than erroring.
   function partialPeriodBasicPay(periodBasePay, dailyRate, daysPresent, periodDays, policy) {
     policy = policy || { mode: 'single-basis' };
     periodDays = periodDays || 1;
-    if (policy.mode === 'threshold') {
-      var threshold = policy.thresholdDays > 0 ? policy.thresholdDays : periodDays / 2;
-      var rate = policy.reconcileThresholdRate !== false ? periodBasePay / periodDays : dailyRate;
-      return daysPresent < threshold ? money(rate * daysPresent) : money(periodBasePay);
-    }
     if (policy.mode === 'split-basis') {
       var splitPoint = policy.thresholdDays > 0 ? policy.thresholdDays : periodDays / 2;
       var splitRate = money(policy.reconcileThresholdRate !== false ? periodBasePay / periodDays : dailyRate);
@@ -282,9 +277,7 @@
       var daysPresentForProration = Math.max(0, periodDaysForProration - attendance.absentDays);
       var proratedBasic = partialPeriodBasicPay(baseBasic, daily, daysPresentForProration, periodDaysForProration, prorationPolicy);
       var absentAmount = money((baseBasic - proratedBasic) * absentRule.value);
-      var absentFormula = prorationPolicy.mode === 'threshold'
-        ? 'Period Base Pay minus the threshold-rule prorated amount (Partial-Period Basic Pay Policy)'
-        : prorationPolicy.mode === 'split-basis'
+      var absentFormula = prorationPolicy.mode === 'split-basis'
         ? 'Days present × daily rate at/below the split, or Period Base Pay minus days absent × daily rate above it (Partial-Period Basic Pay Policy)'
         : 'Period Base Pay × (unpaid absence days ÷ period days), per the Partial-Period Basic Pay Policy';
       // lineFromRule's own `formula` (pulled from the matched PAYROLL_RULEBOOK rule) otherwise wins
