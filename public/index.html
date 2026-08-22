@@ -1444,7 +1444,7 @@ function computePartialPeriodBasicPay(periodBasePay,dailyRate,daysPresent,period
 function previewPartialPay(){
   const resultEl=document.getElementById('co-bp-result'),formulaEl=document.getElementById('co-bp-formula');
   if(!resultEl)return;
-  const mode=document.getElementById('co-bp-mode')?.value||'single-basis';
+  const mode=document.getElementById('co-bp-mode')?.checked?'split-basis':'single-basis';
   const salary=Number(document.getElementById('co-bp-salary')?.value)||0;
   const rate=Number(document.getElementById('co-bp-rate')?.value)||0;
   const periodDays=Number(document.getElementById('co-bp-period')?.value)||1;
@@ -1464,13 +1464,6 @@ function previewPartialPay(){
   }else{
     formulaEl.textContent=`${fmt(salary)} (period base) × ${daysPresent} ÷ ${periodDays} period days`;
   }
-}
-function updateBpModeLabels(){
-  const label=document.getElementById('co-bp-threshold-label');
-  const desc=document.getElementById('co-bp-reconcile-desc');
-  if(!label)return;
-  label.innerHTML='Split Point (days present) <span style="font-weight:400;color:var(--txt3);font-size:11px">leave blank to auto-use half the period</span>';
-  desc.textContent='Recommended. Derives the daily rate as Period Base Pay ÷ Period Days for that cutoff, instead of the employee\'s general Daily Rate — so both sides of the split match single-basis to the peso (aside from rounding).';
 }
 function taxEventLabel(value){return {'regular':'Regular withholding','annualized-year-end':'Annualized · Year-end','annualized-final-pay':'Annualized · Final pay'}[value]||'Regular withholding';}
 function employeeTaxRecord(emp,year,create=false){
@@ -14671,19 +14664,18 @@ function pgCompanySettings(){
     <div class="card">
       <div class="card-title" style="margin-bottom:4px">Partial-Period Basic Pay Policy</div>
       <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">How basic pay is prorated for an incomplete cutoff — new hire, resignation, or an unpaid-leave period. Applies per pay run, so it works the same for a monthly or a semi-monthly cutoff.</div>
-      <div class="field"><label>Proration Method</label>
-        <select id="co-bp-mode" class="finput" onchange="document.getElementById('co-bp-threshold-row').style.display=this.value==='split-basis'?'':'none';updateBpModeLabels();previewPartialPay();">
-          <option value="single-basis" ${(COMPANY.basicPayProrationPolicy?.mode||'single-basis')==='single-basis'?'selected':''}>Single-basis — Period Base Pay × (Days Present ÷ Period Days)</option>
-          <option value="split-basis" ${COMPANY.basicPayProrationPolicy?.mode==='split-basis'?'selected':''}>Split by Day Count — days present × daily rate, or Period Base Pay minus days absent × daily rate</option>
-        </select>
-        <div style="font-size:10.5px;color:var(--txt3);margin-top:4px">Both compute the same peso amount (aside from a possible one-centavo rounding difference) — every absence is always charged, proportional to how much of the period was actually missed. Split by Day Count is just an easier way to explain the math to an employee ("paid for days worked" vs. "full pay minus days absent"), split at a configurable day count.</div>
+      <div class="field">
+        <label style="display:flex;align-items:center;justify-content:space-between;gap:12px">
+          <span><strong style="font-size:12px">Explain as "Days Worked" (Split by Day Count)</strong><br><span style="font-size:10.5px;color:var(--txt3)">Same computation, same peso result either way — every absence is always charged proportionally, no matter which side is active. This only changes how the formula reads in the payslip and audit trail. <strong>Deactivated:</strong> "Period Base Pay × (Days Present ÷ Period Days)." <strong>Activated:</strong> "days present × daily rate" at/below a configurable day count, or "Period Base Pay minus days absent × daily rate" above it — easier to explain to an employee, at the cost of a possible one-centavo rounding difference.</span></span>
+          <input id="co-bp-mode" type="checkbox" style="width:auto;accent-color:var(--accent);flex:none" ${COMPANY.basicPayProrationPolicy?.mode==='split-basis'?'checked':''} onchange="document.getElementById('co-bp-threshold-row').style.display=this.checked?'':'none';previewPartialPay();"/>
+        </label>
       </div>
       <div id="co-bp-threshold-row" style="display:${COMPANY.basicPayProrationPolicy?.mode==='split-basis'?'':'none'}">
-        <div class="field"><label id="co-bp-threshold-label">Threshold (days present) <span style="font-weight:400;color:var(--txt3);font-size:11px">leave blank to auto-use half the period</span></label>
+        <div class="field"><label id="co-bp-threshold-label">Split Point (days present) <span style="font-weight:400;color:var(--txt3);font-size:11px">leave blank to auto-use half the period</span></label>
           <input id="co-bp-threshold" class="finput" type="number" min="0" step="0.5" value="${COMPANY.basicPayProrationPolicy?.thresholdDays||''}" placeholder="auto" style="width:120px" oninput="previewPartialPay()"/>
         </div>
         <label style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:4px">
-          <span><strong style="font-size:12px">Reconcile daily rate to the period</strong><br><span id="co-bp-reconcile-desc" style="font-size:10px;color:var(--txt3)">Recommended. Derives the below-threshold rate as Period Base Pay ÷ Period Days for that cutoff, instead of the employee's general Daily Rate — so both branches meet exactly at the threshold with no jump in pay.</span></span>
+          <span><strong style="font-size:12px">Reconcile daily rate to the period</strong><br><span id="co-bp-reconcile-desc" style="font-size:10px;color:var(--txt3)">Recommended. Derives the daily rate as Period Base Pay ÷ Period Days for that cutoff, instead of the employee's general Daily Rate — so both sides of the split match the deactivated computation to the peso (aside from rounding).</span></span>
           <input id="co-bp-reconcile" type="checkbox" style="width:auto;accent-color:var(--accent)" ${COMPANY.basicPayProrationPolicy?.reconcileThresholdRate!==false?'checked':''} onchange="previewPartialPay()"/>
         </label>
       </div>
@@ -14737,7 +14729,7 @@ function pgCompanySettings(){
     </div>
 
   </div>`;
-  setTimeout(()=>{updateBpModeLabels();previewPartialPay();},0);
+  setTimeout(previewPartialPay,0);
   return _cohtml;
 }
 
@@ -14851,7 +14843,7 @@ function saveCompany(){
   COMPANY.taxPolicy.annualizationEnabled=document.getElementById('co-tax-annualized')?.checked??COMPANY.taxPolicy.annualizationEnabled;
   COMPANY.taxPolicy.autoSuggestDecember=document.getElementById('co-tax-december')?.checked??COMPANY.taxPolicy.autoSuggestDecember;
   COMPANY.taxPolicy.requireConfirmedTaxRecord=document.getElementById('co-tax-confirm')?.checked??COMPANY.taxPolicy.requireConfirmedTaxRecord;
-  COMPANY.basicPayProrationPolicy.mode=document.getElementById('co-bp-mode')?.value||COMPANY.basicPayProrationPolicy.mode;
+  COMPANY.basicPayProrationPolicy.mode=document.getElementById('co-bp-mode')?.checked?'split-basis':'single-basis';
   const bpThreshold=document.getElementById('co-bp-threshold')?.value;
   COMPANY.basicPayProrationPolicy.thresholdDays=bpThreshold?Number(bpThreshold):null;
   COMPANY.basicPayProrationPolicy.reconcileThresholdRate=document.getElementById('co-bp-reconcile')?.checked??COMPANY.basicPayProrationPolicy.reconcileThresholdRate;
