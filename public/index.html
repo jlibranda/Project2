@@ -3912,6 +3912,7 @@ function closeM(){if(modal&&modal.type==='approvalTransferPicker')window._pendin
 // lose.
 function modalHasEditableDraft(){
   return !!(modal&&(modal.draft||modal.ae||modal.data||modal.rows||modal.it||modal.group||modal.period||modal.changes||
+    (modal.type==='lookupBulkAdd'&&modal.text&&modal.text.trim())||
     (modal.type==='approvalTransferPicker'&&modal.replacementEid)));
 }
 function closeMConfirmed(){
@@ -4413,6 +4414,18 @@ function refocusSearch(id){
 // (it's the scrollable element, not the page) back to the top -- jarring when an interaction
 // like a checkbox toggle happens deep in a long scrolled list/form. Call this in place of a
 // bare render() from inside a modal when the interaction shouldn't visibly jump the view.
+// Same problem as renderPreservingModalScroll() but for the Access & Permissions page's
+// scrollable checkbox list, which isn't inside a modal -- render() replacing the DOM was
+// snapping it back to the top on every single checkbox toggle.
+function renderPreservingAclScroll(){
+  const box=document.getElementById('acl-perms-scroll');
+  const top=box?box.scrollTop:0;
+  render();
+  requestAnimationFrame(()=>{
+    const newBox=document.getElementById('acl-perms-scroll');
+    if(newBox&&top)newBox.scrollTop=top;
+  });
+}
 function renderPreservingModalScroll(){
   const box=document.querySelector('.modal-box');
   const top=box?box.scrollTop:0;
@@ -10320,9 +10333,9 @@ function renderModal(){
     <div class="form-row"><div class="field"><label>Company Email *</label><input type="email" id="ne-email" value="${ae.email||''}" style="${reqBorderStyle(ae.email)}" oninput="setAeField('email',this.value);reqBorderLive(this,this.value)"/></div><div class="field"><label>Personal Email</label><input type="email" id="ne-pemail" value="${ae.personalEmail||''}" oninput="setAeField('personalEmail',this.value)"/></div></div>
     <div class="field"><label>Login Password *</label><input id="ne-pass" value="${ae.pass||'emp123'}" style="${reqBorderStyle(ae.pass||'emp123')}" oninput="setAeField('pass',this.value);reqBorderLive(this,this.value)"/></div>`
     :(modal.addTab||0)===1?`
-    <div class="form-row"><div class="field"><label>Employee ID ${EMP_NUM_CONFIG.manual?'(manual entry)':'(auto-generated)'}</label>
+    <div class="form-row"><div class="field"><label>Employee ID ${EMP_NUM_CONFIG.manual?'(manual entry)':'(auto-generated — editable)'}</label>
       <div style="display:flex;gap:7px;align-items:center">
-        <input id="ne-eid" value="${ae.eid||genEIDPreview()}" placeholder="${EMP_NUM_CONFIG.prefix}${EMP_NUM_CONFIG.separator}XXX" ${EMP_NUM_CONFIG.manual?`style="${reqBorderStyle(ae.eid||genEIDPreview())}"`:'readonly style="background:var(--bg);color:var(--txt2)"'} oninput="setAeField('eid',this.value);reqBorderLive(this,this.value)"/>
+        <input id="ne-eid" value="${ae.eid||genEIDPreview()}" placeholder="${EMP_NUM_CONFIG.prefix}${EMP_NUM_CONFIG.separator}XXX" style="${reqBorderStyle(ae.eid||genEIDPreview())}" oninput="setAeField('eid',this.value);reqBorderLive(this,this.value)"/>
         ${!EMP_NUM_CONFIG.manual?`<button class="btn btn-sm" onclick="modal.ae=collectAddEmp();modal.ae.eid=genEID();render()" title="Regenerate">↺</button>`:''}
       </div>
     </div><div class="field"><label>Entity Name</label><input id="ne-entity" value="${ae.entityName||'TiltPay PH Inc.'}" oninput="setAeField('entityName',this.value)"/></div></div>
@@ -10912,6 +10925,32 @@ function renderModal(){
     </select></div>
     <div style="display:flex;gap:8px;margin-top:1rem">
       <button class="btn btn-primary" onclick="saveHolidayEditor()">Save Holiday</button>
+      <button class="btn" onclick="closeM()">Cancel</button>
+    </div>`;
+  }else if(modal.type==='holidayImport'){
+    const phHolidays=window.PH_OFFICIAL_HOLIDAYS||{};
+    const years=Object.keys(phHolidays).sort();
+    const yr=phHolidays[modal.year];
+    const typeLabels={'regular':'Regular','special-non-working':'Special Non-Working','special-working':'Special Working','double':'Double'};
+    inner=`<div class="modal-title">⇩ Import Official PH Holidays
+      <button class="close-x" onclick="closeM()">×</button>
+    </div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:12px">Curated from the Official Gazette's yearly Malacañang Proclamation declaring regular holidays, special non-working days, and special working days. Still fully editable/deletable afterward like any other holiday on the calendar.</div>
+    <div class="field"><label>Year</label>
+      <select class="finput" onchange="modal.year=this.value;render()">
+        ${years.map(y=>`<option value="${y}" ${modal.year===y?'selected':''}>${y}</option>`).join('')}
+      </select>
+    </div>
+    ${yr?`<div style="font-size:11px;color:var(--txt3);margin:8px 0">Source: ${esc(yr.proclamation)}</div>
+    <div style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;margin-top:6px">
+      <table><thead><tr><th>Date</th><th>Holiday</th><th>Type</th></tr></thead><tbody>
+      ${yr.list.map(h=>`<tr><td class="mono" style="font-size:12px">${esc(h.date)}</td><td style="font-size:12px;font-weight:600">${esc(h.name)}</td><td><span class="badge" style="font-size:10px">${typeLabels[h.type]||h.type}</span></td></tr>`).join('')}
+      </tbody></table>
+    </div>
+    ${yr.note?`<div style="margin-top:8px;padding:8px 10px;background:var(--amber-bg);color:var(--amber-txt);border-radius:7px;font-size:11px">⚠ ${esc(yr.note)}</div>`:''}
+    <div style="margin-top:10px;font-size:11px;color:var(--txt3)">Dates already on your calendar will be skipped — this only adds what's missing.</div>`:`<div style="padding:1.5rem;text-align:center;color:var(--txt3);font-size:12px">No curated list available for that year yet.</div>`}
+    <div style="display:flex;gap:8px;margin-top:1rem">
+      <button class="btn btn-primary" ${yr?'':'disabled'} onclick="applyHolidayImport()">✓ Import ${yr?yr.list.length:0} Holidays</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
   }else if(modal.type==='shiftEditor'){
@@ -13723,7 +13762,7 @@ function pgAccessSetup(){
       </div>
 
       <!-- Permissions -->
-      <div style="padding:14px 18px;max-height:calc(100vh - 320px);overflow-y:auto">
+      <div id="acl-perms-scroll" style="padding:14px 18px;max-height:calc(100vh - 320px);overflow-y:auto">
         <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">
           <strong style="color:var(--accent)">${PERM_DEFS.filter(p=>activePerms[p.k]).length}</strong> of ${PERM_DEFS.length} permissions enabled
           &nbsp;·&nbsp; ${editing?'<span style="color:var(--accent);font-weight:600">Editing — click Save Changes to apply, or Cancel to discard.</span>':'Read-only — click Edit Permissions above to make changes.'}
@@ -13823,7 +13862,7 @@ function togglePermFast(key,checked){
     delete _aclDraft.perms[key];
     permSubKeysOf(key).forEach(k=>{delete _aclDraft.perms[k];});
   }
-  render();
+  renderPreservingAclScroll();
 }
 
 function setGroupPerms(grp,enable){
@@ -13831,7 +13870,7 @@ function setGroupPerms(grp,enable){
   PERM_DEFS.filter(p=>p.grp===grp).forEach(p=>{
     if(enable)_aclDraft.perms[p.k]=true;else delete _aclDraft.perms[p.k];
   });
-  render();
+  renderPreservingAclScroll();
 }
 
 function applyPreset(alId,preset){
@@ -14853,7 +14892,7 @@ function pgCompanySettings(){
 
     <div class="card">
       <div class="card-title" style="margin-bottom:4px">Partial-Period Basic Pay Policy</div>
-      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">The Unpaid Absence deduction is always Daily Rate × Days Absent by default. Optionally switch to a different formula once absences reach a configured count within a cutoff — useful for a longer-than-average cutoff where the fixed rate could otherwise deduct more than the period's own Basic Pay.</div>
+      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">Applies to every pay period regardless of frequency — monthly, semi-monthly, weekly, or any other cutoff schedule. The Unpaid Absence deduction is always Daily Rate × Days Absent by default. Optionally switch to a different formula once absences reach a configured count within a cutoff — useful for a longer-than-usual cutoff (more scheduled working days than the Daily Rate's divisor assumes), where the fixed rate could otherwise deduct more than the period's own Basic Pay.</div>
       <div class="field"><label>Switch-Over Formula</label>
         <select id="co-af-mode" class="finput" onchange="document.getElementById('co-af-switch-row').style.display=this.value==='off'?'none':'';">
           <option value="off" ${(COMPANY.absenceFallbackPolicy?.mode||'off')==='off'?'selected':''}>Off (default) — always Daily Rate × Days Absent</option>
@@ -14865,6 +14904,16 @@ function pgCompanySettings(){
         <div class="field"><label>Switch Point (absent days) <span style="font-weight:400;color:var(--txt3);font-size:11px">required — the switch-over formula applies once absences reach this count within the cutoff</span></label>
           <input id="co-af-switch" class="finput" type="number" min="1" step="1" value="${COMPANY.absenceFallbackPolicy?.switchAtAbsentDays||''}" placeholder="e.g. 6" style="width:120px"/>
         </div>
+      </div>
+      <div style="margin-top:12px;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:11px;color:var(--txt2);line-height:1.7">
+        <strong>Sample walkthrough</strong> (illustrative numbers, not tied to any specific pay frequency):<br/>
+        Daily Rate ₱1,000 · this cutoff's own Basic Pay ₱10,875 · this cutoff actually has 13 scheduled working days (longer than usual) · Switch Point set to 6 · employee has 7 absences (present = 13 − 7 = 6):
+        <div style="margin-top:6px;display:grid;gap:3px;font-family:'JetBrains Mono',monospace">
+          <span>Off — always: ₱1,000 × 7 = <strong>₱7,000.00</strong> deducted</span>
+          <span>Period-based (switch triggers at 7 ≥ 6): ₱10,875 × (7 ÷ 13) = <strong>₱5,855.77</strong> deducted</span>
+          <span>Half-Month minus Present (switch triggers at 7 ≥ 6): ₱10,875 − (₱1,000 × 6) = <strong>₱4,875.00</strong> deducted</span>
+        </div>
+        <div style="margin-top:6px">Both switch-over formulas deduct less than the fixed formula here, because the fixed Daily Rate assumes a shorter cutoff than this one actually is — that's the scenario this setting exists for.</div>
       </div>
     </div>
 
