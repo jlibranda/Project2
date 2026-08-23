@@ -4158,25 +4158,58 @@ function findAllDuplicates(){
 // by enterprise.js) so it reads as one consistent design language, not a bolted-on widget.
 // goView() always resets tab to 0, so a target sub-tab is set AFTER calling it, not before.
 function dashboardQuickActions(){
+  const attForms=(window.ATTENDANCE_FORM_CONFIG||[]).filter(f=>f.visible);
   const actions=[
     (canAccess('leave')&&clientHasModule('leave'))?{v:'leave',tab:1,mark:'LV',title:'File Leave',desc:'Request vacation, sick, or other leave'}:null,
-    (canAccess('attendance')&&clientHasModule('attendance'))?{v:'attendance',tab:1,mark:'AT',title:'Attendance Forms',desc:'File corrections, overtime, or a schedule adjustment'}:null,
     (canAccess('webbundy')&&clientHasModule('webbundy'))?{v:'webbundy',mark:'IN',title:'Web Bundy',desc:'Clock in or out for today'}:null,
     (canAccess('myslips')&&clientHasModule('myslips'))?{v:'myslips',mark:'₱',title:'My Payslips',desc:'View and download released payslips'}:null,
+    canAccess('self_view_govt')?{fn:'goMyGovtBank()',mark:'2316',title:'My BIR 2316',desc:'Download your annual certificate or upload the signed copy'}:null,
     {v:'myprofile',mark:'ID',title:'My 201 File',desc:'View your personal HR record'},
     {v:'profilechanges',mark:'✎',title:'Change Requests',desc:'Update your personal information'}
   ].filter(Boolean);
-  if(!actions.length)return'';
+  // Rendered as its own catalog cell (not a plain button-card, since it embeds a live <select>)
+  // so filing any specific attendance request is one click from the Dashboard instead of a
+  // detour through the Attendance Forms catalog first.
+  const attDropdown=(canAccess('attendance')&&clientHasModule('attendance')&&attForms.length)?`
+    <div class="attendance-form-card" style="cursor:default">
+      <span class="attendance-form-mark">AT</span>
+      <span style="flex:1;min-width:0">
+        <strong>Attendance Forms</strong><small>File corrections, overtime, or a schedule adjustment</small>
+        <select class="finput" style="margin-top:7px;font-size:12px" onchange="if(this.value){goView('attendance');openAttendanceForm(this.value);}this.value='';">
+          <option value="">— Choose a form —</option>
+          ${attForms.map(f=>`<option value="${f.key}">${esc(f.label)}</option>`).join('')}
+        </select>
+      </span>
+    </div>`:'';
+  if(!actions.length&&!attDropdown)return'';
   return`<div class="card" style="margin-bottom:1rem">
     <div class="card-title" style="margin-bottom:10px">Quick Actions</div>
     <div class="attendance-catalog">
-      ${actions.map(a=>`<button class="attendance-form-card" onclick="goView('${a.v}');${a.tab!=null?'tab='+a.tab+';render();':''}">
+      ${attDropdown}
+      ${actions.map(a=>`<button class="attendance-form-card" onclick="${a.fn?a.fn:("goView('"+a.v+"');"+(a.tab!=null?'tab='+a.tab+';render();':''))}">
         <span class="attendance-form-mark">${esc(a.mark)}</span>
         <span><strong>${esc(a.title)}</strong><small>${esc(a.desc)}</small></span>
         <span class="attendance-form-arrow">›</span>
       </button>`).join('')}
     </div>
   </div>`;
+}
+// Next occurrence of a given day-of-month, today included, formatted YYYY-MM-DD — used by the
+// Dashboard's Upcoming Remittances widget for real (not hardcoded) filing due dates.
+function nextRemitDueDate(day){
+  const t=new Date();let y=t.getFullYear(),m=t.getMonth();
+  if(t.getDate()>day){m+=1;if(m>11){m=0;y+=1;}}
+  return new Date(y,m,day).toISOString().slice(0,10);
+}
+// Jump straight to the employee's own Gov't & Bank tab inside My 201 File — the tab index there
+// is permission-gated and built dynamically, so this locates it by label after render rather
+// than duplicating that gating logic here (same post-render DOM pattern as refocusSearch()).
+function goMyGovtBank(){
+  goView('myprofile');tab=0;render();
+  requestAnimationFrame(()=>{
+    const idx=[...document.querySelectorAll('.tab')].findIndex(el=>el.textContent.includes("Gov't & Bank"));
+    if(idx>=0){tab=idx;render();}
+  });
 }
 function pgDashboard(){
   const isA=isAdminUser(user)||isPlatformAdmin;
@@ -4192,7 +4225,7 @@ function pgDashboard(){
   </div>
   <div class="metrics">
     ${isA?`
-    <div class="metric"><div class="metric-label">Headcount</div><div class="metric-val">${USERS.filter(u=>u.role==='employee').length}</div><div class="metric-change" style="color:var(--green)">↑ 1 this month</div></div>
+    <div class="metric"><div class="metric-label">Headcount</div><div class="metric-val">${USERS.filter(u=>u.role==='employee').length}</div><div class="metric-change" style="color:var(--txt3)">Active employees</div></div>
     <div class="metric"><div class="metric-label">Last Payroll</div><div class="metric-val" style="font-size:18px">${totalPayroll?fmt(totalPayroll):'—'}</div><div class="metric-change" style="color:var(--txt3)">Net pay</div></div>
     <div class="metric"><div class="metric-label">Pending Leaves</div><div class="metric-val" style="color:var(--amber)">${pendingLeaves()}</div><div class="metric-change" style="color:var(--txt3)">Needs approval</div></div>
     <div class="metric"><div class="metric-label">Active Loans</div><div class="metric-val" style="color:var(--blue)">${activeLoans}</div><div class="metric-change" style="color:var(--txt3)">Gov't + company</div></div>
@@ -4203,7 +4236,7 @@ function pgDashboard(){
     <div class="metric"><div class="metric-label">Pending Leaves</div><div class="metric-val" style="color:var(--blue)">${LEAVES.filter(l=>l.eid===user.id&&l.status==='pending').length}</div></div>
     `}
   </div>
-  ${!isA?dashboardQuickActions():''}
+  ${isA?dashboardAdminQuickActions():dashboardQuickActions()}
   <div class="dashboard-main-grid">
     ${isA?(()=>{
       const dupes=findAllDuplicates();
@@ -4239,19 +4272,42 @@ function pgDashboard(){
     <div class="card"><div class="card-hd"><div class="card-title">My recent attendance</div><button class="btn btn-sm" onclick="goView('attendance')">View all</button></div>
     <table><thead><tr><th>Date</th><th>In</th><th>Out</th><th>Status</th></tr></thead>
     <tbody>${myA.slice().reverse().slice(0,5).map(a=>`<tr><td>${a.date}</td><td class="mono">${a.tin||'—'}</td><td class="mono">${a.tout||'—'}</td><td><span class="badge b-${a.status}">${a.status}</span></td></tr>`).join('')||'<tr><td colspan="4" class="empty-state">No records</td></tr>'}</tbody></table></div>
-    ${isA?`<div class="card"><div class="card-hd"><div class="card-title">Upcoming remittances</div></div>
-    ${[{n:'SSS R3',d:'2025-06-10',amt:2835,color:'blue'},{n:'PhilHealth RF-1',d:'2025-06-15',amt:1600,color:'green'},{n:'Pag-IBIG MCRF',d:'2025-06-10',amt:400,color:'amber'},{n:'BIR 1601-C',d:'2025-06-10',amt:3250,color:'purple'}].map(r=>`
-    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
-      <div style="display:flex;align-items:center;gap:8px"><div style="width:8px;height:8px;border-radius:50%;background:var(--${r.color})"></div><span style="font-size:13px">${r.n}</span></div>
-      <div style="text-align:right"><div class="mono" style="font-size:12px">${fmt(r.amt)}</div><div style="font-size:11px;color:var(--txt3)">Due ${r.d}</div></div>
-    </div>`).join('')}
-    </div>`:`<div class="card"><div class="card-hd"><div class="card-title">My leave balances</div></div>
-    ${[['Vacation Leave',12,15],['Sick Leave',8,15],['Emergency Leave',2,3]].map(([t,u,tot])=>`
-    <div style="margin-bottom:10px">
-      <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px"><span>${t}</span><span class="mono">${u}/${tot} days used</span></div>
-      <div class="progress-bar"><div class="progress-fill" style="width:${Math.round(u/tot*100)}%;background:${u/tot>0.8?'var(--amber)':'var(--accent)'}"></div></div>
-    </div>`).join('')}
-    </div>`}
+    ${isA?(()=>{
+      const emps=USERS.filter(u=>u.role==='employee');
+      const rows=[
+        {n:'SSS R3',color:'blue',due:nextRemitDueDate(10),amt:emps.reduce((s,e)=>s+totalSSS(e.rate*22)+totalSssEr(e.rate*22)+mpfErShare(e.rate*22),0)},
+        {n:'PhilHealth RF-1',color:'green',due:nextRemitDueDate(15),amt:emps.reduce((s,e)=>s+phContrib(e.rate*22)+phErShare(e.rate*22),0)},
+        {n:'Pag-IBIG MCRF',color:'amber',due:nextRemitDueDate(10),amt:emps.reduce((s,e)=>s+piContrib(e.rate*22)+piErShare(e.rate*22),0)},
+        {n:'BIR 1601-C',color:'purple',due:nextRemitDueDate(10),amt:emps.reduce((s,e)=>s+birTax(e.rate*22),0)},
+      ];
+      return`<div class="card"><div class="card-hd"><div class="card-title">Upcoming remittances</div><button class="btn btn-sm" onclick="goView('government')">View all</button></div>
+      <div style="font-size:10px;color:var(--txt3);margin-bottom:6px">Estimated from current employee rates (EE + ER) — reconciled against actual payroll once each cutoff is approved.</div>
+      ${rows.map(r=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+        <div style="display:flex;align-items:center;gap:8px"><div style="width:8px;height:8px;border-radius:50%;background:var(--${r.color})"></div><span style="font-size:13px">${r.n}</span></div>
+        <div style="text-align:right"><div class="mono" style="font-size:12px">${fmt(r.amt)}</div><div style="font-size:11px;color:var(--txt3)">Due ${r.due}</div></div>
+      </div>`).join('')}
+      </div>`;
+    })():(myLeaveBalanceSummary()||`<div class="card"><div class="card-hd"><div class="card-title">My leave balances</div></div><div class="empty-state">No leave types assigned to you yet.</div></div>`)}
+  </div>`;
+}
+function dashboardAdminQuickActions(){
+  const actions=[
+    (canAccess('payroll')&&clientHasModule('payroll'))?{v:'payroll',tab:0,mark:'₱',title:'Process Payroll',desc:'Compute, approve, and release the current cutoff'}:null,
+    (canAccess('leave')&&clientHasModule('leave')&&pendingLeaves())?{v:'leave',tab:0,mark:'LV',title:'Pending Leave Approvals',desc:pendingLeaves()+' request'+(pendingLeaves()===1?'':'s')+' waiting for review'}:null,
+    (canAccess('government')&&clientHasModule('government'))?{v:'government',mark:'📋',title:"Gov't Remittances & 2316",desc:'SSS, PhilHealth, Pag-IBIG, BIR filings and annual 2316'}:null,
+    (canAccess('payroll')&&clientHasModule('payroll'))?{v:'payroll',tab:5,mark:'🧾',title:'Payslips & Reports',desc:'Payroll register, payslips, and government reports'}:null,
+    (canAccess('employees')&&clientHasModule('employees'))?{v:'employees',mark:'👥',title:'Employees',desc:'View the directory or add a new hire'}:null,
+  ].filter(Boolean);
+  if(!actions.length)return'';
+  return`<div class="card" style="margin-bottom:1rem">
+    <div class="card-title" style="margin-bottom:10px">Quick Actions</div>
+    <div class="attendance-catalog">
+      ${actions.map(a=>`<button class="attendance-form-card" onclick="goView('${a.v}');${a.tab!=null?'tab='+a.tab+';render();':''}">
+        <span class="attendance-form-mark">${esc(a.mark)}</span>
+        <span><strong>${esc(a.title)}</strong><small>${esc(a.desc)}</small></span>
+        <span class="attendance-form-arrow">›</span>
+      </button>`).join('')}
+    </div>
   </div>`;
 }
 
