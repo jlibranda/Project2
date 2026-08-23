@@ -80,7 +80,18 @@
     // COMPANY.shifts/holidays (not the enterprise.js-local SHIFT_DEFINITIONS/HOLIDAYS vars,
     // which aren't visible from this file's own scope) are the shared source of truth kept
     // in sync by saveShiftConfig()/saveHolidayConfig().
-    return TimekeepingCore.periodSummary(approvedRecords(),emp,from,to,COMPANY.shifts||[],COMPANY.holidays||[],COMPANY.startOfWeek);
+    var shifts=COMPANY.shifts||[];
+    // A scheduled day with no APPROVED coverage yet (nothing filed at all, or a Time Correction/
+    // Overtime/WFH/etc. request still pending) must not silently pay in full just because
+    // processPayroll() no longer blocks on it -- it's treated as absent for THIS run only, as a
+    // virtual/computed record that's never written to ATT (so the real pending record an approver
+    // still needs to act on is never touched). See unapprovedCoverageDates (compliance.js) and
+    // creditLateApprovalDay (index.html), which makes the employee whole once approval finally
+    // lands, if the period has closed in the meantime.
+    var virtualAbsent=(typeof unapprovedCoverageDates==='function'&&clientHasModule('attendance')?unapprovedCoverageDates(emp,from,to,shifts):[]).map(function(date){
+      return {eid:emp.id,date:date,status:'absent',tin:'',tout:'',ot:0,nd:0,approvalStatus:'approved',source:'pending-not-yet-approved',notes:'Not yet approved as of this payroll run -- treated as LWOP; will be credited automatically once approved.'};
+    });
+    return TimekeepingCore.periodSummary(approvedRecords().concat(virtualAbsent),emp,from,to,shifts,COMPANY.holidays||[],COMPANY.startOfWeek);
   }
   // Fixed Amount (tiered) OT pay is evaluated per day for Normal/Flexible Per Day (each
   // attendance record already carries that day's OT hours) and per settled week for Flexible

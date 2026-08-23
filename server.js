@@ -194,6 +194,19 @@ async function initializeDatabase() {
         ALTER TABLE platform_clients ADD CONSTRAINT platform_clients_admin_email_key UNIQUE (admin_email);
       END IF;
     END $$;
+    -- Single-row table: the God Admin password, when changed from Settings. Absent (no row)
+    -- means "still the GOD_ADMIN_PASSWORD env var default" -- see godAdminPassword() below.
+    -- Previously that Settings field only ever changed a frontend-only variable, so a changed
+    -- password silently stopped working the moment the page reloaded or a different browser was
+    -- used, while every backend-authorized action (Enter Portal, Log in as user, etc.) kept
+    -- requiring the original env-var password regardless of what the UI showed as "saved."
+    CREATE TABLE IF NOT EXISTS platform_admin_credential (
+      id INT PRIMARY KEY DEFAULT 1,
+      password TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_by TEXT NOT NULL DEFAULT 'system',
+      CHECK (id = 1)
+    );
   `);
   // Migrate the one existing real tenant into the directory, exactly once. Purely additive —
   // its tenant_key and app_state row are untouched, so this can never affect the live login
@@ -204,6 +217,18 @@ async function initializeDatabase() {
      ON CONFLICT (tenant_key) DO NOTHING`,
     [TENANT_KEY, process.env.BOOTSTRAP_ADMIN_EMAIL || 'admin@ph.com', process.env.BOOTSTRAP_ADMIN_PASSWORD || 'admin123']
   );
+}
+// The currently effective God Admin password -- the DB-stored override if one has ever been
+// set via Settings, otherwise the GOD_ADMIN_PASSWORD env var (or its hardcoded default). This is
+// the single source of truth both /auth/login and the change-password endpoint below compare
+// against, so a changed password actually takes effect for every future login, not just the
+// browser tab that changed it.
+async function godAdminPassword() {
+  if (pool) {
+    const row = await pool.query('SELECT password FROM platform_admin_credential WHERE id = 1');
+    if (row.rowCount) return row.rows[0].password;
+  }
+  return process.env.GOD_ADMIN_PASSWORD || 'godmode2026';
 }
 async function readState(tenantKey = TENANT_KEY) {
   if (!pool) return null;
@@ -367,7 +392,7 @@ app.post('/api/auth/login', async (req, res) => {
     // its client list from state.platformClients until Step 3 moves it onto
     // GET /api/platform/clients instead, so this can't change yet without losing visibility
     // into anything already saved there (archived demo clients, etc.).
-    const platformAdmin = email === 'god@sproutripple.com' && password === (process.env.GOD_ADMIN_PASSWORD || 'godmode2026');
+    const platformAdmin = email === 'god@sproutripple.com' && password === (await godAdminPassword());
     if (platformAdmin) {
       const record = await readState(TENANT_KEY);
       const token = sign({ sub: email, role: 'platform', tenantKey: TENANT_KEY, exp: Date.now() + 8 * 60 * 60 * 1000 });
@@ -521,6 +546,30 @@ app.post('/api/platform/clients/:id/session', requirePlatformAdmin, async (req, 
     res.json({ token, state: record?.state || null, version: Number(record?.version || 0), persistence: Boolean(pool) });
   } catch (error) {
     res.status(500).json({ error: 'Unable to open this client.', detail: error.message });
+  }
+});
+// Actually persists a new God Admin password (see godAdminPassword() and the platform_admin_
+// credential table above) -- previously Settings only ever changed a frontend-only variable, so
+// a "changed" password stopped working the moment the page reloaded or a different device logged
+// in, while every backend-authorized action still silently required the original one. Requires
+// the current password as confirmation, same spirit as any normal password-change form, so a
+// stolen/leaked session token alone can't relock the account away from its real owner.
+app.post('/api/platform/god-password', requirePlatformAdmin, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const currentPassword = String(req.body.currentPassword || '');
+  const newPassword = String(req.body.newPassword || '');
+  if (newPassword.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+  try {
+    const actual = await godAdminPassword();
+    if (currentPassword !== actual) return res.status(403).json({ error: 'Current password is incorrect.' });
+    await pool.query(
+      `INSERT INTO platform_admin_credential (id, password, updated_by) VALUES (1, $1, $2)
+       ON CONFLICT (id) DO UPDATE SET password = $1, updated_at = NOW(), updated_by = $2`,
+      [newPassword, req.session.sub]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to update the password.', detail: error.message });
   }
 });
 const PLATFORM_CLIENT_STATUSES = new Set(['active', 'paused', 'archived']);

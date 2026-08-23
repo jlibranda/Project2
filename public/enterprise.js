@@ -169,15 +169,20 @@
         var corrected=upsertAttendance(c.employeeId,c.requestDate,linkedCorrection?{}:{tin:'',tout:'',status:'present',ot:0,nd:0,notes:'Approved '+c.subject,source:'attendance-correction'});
         if(c.punchType==='time_out')corrected.tout=c.correctedTime;
         else corrected.tin=c.correctedTime;
-        applyResolutionDecision(corrected);
+        var tcResult=applyResolutionDecision(corrected);
         c.linkedType='attendance';c.linkedId=corrected.id;
+        // Fully (not just layer-)approved and this day's own pay period already closed while it
+        // sat pending -- credit the day's pay to whichever payroll runs next instead of it being
+        // silently lost. No-ops for a period that's still open; the normal run picks it up itself.
+        if(tcResult.decision==='approved'&&tcResult.message.indexOf('Routed to Layer')<0)creditLateApprovalDay(c.employeeId,c.requestDate,'ATT_CORR','Approved Time Correction');
         queueSync('Attendance');
       }else if(c.attendanceRequestType==='official_business'){
         var obRecords=[];
         requestDates(c.requestDate,c.requestEndDate).forEach(function(d){
           var current=attendanceRecord(c.employeeId,d);
           var ob=upsertAttendance(c.employeeId,d,{tin:c.requestedStart,tout:c.requestedEnd,status:'present',ot:current&&current.ot||0,nd:current&&current.nd||0,notes:(current&&current.notes?current.notes+' · ':'')+'Approved Official Business',source:'official-business'});
-          applyResolutionDecision(ob);obRecords.push(ob.id);
+          var obResult=applyResolutionDecision(ob);obRecords.push(ob.id);
+          if(obResult.decision==='approved'&&obResult.message.indexOf('Routed to Layer')<0)creditLateApprovalDay(c.employeeId,d,'OB','Approved Official Business');
         });
         c.attendanceRecordIds=obRecords;queueSync('Attendance');
       }else if(c.attendanceRequestType==='work_from_home'){
@@ -186,7 +191,8 @@
           var wfh=actualLogForDate(c.employeeId,d);
           wfh.status='present';
           wfh.notes=(wfh.notes?wfh.notes+' · ':'')+'Approved Work From Home';
-          applyResolutionDecision(wfh);wfhRecords.push(wfh.id);
+          var wfhResult=applyResolutionDecision(wfh);wfhRecords.push(wfh.id);
+          if(wfhResult.decision==='approved'&&wfhResult.message.indexOf('Routed to Layer')<0)creditLateApprovalDay(c.employeeId,d,'WFH','Approved Work From Home');
         });
         c.attendanceRecordIds=wfhRecords;queueSync('Attendance');
       }else if(c.attendanceRequestType==='schedule_adjustment'){

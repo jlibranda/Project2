@@ -1178,6 +1178,25 @@ function updateGovtHint(key,value){
 }
 
 /* ---- DUPLICATE DETECTION ---- */
+// Login resolves an employee purely by email+password against EVERY client's own roster in turn
+// (see doLogin()'s "Company employee direct login" loop) -- there is no separate "which company"
+// field on the login screen. That makes email uniqueness a cross-client concern, not just a
+// within-one-company one: if two different clients ever end up with an employee sharing the same
+// email, login silently resolves to whichever client happens to come first in PLATFORM_CLIENTS,
+// with no error shown to anyone. USERS-based checks elsewhere only ever see the currently-loaded
+// client's own roster, so they can never catch this. Excludes the currently active client itself
+// (already covered by the plain USERS-based checks) and archived clients (no live login risk).
+function emailUsedInAnotherClient(email,excludeClientId){
+  const target=(email||'').trim().toLowerCase();
+  if(!target)return null;
+  const skipId=excludeClientId!=null?excludeClientId:(activeClientId||1);
+  for(const c of PLATFORM_CLIENTS){
+    if(c.id===skipId||c.status==='archived'||!Array.isArray(c.employees))continue;
+    const match=c.employees.find(em=>(em.email||'').trim().toLowerCase()===target);
+    if(match)return{client:c,employee:match};
+  }
+  return null;
+}
 function findDuplicates(candidate,excludeId){
   const others=USERS.filter(u=>u.id!==excludeId);
   const dupes=[];
@@ -1185,6 +1204,10 @@ function findDuplicates(candidate,excludeId){
     dupes.push(`Employee ID "${candidate.eid}" already exists`);
   if(candidate.email&&others.find(u=>u.email===candidate.email))
     dupes.push(`Email "${candidate.email}" already exists`);
+  if(candidate.email){
+    const cross=emailUsedInAnotherClient(candidate.email,activeClientId);
+    if(cross)dupes.push(`Email "${candidate.email}" is already used by ${cross.employee.name} at ${cross.client.name} — each employee must have a unique email across all client companies`);
+  }
   ['sss','ph','pi','tin'].forEach(k=>{
     const v=(candidate[k]||'').replace(/\D/g,'');
     if(v.length>5&&others.find(u=>(u[k]||'').replace(/\D/g,'')===v))
@@ -2962,8 +2985,18 @@ async function doLogin(){
     errEl.style.display='block';return;
   }
 
+  // The backend already authenticated (or rejected) email+password above -- read its verdict
+  // off the signed session it issued instead of re-comparing the typed password against the
+  // frontend's own local GOD_PASS variable. GOD_PASS only ever tracked whatever this ONE browser
+  // tab last saved (or its hardcoded default): a password changed from Settings on a different
+  // device, or after a page reload here, would silently make this check wrong in either
+  // direction -- rejecting the real new password, or (worse) still accepting a since-changed old
+  // one. See saveGodAdminPassword() / POST /api/platform/god-password for where it's genuinely
+  // persisted now.
+  const loginIdentity=window.getSessionIdentity&&window.getSessionIdentity();
+
   /* ── Platform God Admin ── */
-  if(e==='god@sproutripple.com'&&p===GOD_PASS){
+  if(loginIdentity&&loginIdentity.sub===e&&loginIdentity.role==='platform'){
     isPlatformAdmin=true;
     user={id:0,name:'God Admin',email:e,role:'platform',initials:'GA'};
     view='platform';tab=0;modal=null;
@@ -2980,8 +3013,10 @@ async function doLogin(){
   }
   if(u){user=u;view='dashboard';checkOffboarding();if(window.autoRunLeaveAccrual)window.autoRunLeaveAccrual();render();return;}
 
-  /* ── Company employee direct login — search all client employee lists ── */
-  for(const c of PLATFORM_CLIENTS){
+  /* ── Company employee direct login — search all client employee lists, or
+     just the one this portal link (?c=<slug>) is scoped to, if any ── */
+  const clientLoginCandidates=loginScopedClientId!=null?PLATFORM_CLIENTS.filter(c=>c.id===loginScopedClientId):PLATFORM_CLIENTS;
+  for(const c of clientLoginCandidates){
     if(c.status==='archived'||!c.employees)continue;
     const emp=c.employees.find(em=>em.email===e&&em.pass===p);
     if(emp){
@@ -3498,6 +3533,27 @@ function applyAppState(s){
   if(window.applyPayrollGovernanceState)window.applyPayrollGovernanceState(s.payrollGovernance);
 }
 
+// Persists a new God Admin password to the real backend (POST /api/platform/god-password) --
+// previously this only ever changed the frontend-only GOD_PASS variable, so the change silently
+// stopped applying the moment the page reloaded or a different device logged in, while every
+// backend-authorized action (Enter Portal, Log in as user, etc.) kept requiring the original
+// password regardless of what Settings showed as "saved." See godAdminPassword() in server.js.
+async function saveGodAdminPassword(){
+  const current=document.getElementById('god-pass-current')?.value||'';
+  const next=document.getElementById('god-pass-new')?.value?.trim()||'';
+  if(!current){alert('Enter your current password first.');return;}
+  if(!next||next.length<6){alert('New password must be at least 6 characters.');return;}
+  if(!window.apiRequest){alert('Not connected to the data service — cannot change the password right now.');return;}
+  try{
+    await window.apiRequest('/platform/god-password',{method:'POST',body:JSON.stringify({currentPassword:current,newPassword:next})});
+    GOD_PASS=next;
+    document.getElementById('god-pass-current').value='';
+    document.getElementById('god-pass-new').value='';
+    alert('✅ God Admin password updated. This takes effect immediately for every login and device.');
+  }catch(e){
+    alert('Could not update the password: '+(e.message||'Unknown error'));
+  }
+}
 async function enterClient(clientId){
   const c=PLATFORM_CLIENTS.find(x=>x.id===clientId);
   if(!c)return;
@@ -3717,6 +3773,10 @@ function pgPlatformAdmin(){
             <button onclick="openUserLogin(${c.id})"
               style="background:#312e81;color:#c7d2fe;border:1px solid #4f46e5;border-radius:7px;padding:7px 10px;font-size:12px;font-weight:600;cursor:pointer"
               title="Log in as a user with their actual permissions">Log in as user</button>
+            <button onclick="copyClientPortalLink(${c.id})"
+              style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:7px;padding:7px 9px;font-size:12px;cursor:pointer"
+              onmouseover="this.style.borderColor='#0ea5e9';this.style.color='#7dd3fc'" onmouseout="this.style.borderColor='#334155';this.style.color='#94a3b8'"
+              title="Copy this company's own login link (${esc(clientPortalLink(c.id))})">🔗</button>
             <button onclick="modal={type:'editPOC',clientId:${c.id}};render()"
               style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:7px;padding:7px 9px;font-size:12px;cursor:pointer"
               onmouseover="this.style.borderColor='#22c55e';this.style.color='#86efac'" onmouseout="this.style.borderColor='#334155';this.style.color='#94a3b8'"
@@ -3955,13 +4015,15 @@ function renderLoading(){return`<main style="min-height:100vh;display:flex;align
   </style>
 </main>`;}
 
-function renderLogin(){return`<main class="login-wrap">
+function renderLogin(){
+  const scopedClient=loginScopedClientId?PLATFORM_CLIENTS.find(x=>x.id===loginScopedClientId):null;
+  return`<main class="login-wrap">
   <section class="login-showcase" aria-label="SproutRipple platform overview">
     <div class="login-glow login-glow-one"></div><div class="login-glow login-glow-two"></div>
     <div class="login-showcase-inner">
       <div class="login-brand">
-        <div class="login-brand-mark">${COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'S')}</div>
-        <div><strong>${esc(COMPANY.name)}</strong><span>People Operations Cloud</span></div>
+        <div class="login-brand-mark" ${scopedClient?`style="background:${scopedClient.color}"`:''}>${scopedClient?esc(scopedClient.initials):(COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'S'))}</div>
+        <div><strong>${scopedClient?esc(scopedClient.name):esc(COMPANY.name)}</strong><span>People Operations Cloud</span></div>
       </div>
       <div class="login-hero">
         <div class="login-eyebrow"><span></span> Built for Philippine teams</div>
@@ -3979,16 +4041,16 @@ function renderLogin(){return`<main class="login-wrap">
   </section>
   <section class="login-panel">
     <div class="login-panel-inner">
-      <div class="login-mobile-brand"><div class="login-brand-mark">${esc(COMPANY.initials)||'S'}</div><strong>${esc(COMPANY.name)}</strong></div>
-      <div class="login-heading"><span class="login-kicker">Secure workspace</span><h2>Welcome back</h2><p>Sign in to continue to your HR and payroll workspace.</p></div>
+      <div class="login-mobile-brand"><div class="login-brand-mark" ${scopedClient?`style="background:${scopedClient.color}"`:''}>${scopedClient?esc(scopedClient.initials):(esc(COMPANY.initials)||'S')}</div><strong>${scopedClient?esc(scopedClient.name):esc(COMPANY.name)}</strong></div>
+      <div class="login-heading"><span class="login-kicker">${scopedClient?'Signing in to':'Secure workspace'}</span><h2>${scopedClient?esc(scopedClient.name):'Welcome back'}</h2><p>${scopedClient?'Sign in with your '+esc(scopedClient.name)+' work email.':'Sign in to continue to your HR and payroll workspace.'}</p></div>
       <form class="login-form" onsubmit="event.preventDefault();doLogin()">
-        <div class="field"><label for="le">Work email</label><div class="login-input-wrap"><span>${ico('people',17)}</span><input id="le" type="email" value="admin@ph.com" autocomplete="username"/></div></div>
-        <div class="field"><div class="login-label-row"><label for="lp">Password</label><span>Protected access</span></div><div class="login-input-wrap"><span>${ico('shield',17)}</span><input id="lp" type="password" value="admin123" autocomplete="current-password"/><button id="login-password-toggle" type="button" onclick="toggleLoginPassword()" aria-label="Show or hide password">Show</button></div></div>
+        <div class="field"><label for="le">Work email</label><div class="login-input-wrap"><span>${ico('people',17)}</span><input id="le" type="email" value="${scopedClient?'':'admin@ph.com'}" autocomplete="username"/></div></div>
+        <div class="field"><div class="login-label-row"><label for="lp">Password</label><span>Protected access</span></div><div class="login-input-wrap"><span>${ico('shield',17)}</span><input id="lp" type="password" value="${scopedClient?'':'admin123'}" autocomplete="current-password"/><button id="login-password-toggle" type="button" onclick="toggleLoginPassword()" aria-label="Show or hide password">Show</button></div></div>
         <p id="lerr" class="login-error">Invalid email or password. Please check your details and try again.</p>
         <button class="login-submit" type="submit"><span>Sign in to workspace</span><span>→</span></button>
       </form>
       ${COMPANY.bundyPublicAccess?`<button class="login-bundy" type="button" onclick="doGuestBundy()"><span class="login-bundy-icon">${ico('clock',18)}</span><span><strong>Open Web Bundy</strong><small>Clock in or out without signing in</small></span><span>→</span></button>`:''}
-      <details class="demo-accounts"><summary><span>Explore demo accounts</span><span class="demo-summary-icon">+</span></summary><div class="demo-accounts-body">${renderDemoAccounts()}</div></details>
+      ${scopedClient?'':`<details class="demo-accounts"><summary><span>Explore demo accounts</span><span class="demo-summary-icon">+</span></summary><div class="demo-accounts-body">${renderDemoAccounts()}</div></details>`}
       <div class="login-security">${ico('shield',13)} Your session is protected with role-based access.</div>
     </div>
   </section>
@@ -5111,10 +5173,13 @@ function validateBulkRow(row,idx,usedEmails,usedEids){
       errors.push(`Email format invalid: "${row.email}"`);
     }else{
       const existing=USERS.find(u=>u.email.toLowerCase()===em);
+      const cross=emailUsedInAnotherClient(em,activeClientId);
       if(existing){
         errors.push(`Email "${row.email}" already belongs to ${existing.name} (${existing.eid}) — use Bulk Update to modify an existing employee`);
       }else if(usedEmails.has(em)){
         errors.push(`Duplicate email within this file: "${row.email}" — each employee needs a unique email`);
+      }else if(cross){
+        errors.push(`Email "${row.email}" is already used by ${cross.employee.name} at ${cross.client.name} — each employee must have a unique email across all client companies`);
       }else{usedEmails.add(em);}
     }
   }
@@ -6836,6 +6901,39 @@ function pgLeave(){
   <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
   <div class="card">${body}</div>`;
 }
+// Flat daily rate for an employee (Monthly Salary / configured Daily Rate Divisor), same formula
+// used throughout payroll -- see PayrollRuleEngine.calculate()'s `daily`.
+function employeeDailyRate(emp){
+  const monthly=Number(emp&&emp.salaryPM)||0,divisor=Number(emp&&emp.dailyDivisor||COMPANY.dailyDivisor||22);
+  return monthly&&divisor?monthly/divisor:Number(emp&&emp.rate||0);
+}
+// True once a payroll period covering `date` for this employee's pay group has already been
+// processed (closed) -- meaning a normal payroll run can no longer naturally pick up a late
+// approval for that date on its own, and an explicit catch-up credit is the only way the
+// employee doesn't end up short-paid just because the approver acted late.
+function payrollAlreadyClosedFor(emp,date){
+  const period=PAY_PERIODS.find(p=>p.groupId===emp.payGroupId&&(p.attendanceFrom||p.from)<=date&&(p.attendanceTo||p.to)>=date);
+  return !!(period&&period.status==='closed');
+}
+// Credits one day's pay back via a Payroll Adjustment with no fixed period -- effectiveAdjustments()
+// then picks it up automatically on whichever payroll period is processed next, exactly like any
+// other adjustment, no manual step required. Used when an attendance or leave request is approved
+// AFTER its own pay period already closed (processPayroll() no longer blocks on pending approvals --
+// see its own comment -- so a late approval needs this instead of holding up payroll). No-ops (and
+// returns false) when the period is still open, since the normal run will pick the day up on its own.
+function creditLateApprovalDay(empId,date,payItemCode,label){
+  const emp=USERS.find(u=>u.id===empId);
+  if(!emp||!payrollAlreadyClosedFor(emp,date))return false;
+  const amount=employeeDailyRate(emp);
+  if(!amount)return false;
+  // effectiveDate must be the affected pay date itself, NOT today's wall-clock date -- it's what
+  // effectiveAdjustments() compares against each future period's own end date (`effectiveDate<=
+  // period.to`) to decide eligibility, so using "today" would wrongly exclude every period that
+  // predates whenever this approval happens to be clicked (e.g. correcting a past cutoff).
+  PAYROLL_ADJ.push({id:nAdj++,empId:empId,adjType:label,payItemCode:payItemCode,category:'earnings',taxable:true,direction:'income',amount:+amount.toFixed(2),reason:'Late-approved '+label+' for '+date+' — original pay period already closed; credited automatically to the next payroll run.',effectiveDate:date,payPeriodId:null,payPeriodLabel:null,addedBy:user.name,status:'ready',processStatus:'ready',createdAt:today()});
+  queueSync('Payroll_Adjustments');
+  return true;
+}
 function actLeave(id,ok){
   const l=LEAVES.find(x=>x.id===id);
   if(!l)return;
@@ -6853,6 +6951,16 @@ function actLeave(id,ok){
       emp.leaveBalances[t.id]=bucket;
     }
     if(emp)markAttendanceForApprovedLeave(l,emp);
+    // Paid leave approved after its own pay period already closed still owes the employee that
+    // day's pay -- credit up to `deductDays` (the paid portion only; unpaidDays get nothing, same
+    // as an ordinary LWOP day) for whichever of the leave's dates already had a closed period.
+    if(emp&&t&&t.paid&&deductDays>0){
+      let credited=0;
+      for(const date of leaveDateRange(l.s,l.e)){
+        if(credited>=deductDays)break;
+        if(creditLateApprovalDay(emp.id,date,'LEAVE_PAY','Approved Leave ('+l.type+')'))credited++;
+      }
+    }
   }
   queueSync('Leave_Requests');
   toast(result.message,result.decision==='approved'?'success':'warning');
@@ -8328,11 +8436,13 @@ function processPayroll(){
   const attendanceFrom=calculationPeriod.attendanceFrom||calculationPeriod.from;
   const attendanceTo=calculationPeriod.attendanceTo||calculationPeriod.to;
   const employeeIds=new Set(emps.map(e=>e.id));
-  const pendingAttendance=attendanceRecords().filter(r=>employeeIds.has(r.eid)&&r.date>=attendanceFrom&&r.date<=attendanceTo&&r.approvalStatus==='pending');
-  if(pendingAttendance.length){
-    toast('Payroll cannot be processed yet: '+pendingAttendance.length+' timekeeping record(s) are still pending approval.','warning',6500);
-    return;
-  }
+  // Payroll no longer blocks on pending attendance/leave approvals -- a scheduled day still
+  // awaiting approval by the time payroll is processed is simply treated as absent for THIS run
+  // (see approvedAttendanceSummary's virtual coverage check, payroll-governance.js), without
+  // touching the real pending record. If it's approved later, creditLateApprovalDay (this file)
+  // and the resolveCase()/actLeave() call sites that use it automatically credit the day's pay to
+  // whichever payroll runs next, once this period has closed -- no manual re-processing needed.
+  const pendingCount=attendanceRecords().filter(r=>employeeIds.has(r.eid)&&r.date>=attendanceFrom&&r.date<=attendanceTo&&r.approvalStatus==='pending').length;
   // Any scheduled work day in range with literally no time log at all (no biometric, Web Bundy,
   // or manual entry) automatically becomes LWOP before the draft is built -- only when the client
   // actually has the Attendance/Timekeeping module active, since without real time tracking
@@ -8350,7 +8460,7 @@ function processPayroll(){
   window._payPreviewSearch='';window._payPreviewDepartment='all';window._payPreviewStatus='all';window._payPreviewPage=1;
   window._payrollTraceEmployee=emps[0]?.id||null;
   render();
-  toast('Payroll processed fresh — '+emps.length+' employee(s), '+allowanceLines+' allowance line(s), and '+attendanceCount+' approved timekeeping record(s).'+(sweptCount?' '+sweptCount+' day(s) auto-marked LWOP for missing time logs.':''),'success',6500);
+  toast('Payroll processed fresh — '+emps.length+' employee(s), '+allowanceLines+' allowance line(s), and '+attendanceCount+' approved timekeeping record(s).'+(sweptCount?' '+sweptCount+' day(s) auto-marked LWOP for missing time logs.':'')+(pendingCount?' '+pendingCount+' record(s) still pending approval were treated as absent for this run and will be credited automatically if approved later.':''),'success',7500);
 }
 function previewPayroll(){return processPayroll();}
 
@@ -10639,20 +10749,21 @@ function renderModal(){
 
     ${settingTab==='security'?`
     <div class="field" style="margin-bottom:10px">
-      <label>God Admin Password</label>
+      <label>Current Password</label>
+      <input id="god-pass-current" type="password" class="finput" style="font-family:'JetBrains Mono',monospace" placeholder="Enter your current God Admin password" autocomplete="current-password"/>
+    </div>
+    <div class="field" style="margin-bottom:10px">
+      <label>New God Admin Password</label>
       <div style="display:flex;gap:8px;align-items:center">
-        <input id="god-pass-new" type="text" class="finput" value="${esc(GOD_PASS)}"
+        <input id="god-pass-new" type="text" class="finput" value=""
           style="font-family:'JetBrains Mono',monospace;flex:1"
-          placeholder="Enter new God Admin password"/>
-        <button class="btn btn-sm" onclick="
-          const v=document.getElementById('god-pass-new')?.value?.trim();
-          if(!v||v.length<6){alert('Min 6 characters');return;}
-          GOD_PASS=v;alert('✅ God Admin password updated to: '+v)">Save</button>
+          placeholder="Enter new God Admin password" autocomplete="new-password"/>
+        <button class="btn btn-sm" onclick="saveGodAdminPassword()">Save</button>
       </div>
       <div style="font-size:11px;color:var(--txt3);margin-top:4px">Login: god@sproutripple.com</div>
     </div>
-    <div style="padding:10px 12px;background:var(--amber-bg);border-radius:7px;font-size:12px;color:var(--amber-txt)">
-      ⚠ Password changes are session-only. To make permanent, update the <code>GOD_PASS</code> variable in the HTML file.
+    <div style="padding:10px 12px;background:var(--blue-bg);color:var(--blue-txt);border-radius:7px;font-size:12px">
+      Changing this here updates the real, backend-stored password — it takes effect immediately for every login and every device, not just this browser tab.
     </div>`:''}
 
     ${settingTab==='audit'?`
@@ -12885,6 +12996,8 @@ function saveAddAdmin(){
   const d=modal.data;
   if(!d.name?.trim()||!d.email?.trim()||!d.pass?.trim()){alert('Name, email, and password are required.');return;}
   if(USERS.some(u=>(u.email||'').toLowerCase()===d.email.trim().toLowerCase())){alert('A user with that email already exists.');return;}
+  const crossAdmin=emailUsedInAnotherClient(d.email,activeClientId);
+  if(crossAdmin){alert(`Email "${d.email}" is already used by ${crossAdmin.employee.name} at ${crossAdmin.client.name}. Login resolves by email across all client companies, so this would make that employee's account unreachable — use a different email.`);return;}
   const newId=Math.max(0,...USERS.map(u=>u.id))+1;
   const newAdmin={id:newId,name:d.name.trim(),email:d.email.trim(),pass:d.pass,role:d.role,accessLevelId:1,active:true};
   if(newAdmin.role==='employee')ensureEmployeeShape(newAdmin);
@@ -17370,6 +17483,48 @@ window.alert = function(msg) {
              /^(error|failed|❌)/i.test(msg) ? 'error' : 'info';
   toast(msg.replace(/^[✅✓⚠❌]\s*/, ''), type);
 };
+
+/* ── Per-client portal links (?c=<slug>) ──────────────────────────────────
+   Login otherwise has no "which company" field: doLogin() just tries the
+   demo USERS then loops every PLATFORM_CLIENTS roster looking for a
+   matching email+password. A portal link scopes that up front — the login
+   screen shows the target company's own branding and doLogin() searches
+   only that one client, instead of every client in turn. Falls through to
+   the normal unscoped behavior when the URL has no (or an unrecognized) `c`
+   param, so the generic shared login page keeps working exactly as before. */
+function slugify(s){
+  return String(s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60)||'client';
+}
+function ensureClientSlug(c){
+  if(c.slug)return c.slug;
+  var base=slugify(c.name),slug=base,n=2;
+  while(PLATFORM_CLIENTS.some(function(x){return x!==c&&x.slug===slug;})){slug=base+'-'+n;n++;}
+  c.slug=slug;
+  return slug;
+}
+PLATFORM_CLIENTS.forEach(ensureClientSlug);
+let loginScopedClientId=null;
+(function(){
+  var params=new URLSearchParams(window.location.search);
+  var slugParam=params.get('c');
+  if(!slugParam)return;
+  var match=PLATFORM_CLIENTS.find(function(x){return x.slug===slugParam&&x.status!=='archived';});
+  if(match)loginScopedClientId=match.id;
+})();
+function clientPortalLink(clientId){
+  var c=PLATFORM_CLIENTS.find(function(x){return x.id===clientId;});
+  if(!c)return'';
+  return window.location.origin+window.location.pathname+'?c='+encodeURIComponent(ensureClientSlug(c));
+}
+function copyClientPortalLink(clientId){
+  var c=PLATFORM_CLIENTS.find(function(x){return x.id===clientId;});
+  if(!c)return;
+  var link=clientPortalLink(clientId);
+  var done=function(){toast('Portal link for '+c.name+' copied to clipboard.','success');};
+  var failed=function(){prompt('Copy this portal link for '+c.name+':',link);};
+  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(link).then(done).catch(failed);
+  else failed();
+}
 
 render();
 
