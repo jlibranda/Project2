@@ -10363,7 +10363,7 @@ function renderModal(){
     ${(modal.addTab||0)===0?`
     <div class="form-row"><div class="field"><label>Legal First Name *</label><input id="ne-fn" value="${ae.firstName||''}" style="${reqBorderStyle(ae.firstName)}" oninput="setAeField('firstName',this.value);reqBorderLive(this,this.value)"/></div><div class="field"><label>Legal Last Name *</label><input id="ne-ln" value="${ae.lastName||''}" style="${reqBorderStyle(ae.lastName)}" oninput="setAeField('lastName',this.value);reqBorderLive(this,this.value)"/></div></div>
     <div class="form-row"><div class="field"><label>Middle Name</label><input id="ne-mn" value="${ae.middleName||''}" oninput="setAeField('middleName',this.value)"/></div><div class="field"><label>Suffix</label><input id="ne-sx" value="${ae.suffix||''}" oninput="setAeField('suffix',this.value)"/></div></div>
-    <div class="form-row"><div class="field"><label>Date of Birth</label><input type="date" id="ne-bday" value="${ae.bday||''}" oninput="setAeField('bday',this.value)"/></div><div class="field"><label>Gender</label><select id="ne-gender" onchange="setAeField('gender',this.value)"><option ${ae.gender==='Female'?'selected':''}>Female</option><option ${ae.gender==='Male'?'selected':''}>Male</option><option ${ae.gender==='Non-binary'?'selected':''}>Non-binary</option><option>Prefer not to say</option></select></div></div>
+    <div class="form-row"><div class="field"><label>Date of Birth</label><input type="date" id="ne-bday" value="${ae.bday||''}" oninput="setAeField('bday',this.value)"/></div><div class="field"><label>Gender</label><select id="ne-gender" onchange="setAeField('gender',this.value)"><option value="" ${!ae.gender?'selected':''}>— Select —</option><option ${ae.gender==='Female'?'selected':''}>Female</option><option ${ae.gender==='Male'?'selected':''}>Male</option><option ${ae.gender==='Non-binary'?'selected':''}>Non-binary</option><option ${ae.gender==='Prefer not to say'?'selected':''}>Prefer not to say</option></select></div></div>
     <div class="form-row"><div class="field"><label>Marital Status</label><select id="ne-ms" onchange="setAeField('maritalStatus',this.value);if(this.value==='Single')setAeField('spouseName','');render()"><option ${!ae.maritalStatus||ae.maritalStatus==='Single'?'selected':''}>Single</option><option ${ae.maritalStatus==='Married'?'selected':''}>Married</option><option ${ae.maritalStatus==='Widowed'?'selected':''}>Widowed</option><option ${ae.maritalStatus==='Separated'?'selected':''}>Separated</option></select></div><div class="field"><label>Spouse Name</label><input id="ne-sp" value="${ae.spouseName||''}" oninput="setAeField('spouseName',this.value)" ${(!ae.maritalStatus||ae.maritalStatus==='Single')?'disabled placeholder="N/A — Single"':''}/></div></div>
     <div class="form-row"><div class="field"><label>Religion</label><input id="ne-rel" value="${ae.religion||''}" oninput="setAeField('religion',this.value)"/></div><div class="field"><label>City</label><input id="ne-city" value="${ae.city||''}" oninput="setAeField('city',this.value)"/></div></div>
     <div class="form-row"><div class="field"><label>Permanent Address</label><input id="ne-addr" value="${ae.permanentAddress||''}" oninput="setAeField('permanentAddress',this.value)"/></div>${fieldVisible('personal','zipCode')?`<div class="field"><label>ZIP Code</label><input id="ne-zip" value="${ae.zipCode||''}" maxlength="4" oninput="setAeField('zipCode',this.value)"/></div>`:''}</div>
@@ -10460,7 +10460,7 @@ function renderModal(){
       <div class="field"><label>Suffix</label><input id="ep-sx" value="${esc(d.suffix||'')}" oninput="modal.draft.suffix=this.value"/></div>
     </div>
     <div class="form-row">
-      <div class="field"><label>Marital Status</label><select id="ep-ms" onchange="modal.draft.maritalStatus=this.value"><option ${d.maritalStatus==='Single'?'selected':''}>Single</option><option ${d.maritalStatus==='Married'?'selected':''}>Married</option><option ${d.maritalStatus==='Widowed'?'selected':''}>Widowed</option><option ${d.maritalStatus==='Separated'?'selected':''}>Separated</option></select></div>
+      <div class="field"><label>Marital Status</label><select id="ep-ms" onchange="modal.draft.maritalStatus=this.value"><option ${!d.maritalStatus||d.maritalStatus==='Single'?'selected':''}>Single</option><option ${d.maritalStatus==='Married'?'selected':''}>Married</option><option ${d.maritalStatus==='Widowed'?'selected':''}>Widowed</option><option ${d.maritalStatus==='Separated'?'selected':''}>Separated</option></select></div>
       <div class="field"><label>Spouse Name</label><input id="ep-sp" value="${esc(d.spouseName||'')}" oninput="modal.draft.spouseName=this.value"/></div>
     </div>
     <div class="form-row">
@@ -15885,8 +15885,20 @@ function pgEmpDetail(){
     ?`<div class="field" style="margin-bottom:6px"><label>${label}</label><input id="ef-${key}" class="finput" type="${type}" value="${esc(String(val(key)||''))}" placeholder="${placeholder}" oninput="detailDraft['${key}']=this.value" style="font-size:13px"/></div>`
     :vrow(label,e[key]);
 
+  // Same bug the Assigned Work Shift card had: an <option> only gets `selected` when its value
+  // matches val(key) exactly, so a genuinely blank/unset field (e.g. Gender or Marital Status on
+  // an employee who's never had it set) matches nothing -- the browser then silently defaults to
+  // highlighting the FIRST option in the list, making the dropdown claim a value ("Female",
+  // "Single", ...) that was never actually chosen or saved. Injects an explicit blank option,
+  // selected, whenever the current value doesn't match any real option, so the dropdown can never
+  // silently disagree with the underlying (actually-blank) data again.
   const esel=(key,label,options)=>detailEdit
-    ?`<div class="field" style="margin-bottom:6px"><label>${label}</label><select id="ef-${key}" class="finput" style="font-size:13px" onchange="detailDraft['${key}']=this.value">${options.map(o=>typeof o==='string'?`<option ${val(key)===o?'selected':''}>${esc(o)}</option>`:`<option value="${esc(o.v)}" ${val(key)===o.v?'selected':''}>${esc(o.l)}</option>`).join('')}</select></div>`
+    ?(()=>{
+      const v=val(key);
+      const hasMatch=options.some(o=>(typeof o==='string'?o:o.v)===v);
+      const blankOpt=hasMatch?'':`<option value="" selected></option>`;
+      return`<div class="field" style="margin-bottom:6px"><label>${label}</label><select id="ef-${key}" class="finput" style="font-size:13px" onchange="detailDraft['${key}']=this.value">${blankOpt}${options.map(o=>typeof o==='string'?`<option ${v===o?'selected':''}>${esc(o)}</option>`:`<option value="${esc(o.v)}" ${v===o.v?'selected':''}>${esc(o.l)}</option>`).join('')}</select></div>`;
+    })()
     :vrow(label,e[key]);
 
   /* ── field helpers with FIELD_CONFIG visibility ── */
