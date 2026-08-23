@@ -12324,6 +12324,7 @@ function renderModal(){
       <div class="field"><label>Allowance Amount <span style="color:var(--red)">*</span></label><input id="ra-amount" type="number" min="0" step="0.01" class="finput" value="${d.monthlyAmount||''}" placeholder="0.00"/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Monthly entitlement for monthly/semi-monthly/weekly/bi-weekly. For Quarterly or Fixed every payroll, this exact amount is paid per scheduled occurrence.</div></div>
       <div class="form-row">
         <div class="field"><label>Distribution Schedule</label><select id="ra-frequency" class="finput" onchange="document.getElementById('ra-quarter-wrap').style.display=this.value==='quarterly'?'block':'none';document.getElementById('ra-timing-wrap').style.display=this.value==='monthly'?'block':'none'">
+          ${!RECURRING_ALLOWANCE_FREQUENCIES.includes(d.frequency)?'<option value="" selected></option>':''}
           ${[['monthly','Monthly — once per month'],['semi-monthly','Semi-monthly — 50% each cutoff'],['quarterly','Quarterly — fixed amount once per quarter'],['weekly','Weekly — monthly × 12 ÷ 52'],['bi-weekly','Bi-weekly — monthly × 12 ÷ 26'],['every-payroll','Fixed amount every payroll']].map(o=>`<option value="${o[0]}" ${d.frequency===o[0]?'selected':''}>${o[1]}</option>`).join('')}
         </select></div>
         <div class="field" id="ra-timing-wrap" style="display:${d.frequency==='monthly'?'block':'none'}"><label>Monthly Payout Cutoff</label><select id="ra-timing" class="finput"><option value="every-1st" ${d.timing==='every-1st'?'selected':''}>1st cutoff</option><option value="every-2nd" ${d.timing!=='every-1st'?'selected':''}>2nd cutoff</option></select><div style="font-size:10px;color:var(--txt3);margin-top:3px">Used when Monthly is assigned to a semi-monthly payroll group.</div></div>
@@ -15740,10 +15741,21 @@ function employeeRecurringAllowances(emp){
   });
   return emp.recurringAllowances;
 }
+// The Distribution Schedule dropdown only offers monthly/semi-monthly/quarterly/weekly/
+// bi-weekly/every-payroll -- a pay group on 'daily' (a real, selectable Payroll Group
+// frequency) or any other value outside that list would default this draft's frequency to
+// something the dropdown has no matching <option> for. The dropdown would then silently show
+// "Monthly" selected (the browser's own default-to-first-option fallback) while the actual
+// state stayed 'daily' -- and since saveRecurringAllowance() reads the dropdown's live DOM
+// value, an admin who never touches that field would have the allowance silently saved as
+// Monthly instead of what was actually intended.
+const RECURRING_ALLOWANCE_FREQUENCIES=['monthly','semi-monthly','quarterly','weekly','bi-weekly','every-payroll'];
 function openRecurringAllowance(empId,allowanceId){
   const emp=USERS.find(u=>u.id===empId);if(!emp)return;
   const existing=employeeRecurringAllowances(emp).find(a=>a.id===allowanceId);
-  modal={type:'recurringAllowance',empId,data:existing?JSON.parse(JSON.stringify(existing)):{id:'',payItemCode:'',monthlyAmount:0,frequency:(PAYROLL_GROUPS.find(g=>g.id===emp.payGroupId)?.freq||'monthly'),timing:'every-2nd',quarterlyPattern:'quarter-end',effectiveFrom:today(),effectiveTo:'',active:true,notes:''}};
+  const groupFreq=PAYROLL_GROUPS.find(g=>g.id===emp.payGroupId)?.freq;
+  const defaultFreq=RECURRING_ALLOWANCE_FREQUENCIES.includes(groupFreq)?groupFreq:'monthly';
+  modal={type:'recurringAllowance',empId,data:existing?JSON.parse(JSON.stringify(existing)):{id:'',payItemCode:'',monthlyAmount:0,frequency:defaultFreq,timing:'every-2nd',quarterlyPattern:'quarter-end',effectiveFrom:today(),effectiveTo:'',active:true,notes:''}};
   render();
 }
 function saveRecurringAllowance(){
