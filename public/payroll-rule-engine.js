@@ -201,14 +201,48 @@
     var ndRule = ruleValue(rules,'NIGHT_DIFFERENTIAL',date,context,0.10);
     if (attendance.ndHours) addLine(lines,Object.assign({code:'ND',name:'Night Shift Differential',type:'earning',quantity:attendance.ndHours,rate:hourly,multiplier:ndRule.value,amount:hourly*ndRule.value*attendance.ndHours,taxable:true,formula:'Hourly rate × qualified NSD hours × '+ndRule.value},lineFromRule(ndRule.rule,'NIGHT_DIFFERENTIAL','Labor Code / DOLE')));
 
+    // Shared proration for the Partial-Period Basic Pay Policy (Company Settings), reused below for
+    // both the Basic Pay Unpaid Absence line and attendance-based recurring allowances. Normal case,
+    // always: rate x Days Absent, where rate is (monthlyRateBasis / configuredDailyDivisor) -- the
+    // company's single configured Daily Rate for Basic Pay, or the same idea applied to an allowance's
+    // own monthly amount. Optional switch-over: once absent days reach the configured Switch Point,
+    // 'period-based' recomputes as periodAmount x (Days Present / Period Days) (never exceeds
+    // periodAmount); 'half-month-minus-present' computes periodAmount - (rate x Days Present) instead.
+    // Off (default) never switches, even if the fixed formula would exceed periodAmount for a
+    // longer-than-average cutoff.
+    var absentRule = ruleValue(rules,'ABSENCE_DEDUCTION',date,context,1);
+    var fallbackPolicy = input.absenceFallbackPolicy || {mode:'off'};
+    var switchAt = number(fallbackPolicy.switchAtAbsentDays);
+    var periodDaysForFallback = number(input.periodDays) || configuredDailyDivisor;
+    function absenceDeduction(periodAmount, monthlyRateBasis) {
+      var rate = number(monthlyRateBasis) / (configuredDailyDivisor || 1);
+      var fixedAmount = money(rate * attendance.absentDays * absentRule.value);
+      if (fallbackPolicy.mode !== 'off' && switchAt > 0 && attendance.absentDays >= switchAt) {
+        var daysPresent = Math.max(0, periodDaysForFallback - attendance.absentDays);
+        if (fallbackPolicy.mode === 'half-month-minus-present') return money(periodAmount - money(rate * daysPresent));
+        return money(periodAmount - money(periodAmount * daysPresent / periodDaysForFallback));
+      }
+      return fixedAmount;
+    }
+    function absenceFormulaText(label) {
+      if (fallbackPolicy.mode !== 'off' && switchAt > 0 && attendance.absentDays >= switchAt) {
+        return fallbackPolicy.mode === 'half-month-minus-present'
+          ? label+' − (Daily Rate × Days Present) -- switch-over at '+switchAt+'+ absent days (Partial-Period Basic Pay Policy)'
+          : label+' × (unpaid absence days ÷ period days) -- switch-over at '+switchAt+'+ absent days (Partial-Period Basic Pay Policy)';
+      }
+      return 'Daily rate × unpaid absence days';
+    }
+
     /* Tax treatment comes from the configured pay item, never the allowance name. */
     if (Array.isArray(input.recurringAllowances)) {
       input.recurringAllowances.forEach(function (allowance) {
         var paid = number(allowance.payoutAmount);
         if (!paid) return;
+        if (attendance.absentDays) paid = money(Math.max(0, paid - absenceDeduction(paid, allowance.monthlyAmount||allowance.amount)));
+        if (!paid) return;
         var code = allowance.payItemCode || 'ALLOWANCE';
         var source = allowance.source || 'Employee recurring allowance setup';
-        var formula = allowance.formula || 'Monthly entitlement converted by configured distribution schedule';
+        var formula = attendance.absentDays ? absenceFormulaText('Allowance entitlement') : (allowance.formula || 'Monthly entitlement converted by configured distribution schedule');
         if (allowance.deminimis) {
           var exemptLimit = number(allowance.exemptLimit);
           var exempt = exemptLimit > 0 ? Math.min(paid,exemptLimit) : paid;
@@ -221,10 +255,15 @@
     } else {
       /* Backward-compatible fallback for snapshots created before recurring allowances existed. */
       var allowanceFactor = factor;
-      if (number(employee.mobileAllowance)) addLine(lines,{code:'MOBILE',name:'Mobile Allowance',type:'earning',amount:number(employee.mobileAllowance)*allowanceFactor,taxable:true,formula:'Legacy monthly allowance × payroll-frequency factor',ruleCode:'COMPONENT_MOBILE_LEGACY',ruleVersion:1,legalSource:'Legacy employee profile'});
+      if (number(employee.mobileAllowance)) {
+        var mobilePaid = number(employee.mobileAllowance)*allowanceFactor;
+        if (attendance.absentDays) mobilePaid = money(Math.max(0, mobilePaid - absenceDeduction(mobilePaid, employee.mobileAllowance)));
+        if (mobilePaid) addLine(lines,{code:'MOBILE',name:'Mobile Allowance',type:'earning',amount:mobilePaid,taxable:true,formula:attendance.absentDays?absenceFormulaText('Allowance entitlement'):'Legacy monthly allowance × payroll-frequency factor',ruleCode:'COMPONENT_MOBILE_LEGACY',ruleVersion:1,legalSource:'Legacy employee profile'});
+      }
       if (number(employee.riceAllowance)) {
         var riceRule = ruleValue(rules,'DEMINIMIS_RICE_MONTHLY',date,context,2500);
         var ricePaid = number(employee.riceAllowance)*allowanceFactor;
+        if (attendance.absentDays) ricePaid = money(Math.max(0, ricePaid - absenceDeduction(ricePaid, employee.riceAllowance)));
         var riceExempt = Math.min(ricePaid,riceRule.value*allowanceFactor);
         if (riceExempt) addLine(lines,Object.assign({code:'RICE',name:'Rice Subsidy – Non-Taxable',type:'earning',amount:riceExempt,taxable:false,formula:'Lower of benefit paid or remaining configured de minimis limit'},lineFromRule(riceRule.rule,'DEMINIMIS_RICE_MONTHLY','BIR RR 29-2025')));
         if (ricePaid>riceExempt) addLine(lines,{code:'RICE_TX',name:'Rice Subsidy – Taxable Excess',type:'earning',amount:ricePaid-riceExempt,taxable:true,formula:'Benefit paid − non-taxable portion',ruleCode:'DEMINIMIS_EXCESS',ruleVersion:1,legalSource:'BIR'});
@@ -243,33 +282,9 @@
       }else addLine(lines,{code:adjustment.payItemCode||'ADJUST',name:adjustment.adjType||'Payroll Adjustment',type:isDeduction?'deduction':'earning',amount:amount,taxable:!isDeduction&&adjustment.taxable!==false,formula:'Ready payroll adjustment from source period',ruleCode:'RETRO_ADJUSTMENT',ruleVersion:1,legalSource:adjustment.reason||'Payroll adjustment',sourceTransaction:adjustment.id});
     });
 
-    var absentRule = ruleValue(rules,'ABSENCE_DEDUCTION',date,context,1);
     if (attendance.absentDays) {
-      // Normal case, always: Daily Rate x Days Absent, using the company's single configured Daily
-      // Rate -- consistent with OT/ND/Late elsewhere in this engine.
-      // Optional switch-over (Company Settings -> Partial-Period Basic Pay Policy): once absent days
-      // reach a client-configured count, switch to a different formula for the rest of that cutoff.
-      // 'period-based' uses period-exact proration (Period Base Pay x Days Present / Period Days),
-      // which by construction never exceeds Period Base Pay. 'half-month-minus-present' computes
-      // Period Base Pay minus (Daily Rate x Days Present) instead -- still anchored to the configured
-      // Daily Rate, just counting from the present side once the switch point is reached. Off by
-      // default: with no switch-over configured, the fixed formula applies unconditionally, even if it
-      // would exceed Period Base Pay for a longer-than-average cutoff.
-      var fixedRateAmount = money(daily * attendance.absentDays * absentRule.value);
-      var fallbackPolicy = input.absenceFallbackPolicy || {mode:'off'};
-      var switchAt = number(fallbackPolicy.switchAtAbsentDays);
-      var absentAmount = fixedRateAmount, absentFormula = 'Daily rate × unpaid absence days';
-      if (fallbackPolicy.mode !== 'off' && switchAt > 0 && attendance.absentDays >= switchAt) {
-        var periodDaysForFallback = number(input.periodDays) || configuredDailyDivisor;
-        var daysPresentForFallback = Math.max(0, periodDaysForFallback - attendance.absentDays);
-        if (fallbackPolicy.mode === 'half-month-minus-present') {
-          absentAmount = money(baseBasic - money(daily * daysPresentForFallback));
-          absentFormula = 'Period Base Pay − (Daily Rate × Days Present) -- switch-over at '+switchAt+'+ absent days (Partial-Period Basic Pay Policy)';
-        } else {
-          absentAmount = money(baseBasic - money(baseBasic * daysPresentForFallback / periodDaysForFallback));
-          absentFormula = 'Period Base Pay × (unpaid absence days ÷ period days) -- switch-over at '+switchAt+'+ absent days (Partial-Period Basic Pay Policy)';
-        }
-      }
+      var absentAmount = absenceDeduction(baseBasic, monthly);
+      var absentFormula = absenceFormulaText('Period Base Pay');
       // lineFromRule's own `formula` (pulled from the matched PAYROLL_RULEBOOK rule) otherwise wins
       // over the object's own formula key above, since it's spread in second -- same gotcha as the
       // OT_REG override above, so absentFormula is set explicitly after the merge instead.
