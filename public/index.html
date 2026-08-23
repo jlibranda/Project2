@@ -3003,8 +3003,10 @@ async function doLogin(){
   }
   if(u){user=u;view='dashboard';checkOffboarding();if(window.autoRunLeaveAccrual)window.autoRunLeaveAccrual();render();return;}
 
-  /* ── Company employee direct login — search all client employee lists ── */
-  for(const c of PLATFORM_CLIENTS){
+  /* ── Company employee direct login — search all client employee lists, or
+     just the one this portal link (?c=<slug>) is scoped to, if any ── */
+  const clientLoginCandidates=loginScopedClientId!=null?PLATFORM_CLIENTS.filter(c=>c.id===loginScopedClientId):PLATFORM_CLIENTS;
+  for(const c of clientLoginCandidates){
     if(c.status==='archived'||!c.employees)continue;
     const emp=c.employees.find(em=>em.email===e&&em.pass===p);
     if(emp){
@@ -3740,6 +3742,10 @@ function pgPlatformAdmin(){
             <button onclick="openUserLogin(${c.id})"
               style="background:#312e81;color:#c7d2fe;border:1px solid #4f46e5;border-radius:7px;padding:7px 10px;font-size:12px;font-weight:600;cursor:pointer"
               title="Log in as a user with their actual permissions">Log in as user</button>
+            <button onclick="copyClientPortalLink(${c.id})"
+              style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:7px;padding:7px 9px;font-size:12px;cursor:pointer"
+              onmouseover="this.style.borderColor='#0ea5e9';this.style.color='#7dd3fc'" onmouseout="this.style.borderColor='#334155';this.style.color='#94a3b8'"
+              title="Copy this company's own login link (${esc(clientPortalLink(c.id))})">🔗</button>
             <button onclick="modal={type:'editPOC',clientId:${c.id}};render()"
               style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:7px;padding:7px 9px;font-size:12px;cursor:pointer"
               onmouseover="this.style.borderColor='#22c55e';this.style.color='#86efac'" onmouseout="this.style.borderColor='#334155';this.style.color='#94a3b8'"
@@ -3978,13 +3984,15 @@ function renderLoading(){return`<main style="min-height:100vh;display:flex;align
   </style>
 </main>`;}
 
-function renderLogin(){return`<main class="login-wrap">
+function renderLogin(){
+  const scopedClient=loginScopedClientId?PLATFORM_CLIENTS.find(x=>x.id===loginScopedClientId):null;
+  return`<main class="login-wrap">
   <section class="login-showcase" aria-label="SproutRipple platform overview">
     <div class="login-glow login-glow-one"></div><div class="login-glow login-glow-two"></div>
     <div class="login-showcase-inner">
       <div class="login-brand">
-        <div class="login-brand-mark">${COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'S')}</div>
-        <div><strong>${esc(COMPANY.name)}</strong><span>People Operations Cloud</span></div>
+        <div class="login-brand-mark" ${scopedClient?`style="background:${scopedClient.color}"`:''}>${scopedClient?esc(scopedClient.initials):(COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'S'))}</div>
+        <div><strong>${scopedClient?esc(scopedClient.name):esc(COMPANY.name)}</strong><span>People Operations Cloud</span></div>
       </div>
       <div class="login-hero">
         <div class="login-eyebrow"><span></span> Built for Philippine teams</div>
@@ -4002,16 +4010,16 @@ function renderLogin(){return`<main class="login-wrap">
   </section>
   <section class="login-panel">
     <div class="login-panel-inner">
-      <div class="login-mobile-brand"><div class="login-brand-mark">${esc(COMPANY.initials)||'S'}</div><strong>${esc(COMPANY.name)}</strong></div>
-      <div class="login-heading"><span class="login-kicker">Secure workspace</span><h2>Welcome back</h2><p>Sign in to continue to your HR and payroll workspace.</p></div>
+      <div class="login-mobile-brand"><div class="login-brand-mark" ${scopedClient?`style="background:${scopedClient.color}"`:''}>${scopedClient?esc(scopedClient.initials):(esc(COMPANY.initials)||'S')}</div><strong>${scopedClient?esc(scopedClient.name):esc(COMPANY.name)}</strong></div>
+      <div class="login-heading"><span class="login-kicker">${scopedClient?'Signing in to':'Secure workspace'}</span><h2>${scopedClient?esc(scopedClient.name):'Welcome back'}</h2><p>${scopedClient?'Sign in with your '+esc(scopedClient.name)+' work email.':'Sign in to continue to your HR and payroll workspace.'}</p></div>
       <form class="login-form" onsubmit="event.preventDefault();doLogin()">
-        <div class="field"><label for="le">Work email</label><div class="login-input-wrap"><span>${ico('people',17)}</span><input id="le" type="email" value="admin@ph.com" autocomplete="username"/></div></div>
-        <div class="field"><div class="login-label-row"><label for="lp">Password</label><span>Protected access</span></div><div class="login-input-wrap"><span>${ico('shield',17)}</span><input id="lp" type="password" value="admin123" autocomplete="current-password"/><button id="login-password-toggle" type="button" onclick="toggleLoginPassword()" aria-label="Show or hide password">Show</button></div></div>
+        <div class="field"><label for="le">Work email</label><div class="login-input-wrap"><span>${ico('people',17)}</span><input id="le" type="email" value="${scopedClient?'':'admin@ph.com'}" autocomplete="username"/></div></div>
+        <div class="field"><div class="login-label-row"><label for="lp">Password</label><span>Protected access</span></div><div class="login-input-wrap"><span>${ico('shield',17)}</span><input id="lp" type="password" value="${scopedClient?'':'admin123'}" autocomplete="current-password"/><button id="login-password-toggle" type="button" onclick="toggleLoginPassword()" aria-label="Show or hide password">Show</button></div></div>
         <p id="lerr" class="login-error">Invalid email or password. Please check your details and try again.</p>
         <button class="login-submit" type="submit"><span>Sign in to workspace</span><span>→</span></button>
       </form>
       ${COMPANY.bundyPublicAccess?`<button class="login-bundy" type="button" onclick="doGuestBundy()"><span class="login-bundy-icon">${ico('clock',18)}</span><span><strong>Open Web Bundy</strong><small>Clock in or out without signing in</small></span><span>→</span></button>`:''}
-      <details class="demo-accounts"><summary><span>Explore demo accounts</span><span class="demo-summary-icon">+</span></summary><div class="demo-accounts-body">${renderDemoAccounts()}</div></details>
+      ${scopedClient?'':`<details class="demo-accounts"><summary><span>Explore demo accounts</span><span class="demo-summary-icon">+</span></summary><div class="demo-accounts-body">${renderDemoAccounts()}</div></details>`}
       <div class="login-security">${ico('shield',13)} Your session is protected with role-based access.</div>
     </div>
   </section>
@@ -17443,6 +17451,48 @@ window.alert = function(msg) {
              /^(error|failed|❌)/i.test(msg) ? 'error' : 'info';
   toast(msg.replace(/^[✅✓⚠❌]\s*/, ''), type);
 };
+
+/* ── Per-client portal links (?c=<slug>) ──────────────────────────────────
+   Login otherwise has no "which company" field: doLogin() just tries the
+   demo USERS then loops every PLATFORM_CLIENTS roster looking for a
+   matching email+password. A portal link scopes that up front — the login
+   screen shows the target company's own branding and doLogin() searches
+   only that one client, instead of every client in turn. Falls through to
+   the normal unscoped behavior when the URL has no (or an unrecognized) `c`
+   param, so the generic shared login page keeps working exactly as before. */
+function slugify(s){
+  return String(s||'').toLowerCase().trim().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60)||'client';
+}
+function ensureClientSlug(c){
+  if(c.slug)return c.slug;
+  var base=slugify(c.name),slug=base,n=2;
+  while(PLATFORM_CLIENTS.some(function(x){return x!==c&&x.slug===slug;})){slug=base+'-'+n;n++;}
+  c.slug=slug;
+  return slug;
+}
+PLATFORM_CLIENTS.forEach(ensureClientSlug);
+let loginScopedClientId=null;
+(function(){
+  var params=new URLSearchParams(window.location.search);
+  var slugParam=params.get('c');
+  if(!slugParam)return;
+  var match=PLATFORM_CLIENTS.find(function(x){return x.slug===slugParam&&x.status!=='archived';});
+  if(match)loginScopedClientId=match.id;
+})();
+function clientPortalLink(clientId){
+  var c=PLATFORM_CLIENTS.find(function(x){return x.id===clientId;});
+  if(!c)return'';
+  return window.location.origin+window.location.pathname+'?c='+encodeURIComponent(ensureClientSlug(c));
+}
+function copyClientPortalLink(clientId){
+  var c=PLATFORM_CLIENTS.find(function(x){return x.id===clientId;});
+  if(!c)return;
+  var link=clientPortalLink(clientId);
+  var done=function(){toast('Portal link for '+c.name+' copied to clipboard.','success');};
+  var failed=function(){prompt('Copy this portal link for '+c.name+':',link);};
+  if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(link).then(done).catch(failed);
+  else failed();
+}
 
 render();
 
