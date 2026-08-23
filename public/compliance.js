@@ -460,23 +460,42 @@
       '<div class="card-sub" style="margin-bottom:14px">Export a payroll-ready attendance report for one pay period (or a custom date range) — a per-employee summary plus the full daily breakdown behind it.</div>'+
       renderAttReportFilterUI('attReport', { showMatchList:true });
   }
-  // A "missing log" day: a scheduled work day (not a rest day, has a configured shift, employee
-  // already hired) with no approved leave covering it and no attendance record at all yet.
-  // Shared by flagMissingLogsAsLWOP (which commits real LWOP records for these, on request) and
-  // the Attendance Report (which shows/tallies them as LWOP for review even before that sweep is
-  // ever run — see openAttReportDetailModal / downloadAttendanceReport) so the two never
-  // disagree about which days count.
+  // A scheduled work day for this employee: not a rest day, has a configured shift, employee
+  // already hired, and not covered by an already-approved leave. Shared by missingLogDates
+  // (zero records at all) and unapprovedCoverageDates (no APPROVED record yet, pending or none)
+  // below so both use the identical definition of "should have a log."
+  function scheduledDayNeedsCoverage(emp, date, shifts) {
+    if (emp.hired && date < emp.hired) return false;
+    if (TimekeepingCore.isRestDay(emp, date, shifts)) return false;
+    if (!TimekeepingCore.scheduleForDate(emp, date, shifts)) return false;
+    var onLeave = LEAVES.some(function (l) { return l.eid === emp.id && l.status === 'approved' && date >= l.s && date <= l.e; });
+    return !onLeave;
+  }
+  // A "missing log" day: scheduledDayNeedsCoverage, with no attendance record at all yet (not
+  // even a pending one). Shared by sweepMissingLogsAsLWOP (which commits real LWOP records for
+  // these) and the Attendance Report (which shows/tallies them as LWOP for review even before
+  // that sweep is ever run — see openAttReportDetailModal / downloadAttendanceReport) so the two
+  // never disagree about which days count.
   function missingLogDates(emp, from, to, shifts) {
     return leaveDateRange(from, to).filter(function (date) {
-      if (emp.hired && date < emp.hired) return false;
-      if (TimekeepingCore.isRestDay(emp, date, shifts)) return false;
-      if (!TimekeepingCore.scheduleForDate(emp, date, shifts)) return false;
-      var onLeave = LEAVES.some(function (l) { return l.eid === emp.id && l.status === 'approved' && date >= l.s && date <= l.e; });
-      if (onLeave) return false;
-      if (attendanceRecord(emp.id, date)) return false;
-      return true;
+      return scheduledDayNeedsCoverage(emp, date, shifts) && !attendanceRecord(emp.id, date);
     });
   }
+  // Broader than missingLogDates: also catches a scheduled day that DOES have a record (a filed
+  // Time Correction / Overtime / WFH / etc. request, or a raw import) but it's still sitting
+  // unapproved -- pending or rejected, not approved. Used only to decide what payroll should
+  // treat as absent FOR THIS RUN (approvedAttendanceSummary in payroll-governance.js); unlike
+  // missingLogDates it must never trigger a real write, since that would overwrite/destroy the
+  // pending record an approver still needs to act on. Once approved (even late), payroll simply
+  // stops seeing this date here and creditLateApprovalDay (index.html) makes the employee whole
+  // for any pay period that already closed in the meantime.
+  window.unapprovedCoverageDates = function (emp, from, to, shifts) {
+    return leaveDateRange(from, to).filter(function (date) {
+      if (!scheduledDayNeedsCoverage(emp, date, shifts)) return false;
+      var rec = attendanceRecord(emp.id, date);
+      return !rec || rec.approvalStatus !== 'approved';
+    });
+  };
   // The 4th automatic attendance rule ("kulang ang time logs -> automatic LWOP") can't run off a
   // punch event like the other three (computeFromPunches has nothing to compute from when there
   // are literally zero punches for the day) — it needs a day to have fully passed with nothing

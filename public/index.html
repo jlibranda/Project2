@@ -6836,6 +6836,39 @@ function pgLeave(){
   <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
   <div class="card">${body}</div>`;
 }
+// Flat daily rate for an employee (Monthly Salary / configured Daily Rate Divisor), same formula
+// used throughout payroll -- see PayrollRuleEngine.calculate()'s `daily`.
+function employeeDailyRate(emp){
+  const monthly=Number(emp&&emp.salaryPM)||0,divisor=Number(emp&&emp.dailyDivisor||COMPANY.dailyDivisor||22);
+  return monthly&&divisor?monthly/divisor:Number(emp&&emp.rate||0);
+}
+// True once a payroll period covering `date` for this employee's pay group has already been
+// processed (closed) -- meaning a normal payroll run can no longer naturally pick up a late
+// approval for that date on its own, and an explicit catch-up credit is the only way the
+// employee doesn't end up short-paid just because the approver acted late.
+function payrollAlreadyClosedFor(emp,date){
+  const period=PAY_PERIODS.find(p=>p.groupId===emp.payGroupId&&(p.attendanceFrom||p.from)<=date&&(p.attendanceTo||p.to)>=date);
+  return !!(period&&period.status==='closed');
+}
+// Credits one day's pay back via a Payroll Adjustment with no fixed period -- effectiveAdjustments()
+// then picks it up automatically on whichever payroll period is processed next, exactly like any
+// other adjustment, no manual step required. Used when an attendance or leave request is approved
+// AFTER its own pay period already closed (processPayroll() no longer blocks on pending approvals --
+// see its own comment -- so a late approval needs this instead of holding up payroll). No-ops (and
+// returns false) when the period is still open, since the normal run will pick the day up on its own.
+function creditLateApprovalDay(empId,date,payItemCode,label){
+  const emp=USERS.find(u=>u.id===empId);
+  if(!emp||!payrollAlreadyClosedFor(emp,date))return false;
+  const amount=employeeDailyRate(emp);
+  if(!amount)return false;
+  // effectiveDate must be the affected pay date itself, NOT today's wall-clock date -- it's what
+  // effectiveAdjustments() compares against each future period's own end date (`effectiveDate<=
+  // period.to`) to decide eligibility, so using "today" would wrongly exclude every period that
+  // predates whenever this approval happens to be clicked (e.g. correcting a past cutoff).
+  PAYROLL_ADJ.push({id:nAdj++,empId:empId,adjType:label,payItemCode:payItemCode,category:'earnings',taxable:true,direction:'income',amount:+amount.toFixed(2),reason:'Late-approved '+label+' for '+date+' — original pay period already closed; credited automatically to the next payroll run.',effectiveDate:date,payPeriodId:null,payPeriodLabel:null,addedBy:user.name,status:'ready',processStatus:'ready',createdAt:today()});
+  queueSync('Payroll_Adjustments');
+  return true;
+}
 function actLeave(id,ok){
   const l=LEAVES.find(x=>x.id===id);
   if(!l)return;
@@ -6853,6 +6886,16 @@ function actLeave(id,ok){
       emp.leaveBalances[t.id]=bucket;
     }
     if(emp)markAttendanceForApprovedLeave(l,emp);
+    // Paid leave approved after its own pay period already closed still owes the employee that
+    // day's pay -- credit up to `deductDays` (the paid portion only; unpaidDays get nothing, same
+    // as an ordinary LWOP day) for whichever of the leave's dates already had a closed period.
+    if(emp&&t&&t.paid&&deductDays>0){
+      let credited=0;
+      for(const date of leaveDateRange(l.s,l.e)){
+        if(credited>=deductDays)break;
+        if(creditLateApprovalDay(emp.id,date,'LEAVE_PAY','Approved Leave ('+l.type+')'))credited++;
+      }
+    }
   }
   queueSync('Leave_Requests');
   toast(result.message,result.decision==='approved'?'success':'warning');
@@ -8328,11 +8371,13 @@ function processPayroll(){
   const attendanceFrom=calculationPeriod.attendanceFrom||calculationPeriod.from;
   const attendanceTo=calculationPeriod.attendanceTo||calculationPeriod.to;
   const employeeIds=new Set(emps.map(e=>e.id));
-  const pendingAttendance=attendanceRecords().filter(r=>employeeIds.has(r.eid)&&r.date>=attendanceFrom&&r.date<=attendanceTo&&r.approvalStatus==='pending');
-  if(pendingAttendance.length){
-    toast('Payroll cannot be processed yet: '+pendingAttendance.length+' timekeeping record(s) are still pending approval.','warning',6500);
-    return;
-  }
+  // Payroll no longer blocks on pending attendance/leave approvals -- a scheduled day still
+  // awaiting approval by the time payroll is processed is simply treated as absent for THIS run
+  // (see approvedAttendanceSummary's virtual coverage check, payroll-governance.js), without
+  // touching the real pending record. If it's approved later, creditLateApprovalDay (this file)
+  // and the resolveCase()/actLeave() call sites that use it automatically credit the day's pay to
+  // whichever payroll runs next, once this period has closed -- no manual re-processing needed.
+  const pendingCount=attendanceRecords().filter(r=>employeeIds.has(r.eid)&&r.date>=attendanceFrom&&r.date<=attendanceTo&&r.approvalStatus==='pending').length;
   // Any scheduled work day in range with literally no time log at all (no biometric, Web Bundy,
   // or manual entry) automatically becomes LWOP before the draft is built -- only when the client
   // actually has the Attendance/Timekeeping module active, since without real time tracking
@@ -8350,7 +8395,7 @@ function processPayroll(){
   window._payPreviewSearch='';window._payPreviewDepartment='all';window._payPreviewStatus='all';window._payPreviewPage=1;
   window._payrollTraceEmployee=emps[0]?.id||null;
   render();
-  toast('Payroll processed fresh — '+emps.length+' employee(s), '+allowanceLines+' allowance line(s), and '+attendanceCount+' approved timekeeping record(s).'+(sweptCount?' '+sweptCount+' day(s) auto-marked LWOP for missing time logs.':''),'success',6500);
+  toast('Payroll processed fresh — '+emps.length+' employee(s), '+allowanceLines+' allowance line(s), and '+attendanceCount+' approved timekeeping record(s).'+(sweptCount?' '+sweptCount+' day(s) auto-marked LWOP for missing time logs.':'')+(pendingCount?' '+pendingCount+' record(s) still pending approval were treated as absent for this run and will be credited automatically if approved later.':''),'success',7500);
 }
 function previewPayroll(){return processPayroll();}
 
