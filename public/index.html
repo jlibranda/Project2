@@ -14893,12 +14893,13 @@ function pgCompanySettings(){
     <div class="card">
       <div class="card-title" style="margin-bottom:4px">Partial-Period Basic Pay Policy</div>
       <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">Applies to every pay period regardless of frequency — monthly, semi-monthly, weekly, or any other cutoff schedule. The Unpaid Absence deduction is always Daily Rate × Days Absent by default. Optionally switch to a different formula once absences reach a configured count within a cutoff — useful for a longer-than-usual cutoff (more scheduled working days than the Daily Rate's divisor assumes), where the fixed rate could otherwise deduct more than the period's own Basic Pay.</div>
-      <div class="field"><label>Switch-Over Formula</label>
+      <div class="field"><label>When absences reach the Switch Point below, use this formula instead</label>
         <select id="co-af-mode" class="finput" onchange="document.getElementById('co-af-switch-row').style.display=this.value==='off'?'none':'';">
-          <option value="off" ${(COMPANY.absenceFallbackPolicy?.mode||'off')==='off'?'selected':''}>Off (default) — always Daily Rate × Days Absent</option>
-          <option value="period-based" ${COMPANY.absenceFallbackPolicy?.mode==='period-based'?'selected':''}>Period-based — Period Base Pay × (Days Present ÷ Period Days)</option>
-          <option value="half-month-minus-present" ${COMPANY.absenceFallbackPolicy?.mode==='half-month-minus-present'?'selected':''}>Half-Month minus Present — Period Base Pay − (Daily Rate × Days Present)</option>
+          <option value="off" ${(COMPANY.absenceFallbackPolicy?.mode||'off')==='off'?'selected':''}>Off (Recommended default) — no switch-over; always Daily Rate × Days Absent</option>
+          <option value="period-based" ${COMPANY.absenceFallbackPolicy?.mode==='period-based'?'selected':''}>Scale to this cutoff's real length — pay = this cutoff's Basic Pay × (Days Present ÷ this cutoff's actual scheduled days)</option>
+          <option value="half-month-minus-present" ${COMPANY.absenceFallbackPolicy?.mode==='half-month-minus-present'?'selected':''}>Pay only for days present — pay = this cutoff's Basic Pay − (Daily Rate × Days Present)</option>
         </select>
+        <div style="font-size:10px;color:var(--txt3);margin-top:4px">Both switch-over choices only kick in once absences hit the Switch Point — below that, it's always the plain Daily Rate × Days Absent deduction either way.</div>
       </div>
       <div id="co-af-switch-row" style="display:${(COMPANY.absenceFallbackPolicy?.mode||'off')==='off'?'none':''}">
         <div class="field"><label>Switch Point (absent days) <span style="font-weight:400;color:var(--txt3);font-size:11px">required — the switch-over formula applies once absences reach this count within the cutoff</span></label>
@@ -14910,8 +14911,8 @@ function pgCompanySettings(){
         Daily Rate ₱1,000 · this cutoff's own Basic Pay ₱10,875 · this cutoff actually has 13 scheduled working days (longer than usual) · Switch Point set to 6 · employee has 7 absences (present = 13 − 7 = 6):
         <div style="margin-top:6px;display:grid;gap:3px;font-family:'JetBrains Mono',monospace">
           <span>Off — always: ₱1,000 × 7 = <strong>₱7,000.00</strong> deducted</span>
-          <span>Period-based (switch triggers at 7 ≥ 6): ₱10,875 × (7 ÷ 13) = <strong>₱5,855.77</strong> deducted</span>
-          <span>Half-Month minus Present (switch triggers at 7 ≥ 6): ₱10,875 − (₱1,000 × 6) = <strong>₱4,875.00</strong> deducted</span>
+          <span>Scale to cutoff's real length (switch triggers at 7 ≥ 6): ₱10,875 × (7 ÷ 13) = <strong>₱5,855.77</strong> deducted</span>
+          <span>Pay only for days present (switch triggers at 7 ≥ 6): ₱10,875 − (₱1,000 × 6) = <strong>₱4,875.00</strong> deducted</span>
         </div>
         <div style="margin-top:6px">Both switch-over formulas deduct less than the fixed formula here, because the fixed Daily Rate assumes a shorter cutoff than this one actually is — that's the scenario this setting exists for.</div>
       </div>
@@ -14929,7 +14930,10 @@ function pgCompanySettings(){
     <div class="card" style="grid-column:span 2;border-left:3px solid var(--red)">
       <div class="card-title" style="margin-bottom:4px">BIR Employer Information (1601-C / 2316)</div>
       <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">Printed directly on the official BIR forms. RDO is stored as text so codes such as <strong>043</strong> keep the leading zero.</div>
-      <div class="form-row"><div class="field"><label>BIR-Registered Employer Name</label><input id="co-bir-name" class="finput" value="${esc(COMPANY.registeredName||COMPANY.name)}"/></div><div class="field"><label>Employer TIN</label><input id="co-bir-tin" class="finput" value="${esc(COMPANY.taxIdentificationNo||'')}" placeholder="000-000-000-000"/></div></div>
+      <div class="form-row"><div class="field"><label>BIR-Registered Employer Name</label><input id="co-bir-name" class="finput" value="${esc(COMPANY.registeredName||COMPANY.name)}"/></div><div class="field"><label>Employer TIN</label><input id="co-bir-tin" class="finput" value="${fmtGovt('tin',COMPANY.taxIdentificationNo||'')}" placeholder="123-456-789-000" style="font-family:'JetBrains Mono',monospace;letter-spacing:.5px"
+        oninput="const v=fmtGovt('tin',this.value);this.value=v;this.style.borderColor=validateGovtNum('tin',v)?'var(--red)':'var(--border)';const h=document.getElementById('hint-co-bir-tin');if(h)h.textContent=validateGovtNum('tin',v)||'';"/>
+        <div id="hint-co-bir-tin" style="font-size:10px;color:var(--red);margin-top:3px">${validateGovtNum('tin',COMPANY.taxIdentificationNo||'')||''}</div>
+      </div></div>
       <div class="form-row"><div class="field"><label>Employer RDO Code</label><input id="co-bir-rdo" class="finput" type="text" inputmode="text" maxlength="3" value="${esc(normalizeRdoCode(COMPANY.rdo||''))}" placeholder="043" onblur="this.value=normalizeRdoCode(this.value)"/></div><div class="field"><label>Withholding Agent Category</label><select id="co-bir-category" class="finput"><option value="private" ${COMPANY.withholdingAgentCategory!=='government'?'selected':''}>Private</option><option value="government" ${COMPANY.withholdingAgentCategory==='government'?'selected':''}>Government</option></select></div></div>
       <div class="form-row"><div class="field"><label>Registered Address</label><input id="co-bir-address" class="finput" value="${esc(COMPANY.registeredAddress||'')}"/></div><div class="field"><label>ZIP Code</label><input id="co-bir-zip" class="finput" value="${esc(COMPANY.zipCode||'')}" maxlength="4"/></div></div>
       <div class="form-row"><div class="field"><label>Registered Contact Number</label><input id="co-bir-contact" class="finput" value="${esc(COMPANY.contactNumber||'')}"/></div><div class="field"><label>Registered Email Address</label><input id="co-bir-email" class="finput" type="email" value="${esc(COMPANY.emailAddress||'')}"/></div></div>
