@@ -632,11 +632,45 @@
     SHIFT_DEFINITIONS.splice(index,1);saveShiftConfig();render();
   };
 
-  window.assignEmployeeShift=function(employeeId,shiftId){
+  // Was committed instantly on the <select>'s onchange (no Edit/Save/Cancel step at all,
+  // unlike the rest of the 201 profile), which also meant an employee whose shiftId matched no
+  // real SHIFT_DEFINITIONS entry (never assigned, or the shift it pointed to was since deleted)
+  // showed the browser's own default-to-first-<option> behavior as if that shift were actually
+  // selected -- the dropdown said "Regular Day Shift" while the badge/status right next to it
+  // correctly said "Needs assignment" / "No shift is assigned", because no <option> actually had
+  // the `selected` attribute. Now stages into _shiftAssignEdit (mirrors the editSaveBar pattern
+  // used everywhere else in this profile) and the dropdown always has an explicit "Unassigned"
+  // option so there's a real, always-matching selection either way -- never a false default.
+  // Global, not a module-local var -- the rendered <select>'s inline onchange
+  // ("_shiftAssignEdit.shiftId=this.value") runs in global scope and can't see a variable
+  // closed over by this IIFE, the same way modal/_aclDraft are deliberately globals for the
+  // same reason.
+  window._shiftAssignEdit=null;
+  window.openShiftAssignEdit=function(employeeId){
     if(!(isAdminUser(user)||isPlatformAdmin))return;
-    var employee=USERS.find(function(e){return e.id===employeeId;}),shift=SHIFT_DEFINITIONS.find(function(s){return s.id===shiftId;});
-    if(!employee||!shift)return;
-    employee.shiftId=shiftId;queueSync('Employees','Employee_Shifts');toast(shift.name+' assigned to '+employee.name+'.','success');render();
+    var employee=USERS.find(function(e){return e.id===employeeId;});
+    if(!employee)return;
+    // Only carry over shiftId if it actually resolves to a real, current shift -- otherwise
+    // (never assigned, or pointing at a shift that's since been deleted) start the dropdown on
+    // the explicit "Unassigned" option rather than an orphaned id that won't match any <option>
+    // either, which would just relocate the exact same false-default-selection bug into edit mode.
+    var resolved=SHIFT_DEFINITIONS.find(function(s){return s.id===employee.shiftId;});
+    _shiftAssignEdit={employeeId:employeeId,shiftId:resolved?employee.shiftId:''};
+    render();
+  };
+  window.cancelShiftAssignEdit=function(){_shiftAssignEdit=null;render();toast('Changes discarded.','info');};
+  window.saveShiftAssignEdit=function(){
+    if(!_shiftAssignEdit)return;
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var employee=USERS.find(function(e){return e.id===_shiftAssignEdit.employeeId;});
+    if(!employee)return;
+    var shiftId=_shiftAssignEdit.shiftId?parseInt(_shiftAssignEdit.shiftId,10):null;
+    var shift=shiftId?SHIFT_DEFINITIONS.find(function(s){return s.id===shiftId;}):null;
+    employee.shiftId=shiftId;
+    _shiftAssignEdit=null;
+    queueSync('Employees','Employee_Shifts');
+    toast(shift?(shift.name+' assigned to '+employee.name+'.'):(employee.name+' is now unassigned from any shift.'),'success');
+    render();
   };
 
   // Personal Schedule: an optional, permanent per-employee override of the shared shift
@@ -1914,12 +1948,26 @@
     var shift=SHIFT_DEFINITIONS.find(function(s){return s.id===employee.shiftId;});
     var adjustments=(employee.scheduleAdjustments||[]).slice().reverse().slice(0,5);
     var hasPersonal=!!employee.personalSchedule;
+    var editing=!!(_shiftAssignEdit&&_shiftAssignEdit.employeeId===employee.id);
     var effectivePatternHtml=hasPersonal
       ?'<strong>Personal Schedule</strong><br>'+esc(describeShiftPattern({schedule:employee.personalSchedule}))
       :(shift?'<strong>'+esc(shift.name)+'</strong><br>'+esc(describeShiftPattern(shift))+' · '+shift.graceMinutes+'-minute grace':'No shift is assigned.');
-    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Assigned Work Shift</div><div class="card-sub">Employee profile schedule used for attendance policy and schedule-adjustment requests</div></div><span class="badge '+(hasPersonal?'b-info':(shift&&shift.active?'b-approved':'b-pending'))+'">'+(hasPersonal?'Personal schedule':(shift&&shift.active?'Active shift':'Needs assignment'))+'</span></div>'+
-      '<div class="form-row"><div class="field"><label>Shift Assignment</label><select onchange="assignEmployeeShift('+employee.id+',parseInt(this.value,10))">'+SHIFT_DEFINITIONS.filter(function(s){return s.active||s.id===employee.shiftId;}).map(function(s){return '<option value="'+s.id+'" '+(s.id===employee.shiftId?'selected':'')+'>'+esc(s.name)+(s.active?'':' (inactive)')+'</option>';}).join('')+'</select>'+(hasPersonal?'<div style="font-size:11px;color:var(--txt3);margin-top:5px">Used as the fallback if the personal schedule below is removed.</div>':'')+'</div>'+
-      '<div style="padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;align-self:end;margin-bottom:10px">Currently following: '+effectivePatternHtml+'</div></div>'+
+    var assignmentField=editing
+      ?'<select onchange="_shiftAssignEdit.shiftId=this.value">'+
+        '<option value="" '+(!_shiftAssignEdit.shiftId?'selected':'')+'>— Unassigned —</option>'+
+        SHIFT_DEFINITIONS.filter(function(s){return s.active||s.id===employee.shiftId;}).map(function(s){return '<option value="'+s.id+'" '+(String(s.id)===String(_shiftAssignEdit.shiftId)?'selected':'')+'>'+esc(s.name)+(s.active?'':' (inactive)')+'</option>';}).join('')+
+      '</select>'
+      :'<div style="padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:13px">'+(shift?esc(shift.name)+(shift.active?'':' (inactive)'):'<span style="color:var(--txt3)">Not assigned</span>')+'</div>';
+    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Assigned Work Shift</div><div class="card-sub">Employee profile schedule used for attendance policy and schedule-adjustment requests</div></div>'+
+      (editing?'':'<span class="badge '+(hasPersonal?'b-info':(shift&&shift.active?'b-approved':'b-pending'))+'">'+(hasPersonal?'Personal schedule':(shift&&shift.active?'Active shift':'Needs assignment'))+'</span>')+
+      '</div>'+
+      '<div class="form-row" style="align-items:stretch">'+
+        '<div class="field" style="display:flex;flex-direction:column;margin-bottom:0"><label>Shift Assignment</label>'+assignmentField+(hasPersonal?'<div style="font-size:11px;color:var(--txt3);margin-top:5px">Used as the fallback if the personal schedule below is removed.</div>':'')+'</div>'+
+        '<div style="display:flex;flex-direction:column;justify-content:center;padding:10px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px">Currently following: '+effectivePatternHtml+'</div>'+
+      '</div>'+
+      (editing
+        ?'<div style="display:flex;gap:8px;padding-top:12px;border-top:1px solid var(--border)"><button class="btn btn-sm btn-primary" onclick="saveShiftAssignEdit()">💾 Save Changes</button><button class="btn btn-sm" onclick="cancelShiftAssignEdit()">✕ Cancel</button></div>'
+        :'<div style="display:flex;gap:8px;padding-top:12px;border-top:1px solid var(--border)"><button class="btn btn-sm" onclick="openShiftAssignEdit('+employee.id+')">✎ Edit Shift Assignment</button></div>')+
       '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:12px;border-top:1px solid var(--border)">'+
       (hasPersonal?
         '<button class="btn btn-sm" onclick="openPersonalScheduleEditor('+employee.id+')">Edit Personal Schedule</button><button class="btn btn-sm btn-danger" onclick="removePersonalSchedule('+employee.id+')">Remove — follow shift template</button>':
