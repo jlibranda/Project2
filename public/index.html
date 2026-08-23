@@ -3159,32 +3159,38 @@ function filterPlatform(v){
 }
 
 /* ── Module toggle: no full re-render, direct DOM update ── */
-function toggleClientModule(cid,k,checked,lbl){
-  const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
-  if(checked){if(!c.modules.includes(k))c.modules.push(k);}
-  else c.modules=c.modules.filter(m=>m!==k);
+// Both functions mutate modal.draftModules (a copy taken when the modal opened), never the
+// live PLATFORM_CLIENTS record directly -- that used to be the same instant-permanent-mutation
+// bug the Access Level quick-editor had: the "Save Changes"/"Close" buttons were cosmetic no-ops
+// since every checkbox click had already applied itself straight to the real client.
+function toggleClientModule(k,checked,lbl){
+  if(!modal||modal.type!=='moduleManager')return;
+  const cid=modal.clientId;
+  if(checked){if(!modal.draftModules.includes(k))modal.draftModules.push(k);}
+  else modal.draftModules=modal.draftModules.filter(m=>m!==k);
   if(lbl){
     lbl.style.background=checked?'var(--accent-bg)':'';
     lbl.style.borderColor=checked?'var(--accent)':'var(--border)';
     const sp=lbl.querySelector('span');if(sp)sp.style.color=checked?'var(--accent-txt)':'var(--txt)';
   }
   const cnt=document.getElementById('mod-cnt-'+cid);
-  if(cnt)cnt.textContent=c.modules.length+' of '+ALL_MODULES.length+' modules enabled';
+  if(cnt)cnt.textContent=modal.draftModules.length+' of '+ALL_MODULES.length+' modules enabled';
 }
 
 /* ── Module group All/None without re-render ── */
-function setClientModuleGroup(cid,grp,enable){
-  const c=PLATFORM_CLIENTS.find(x=>x.id===cid);if(!c)return;
+function setClientModuleGroup(grp,enable){
+  if(!modal||modal.type!=='moduleManager')return;
+  const cid=modal.clientId;
   const mks=ALL_MODULES.filter(m=>m.grp===grp).map(m=>m.k);
-  if(enable)mks.forEach(k=>{if(!c.modules.includes(k))c.modules.push(k);});
-  else c.modules=c.modules.filter(k=>!mks.includes(k));
+  if(enable)mks.forEach(k=>{if(!modal.draftModules.includes(k))modal.draftModules.push(k);});
+  else modal.draftModules=modal.draftModules.filter(k=>!mks.includes(k));
   mks.forEach(k=>{
     const cb=document.getElementById('modcb-'+cid+'-'+k);
     if(!cb)return;cb.checked=enable;const lbl=cb.closest('label');
     if(lbl){lbl.style.background=enable?'var(--accent-bg)':'';lbl.style.borderColor=enable?'var(--accent)':'var(--border)';const sp=lbl.querySelector('span');if(sp)sp.style.color=enable?'var(--accent-txt)':'var(--txt)';}
   });
   const cnt=document.getElementById('mod-cnt-'+cid);
-  if(cnt)cnt.textContent=c.modules.length+' of '+ALL_MODULES.length+' modules enabled';
+  if(cnt)cnt.textContent=modal.draftModules.length+' of '+ALL_MODULES.length+' modules enabled';
 }
 
 /* ── Reset plan preset without re-render ── */
@@ -3353,12 +3359,23 @@ function clientHasModule(v){
 }
 
 function openModuleManager(clientId){
-  modal={type:'moduleManager',clientId};render();
+  const c=PLATFORM_CLIENTS.find(x=>x.id===clientId);
+  if(!c)return;
+  modal={type:'moduleManager',clientId,draftModules:[...c.modules]};render();
+}
+
+function saveModuleManager(){
+  const c=PLATFORM_CLIENTS.find(x=>x.id===modal.clientId);
+  if(!c)return;
+  c.modules=[...modal.draftModules];
+  closeM();
+  toast('Module access saved for '+c.name+'.','success');
 }
 
 function renderModuleManagerModal(){
   const c=PLATFORM_CLIENTS.find(x=>x.id===modal.clientId);
   if(!c)return'';
+  const draft=modal.draftModules||c.modules;
   const grps=[...new Set(ALL_MODULES.map(m=>m.grp))];
   const planColors={Enterprise:'var(--accent)',Professional:'var(--green)',Starter:'var(--blue)',Internal:'var(--txt3)'};
   return`<div class="modal-title">
@@ -3367,11 +3384,9 @@ function renderModuleManagerModal(){
   </div>
   <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
     <span class="badge" style="background:${planColors[c.plan]||'#6b7280'}22;color:${planColors[c.plan]||'#6b7280'}">${c.plan} Plan</span>
-    <span style="font-size:12px;color:var(--txt3)">${c.modules.length} of ${ALL_MODULES.length} modules enabled</span>
+    <span id="mod-cnt-${c.id}" style="font-size:12px;color:var(--txt3)">${draft.length} of ${ALL_MODULES.length} modules enabled</span>
     <div style="flex:1"></div>
-    ${Object.keys(PLAN_MODULES).map(p=>`<button class="btn btn-sm" style="font-size:10px" onclick="
-      PLATFORM_CLIENTS.find(x=>x.id===${c.id}).modules=[...PLAN_MODULES['${p}']];render()
-    ">Reset to ${p}</button>`).join('')}
+    ${Object.keys(PLAN_MODULES).map(p=>`<button class="btn btn-sm" style="font-size:10px" onclick="modal.draftModules=[...PLAN_MODULES['${p}']];render()">Reset to ${p}</button>`).join('')}
   </div>
   <div style="display:grid;gap:10px;max-height:420px;overflow-y:auto">
     ${grps.map(grp=>`
@@ -3379,16 +3394,16 @@ function renderModuleManagerModal(){
       <div style="font-size:10px;font-weight:700;color:var(--txt3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px;display:flex;align-items:center;justify-content:space-between">
         <span>${grp}</span>
         <div style="display:flex;gap:4px">
-          <button class="btn btn-sm" style="font-size:9px;padding:1px 5px" onclick="setClientModuleGroup(${c.id},'${grp}',true)">All</button>
-          <button class="btn btn-sm" style="font-size:9px;padding:1px 5px" onclick="setClientModuleGroup(${c.id},'${grp}',false)">None</button>
+          <button class="btn btn-sm" style="font-size:9px;padding:1px 5px" onclick="setClientModuleGroup('${grp}',true)">All</button>
+          <button class="btn btn-sm" style="font-size:9px;padding:1px 5px" onclick="setClientModuleGroup('${grp}',false)">None</button>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
         ${ALL_MODULES.filter(m=>m.grp===grp).map(m=>{
-          const enabled=c.modules.includes(m.k);
+          const enabled=draft.includes(m.k);
           return`<label id="modlbl-${c.id}-${m.k}" style="display:flex;align-items:center;gap:7px;cursor:pointer;padding:4px 7px;border-radius:6px;border:1px solid ${enabled?'var(--accent)':'var(--border)'};background:${enabled?'var(--accent-bg)':'var(--bg)'}">
             <input id="modcb-${c.id}-${m.k}" type="checkbox" style="width:auto;accent-color:var(--accent);flex-shrink:0" ${enabled?'checked':''}
-              onchange="toggleClientModule(${c.id},'${m.k}',this.checked,this.closest('label'))"/>
+              onchange="toggleClientModule('${m.k}',this.checked,this.closest('label'))"/>
             <span style="font-size:12px;color:${enabled?'var(--accent-txt)':'var(--txt)'}">${m.l}</span>
           </label>`;
         }).join('')}
@@ -3396,8 +3411,8 @@ function renderModuleManagerModal(){
     </div>`).join('')}
   </div>
   <div style="display:flex;gap:8px;margin-top:12px">
-    <button class="btn btn-primary" onclick="closeM()">✓ Save Changes</button>
-    <button class="btn" onclick="closeM()">Close</button>
+    <button class="btn btn-primary" onclick="saveModuleManager()">✓ Save Changes</button>
+    <button class="btn" onclick="closeMConfirmed()">Close</button>
   </div>`;
 }
 
@@ -3910,10 +3925,34 @@ function closeM(){if(modal&&modal.type==='approvalTransferPicker')window._pendin
 // accidental-dismissal paths confirm first; the button/link based ones (view-only modals like
 // payslip or leave history, or simple pickers) still close instantly since there's nothing to
 // lose.
+// A handful of simpler modals (Add Loan, Add Candidate, God Admin password, Change My
+// Password, New Payroll Adjustment, and any future one built the same way) never mirror their
+// typed values into a modal.* property at all -- every field lives purely in the DOM, read only
+// once, at Save. None of the specific-property checks above can see that, so an outside
+// click/ESC on those would silently vanish whatever was typed with zero warning (the same class
+// of bug the lookupBulkAdd text field had). Falls back to asking the DOM itself: any live,
+// non-readonly text-like input or textarea inside the modal with real content counts as unsaved
+// work worth confirming before discarding.
+function modalHasDomTypedContent(){
+  const box=document.querySelector('.modal-box');
+  if(!box)return false;
+  // [list] excludes empPickerInput()'s datalist-backed autocomplete text inputs -- those start
+  // pre-filled with a sensible default selection (e.g. the first employee alphabetically), which
+  // isn't user-typed content at risk of loss in the same way a blank field the admin actually
+  // filled in is, and would otherwise fire this confirm on nearly every modal that has one.
+  const els=box.querySelectorAll(
+    'input[type=text]:not([readonly]):not([disabled]):not([list]),input[type=email]:not([readonly]):not([disabled]):not([list]),'+
+    'input[type=tel]:not([readonly]):not([disabled]):not([list]),input[type=number]:not([readonly]):not([disabled]):not([list]),'+
+    'input[type=password]:not([readonly]):not([disabled]):not([list]),input[type=search]:not([readonly]):not([disabled]):not([list]),'+
+    'input:not([type]):not([readonly]):not([disabled]):not([list]),textarea:not([readonly]):not([disabled])'
+  );
+  return[...els].some(el=>(el.value||'').trim());
+}
 function modalHasEditableDraft(){
-  return !!(modal&&(modal.draft||modal.ae||modal.data||modal.rows||modal.it||modal.group||modal.period||modal.changes||
+  return !!(modal&&(modal.draft||modal.ae||modal.data||modal.rows||modal.it||modal.group||modal.period||modal.changes||modal.emp||modal.draftModules||
     (modal.type==='lookupBulkAdd'&&modal.text&&modal.text.trim())||
-    (modal.type==='approvalTransferPicker'&&modal.replacementEid)));
+    (modal.type==='approvalTransferPicker'&&modal.replacementEid)||
+    modalHasDomTypedContent()));
 }
 function closeMConfirmed(){
   // The "Log in as user" picker only shows up mid-flow: enterClient() already opened this real
@@ -5094,7 +5133,7 @@ function pgEmployees(){
     </label>`:`<span style="font-size:12px;color:${e.active!==false?'var(--green)':'var(--red)'}">${e.active!==false?'Active':'Disabled'}</span>`}</td>
     <td><div style="display:flex;gap:5px">
       <button class="btn btn-sm" onclick="openEmp(${e.id})">201 →</button>
-      ${(isPlatformAdmin||canAccess('access_manage'))?`<button class="btn btn-sm" onclick="modal={type:'accessEdit',emp:USERS.find(u=>u.id===${e.id}),origRole:'${e.role}'};render()" title="Edit access level" style="padding:4px 8px">${ico('shield',13)}</button>`:''}
+      ${(isPlatformAdmin||canAccess('access_manage'))?`<button class="btn btn-sm" onclick="openAccessEdit(${e.id})" title="Edit access level" style="padding:4px 8px">${ico('shield',13)}</button>`:''}
       ${(isPlatformAdmin||canAccess('emp_reset_password'))?`<button class="btn btn-sm" onclick="modal={type:'resetPassword',emp:USERS.find(u=>u.id===${e.id}),newPass:''};render()" title="Reset password" style="padding:4px 8px">🔑</button>`:''}
       ${isPlatformAdmin?`<button class="btn btn-sm" style="padding:4px 8px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${e.id})" title="Log in with this user's actual access — Super Admin only">Log in as user</button>`:''}
       ${(isPlatformAdmin||isAdminUser(user)||canAccess('emp_delete'))?`<button class="btn btn-sm btn-danger" onclick="deleteEmp(${e.id})" title="Delete" style="padding:4px 8px">✕</button>`:''}
@@ -13015,6 +13054,18 @@ function ensureEmployeeShape(u){
   if(u.includeInPayroll===undefined)u.includeInPayroll='N'; /* opt-in later via Compensation tab */
   if(u.includeInTimekeeping===undefined)u.includeInTimekeeping='N';
 }
+// modal.emp used to be a direct reference to the live USERS record (USERS.find(...)), so every
+// onchange handler in the modal ("modal.emp.active=this.checked", "modal.emp.accessLevelId=...")
+// mutated that SAME object immediately -- Cancel (and the outside-click/ESC discard-confirm) had
+// nothing left to discard, since the change was already permanently applied to the real record
+// the instant it was clicked, confirm() dialog or not. Opens on a deep copy instead so
+// saveAccessEdit()'s own copy-back-to-target logic is the only path that actually commits anything.
+function openAccessEdit(id){
+  const src=USERS.find(u=>u.id===id);
+  if(!src)return;
+  modal={type:'accessEdit',emp:JSON.parse(JSON.stringify(src)),origRole:src.role};
+  render();
+}
 function saveAccessEdit(){
   const e=modal.emp;
   if(!(isPlatformAdmin||canAccess('access_manage'))){toast('You do not have permission to change access levels.','warning');return;}
@@ -13840,7 +13891,7 @@ function renderCredRows(filter){
       <td><span class="badge" style="background:${c}22;color:${c};font-size:10px">${al.name}</span></td>
       <td><code style="font-size:11px;background:var(--surface2);padding:2px 7px;border-radius:4px;border:1px solid var(--border)">${esc(u.pass||'—')}</code></td>
       <td><div style="display:flex;gap:4px;flex-wrap:wrap">
-        ${(isPlatformAdmin||canAccess('access_manage'))?`<button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'accessEdit',emp:USERS.find(x=>x.id===${u.id}),origRole:'${u.role}'};render()">🛡 Level</button>`:''}
+        ${(isPlatformAdmin||canAccess('access_manage'))?`<button class="btn btn-sm" style="font-size:11px" onclick="openAccessEdit(${u.id})">🛡 Level</button>`:''}
         ${(isPlatformAdmin||canAccess('emp_reset_password'))?`<button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'resetPassword',emp:USERS.find(x=>x.id===${u.id}),newPass:''};render()">🔑 Reset</button>`:''}
         ${u.id!==user.id?(isPlatformAdmin?`<button class="btn btn-sm" style="font-size:11px;background:var(--amber-bg);color:var(--amber-txt);border-color:var(--amber)" onclick="impersonateUser(${u.id})">Log in as user</button>`:''):'<span style="font-size:11px;color:var(--txt3)">← You</span>'}
         ${u.id!==user.id&&(isPlatformAdmin||isAdminUser(user)||canAccess('emp_delete'))?`<button class="btn btn-sm btn-danger" style="font-size:11px" onclick="deleteEmp(${u.id})">✕ Delete</button>`:''}
@@ -16591,7 +16642,7 @@ function pgEmpDetail(){
         <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)">
           <div style="font-size:11px;font-weight:600;color:var(--txt3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">Access Level</div>
           <span class="badge" style="background:${alColors[al.color]||'#6b7280'}22;color:${alColors[al.color]||'#6b7280'}">${al.name}</span>
-          ${(isA||canAccess('access_manage'))?`<button class="btn btn-sm" style="margin-top:8px;width:100%;font-size:11px" onclick="modal={type:'accessEdit',emp:USERS.find(u=>u.id===${e.id}),origRole:'${e.role}'};render()">Change level</button>`:''}
+          ${(isA||canAccess('access_manage'))?`<button class="btn btn-sm" style="margin-top:8px;width:100%;font-size:11px" onclick="openAccessEdit(${e.id})">Change level</button>`:''}
         </div>
       </div>
     </div>
