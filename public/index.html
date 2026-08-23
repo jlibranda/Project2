@@ -10401,7 +10401,37 @@ function renderModal(){
     <div class="form-row"><div class="field"><label>Daily Rate (auto)</label><input type="text" id="ne-rate" value="${ae.salaryPM?fmtN(ae.salaryPM/(normalizeDailyDivisor(ae.dailyDivisor,'')||COMPANY.dailyDivisor||22)):(ae.rate?fmtN(ae.rate):'')}" readonly style="background:var(--bg);color:var(--txt2)"/></div><div class="field"><label>Salary Per Annum (auto)</label><input type="text" id="ne-spa" value="${ae.salaryPM?fmtN(ae.salaryPM*(COMPANY.salaryMultiplier||13)):(ae.salaryPA?fmtN(ae.salaryPA):'')}" readonly style="background:var(--bg);color:var(--txt2)"/></div></div>
     <div class="form-row"><div class="field"><label>Mobile Allowance</label><input type="text" inputmode="decimal" id="ne-mob" value="${fmtN(ae.mobileAllowance||0)}" oninput="moneyMaskInput(this,'mobileAllowance')"/></div><div class="field"><label>Rice Allowance</label><input type="text" inputmode="decimal" id="ne-rice" value="${fmtN(ae.riceAllowance!==undefined?ae.riceAllowance:2000)}" oninput="moneyMaskInput(this,'riceAllowance')"/></div></div>
     <div class="form-row"><div class="field"><label>Stock Options</label><select id="ne-so" onchange="setAeField('stockOptions',this.value);render()"><option value="N">No</option><option value="Y" ${ae.stockOptions==='Y'?'selected':''}>Yes</option></select></div>${ae.stockOptions==='Y'?`<div class="field"><label>Number of Stock Options</label><input type="number" min="0" step="1" id="ne-socount" value="${ae.stockOptionsCount||''}" oninput="setAeField('stockOptionsCount',parseFloat(this.value)||0)"/></div>`:''}</div>
-    <div class="form-row"><div class="field"><label>ESOP Granted</label><select id="ne-esop" onchange="setAeField('esopGranted',this.value)"><option value="N">No</option><option value="Y" ${ae.esopGranted==='Y'?'selected':''}>Yes</option></select></div><div class="field"><label>ESOP Entity Name</label><input id="ne-esopent" value="${ae.esopEntity||''}" oninput="setAeField('esopEntity',this.value)"/></div></div>`
+    <div class="form-row"><div class="field"><label>ESOP Granted</label><select id="ne-esop" onchange="setAeField('esopGranted',this.value)"><option value="N">No</option><option value="Y" ${ae.esopGranted==='Y'?'selected':''}>Yes</option></select></div><div class="field"><label>ESOP Entity Name</label><input id="ne-esopent" value="${ae.esopEntity||''}" oninput="setAeField('esopEntity',this.value)"/></div></div>
+    ${(()=>{
+      const otMethod=ae.otPayMethod||'percentage';
+      const tiers=ae.otFixedTiers||COMPANY.otFixedTiersDefault||{firstHours:2,firstAmount:500,prorateFirstTier:true,firstTierMinimumMinutes:0,succeedingRate:50,prorateSucceedingHours:true,succeedingMinimumMinutes:0};
+      const firstProrated=tiers.prorateFirstTier!==false;
+      const succeedingProrated=tiers.prorateSucceedingHours!==false;
+      // Single-quoted oninput/onchange attributes here on purpose -- JSON.stringify always
+      // double-quotes its keys, which would otherwise prematurely close a double-quoted HTML
+      // attribute. Matches the same pattern used for this same field on the 201 edit page.
+      // References modal.ae, not the bare `ae` closure variable -- inline event handler
+      // attributes execute in global scope and can't see a variable local to this render
+      // function, the same way _shiftAssignEdit had to become a true global elsewhere.
+      const tierField=(key,label,width,step)=>`<div class="field" style="margin-bottom:6px;display:inline-block;width:${width}px;margin-right:10px"><label style="font-size:11px">${label}</label>
+        <input class="finput" type="number" step="${step||'0.01'}" style="font-size:13px" value="${tiers[key]||0}"
+          oninput='setAeField("otFixedTiers",Object.assign({},modal.ae.otFixedTiers||${JSON.stringify(tiers)},{${key}:parseFloat(this.value)||0}))'/></div>`;
+      const tierCheckbox=(key,label,hint)=>`<label style="display:flex;align-items:center;gap:8px;margin-top:4px;font-size:12px;cursor:pointer">
+        <input type="checkbox" style="width:auto;accent-color:var(--accent)" ${tiers[key]!==false?'checked':''} onchange='setAeField("otFixedTiers",Object.assign({},modal.ae.otFixedTiers||${JSON.stringify(tiers)},{${key}:this.checked}));render()'/>
+        <span>${label}${hint?` <span style="font-weight:400;color:var(--txt3)">${hint}</span>`:''}</span>
+      </label>`;
+      return`<div style="border-top:1px solid var(--border);margin:10px 0"></div>
+      <div class="section-header" style="margin-bottom:8px">Overtime Pay Method</div>
+      <select id="ne-otmethod" class="finput" style="max-width:320px;margin-bottom:8px" onchange="setAeField('otPayMethod',this.value);render()">
+        <option value="percentage" ${otMethod==='percentage'?'selected':''}>Percentage of Hourly Rate (default)</option>
+        <option value="fixed" ${otMethod==='fixed'?'selected':''}>Fixed Amount (tiered)</option>
+      </select>
+      ${otMethod==='fixed'?`<div>${tierField('firstHours','First (hrs)',90)}${tierField('firstAmount','First-tier Amount (₱)',150)}${tierField('succeedingRate','Succeeding Rate (₱/hr)',150)}</div>
+        ${tierCheckbox('prorateFirstTier','Prorate first tier by actual time','— unchecked = must fully complete the first-tier hours to earn any of it')}
+        ${firstProrated?tierField('firstTierMinimumMinutes','First-tier Minimum (min)',180,'1'):''}
+        ${tierCheckbox('prorateSucceedingHours','Prorate succeeding hours by actual time','— unchecked = paid only in completed whole hours')}
+        ${succeedingProrated?tierField('succeedingMinimumMinutes','Succeeding Minimum (min)',180,'1'):''}`:''}`;
+    })()}`
     :(modal.addTab||0)===3?`
     <div class="form-row">
       <div class="field"><label>SSS No. <span style="font-weight:400;color:var(--txt3);font-size:11px">12-3456789-0</span></label>
