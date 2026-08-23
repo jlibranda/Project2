@@ -135,7 +135,7 @@
       var fixedPayout=record.frequency==='every-payroll'||record.frequency==='quarterly';
       var payoutAmount=fixedPayout?monthlyAmount:monthlyAmount*factor;
       var capFactor=record.frequency==='every-payroll'?PayrollRuleEngine.frequencyFactor(group):(record.frequency==='quarterly'?3:factor);
-      return Object.assign({},record,{name:payItem.name,taxable:payItem.taxable!==false,deminimis:!!payItem.deminimis,payoutAmount:PayrollRuleEngine.money(payoutAmount),exemptLimit:PayrollRuleEngine.money(Number(payItem.dmLimit||0)*capFactor),source:'Income Type '+payItem.code+' / employee recurring allowance',formula:record.frequency==='every-payroll'?'Fixed amount every payroll':record.frequency==='quarterly'?'Fixed quarterly amount in configured payout month':'Monthly entitlement × '+PayrollRuleEngine.money(factor)+' schedule factor'});
+      return Object.assign({},record,{name:payItem.name,taxable:payItem.taxable!==false,deminimis:!!payItem.deminimis,attendanceBased:!!payItem.attendanceBased,payoutAmount:PayrollRuleEngine.money(payoutAmount),exemptLimit:PayrollRuleEngine.money(Number(payItem.dmLimit||0)*capFactor),source:'Income Type '+payItem.code+' / employee recurring allowance',formula:record.frequency==='every-payroll'?'Fixed amount every payroll':record.frequency==='quarterly'?'Fixed quarterly amount in configured payout month':'Monthly entitlement × '+PayrollRuleEngine.money(factor)+' schedule factor'});
     }).filter(Boolean);
   }
   function applyAnnualizedTax(result,emp,period){
