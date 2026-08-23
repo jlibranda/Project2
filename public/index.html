@@ -2985,8 +2985,18 @@ async function doLogin(){
     errEl.style.display='block';return;
   }
 
+  // The backend already authenticated (or rejected) email+password above -- read its verdict
+  // off the signed session it issued instead of re-comparing the typed password against the
+  // frontend's own local GOD_PASS variable. GOD_PASS only ever tracked whatever this ONE browser
+  // tab last saved (or its hardcoded default): a password changed from Settings on a different
+  // device, or after a page reload here, would silently make this check wrong in either
+  // direction -- rejecting the real new password, or (worse) still accepting a since-changed old
+  // one. See saveGodAdminPassword() / POST /api/platform/god-password for where it's genuinely
+  // persisted now.
+  const loginIdentity=window.getSessionIdentity&&window.getSessionIdentity();
+
   /* ── Platform God Admin ── */
-  if(e==='god@sproutripple.com'&&p===GOD_PASS){
+  if(loginIdentity&&loginIdentity.sub===e&&loginIdentity.role==='platform'){
     isPlatformAdmin=true;
     user={id:0,name:'God Admin',email:e,role:'platform',initials:'GA'};
     view='platform';tab=0;modal=null;
@@ -3523,6 +3533,27 @@ function applyAppState(s){
   if(window.applyPayrollGovernanceState)window.applyPayrollGovernanceState(s.payrollGovernance);
 }
 
+// Persists a new God Admin password to the real backend (POST /api/platform/god-password) --
+// previously this only ever changed the frontend-only GOD_PASS variable, so the change silently
+// stopped applying the moment the page reloaded or a different device logged in, while every
+// backend-authorized action (Enter Portal, Log in as user, etc.) kept requiring the original
+// password regardless of what Settings showed as "saved." See godAdminPassword() in server.js.
+async function saveGodAdminPassword(){
+  const current=document.getElementById('god-pass-current')?.value||'';
+  const next=document.getElementById('god-pass-new')?.value?.trim()||'';
+  if(!current){alert('Enter your current password first.');return;}
+  if(!next||next.length<6){alert('New password must be at least 6 characters.');return;}
+  if(!window.apiRequest){alert('Not connected to the data service — cannot change the password right now.');return;}
+  try{
+    await window.apiRequest('/platform/god-password',{method:'POST',body:JSON.stringify({currentPassword:current,newPassword:next})});
+    GOD_PASS=next;
+    document.getElementById('god-pass-current').value='';
+    document.getElementById('god-pass-new').value='';
+    alert('✅ God Admin password updated. This takes effect immediately for every login and device.');
+  }catch(e){
+    alert('Could not update the password: '+(e.message||'Unknown error'));
+  }
+}
 async function enterClient(clientId){
   const c=PLATFORM_CLIENTS.find(x=>x.id===clientId);
   if(!c)return;
@@ -10718,20 +10749,21 @@ function renderModal(){
 
     ${settingTab==='security'?`
     <div class="field" style="margin-bottom:10px">
-      <label>God Admin Password</label>
+      <label>Current Password</label>
+      <input id="god-pass-current" type="password" class="finput" style="font-family:'JetBrains Mono',monospace" placeholder="Enter your current God Admin password" autocomplete="current-password"/>
+    </div>
+    <div class="field" style="margin-bottom:10px">
+      <label>New God Admin Password</label>
       <div style="display:flex;gap:8px;align-items:center">
-        <input id="god-pass-new" type="text" class="finput" value="${esc(GOD_PASS)}"
+        <input id="god-pass-new" type="text" class="finput" value=""
           style="font-family:'JetBrains Mono',monospace;flex:1"
-          placeholder="Enter new God Admin password"/>
-        <button class="btn btn-sm" onclick="
-          const v=document.getElementById('god-pass-new')?.value?.trim();
-          if(!v||v.length<6){alert('Min 6 characters');return;}
-          GOD_PASS=v;alert('✅ God Admin password updated to: '+v)">Save</button>
+          placeholder="Enter new God Admin password" autocomplete="new-password"/>
+        <button class="btn btn-sm" onclick="saveGodAdminPassword()">Save</button>
       </div>
       <div style="font-size:11px;color:var(--txt3);margin-top:4px">Login: god@sproutripple.com</div>
     </div>
-    <div style="padding:10px 12px;background:var(--amber-bg);border-radius:7px;font-size:12px;color:var(--amber-txt)">
-      ⚠ Password changes are session-only. To make permanent, update the <code>GOD_PASS</code> variable in the HTML file.
+    <div style="padding:10px 12px;background:var(--blue-bg);color:var(--blue-txt);border-radius:7px;font-size:12px">
+      Changing this here updates the real, backend-stored password — it takes effect immediately for every login and every device, not just this browser tab.
     </div>`:''}
 
     ${settingTab==='audit'?`
