@@ -244,7 +244,32 @@
     });
 
     var absentRule = ruleValue(rules,'ABSENCE_DEDUCTION',date,context,1);
-    if (attendance.absentDays) addLine(lines,Object.assign({code:'ABSENT',name:'Unpaid Absence',type:'deduction',quantity:attendance.absentDays,rate:daily,multiplier:absentRule.value,amount:daily*attendance.absentDays*absentRule.value,formula:'Daily rate × unpaid absence days'},lineFromRule(absentRule.rule,'ABSENCE_DEDUCTION','Labor standards / company attendance policy')));
+    if (attendance.absentDays) {
+      // Normal case: Daily Rate x Days Absent, using the company's single configured Daily Rate --
+      // consistent with OT/ND/Late elsewhere in this engine.
+      // Near/full-period absence fallback: for a cutoff longer than the Daily Rate Divisor implies
+      // (e.g. a 12-working-day semi-monthly cutoff against a divisor of 22), that fixed rate can
+      // overshoot the period's own Basic Pay once absences pile up -- deducting more than was ever
+      // owed for the period. When that happens, fall back to period-exact proration (Period Base Pay
+      // x Days Present / Period Days), which by construction never exceeds Period Base Pay.
+      var fixedRateAmount = money(daily * attendance.absentDays * absentRule.value);
+      var periodDaysForFallback = number(input.periodDays) || configuredDailyDivisor;
+      var absentAmount, absentFormula;
+      if (fixedRateAmount >= baseBasic && periodDaysForFallback > 0) {
+        var daysPresentForFallback = Math.max(0, periodDaysForFallback - attendance.absentDays);
+        absentAmount = money(baseBasic - money(baseBasic * daysPresentForFallback / periodDaysForFallback));
+        absentFormula = 'Period Base Pay × (unpaid absence days ÷ period days) -- near/full-period absence fallback, since Daily Rate × Days Absent would exceed Period Base Pay';
+      } else {
+        absentAmount = fixedRateAmount;
+        absentFormula = 'Daily rate × unpaid absence days';
+      }
+      // lineFromRule's own `formula` (pulled from the matched PAYROLL_RULEBOOK rule) otherwise wins
+      // over the object's own formula key above, since it's spread in second -- same gotcha as the
+      // OT_REG override above, so absentFormula is set explicitly after the merge instead.
+      var absentLine=Object.assign({code:'ABSENT',name:'Unpaid Absence',type:'deduction',quantity:attendance.absentDays,rate:daily,multiplier:absentRule.value,amount:absentAmount,formula:absentFormula},lineFromRule(absentRule.rule,'ABSENCE_DEDUCTION','Labor standards / company attendance policy'));
+      absentLine.formula=absentFormula;
+      addLine(lines,absentLine);
+    }
     var lateRounding = ruleValue(rules,'LATE_ROUNDING_MINUTES',date,context,1).value;
     var lateMinutes = lateRounding>1?Math.ceil(number(attendance.lateMinutes)/lateRounding)*lateRounding:number(attendance.lateMinutes);
     // exemptLateDeduction/exemptUndertimeDeduction are a per-employee payroll exception,
