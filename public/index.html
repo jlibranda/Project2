@@ -10332,7 +10332,7 @@ function renderModal(){
     </div>
     <div class="section-header">Earnings</div>
     <div class="info-row"><span>Basic pay (${i.pr} days × ${fmt(emp.rate)})</span><span class="mono">${fmt(i.basic)}</span></div>
-    ${i.ot>0?`<div class="info-row"><span style="color:var(--accent)">Overtime pay (${i.otH}h × 125%)</span><span class="mono" style="color:var(--accent)">+${fmt(i.ot)}</span></div>`:''}
+    ${(i.calculationTrace||[]).filter(l=>l.type==='earning'&&l.code!=='BASIC'&&l.code!=='ND').map(l=>`<div class="info-row"><span style="color:var(--accent)">${esc(l.name)}</span><span class="mono" style="color:var(--accent)">+${fmt(l.amount)}</span></div>`).join('')}
     ${i.nd>0?`<div class="info-row"><span style="color:var(--purple)">Night differential (${i.ndH}h × 10%)</span><span class="mono" style="color:var(--purple)">+${fmt(i.nd)}</span></div>`:''}
     ${i.lded>0?`<div class="info-row"><span style="color:var(--red)">Late deduction</span><span class="mono" style="color:var(--red)">−${fmt(i.lded)}</span></div>`:''}
     ${i.aded>0?`<div class="info-row"><span style="color:var(--red)">Absence deduction</span><span class="mono" style="color:var(--red)">−${fmt(i.aded)}</span></div>`:''}
