@@ -456,14 +456,9 @@
     if (el) el.focus();
   };
   function renderAttendanceReportTab() {
-    var range = attReportRange('attReport');
     return '<div class="card-title" style="margin-bottom:6px">Attendance Report</div>'+
       '<div class="card-sub" style="margin-bottom:14px">Export a payroll-ready attendance report for one pay period (or a custom date range) — a per-employee summary plus the full daily breakdown behind it.</div>'+
-      renderAttReportFilterUI('attReport', { showMatchList:true })+
-      '<div style="margin-top:10px;padding:10px 12px;background:var(--amber-bg);border-radius:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'+
-        '<div style="font-size:12px;color:var(--amber-txt);flex:1;min-width:200px">Find every scheduled work day in this range with no time log at all (no biometric, Web Bundy, or manual entry), and mark it LWOP.</div>'+
-        '<button class="btn btn-sm btn-amber" onclick="flagMissingLogsAsLWOP(\'attReport\')" '+(!range.from||!range.to?'disabled title="Select a pay period or date range first"':'')+'>🔍 Flag Missing Logs as LWOP</button>'+
-      '</div>';
+      renderAttReportFilterUI('attReport', { showMatchList:true });
   }
   // A "missing log" day: a scheduled work day (not a rest day, has a configured shift, employee
   // already hired) with no approved leave covering it and no attendance record at all yet.
@@ -485,30 +480,29 @@
   // The 4th automatic attendance rule ("kulang ang time logs -> automatic LWOP") can't run off a
   // punch event like the other three (computeFromPunches has nothing to compute from when there
   // are literally zero punches for the day) — it needs a day to have fully passed with nothing
-  // recorded at all. The Attendance Report already shows/tallies these as LWOP on its own (see
-  // missingLogDates above), but that's a computed-for-display figure only; this is what actually
-  // commits a real, reviewable record for each one — an explicit, idempotent sweep rather than a
-  // silent background write.
-  window.flagMissingLogsAsLWOP = function (ns) {
-    if (!(isAdminUser(user) || isPlatformAdmin || canAccess('att_edit'))) return;
-    var range = attReportRange(ns);
-    if (!range.from || !range.to) { toast('Select a pay period or date range first.', 'warning'); return; }
+  // recorded at all. Rather than a manually-triggered sweep, this now runs automatically as part
+  // of processPayroll() (index.html) for the employees/dates being processed, right before the
+  // draft is built, so payroll and the Attendance Report never disagree about which days count —
+  // gated on the client actually having the Attendance/Timekeeping module active, since without
+  // any time tracking there is no real basis to call a day "missing" in the first place. Still an
+  // explicit, idempotent write (upsertAttendance no-ops on days that already have a record) rather
+  // than a silent computed-only adjustment, so every LWOP day it creates stays a normal, visible,
+  // reviewable/editable attendance record like any other.
+  window.sweepMissingLogsAsLWOP = function (empIds, from, to) {
+    if (!from || !to || !clientHasModule('attendance')) return 0;
     var shifts = COMPANY.shifts || [];
-    var emps = attReportMatchedEmps(ns).filter(function (u) { return u.active !== false; });
+    var emps = USERS.filter(function (u) { return empIds.indexOf(u.id) >= 0 && u.active !== false; });
     var candidates = [];
     emps.forEach(function (emp) {
-      missingLogDates(emp, range.from, range.to, shifts).forEach(function (date) {
+      missingLogDates(emp, from, to, shifts).forEach(function (date) {
         candidates.push({ emp: emp, date: date });
       });
     });
-    if (!candidates.length) { toast('No missing logs found in this range for the matched employees.', 'info'); return; }
-    if (!confirm('Found '+candidates.length+' scheduled work day(s) with no time log at all, from '+range.from+' to '+range.to+'.\n\nMark all of these LWOP (Leave Without Pay / Absent)? Nothing existing is touched — each gets a clearly-labeled new record you can review or edit afterward.')) return;
     candidates.forEach(function (c) {
       upsertAttendance(c.emp.id, c.date, { tin:'', tout:'', status:'absent', ot:0, nd:0, notes:'LWOP — no time log on record for this scheduled work day', source:'attendance-policy', approvalStatus:'approved', filedBy:'Attendance Policy' });
     });
-    queueSync('Attendance');
-    toast(candidates.length+' day(s) marked LWOP for missing time logs.', 'success');
-    render();
+    if (candidates.length) queueSync('Attendance');
+    return candidates.length;
   };
   // Time Logs: the same filter/search engine as Attendance Report, but for browsing and editing
   // the underlying records directly instead of only exporting them.

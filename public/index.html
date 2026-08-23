@@ -8333,6 +8333,11 @@ function processPayroll(){
     toast('Payroll cannot be processed yet: '+pendingAttendance.length+' timekeeping record(s) are still pending approval.','warning',6500);
     return;
   }
+  // Any scheduled work day in range with literally no time log at all (no biometric, Web Bundy,
+  // or manual entry) automatically becomes LWOP before the draft is built -- only when the client
+  // actually has the Attendance/Timekeeping module active, since without real time tracking
+  // there's no basis to call a day "missing" (see sweepMissingLogsAsLWOP in compliance.js).
+  const sweptCount=typeof sweepMissingLogsAsLWOP==='function'?sweepMissingLogsAsLWOP(emps.map(e=>e.id),attendanceFrom,attendanceTo):0;
   PAYROLL_DRAFT={};
   emps.forEach(function(emp){
     PAYROLL_DRAFT[emp.id]=buildDraftRow(emp,grp,calculationPeriod);
@@ -8345,7 +8350,7 @@ function processPayroll(){
   window._payPreviewSearch='';window._payPreviewDepartment='all';window._payPreviewStatus='all';window._payPreviewPage=1;
   window._payrollTraceEmployee=emps[0]?.id||null;
   render();
-  toast('Payroll processed fresh — '+emps.length+' employee(s), '+allowanceLines+' allowance line(s), and '+attendanceCount+' approved timekeeping record(s).','success',6000);
+  toast('Payroll processed fresh — '+emps.length+' employee(s), '+allowanceLines+' allowance line(s), and '+attendanceCount+' approved timekeeping record(s).'+(sweptCount?' '+sweptCount+' day(s) auto-marked LWOP for missing time logs.':''),'success',6500);
 }
 function previewPayroll(){return processPayroll();}
 
