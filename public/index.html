@@ -1431,6 +1431,7 @@ function ensureAnnualizedTaxConfig(){
   COMPANY.taxPolicy=Object.assign({annualizationEnabled:true,autoSuggestDecember:true,requireConfirmedTaxRecord:true,taxTableVersion:'BIR RR 11-2018 Annex E · 2023 onwards'},COMPANY.taxPolicy||{});
   PAY_PERIODS.forEach(p=>{if(!p.taxEvent)p.taxEvent='regular';if(!p.taxYear)p.taxYear=Number(String(p.bir1601CMonth||p.to||today()).slice(0,4));});
   USERS.filter(e=>e.role==='employee').forEach(e=>{if(!Array.isArray(e.taxYearRecords))e.taxYearRecords=[];});
+  COMPANY.absenceFallbackPolicy=Object.assign({mode:'off',switchAtAbsentDays:null},COMPANY.absenceFallbackPolicy||{});
 }
 function taxEventLabel(value){return {'regular':'Regular withholding','annualized-year-end':'Annualized · Year-end','annualized-final-pay':'Annualized · Final pay'}[value]||'Regular withholding';}
 function employeeTaxRecord(emp,year,create=false){
@@ -14629,6 +14630,23 @@ function pgCompanySettings(){
     </div>
 
     <div class="card">
+      <div class="card-title" style="margin-bottom:4px">Partial-Period Basic Pay Policy</div>
+      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">The Unpaid Absence deduction is always Daily Rate × Days Absent by default. Optionally switch to a different formula once absences reach a configured count within a cutoff — useful for a longer-than-average cutoff where the fixed rate could otherwise deduct more than the period's own Basic Pay.</div>
+      <div class="field"><label>Switch-Over Formula</label>
+        <select id="co-af-mode" class="finput" onchange="document.getElementById('co-af-switch-row').style.display=this.value==='off'?'none':'';">
+          <option value="off" ${(COMPANY.absenceFallbackPolicy?.mode||'off')==='off'?'selected':''}>Off (default) — always Daily Rate × Days Absent</option>
+          <option value="period-based" ${COMPANY.absenceFallbackPolicy?.mode==='period-based'?'selected':''}>Period-based — Period Base Pay × (Days Present ÷ Period Days)</option>
+          <option value="half-month-minus-present" ${COMPANY.absenceFallbackPolicy?.mode==='half-month-minus-present'?'selected':''}>Half-Month minus Present — Period Base Pay − (Daily Rate × Days Present)</option>
+        </select>
+      </div>
+      <div id="co-af-switch-row" style="display:${(COMPANY.absenceFallbackPolicy?.mode||'off')==='off'?'none':''}">
+        <div class="field"><label>Switch Point (absent days) <span style="font-weight:400;color:var(--txt3);font-size:11px">required — the switch-over formula applies once absences reach this count within the cutoff</span></label>
+          <input id="co-af-switch" class="finput" type="number" min="1" step="1" value="${COMPANY.absenceFallbackPolicy?.switchAtAbsentDays||''}" placeholder="e.g. 6" style="width:120px"/>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-title" style="margin-bottom:4px">BIR Tax & Annualization Policy</div>
       <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">Controls year-end and termination reconciliation. The payroll calendar selects the tax event for each run.</div>
       <label style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px"><span><strong style="font-size:12px">Enable annualized withholding</strong><br><span style="font-size:10px;color:var(--txt3)">Allows BIR year-end and final-pay annualization events.</span></span><input id="co-tax-annualized" type="checkbox" style="width:auto;accent-color:var(--accent)" ${COMPANY.taxPolicy.annualizationEnabled?'checked':''}/></label>
@@ -14777,6 +14795,11 @@ function saveCompany(){
   COMPANY.taxPolicy.annualizationEnabled=document.getElementById('co-tax-annualized')?.checked??COMPANY.taxPolicy.annualizationEnabled;
   COMPANY.taxPolicy.autoSuggestDecember=document.getElementById('co-tax-december')?.checked??COMPANY.taxPolicy.autoSuggestDecember;
   COMPANY.taxPolicy.requireConfirmedTaxRecord=document.getElementById('co-tax-confirm')?.checked??COMPANY.taxPolicy.requireConfirmedTaxRecord;
+  const afMode=document.getElementById('co-af-mode')?.value||'off';
+  const afSwitchInput=document.getElementById('co-af-switch')?.value;
+  if(afMode!=='off'&&!(Number(afSwitchInput)>0)){toast('Switch Point (absent days) is required when a Partial-Period Basic Pay switch-over formula is selected.','warning');return;}
+  COMPANY.absenceFallbackPolicy.mode=afMode;
+  COMPANY.absenceFallbackPolicy.switchAtAbsentDays=afMode==='off'?null:Number(afSwitchInput);
   if(_pendingBrand){
     Object.assign(COMPANY,_pendingBrand);
     _pendingBrand=null;

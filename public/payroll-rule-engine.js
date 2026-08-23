@@ -245,23 +245,30 @@
 
     var absentRule = ruleValue(rules,'ABSENCE_DEDUCTION',date,context,1);
     if (attendance.absentDays) {
-      // Normal case: Daily Rate x Days Absent, using the company's single configured Daily Rate --
-      // consistent with OT/ND/Late elsewhere in this engine.
-      // Near/full-period absence fallback: for a cutoff longer than the Daily Rate Divisor implies
-      // (e.g. a 12-working-day semi-monthly cutoff against a divisor of 22), that fixed rate can
-      // overshoot the period's own Basic Pay once absences pile up -- deducting more than was ever
-      // owed for the period. When that happens, fall back to period-exact proration (Period Base Pay
-      // x Days Present / Period Days), which by construction never exceeds Period Base Pay.
+      // Normal case, always: Daily Rate x Days Absent, using the company's single configured Daily
+      // Rate -- consistent with OT/ND/Late elsewhere in this engine.
+      // Optional switch-over (Company Settings -> Partial-Period Basic Pay Policy): once absent days
+      // reach a client-configured count, switch to a different formula for the rest of that cutoff.
+      // 'period-based' uses period-exact proration (Period Base Pay x Days Present / Period Days),
+      // which by construction never exceeds Period Base Pay. 'half-month-minus-present' computes
+      // Period Base Pay minus (Daily Rate x Days Present) instead -- still anchored to the configured
+      // Daily Rate, just counting from the present side once the switch point is reached. Off by
+      // default: with no switch-over configured, the fixed formula applies unconditionally, even if it
+      // would exceed Period Base Pay for a longer-than-average cutoff.
       var fixedRateAmount = money(daily * attendance.absentDays * absentRule.value);
-      var periodDaysForFallback = number(input.periodDays) || configuredDailyDivisor;
-      var absentAmount, absentFormula;
-      if (fixedRateAmount >= baseBasic && periodDaysForFallback > 0) {
+      var fallbackPolicy = input.absenceFallbackPolicy || {mode:'off'};
+      var switchAt = number(fallbackPolicy.switchAtAbsentDays);
+      var absentAmount = fixedRateAmount, absentFormula = 'Daily rate × unpaid absence days';
+      if (fallbackPolicy.mode !== 'off' && switchAt > 0 && attendance.absentDays >= switchAt) {
+        var periodDaysForFallback = number(input.periodDays) || configuredDailyDivisor;
         var daysPresentForFallback = Math.max(0, periodDaysForFallback - attendance.absentDays);
-        absentAmount = money(baseBasic - money(baseBasic * daysPresentForFallback / periodDaysForFallback));
-        absentFormula = 'Period Base Pay × (unpaid absence days ÷ period days) -- near/full-period absence fallback, since Daily Rate × Days Absent would exceed Period Base Pay';
-      } else {
-        absentAmount = fixedRateAmount;
-        absentFormula = 'Daily rate × unpaid absence days';
+        if (fallbackPolicy.mode === 'half-month-minus-present') {
+          absentAmount = money(baseBasic - money(daily * daysPresentForFallback));
+          absentFormula = 'Period Base Pay − (Daily Rate × Days Present) -- switch-over at '+switchAt+'+ absent days (Partial-Period Basic Pay Policy)';
+        } else {
+          absentAmount = money(baseBasic - money(baseBasic * daysPresentForFallback / periodDaysForFallback));
+          absentFormula = 'Period Base Pay × (unpaid absence days ÷ period days) -- switch-over at '+switchAt+'+ absent days (Partial-Period Basic Pay Policy)';
+        }
       }
       // lineFromRule's own `formula` (pulled from the matched PAYROLL_RULEBOOK rule) otherwise wins
       // over the object's own formula key above, since it's spread in second -- same gotcha as the
