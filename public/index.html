@@ -10353,10 +10353,13 @@ function renderModal(){
     :(modal.addTab||0)===2?`
     <div class="form-row"><div class="field"><label>Currency</label><select id="ne-curr" onchange="setAeField('currency',this.value);render()"><option ${ae.currency!=='USD'?'selected':''}>PHP</option><option ${ae.currency==='USD'?'selected':''}>USD</option></select></div></div>
     <div class="field"><label>Monthly Rate (${currencySymbol(ae.currency)}) *</label><input type="text" inputmode="decimal" id="ne-ratepm" value="${ae.salaryPM?fmtN(ae.salaryPM):''}" style="${reqBorderStyle(ae.salaryPM)}" oninput="moneyMaskInput(this,'salaryPM');reqBorderLive(this,this.value);recalcSalary();"/></div>
+    <div class="field"><label>Daily Rate Divisor <span style="font-weight:400;color:var(--txt3);font-size:11px">blank = company default (${formatDailyDivisor(COMPANY.dailyDivisor)})</span></label>
+      <input id="ne-divisor" class="finput" type="number" min="1" max="31" step="0.0001" value="${ae.dailyDivisor?formatDailyDivisor(ae.dailyDivisor):''}" placeholder="${formatDailyDivisor(COMPANY.dailyDivisor)}"
+        style="width:115px" oninput="setAeField('dailyDivisor',this.value);this.style.borderColor=(this.value&&!isDailyDivisorInputValid(this.value))?'var(--red)':'var(--border)';recalcSalary();"/></div>
     <div style="background:var(--accent-bg);border-radius:8px;padding:10px 12px;margin:8px 0;font-size:12px;color:var(--accent-txt)" id="salary-preview">
-      ${ae.salaryPM?`<strong>Auto-computed:</strong> ${currencySymbol(ae.currency)}${fmtN(ae.salaryPM)} ÷ ${formatDailyDivisor(COMPANY.dailyDivisor||22)} days = <strong>${currencySymbol(ae.currency)}${fmtN(ae.salaryPM/(COMPANY.dailyDivisor||22))}</strong> daily rate · × ${COMPANY.salaryMultiplier||13} months = <strong>${currencySymbol(ae.currency)}${fmtN(ae.salaryPM*(COMPANY.salaryMultiplier||13))}</strong> per annum`:'Enter monthly rate above to auto-compute daily rate and annual salary.'}
+      ${ae.salaryPM?`<strong>Auto-computed:</strong> ${currencySymbol(ae.currency)}${fmtN(ae.salaryPM)} ÷ ${formatDailyDivisor(normalizeDailyDivisor(ae.dailyDivisor,'')||COMPANY.dailyDivisor||22)} days = <strong>${currencySymbol(ae.currency)}${fmtN(ae.salaryPM/(normalizeDailyDivisor(ae.dailyDivisor,'')||COMPANY.dailyDivisor||22))}</strong> daily rate · × ${COMPANY.salaryMultiplier||13} months = <strong>${currencySymbol(ae.currency)}${fmtN(ae.salaryPM*(COMPANY.salaryMultiplier||13))}</strong> per annum`:'Enter monthly rate above to auto-compute daily rate and annual salary.'}
     </div>
-    <div class="form-row"><div class="field"><label>Daily Rate (auto)</label><input type="text" id="ne-rate" value="${ae.salaryPM?fmtN(ae.salaryPM/(COMPANY.dailyDivisor||22)):(ae.rate?fmtN(ae.rate):'')}" readonly style="background:var(--bg);color:var(--txt2)"/></div><div class="field"><label>Salary Per Annum (auto)</label><input type="text" id="ne-spa" value="${ae.salaryPM?fmtN(ae.salaryPM*(COMPANY.salaryMultiplier||13)):(ae.salaryPA?fmtN(ae.salaryPA):'')}" readonly style="background:var(--bg);color:var(--txt2)"/></div></div>
+    <div class="form-row"><div class="field"><label>Daily Rate (auto)</label><input type="text" id="ne-rate" value="${ae.salaryPM?fmtN(ae.salaryPM/(normalizeDailyDivisor(ae.dailyDivisor,'')||COMPANY.dailyDivisor||22)):(ae.rate?fmtN(ae.rate):'')}" readonly style="background:var(--bg);color:var(--txt2)"/></div><div class="field"><label>Salary Per Annum (auto)</label><input type="text" id="ne-spa" value="${ae.salaryPM?fmtN(ae.salaryPM*(COMPANY.salaryMultiplier||13)):(ae.salaryPA?fmtN(ae.salaryPA):'')}" readonly style="background:var(--bg);color:var(--txt2)"/></div></div>
     <div class="form-row"><div class="field"><label>Mobile Allowance</label><input type="text" inputmode="decimal" id="ne-mob" value="${fmtN(ae.mobileAllowance||0)}" oninput="moneyMaskInput(this,'mobileAllowance')"/></div><div class="field"><label>Rice Allowance</label><input type="text" inputmode="decimal" id="ne-rice" value="${fmtN(ae.riceAllowance!==undefined?ae.riceAllowance:2000)}" oninput="moneyMaskInput(this,'riceAllowance')"/></div></div>
     <div class="form-row"><div class="field"><label>Stock Options</label><select id="ne-so" onchange="setAeField('stockOptions',this.value);render()"><option value="N">No</option><option value="Y" ${ae.stockOptions==='Y'?'selected':''}>Yes</option></select></div>${ae.stockOptions==='Y'?`<div class="field"><label>Number of Stock Options</label><input type="number" min="0" step="1" id="ne-socount" value="${ae.stockOptionsCount||''}" oninput="setAeField('stockOptionsCount',parseFloat(this.value)||0)"/></div>`:''}</div>
     <div class="form-row"><div class="field"><label>ESOP Granted</label><select id="ne-esop" onchange="setAeField('esopGranted',this.value)"><option value="N">No</option><option value="Y" ${ae.esopGranted==='Y'?'selected':''}>Yes</option></select></div><div class="field"><label>ESOP Entity Name</label><input id="ne-esopent" value="${ae.esopEntity||''}" oninput="setAeField('esopEntity',this.value)"/></div></div>`
@@ -12802,7 +12805,8 @@ function renderModal(){
 }
 function recalcSalary(){
   const pm=parseFloat((document.getElementById('ne-ratepm')?.value||'').replace(/,/g,''))||0;
-  const div=COMPANY.dailyDivisor||22;
+  const divInput=document.getElementById('ne-divisor')?.value||'';
+  const div=normalizeDailyDivisor(divInput,'')||COMPANY.dailyDivisor||22;
   const months=COMPANY.salaryMultiplier||13;
   const dr=+(pm/div).toFixed(4);
   const pa=+(pm*months).toFixed(2);
@@ -12893,6 +12897,7 @@ function saveEmp(){
   UPPERCASE_ON_SAVE_FIELDS.forEach(k=>{if(ae[k])ae[k]=String(ae[k]).toUpperCase();});
   ['sss','ph','pi','tin'].forEach(k=>{if(!ae[k])ae[k]='—';}); /* normalize blank govt IDs to the app's placeholder */
   if(ae.rdo)ae.rdo=normalizeRdoCode(ae.rdo);
+  ae.dailyDivisor=ae.dailyDivisor?normalizeDailyDivisor(ae.dailyDivisor,''):'';
   if(ae.stockOptions!=='Y')ae.stockOptionsCount=0;
   if(!ae.maritalStatus||ae.maritalStatus==='Single')ae.spouseName='';
   if(!ae.hired)ae.hired=today(); /* always has a sensible default shown in the field; never worth blocking on */
@@ -12929,7 +12934,7 @@ function saveEmp(){
   if(!confirm('Are you sure you want to save this new employee?'))return;
   const newId=Math.max(...USERS.map(u=>u.id))+1;
   const months=COMPANY.salaryMultiplier||13;
-  const div=COMPANY.dailyDivisor||22;
+  const div=normalizeDailyDivisor(ae.dailyDivisor,'')||COMPANY.dailyDivisor||22;
   ae.rate=+(ae.salaryPM/div).toFixed(4);
   ae.salaryPA=+(ae.salaryPM*months).toFixed(2);
   const mgrObj=ae.managerId?USERS.find(u=>u.eid===ae.managerId):null;
