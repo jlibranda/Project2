@@ -238,11 +238,12 @@
       input.recurringAllowances.forEach(function (allowance) {
         var paid = number(allowance.payoutAmount);
         if (!paid) return;
-        if (attendance.absentDays) paid = money(Math.max(0, paid - absenceDeduction(paid, allowance.monthlyAmount||allowance.amount)));
+        var prorated = allowance.attendanceBased && attendance.absentDays;
+        if (prorated) paid = money(Math.max(0, paid - absenceDeduction(paid, allowance.monthlyAmount||allowance.amount)));
         if (!paid) return;
         var code = allowance.payItemCode || 'ALLOWANCE';
         var source = allowance.source || 'Employee recurring allowance setup';
-        var formula = attendance.absentDays ? absenceFormulaText('Allowance entitlement') : (allowance.formula || 'Monthly entitlement converted by configured distribution schedule');
+        var formula = prorated ? absenceFormulaText('Allowance entitlement') : (allowance.formula || 'Monthly entitlement converted by configured distribution schedule');
         if (allowance.deminimis) {
           var exemptLimit = number(allowance.exemptLimit);
           var exempt = exemptLimit > 0 ? Math.min(paid,exemptLimit) : paid;
@@ -253,17 +254,17 @@
         }
       });
     } else {
-      /* Backward-compatible fallback for snapshots created before recurring allowances existed. */
+      /* Backward-compatible fallback for snapshots created before recurring allowances existed. No
+         Income/Deduction Type record exists for these legacy fields, so there is no Attendance-based
+         toggle to read -- they are always paid in full, matching the default-off behavior. */
       var allowanceFactor = factor;
       if (number(employee.mobileAllowance)) {
         var mobilePaid = number(employee.mobileAllowance)*allowanceFactor;
-        if (attendance.absentDays) mobilePaid = money(Math.max(0, mobilePaid - absenceDeduction(mobilePaid, employee.mobileAllowance)));
-        if (mobilePaid) addLine(lines,{code:'MOBILE',name:'Mobile Allowance',type:'earning',amount:mobilePaid,taxable:true,formula:attendance.absentDays?absenceFormulaText('Allowance entitlement'):'Legacy monthly allowance × payroll-frequency factor',ruleCode:'COMPONENT_MOBILE_LEGACY',ruleVersion:1,legalSource:'Legacy employee profile'});
+        if (mobilePaid) addLine(lines,{code:'MOBILE',name:'Mobile Allowance',type:'earning',amount:mobilePaid,taxable:true,formula:'Legacy monthly allowance × payroll-frequency factor',ruleCode:'COMPONENT_MOBILE_LEGACY',ruleVersion:1,legalSource:'Legacy employee profile'});
       }
       if (number(employee.riceAllowance)) {
         var riceRule = ruleValue(rules,'DEMINIMIS_RICE_MONTHLY',date,context,2500);
         var ricePaid = number(employee.riceAllowance)*allowanceFactor;
-        if (attendance.absentDays) ricePaid = money(Math.max(0, ricePaid - absenceDeduction(ricePaid, employee.riceAllowance)));
         var riceExempt = Math.min(ricePaid,riceRule.value*allowanceFactor);
         if (riceExempt) addLine(lines,Object.assign({code:'RICE',name:'Rice Subsidy – Non-Taxable',type:'earning',amount:riceExempt,taxable:false,formula:'Lower of benefit paid or remaining configured de minimis limit'},lineFromRule(riceRule.rule,'DEMINIMIS_RICE_MONTHLY','BIR RR 29-2025')));
         if (ricePaid>riceExempt) addLine(lines,{code:'RICE_TX',name:'Rice Subsidy – Taxable Excess',type:'earning',amount:ricePaid-riceExempt,taxable:true,formula:'Benefit paid − non-taxable portion',ruleCode:'DEMINIMIS_EXCESS',ruleVersion:1,legalSource:'BIR'});

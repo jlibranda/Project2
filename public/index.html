@@ -7565,7 +7565,7 @@ function pgPayroll(){
     <!-- Income / Deduction Types -->
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:10px">
       <button class="btn btn-sm" onclick="openITBulkModal()">📋 Bulk Add</button>
-      <button class="btn btn-primary btn-sm" onclick="modal={type:'editIT',it:{id:0,code:'',name:'',cat:'earnings',consideredIn:[],taxable:true,deminimis:false,dmLimit:0,annualize:true,isStatutory:false}};render()">+ Add Type</button>
+      <button class="btn btn-primary btn-sm" onclick="modal={type:'editIT',it:{id:0,code:'',name:'',cat:'earnings',consideredIn:[],taxable:true,deminimis:false,dmLimit:0,annualize:true,attendanceBased:false,isStatutory:false}};render()">+ Add Type</button>
     </div>
 
     ${(()=>{
@@ -12147,6 +12147,13 @@ function renderModal(){
             e.g. <strong>${esc(sample.name)}</strong>: <span class="mono" style="color:var(--accent)">${fmt(sample[t.compensationField]||0)}</span></div>`:'';
         })():''}
       </div>
+      <!-- Attendance-based — reduces this allowance for unpaid absences using the Partial-Period Basic Pay Policy -->
+      <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:10px">
+        <label style="display:flex;align-items:center;gap:7px;padding:8px 10px;border-radius:7px;border:1px solid var(--border);cursor:pointer;font-size:12px">
+          <input type="checkbox" id="it-attendance-based" style="width:auto;accent-color:var(--accent)" ${t.attendanceBased?'checked':''}/> Attendance-based
+        </label>
+        <div style="font-size:10px;color:var(--txt3);margin-top:4px">When on, this allowance is reduced for unpaid absences using the company's configured Partial-Period Basic Pay Policy (Company Settings), same as Basic Pay. When off (default), it is always paid in full regardless of attendance.</div>
+      </div>
     </div>
     <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px">
       ${[['it-tax','Taxable','taxable'],['it-dm','De Minimis','deminimis'],['it-ann','Include in Annualization','annualize']].map(([id,lbl,key])=>`
@@ -12168,7 +12175,8 @@ function renderModal(){
         const attendanceCode=cat==='attendance'?(document.getElementById('it-linked-code')?.value||''):'';
         const recurVal=cat==='allowance'?([...document.querySelectorAll('input[name=it-recur]')].find(r=>r.checked)?.value||''):'';
         const compField=cat==='allowance'?(document.getElementById('it-comp-field')?.value||''):'';
-        const obj={id:${isNew?'nIT++':t.id},code,name,cat,consideredIn,attendanceCode,recurring:!!recurVal,recurrence:recurVal||'',compensationField:compField,taxable:document.getElementById('it-tax')?.checked||false,deminimis:document.getElementById('it-dm')?.checked||false,dmLimit:parseFloat(document.getElementById('it-dmlimit')?.value)||0,annualize:document.getElementById('it-ann')?.checked||false,benefitTreatment:document.getElementById('it-benefit-treatment')?.value||'standard',isStatutory:cat==='statutory'};
+        const attendanceBased=cat==='allowance'?(document.getElementById('it-attendance-based')?.checked||false):false;
+        const obj={id:${isNew?'nIT++':t.id},code,name,cat,consideredIn,attendanceCode,recurring:!!recurVal,recurrence:recurVal||'',compensationField:compField,attendanceBased,taxable:document.getElementById('it-tax')?.checked||false,deminimis:document.getElementById('it-dm')?.checked||false,dmLimit:parseFloat(document.getElementById('it-dmlimit')?.value)||0,annualize:document.getElementById('it-ann')?.checked||false,benefitTreatment:document.getElementById('it-benefit-treatment')?.value||'standard',isStatutory:cat==='statutory'};
         ${isNew?'INCOME_TYPES.push(obj)':'Object.assign(INCOME_TYPES.find(x=>x.id==='+t.id+'),obj)'};
         closeM();toast('Income/deduction type ${isNew?'added':'updated'}!','success');render()">
         ✓ ${isNew?'Add':'Save'}</button>
