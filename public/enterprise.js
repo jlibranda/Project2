@@ -778,13 +778,90 @@
     HOLIDAYS.splice(index,1);saveHolidayConfig();render();
   };
 
+  // Curated from the actual yearly Malacañang Proclamation (Official Gazette) declaring
+  // regular holidays, special (non-working) days, and special working days -- not a live
+  // scrape, since the Gazette's page structure isn't a stable API and payroll compliance data
+  // is too consequential to trust to unverified runtime scraping. Add a new year's entry here
+  // once its proclamation is signed (typically mid-prior-year for most dates; Eid'l Fitr and
+  // Eid'l Adha are proclaimed separately later, once the Islamic/lunar calendar dates are
+  // confirmed by the National Commission on Muslim Filipinos -- omitted here until then rather
+  // than guessed).
+  var PH_OFFICIAL_HOLIDAYS={
+    2026:{
+      proclamation:'Proclamation No. 1006, s. 2025',
+      list:[
+        {date:'2026-01-01',name:"New Year's Day",type:'regular'},
+        {date:'2026-02-17',name:'Chinese New Year',type:'special-non-working'},
+        {date:'2026-02-25',name:'EDSA People Power Revolution Anniversary (40th)',type:'special-working'},
+        {date:'2026-04-02',name:'Maundy Thursday',type:'regular'},
+        {date:'2026-04-03',name:'Good Friday',type:'regular'},
+        {date:'2026-04-04',name:'Black Saturday',type:'special-non-working'},
+        {date:'2026-04-09',name:'Araw ng Kagitingan',type:'regular'},
+        {date:'2026-05-01',name:'Labor Day',type:'regular'},
+        {date:'2026-06-12',name:'Independence Day',type:'regular'},
+        {date:'2026-08-21',name:'Ninoy Aquino Day',type:'special-non-working'},
+        {date:'2026-08-31',name:"National Heroes Day",type:'regular'},
+        {date:'2026-11-01',name:"All Saints' Day",type:'special-non-working'},
+        {date:'2026-11-02',name:"All Souls' Day",type:'special-non-working'},
+        {date:'2026-11-30',name:'Bonifacio Day',type:'regular'},
+        {date:'2026-12-08',name:'Feast of the Immaculate Conception of Mary',type:'special-non-working'},
+        {date:'2026-12-24',name:'Christmas Eve',type:'special-non-working'},
+        {date:'2026-12-25',name:'Christmas Day',type:'regular'},
+        {date:'2026-12-30',name:'Rizal Day',type:'regular'},
+        {date:'2026-12-31',name:'Last Day of the Year',type:'special-non-working'},
+      ],
+      note:"Eid'l Fitr and Eid'l Adha are regular holidays under RA 9849 but are proclaimed separately once their Islamic-calendar dates are confirmed — add them here once announced."
+    }
+  };
+  window.PH_OFFICIAL_HOLIDAYS=PH_OFFICIAL_HOLIDAYS; /* readable from index.html's modal renderer */
+
+  window.openHolidayImport=function(){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var years=Object.keys(PH_OFFICIAL_HOLIDAYS).sort();
+    modal={type:'holidayImport',year:years[years.length-1]||''};
+    render();
+  };
+
+  window.applyHolidayImport=function(){
+    if(!(isAdminUser(user)||isPlatformAdmin))return;
+    var yr=PH_OFFICIAL_HOLIDAYS[modal.year];
+    if(!yr){toast('No curated list available for that year yet.','warning');return;}
+    var existingDates={};
+    HOLIDAYS.forEach(function(h){existingDates[h.date]=true;});
+    var added=0,skipped=0;
+    yr.list.forEach(function(item){
+      if(existingDates[item.date]){skipped++;return;}
+      HOLIDAYS.push({id:nextHolidayId++,date:item.date,name:item.name,type:item.type});
+      added++;
+    });
+    HOLIDAYS.sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:0;});
+    saveHolidayConfig();
+    var importedYear=modal.year;
+    _holidayYearFilter=String(importedYear);
+    closeM();
+    toast('Imported '+added+' official '+importedYear+' holiday'+(added!==1?'s':'')+(skipped?' ('+skipped+' already on the calendar, skipped)':'')+'.','success');
+  };
+
+  var _holidayYearFilter='';
+  window.setHolidayYearFilter=function(v){_holidayYearFilter=v;render();};
+
   function renderHolidayManager(){
-    var upcoming=HOLIDAYS.slice().sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:0;});
-    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Holiday Calendar</div><div class="card-sub">Dates here are automatically matched against attendance, and payroll uses the matching holiday pay rate for approved holiday work</div></div><button class="btn btn-primary btn-sm" onclick="openHolidayEditor()">+ Add Holiday</button></div>'+
+    var allHolidays=HOLIDAYS.slice().sort(function(a,b){return a.date<b.date?-1:a.date>b.date?1:0;});
+    var years=Array.from(new Set(
+      allHolidays.map(function(h){return h.date.slice(0,4);}).concat(Object.keys(PH_OFFICIAL_HOLIDAYS))
+    )).sort();
+    var upcoming=_holidayYearFilter?allHolidays.filter(function(h){return h.date.slice(0,4)===_holidayYearFilter;}):allHolidays;
+    var availableImportYears=Object.keys(PH_OFFICIAL_HOLIDAYS).sort();
+    return '<div class="card" style="margin-top:1rem"><div class="card-hd"><div><div class="card-title">Holiday Calendar</div><div class="card-sub">Dates here are automatically matched against attendance, and payroll uses the matching holiday pay rate for approved holiday work</div></div>'+
+      '<div class="action-row">'+
+      (years.length?'<select class="finput" style="width:auto" onchange="setHolidayYearFilter(this.value)"><option value="">All years</option>'+years.map(function(y){return '<option value="'+y+'" '+(_holidayYearFilter===y?'selected':'')+'>'+y+'</option>';}).join('')+'</select>':'')+
+      (availableImportYears.length?'<button class="btn btn-sm" onclick="openHolidayImport()">⇩ Import Official PH Holidays</button>':'')+
+      '<button class="btn btn-primary btn-sm" onclick="openHolidayEditor()">+ Add Holiday</button>'+
+      '</div></div>'+
       '<div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Holiday</th><th>Type</th><th>Actions</th></tr></thead><tbody>'+
       (upcoming.length?upcoming.map(function(h){
         return '<tr><td class="mono">'+esc(h.date)+'</td><td style="font-weight:700">'+esc(h.name)+'</td><td><span class="badge">'+esc(HOLIDAY_TYPE_LABELS[h.type]||h.type)+'</span></td><td><div class="action-row"><button class="btn btn-sm" onclick="openHolidayEditor('+h.id+')">Edit</button><button class="btn btn-sm btn-danger" onclick="deleteHoliday('+h.id+')">Delete</button></div></td></tr>';
-      }).join(''):'<tr><td colspan="4" style="text-align:center;color:var(--txt3);padding:2rem">No holidays configured yet.</td></tr>')+
+      }).join(''):'<tr><td colspan="4" style="text-align:center;color:var(--txt3);padding:2rem">'+(_holidayYearFilter?'No holidays configured for '+_holidayYearFilter+'.':'No holidays configured yet.')+'</td></tr>')+
       '</tbody></table></div></div>';
   }
 
