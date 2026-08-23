@@ -1268,6 +1268,15 @@
     }catch(error){toast('BIR 1601-C PDF could not be generated: '+error.message,'error',7000);}
   };
 
+  /* Approved/locked payroll runs plus released final-pay records for one employee and tax year,
+     normalized to the same {items:[...]} run shape either way. Shared by the PDF generator below
+     and the real-data BIR 2316 Report table in pgGovernment() (index.html). */
+  window.bir2316RunsForEmployee = function (empId, year) {
+    var approved=PAYROLLS.filter(function(run){return run.status==='approved'||run.status==='locked';});
+    var finalPayRuns=FINAL_PAY_LIST.filter(function(record){return record.status==='released'&&Number(record.taxYear)===year;}).map(function(record){return{id:'FP-'+record.id,status:'locked',type:'final-pay',taxYear:record.taxYear,from:record.releaseDate,to:record.releaseDate,releaseDate:record.releaseDate,bir1601CMonth:record.bir1601CMonth,items:[{empId:record.empId,eid:record.eid,name:record.employeeName,gross:record.grossFP,taxableCompensation:record.taxableCompensation,annualBenefitExempt:record.annualBenefitExempt,annualBenefitTaxable:record.annualBenefitTaxable,sss:0,ph:0,pi:0,tax:record.taxWithheld,taxRefund:record.taxRefund,annualTax:record.annualTax,calculationTrace:[]}]};});
+    return approved.concat(finalPayRuns).filter(function(run){return Number(run.taxYear||String(run.bir1601CMonth||run.releaseDate||run.to||'').slice(0,4))===year&&(run.items||[]).some(function(item){return item.empId===empId;});});
+  };
+
   window.generateOfficial2316PDF = async function (empId) {
     var emp=USERS.find(function(u){return u.id===empId;}),year=Number(window._bir2316Year||new Date().getFullYear());
     if(!emp){toast('Employee was not found.','warning');return;}
@@ -1280,9 +1289,7 @@
     if(!String(emp.permanentAddress||emp.city||'').trim())missing.push('Employee registered address');
     if(profile.hasPreviousEmployer){if(!String(profile.previousEmployerName||'').trim())missing.push('Previous employer name');if(!String(profile.previousEmployerTin||'').trim())missing.push('Previous employer TIN');if(!String(profile.previousEmployerAddress||'').trim())missing.push('Previous employer address');}
     if(missing.length){toast('Complete the employee Tax & YTD / Personal records before generating: '+missing.join(', ')+'.','warning',7500);return;}
-    var approved=PAYROLLS.filter(function(run){return run.status==='approved'||run.status==='locked';});
-    var finalPayRuns=FINAL_PAY_LIST.filter(function(record){return record.status==='released'&&Number(record.taxYear)===year;}).map(function(record){return{id:'FP-'+record.id,status:'locked',type:'final-pay',taxYear:record.taxYear,from:record.releaseDate,to:record.releaseDate,releaseDate:record.releaseDate,bir1601CMonth:record.bir1601CMonth,items:[{empId:record.empId,eid:record.eid,name:record.employeeName,gross:record.grossFP,taxableCompensation:record.taxableCompensation,annualBenefitExempt:record.annualBenefitExempt,annualBenefitTaxable:record.annualBenefitTaxable,sss:0,ph:0,pi:0,tax:record.taxWithheld,taxRefund:record.taxRefund,annualTax:record.annualTax,calculationTrace:[]}]};});
-    var runs=approved.concat(finalPayRuns).filter(function(run){return Number(run.taxYear||String(run.bir1601CMonth||run.releaseDate||run.to||'').slice(0,4))===year&&(run.items||[]).some(function(item){return item.empId===empId;});});
+    var runs=bir2316RunsForEmployee(empId,year);
     if(!runs.length){toast('No approved/locked payroll or released final pay for '+year+'.','warning');return;}
     try{
       toast('Generating official BIR Form 2316 PDF…','info');

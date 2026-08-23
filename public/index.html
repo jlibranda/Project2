@@ -1479,6 +1479,25 @@ function saveEmployeeTaxYearRecord(empId,year){
 }
 function setEmployeeHasPreviousEmployer(empId,year,checked){const emp=USERS.find(e=>e.id===empId),record=employeeTaxRecord(emp,year,true);record.hasPreviousEmployer=!!checked;if(!checked){['previousEmployerName','previousEmployerTin','previousEmployerAddress','previousEmployerZip','previousEmploymentFrom','previousEmploymentTo','previousEmployerNonTaxableBenefits','previousEmployerTaxableBenefits','previousEmployerDeMinimis','previousEmployerTaxable','previousEmployerTaxWithheld'].forEach(k=>record[k]=typeof record[k]==='number'?0:'');}render();}
 
+/* ---- Signed BIR 2316 upload (employee or admin) — one copy per employee per tax year ---- */
+function handleSigned2316Upload(input,empId,year){
+  const file=input.files[0];if(!file)return;
+  if(file.size>8*1024*1024){toast('File must be under 8MB.','warning');input.value='';return;}
+  const reader=new FileReader();
+  reader.onload=function(e){
+    const emp=USERS.find(u=>u.id===empId);if(!emp)return;
+    const record=employeeTaxRecord(emp,year,true);
+    record.signed2316={name:file.name,dataUrl:e.target.result,uploadedAt:new Date().toISOString(),uploadedBy:user.name};
+    queueSync('Employees');toast('Signed BIR 2316 for '+year+' uploaded.','success');render();
+  };
+  reader.readAsDataURL(file);
+}
+function removeSigned2316(empId,year){
+  const emp=USERS.find(u=>u.id===empId);if(!emp)return;
+  const record=employeeTaxRecord(emp,year,false);if(!record||!record.signed2316)return;
+  record.signed2316=null;queueSync('Employees');toast('Signed BIR 2316 removed.','info');render();
+}
+
 /* ---- Leave balances (Employee 201 > Leave tab) ---- */
 function openSetLeaveBalance(empId,typeId){
   if(!(isAdminUser(user)||isPlatformAdmin||canAccess('leave_credits')))return;
@@ -6956,11 +6975,15 @@ function pgMyProfile(){
   }else if(active.key==='allowances'){
     body=myAllowances.length?myAllowances.map(a=>{const type=INCOME_TYPES.find(t=>t.code===a.payItemCode);return`<div class="info-row"><span class="info-label">${esc(type?.name||a.payItemCode)}</span><span class="mono">${fmt(a.monthlyAmount||a.amount||0)}${a.active===false?' <span class="badge b-absent" style="font-size:10px">Inactive</span>':''}</span></div>`;}).join(''):`<div class="empty-state"><div class="ei">💵</div>No recurring allowances configured.</div>`;
   }else if(active.key==='govtbank'){
+    const my2316Year=Number(window._my2316Year||new Date().getFullYear());
     body=`${canGovt?`<div class="section-header" style="margin-bottom:8px">Government Numbers</div>
     ${[['SSS',emp.sss],['PhilHealth',emp.ph],['Pag-IBIG',emp.pi],['TIN (BIR)',emp.tin]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span class="mono" style="font-size:12px">${esc(v||'—')}</span></div>`).join('')}`:''}
     ${canGovt&&canBanking?'<div style="border-top:1px solid var(--border);margin:14px 0"></div>':''}
     ${canBanking?`<div class="section-header" style="margin-bottom:8px">Banking Details</div>
-    ${[['Bank',emp.bank],['Account No.',emp.bankAccount]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span class="mono" style="font-size:12px">${esc(v||'—')}</span></div>`).join('')}`:''}`;
+    ${[['Bank',emp.bank],['Account No.',emp.bankAccount]].map(([l,v])=>`<div class="info-row"><span class="info-label">${l}</span><span class="mono" style="font-size:12px">${esc(v||'—')}</span></div>`).join('')}`:''}
+    ${canGovt?`<div style="border-top:1px solid var(--border);margin:14px 0"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px"><div class="section-header" style="margin-bottom:0">BIR Form 2316</div><div class="field" style="margin:0;width:100px"><input type="number" min="2000" max="2099" class="finput" value="${my2316Year}" onchange="window._my2316Year=Number(this.value);render()"/></div></div>
+    ${render2316Card(emp,my2316Year)}`:''}`;
   }else if(active.key==='emergency'){
     body=`<div class="section-header">Emergency Contact 1</div>
     <div class="form-row">
@@ -7799,7 +7822,7 @@ function renderGovtReports(){
     <div style="display:grid;gap:4px">
       ${emps.slice(0,3).map(e=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;border-radius:6px;border:1px solid var(--border);background:var(--bg)">
         <div style="display:flex;align-items:center;gap:8px"><div class="avatar sm">${ini(e.name)}</div><div><div style="font-weight:500;font-size:12px">${esc(fmtEmpName(e))}</div><div style="font-size:11px;color:var(--txt3)">TIN: ${e.tin||'Not set'}</div></div></div>
-        <button class="btn btn-sm" onclick="toast('BIR 2316 for ${esc(e.name)} — coming soon','info')">Generate 2316</button>
+        <button class="btn btn-sm" onclick="generateOfficial2316PDF(${e.id})">Generate 2316</button>
       </div>`).join('')}
       ${emps.length>3?`<div style="text-align:center;font-size:12px;color:var(--txt3);padding:4px">... and ${emps.length-3} more employees</div>`:''}
     </div>
@@ -9045,18 +9068,35 @@ function pgGovernment(){
   }
   if(tab===3){
     return`<div class="page-header"><div class="page-title">Gov't Remittances</div></div>${tabBar}
-    <div class="card"><div class="card-title" style="margin-bottom:.875rem">BIR Form 2316 — Annual Summary</div>
-    <table><thead><tr><th>Employee</th><th>Annual Gross</th><th>SSS+MPF (Annual EE)</th><th>PhilHealth (Annual)</th><th>Pag-IBIG (Annual)</th><th>Tax Withheld</th><th>ER Cost (SSS+PH+PI)</th><th>Net Taxable</th></tr></thead>
-    <tbody>${emps.map(e=>{const ms=e.rate*22;const ann=ms*12;const sEE=totalSSS(ms)*12,pEE=phContrib(ms)*12,iEE=piContrib(ms)*12,tax=birTax(ms)*12;const erCost=(totalSssEr(ms)+phErShare(ms)+piErShare(ms))*12;return`<tr>
-      <td><div class="emp-cell"><div class="avatar sm">${ini(e.name)}</div>${esc(fmtEmpName(e))}</div></td>
-      <td class="mono">${fmt(ann)}</td>
-      <td class="mono" style="color:var(--red)">${fmt(sEE)}</td>
-      <td class="mono" style="color:var(--red)">${fmt(pEE)}</td>
-      <td class="mono" style="color:var(--red)">${fmt(iEE)}</td>
-      <td class="mono" style="color:var(--red)">${fmt(tax)}</td>
-      <td class="mono" style="color:var(--blue)">${fmt(erCost)}</td>
-      <td class="mono" style="font-weight:700">${fmt(ann-sEE-pEE-iEE)}</td>
-    </tr>`;}).join('')}</tbody></table></div>`;
+    ${(()=>{
+      const repYear=Number(window._bir2316ReportYear||new Date().getFullYear());
+      const rows=emps.map(e=>{
+        const runs=bir2316RunsForEmployee(e.id,repYear);
+        if(!runs.length)return{e,runsCount:0};
+        const profile=employeeTaxRecord(e,repYear,false)||{};
+        const data=BIR2316Pdf.buildData({employee:e,company:COMPANY,profile:profile,year:repYear,runs:runs,taxDueFunction:v=>birTaxByFreq(v,'annual',repYear+'-12-31')});
+        return{e,runsCount:runs.length,data};
+      });
+      return`<div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.875rem">
+        <div class="card-title" style="margin-bottom:0">BIR Form 2316 — Annual Summary</div>
+        <div class="field" style="margin:0;width:100px"><input type="number" min="2000" max="2099" class="finput" value="${repYear}" onchange="window._bir2316ReportYear=Number(this.value);render()"/></div>
+      </div>
+      <div style="font-size:11px;color:var(--txt3);margin-bottom:10px">Sourced from actual approved/locked payroll runs and released final pay for ${repYear} — the same data used by the official 2316 PDF, not an estimate.</div>
+      <table><thead><tr><th>Employee</th><th>Annual Gross</th><th>Mandatory (SSS+PH+PI)</th><th>Tax Withheld</th><th>Net Taxable</th><th></th></tr></thead>
+      <tbody>${rows.map(({e,runsCount,data})=>runsCount?`<tr>
+        <td><div class="emp-cell"><div class="avatar sm">${ini(e.name)}</div>${esc(fmtEmpName(e))}</div></td>
+        <td class="mono">${fmt(data.grossPresent)}</td>
+        <td class="mono" style="color:var(--red)">${fmt(data.mandatory)}</td>
+        <td class="mono" style="color:var(--red)">${fmt(data.totalTaxWithheld)}</td>
+        <td class="mono" style="font-weight:700">${fmt(data.grossTaxable)}</td>
+        <td><button class="btn btn-sm" onclick="window._bir2316Year=${repYear};generateOfficial2316PDF(${e.id})">⬇ 2316</button></td>
+      </tr>`:`<tr>
+        <td><div class="emp-cell"><div class="avatar sm">${ini(e.name)}</div>${esc(fmtEmpName(e))}</div></td>
+        <td colspan="4" style="color:var(--txt3);font-size:12px">No approved/locked payroll or released final pay for ${repYear}</td>
+        <td></td>
+      </tr>`).join('')}</tbody></table></div>`;
+    })()}`;
   }
   return`<div class="page-header"><div class="page-title">Gov't Remittances</div><span style="font-size:12px;color:var(--txt3)">Current Period</span></div>
   ${tabBar}
@@ -15455,6 +15495,25 @@ function deleteRecurringAllowance(empId,allowanceId){
   if(item?.legacyField)emp[item.legacyField]=0;
   queueSync('Employees');toast('Recurring allowance deleted','success');render();
 }
+/* BIR Form 2316 download + signed-copy upload — shared by the admin Employee Detail page and the
+   employee's own My 201 File self-view, so both stay in sync with one rendering. */
+function render2316Card(emp,taxYear){
+  const record=employeeTaxRecord(emp,taxYear,false);
+  const signed=record&&record.signed2316;
+  return`<div class="card" style="padding:12px;margin-bottom:12px">
+    <div class="card-title" style="margin-bottom:8px">BIR Form 2316</div>
+    <div style="font-size:11px;color:var(--txt3);margin-bottom:10px">Certificate of Compensation Payment / Tax Withheld for ${taxYear}, generated from actual payroll records in the system.</div>
+    <button class="btn btn-primary btn-sm" onclick="window._bir2316Year=${taxYear};generateOfficial2316PDF(${emp.id})">⬇ Download 2316 PDF</button>
+    <div style="border-top:1px solid var(--border);margin-top:12px;padding-top:10px">
+      <div style="font-size:12px;font-weight:600;color:var(--txt2);margin-bottom:6px">Signed Copy</div>
+      ${signed?`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:7px;background:var(--bg)">
+        <div style="font-size:12px"><a href="${signed.dataUrl}" target="_blank" rel="noopener" style="color:var(--accent);font-weight:500">📎 ${esc(signed.name)}</a><div style="font-size:10px;color:var(--txt3);margin-top:2px">Uploaded by ${esc(signed.uploadedBy)} · ${esc(String(signed.uploadedAt).slice(0,10))}</div></div>
+        <button class="btn btn-sm btn-danger" onclick="removeSigned2316(${emp.id},${taxYear})">Remove</button>
+      </div>`:`<div style="font-size:11px;color:var(--txt3);margin-bottom:6px">No signed copy uploaded yet. Upload the wet-signed or e-signed 2316 once issued.</div>
+      <input type="file" accept=".pdf,image/*" class="finput" onchange="handleSigned2316Upload(this,${emp.id},${taxYear})"/>`}
+    </div>
+  </div>`;
+}
 /* Read-only movement-history timeline — shared by the admin Employee Detail page and the
    employee's own My 201 File self-view, so both stay in sync with one rendering. */
 function renderMovementHistory(mvs){
@@ -16219,6 +16278,7 @@ function pgEmpDetail(){
     tabBody=`<div class="card-hd" style="padding:0;margin-bottom:12px"><div><div class="card-title">Tax Year Record</div><div class="card-sub">Previous-employer BIR 2316, consolidated annual-benefit bucket, migration balances, and system YTD.</div></div><div class="field" style="margin:0;width:120px"><label>Tax Year</label><input type="number" min="2000" max="2099" class="finput" value="${taxYear}" onchange="window._empTaxYear=Number(this.value);render()"/></div></div>
     <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px"><div class="metric"><div class="metric-label">System YTD Taxable</div><div class="metric-val" style="font-size:17px">${fmt(ytd.taxable)}</div></div><div class="metric"><div class="metric-label">System Tax Withheld</div><div class="metric-val" style="font-size:17px">${fmt(ytd.withheld)}</div></div><div class="metric"><div class="metric-label">Benefit Bucket Used</div><div class="metric-val" style="font-size:17px">${fmt(Number(record.previousEmployerNonTaxableBenefits||0)+benefits.exempt)}</div><div style="font-size:9px;color:var(--txt3)">Remaining ${fmt(Math.max(0,90000-Number(record.previousEmployerNonTaxableBenefits||0)-benefits.exempt))}</div></div><div class="metric"><div class="metric-label">Annualization Readiness</div><div class="metric-val" style="font-size:14px;color:${record.confirmed?'var(--green)':'var(--amber)'}">${record.confirmed?'Confirmed':'Needs confirmation'}</div></div></div>
     <div style="padding:10px 12px;background:var(--blue-bg);color:var(--blue-txt);border-radius:8px;margin-bottom:12px;font-size:11px">Opening YTD is only for payroll history before this system began. Do not enter system-generated payroll again. Previous-employer amounts should come from BIR Form 2316 for the same calendar year.</div>
+    ${render2316Card(e,taxYear)}
     <div class="card" style="padding:12px;margin-bottom:12px;${hasPrevious?'':'opacity:.62'}"><div class="card-title" style="margin-bottom:8px">Previous Employer BIR 2316 Breakdown</div><div class="form-row"><div><div class="field"><label>Previous Employer Name</label><input id="tax-prev-name" class="finput" value="${esc(record.previousEmployerName||'')}" ${hasPrevious?'':'disabled'}/></div><div class="field"><label>Previous Employer TIN</label><input id="tax-prev-tin" class="finput" value="${esc(record.previousEmployerTin||'')}" ${hasPrevious?'':'disabled'}/></div><div class="form-row"><div class="field"><label>Employment From</label><input id="tax-prev-from" type="date" class="finput" value="${record.previousEmploymentFrom||''}" ${hasPrevious?'':'disabled'}/></div><div class="field"><label>Employment To</label><input id="tax-prev-to" type="date" class="finput" value="${record.previousEmploymentTo||''}" ${hasPrevious?'':'disabled'}/></div></div></div><div><div class="field"><label>Non-taxable 13th Month &amp; Other Benefits</label><input id="tax-prev-nontax-benefits" type="number" min="0" max="90000" step="0.01" class="finput" value="${Number(record.previousEmployerNonTaxableBenefits||0)}" ${hasPrevious?'':'disabled'}/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Consumes the same combined ₱90,000 annual exemption.</div></div><div class="field"><label>Taxable 13th Month &amp; Other Benefits</label><input id="tax-prev-tax-benefits" type="number" min="0" step="0.01" class="finput" value="${Number(record.previousEmployerTaxableBenefits||0)}" ${hasPrevious?'':'disabled'}/><div style="font-size:10px;color:var(--txt3);margin-top:3px">Must already be included in total taxable compensation below.</div></div><div class="field"><label>Previous Employer De Minimis</label><input id="tax-prev-deminimis" type="number" min="0" step="0.01" class="finput" value="${Number(record.previousEmployerDeMinimis||0)}" ${hasPrevious?'':'disabled'}/></div></div></div></div>
     <div class="form-row"><div><label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:12px;font-weight:650"><input id="tax-has-previous" type="checkbox" style="width:auto;accent-color:var(--accent)" ${hasPrevious?'checked':''} onchange="setEmployeeHasPreviousEmployer(${e.id},${taxYear},this.checked)"/> Employee had a previous employer in ${taxYear}</label><div class="field"><label>Previous Employer Taxable Compensation</label><input id="tax-prev-taxable" type="number" min="0" step="0.01" class="finput" value="${Number(record.previousEmployerTaxable||0)}" ${hasPrevious?'':'disabled'}/></div><div class="field"><label>Previous Employer Tax Withheld</label><input id="tax-prev-withheld" type="number" min="0" step="0.01" class="finput" value="${Number(record.previousEmployerTaxWithheld||0)}" ${hasPrevious?'':'disabled'}/></div><div class="field"><label>BIR 2316 / Source Reference</label><input id="tax-source" class="finput" value="${esc(record.sourceReference||'')}" placeholder="e.g. 2316 received 2026-03-15"/></div></div><div><div class="field"><label>Opening YTD Taxable Compensation</label><input id="tax-opening-taxable" type="number" min="0" step="0.01" class="finput" value="${Number(record.openingYtdTaxable||0)}"/></div><div class="field"><label>Opening YTD Tax Withheld</label><input id="tax-opening-withheld" type="number" min="0" step="0.01" class="finput" value="${Number(record.openingYtdTaxWithheld||0)}"/></div><label style="display:flex;align-items:flex-start;gap:8px;padding:10px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;font-size:11px"><input id="tax-confirmed" type="checkbox" style="width:auto;accent-color:var(--accent);margin-top:2px" ${record.confirmed?'checked':''}/><span><strong>Confirmed for annualization</strong><br>I verified previous-employer status and opening balances for ${taxYear}.</span></label>${record.confirmedAt?`<div style="font-size:10px;color:var(--txt3);margin-top:5px">Confirmed by ${esc(record.confirmedBy||'—')} · ${esc(record.confirmedAt)}</div>`:''}</div></div>
     ${hasPrevious?`<div class="form-row"><div class="field"><label>Previous Employer Registered Address</label><input id="tax-prev-address" class="finput" value="${esc(record.previousEmployerAddress||'')}"/></div><div class="field"><label>Previous Employer ZIP Code</label><input id="tax-prev-zip" class="finput" value="${esc(record.previousEmployerZip||'')}" maxlength="4"/></div></div>`:`<input id="tax-prev-address" type="hidden" value=""/><input id="tax-prev-zip" type="hidden" value=""/>`}
