@@ -239,19 +239,19 @@ async function readState(tenantKey = TENANT_KEY) {
 // zk_devices lives in its own table, separate from app_state, specifically so device pushes
 // (which happen independently of any browser session) can never be clobbered by the browser's
 // full-state overwrite in PUT /api/state.
-async function zkMutateDevice(serial, mutator) {
+async function zkMutateDevice(serial, mutator, tenantKey = TENANT_KEY) {
   if (!pool) return null;
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    const existing = await client.query('SELECT pending, device_users, commands FROM zk_devices WHERE tenant_key = $1 AND serial = $2 FOR UPDATE', [TENANT_KEY, serial]);
+    const existing = await client.query('SELECT pending, device_users, commands FROM zk_devices WHERE tenant_key = $1 AND serial = $2 FOR UPDATE', [tenantKey, serial]);
     const row = existing.rows[0] || { pending: [], device_users: [], commands: [] };
     const next = mutator({ pending: row.pending || [], deviceUsers: row.device_users || [], commands: row.commands || [] }) || {};
     await client.query(
       `INSERT INTO zk_devices (tenant_key, serial, last_seen, pending, device_users, commands, updated_at)
        VALUES ($1, $2, NOW(), $3, $4, $5, NOW())
        ON CONFLICT (tenant_key, serial) DO UPDATE SET last_seen = NOW(), pending = $3, device_users = $4, commands = $5, updated_at = NOW()`,
-      [TENANT_KEY, serial, JSON.stringify(next.pending || []), JSON.stringify(next.deviceUsers || []), JSON.stringify(next.commands || [])]
+      [tenantKey, serial, JSON.stringify(next.pending || []), JSON.stringify(next.deviceUsers || []), JSON.stringify(next.commands || [])]
     );
     await client.query('COMMIT');
   } catch (error) {
@@ -261,9 +261,9 @@ async function zkMutateDevice(serial, mutator) {
     client.release();
   }
 }
-async function zkAllDevices() {
+async function zkAllDevices(tenantKey = TENANT_KEY) {
   if (!pool) return [];
-  const result = await pool.query('SELECT serial, last_seen, pending, device_users, commands FROM zk_devices WHERE tenant_key = $1', [TENANT_KEY]);
+  const result = await pool.query('SELECT serial, last_seen, pending, device_users, commands FROM zk_devices WHERE tenant_key = $1', [tenantKey]);
   return result.rows;
 }
 
@@ -802,8 +802,9 @@ app.post('/iclock/devicecmd', express.text({ type: '*/*', limit: '256kb' }), asy
    userMapping is admin-edited and lives in app_state (round-trips with the normal save flow);
    everything else here is device-owned and lives in zk_devices so it's never at risk of being
    overwritten by a stale browser save. */
-app.get('/api/zk/status', requireAuth, async (_req, res) => {
-  const [record, devices] = await Promise.all([readState(), zkAllDevices()]);
+app.get('/api/zk/status', requireAuth, async (req, res) => {
+  const tenantKey = req.session.tenantKey || TENANT_KEY;
+  const [record, devices] = await Promise.all([readState(tenantKey), zkAllDevices(tenantKey)]);
   const userMapping = record?.state?.zk?.userMapping || {};
   res.json({
     devices: devices.map(d => ({
@@ -839,14 +840,14 @@ app.post('/api/zk/command', requireAuth, async (req, res) => {
       });
       current.commands = commands;
       return current;
-    });
+    }, req.session.tenantKey || TENANT_KEY);
     res.json({ ok: true, id: queuedId });
   } catch (error) {
     res.status(500).json({ error: 'Unable to queue command.', detail: error.message });
   }
 });
-app.get('/api/zk/pending', requireAuth, async (_req, res) => {
-  const devices = await zkAllDevices();
+app.get('/api/zk/pending', requireAuth, async (req, res) => {
+  const devices = await zkAllDevices(req.session.tenantKey || TENANT_KEY);
   res.json({ records: devices.flatMap(d => (d.pending || []).map(r => ({ ...r, serial: d.serial }))) });
 });
 app.post('/api/zk/ack', requireAuth, async (req, res) => {
@@ -857,11 +858,12 @@ app.post('/api/zk/ack', requireAuth, async (req, res) => {
     consumedBySerial.get(serial).add(zkKey(r.userId, r.date, r.time));
   });
   try {
+    const tenantKey = req.session.tenantKey || TENANT_KEY;
     for (const [serial, keys] of consumedBySerial) {
       await zkMutateDevice(serial, current => {
         current.pending = current.pending.filter(r => !keys.has(zkKey(r.userId, r.date, r.time)));
         return current;
-      });
+      }, tenantKey);
     }
     res.json({ ok: true });
   } catch (error) {
