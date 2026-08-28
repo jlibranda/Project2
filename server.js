@@ -219,6 +219,37 @@ async function initializeDatabase() {
       registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       registered_by TEXT NOT NULL
     );
+    -- Defense-in-depth below the application-layer tenant_key filtering every query above is
+    -- supposed to do: a Postgres Row-Level Security policy per table that independently blocks
+    -- any row whose tenant_key doesn't match the current transaction's app.tenant_key setting
+    -- (see withTenantScope/withLoginLookupScope). If a future query anywhere in this file ever
+    -- forgets that WHERE clause -- the exact mistake the ZK endpoints made -- it now returns no
+    -- rows instead of every tenant's, rather than relying solely on the application code being
+    -- right every time. FORCE is required or the owning DB role (this app's own connection,
+    -- since it's the one that just ran the CREATE TABLE above) would silently bypass its own
+    -- policies. Deliberately NOT applied to zk_device_registry or platform_clients -- both have
+    -- legitimate, by-design cross-tenant access patterns (device-claim conflict checks and the
+    -- platform directory itself) that a per-tenant policy would break.
+    ALTER TABLE app_state ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE app_state FORCE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS tenant_isolation ON app_state;
+    CREATE POLICY tenant_isolation ON app_state
+      USING (tenant_key = current_setting('app.tenant_key', true) OR current_setting('app.login_lookup', true) = 'true')
+      WITH CHECK (tenant_key = current_setting('app.tenant_key', true));
+
+    ALTER TABLE app_state_audit ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE app_state_audit FORCE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS tenant_isolation ON app_state_audit;
+    CREATE POLICY tenant_isolation ON app_state_audit
+      USING (tenant_key = current_setting('app.tenant_key', true))
+      WITH CHECK (tenant_key = current_setting('app.tenant_key', true));
+
+    ALTER TABLE zk_devices ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE zk_devices FORCE ROW LEVEL SECURITY;
+    DROP POLICY IF EXISTS tenant_isolation ON zk_devices;
+    CREATE POLICY tenant_isolation ON zk_devices
+      USING (tenant_key = current_setting('app.tenant_key', true))
+      WITH CHECK (tenant_key = current_setting('app.tenant_key', true));
   `);
   // Migrate the one existing real tenant into the directory, exactly once. Purely additive —
   // its tenant_key and app_state row are untouched, so this can never affect the live login
@@ -242,10 +273,56 @@ async function godAdminPassword() {
   }
   return process.env.GOD_ADMIN_PASSWORD || 'godmode2026';
 }
+// Defense-in-depth below application-layer tenant checks: app_state, app_state_audit, and
+// zk_devices all carry a Postgres Row-Level Security policy (see initializeDatabase) that
+// compares each row's tenant_key against this session-local GUC. A query that forgets to filter
+// by tenant_key -- exactly the bug class the ZK endpoints had -- now returns no rows at all
+// instead of every tenant's, even if the WHERE clause is wrong or missing entirely. Every
+// pool.connect()-based call against those three tables MUST set this (via withTenantScope or,
+// for the one deliberate cross-tenant exception, withLoginLookupScope) before querying them --
+// a plain pool.query() against a pooled connection with no scope set will see zero rows.
+async function withTenantScope(tenantKey, fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("SELECT set_config('app.tenant_key', $1, true)", [String(tenantKey)]);
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+// The ONE legitimate cross-tenant read: /api/auth/login's employee search has to scan every
+// tenant's app_state, because at that point in the request we don't yet know which tenant the
+// submitted credentials belong to -- that's literally what this query is resolving. Every other
+// query goes through withTenantScope instead. Deliberately read-only by convention (nothing here
+// technically stops a write, so never use this for one) -- keeping it to this single call site
+// is what makes that safe.
+async function withLoginLookupScope(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query("SELECT set_config('app.login_lookup', 'true', true)");
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 async function readState(tenantKey = TENANT_KEY) {
   if (!pool) return null;
-  const result = await pool.query('SELECT state, version, updated_at FROM app_state WHERE tenant_key = $1', [tenantKey]);
-  return result.rows[0] || null;
+  return withTenantScope(tenantKey, async client => {
+    const result = await client.query('SELECT state, version, updated_at FROM app_state WHERE tenant_key = $1', [tenantKey]);
+    return result.rows[0] || null;
+  });
 }
 
 // zk_devices lives in its own table, separate from app_state, specifically so device pushes
@@ -253,9 +330,7 @@ async function readState(tenantKey = TENANT_KEY) {
 // full-state overwrite in PUT /api/state.
 async function zkMutateDevice(serial, mutator, tenantKey = TENANT_KEY) {
   if (!pool) return null;
-  const client = await pool.connect();
-  try {
-    await client.query('BEGIN');
+  return withTenantScope(tenantKey, async client => {
     const existing = await client.query('SELECT pending, device_users, commands FROM zk_devices WHERE tenant_key = $1 AND serial = $2 FOR UPDATE', [tenantKey, serial]);
     const row = existing.rows[0] || { pending: [], device_users: [], commands: [] };
     const next = mutator({ pending: row.pending || [], deviceUsers: row.device_users || [], commands: row.commands || [] }) || {};
@@ -265,18 +340,14 @@ async function zkMutateDevice(serial, mutator, tenantKey = TENANT_KEY) {
        ON CONFLICT (tenant_key, serial) DO UPDATE SET last_seen = NOW(), pending = $3, device_users = $4, commands = $5, updated_at = NOW()`,
       [tenantKey, serial, JSON.stringify(next.pending || []), JSON.stringify(next.deviceUsers || []), JSON.stringify(next.commands || [])]
     );
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
-  }
+  });
 }
 async function zkAllDevices(tenantKey = TENANT_KEY) {
   if (!pool) return [];
-  const result = await pool.query('SELECT serial, last_seen, pending, device_users, commands FROM zk_devices WHERE tenant_key = $1', [tenantKey]);
-  return result.rows;
+  return withTenantScope(tenantKey, async client => {
+    const result = await client.query('SELECT serial, last_seen, pending, device_users, commands FROM zk_devices WHERE tenant_key = $1', [tenantKey]);
+    return result.rows;
+  });
 }
 // The device-facing /iclock/* endpoints have no session -- ZKTeco's ADMS push protocol only
 // ever sends the device's own serial, nothing that identifies a tenant. This is the one place
@@ -296,6 +367,7 @@ async function mutateAppState(mutator, actor, tenantKey = TENANT_KEY) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await client.query("SELECT set_config('app.tenant_key', $1, true)", [String(tenantKey)]);
     const existing = await client.query('SELECT state, version FROM app_state WHERE tenant_key = $1 FOR UPDATE', [tenantKey]);
     const row = existing.rows[0];
     const state = row ? row.state : {};
@@ -438,14 +510,17 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     // 3. A regular employee of some other real client — search every tenant's own users array
-    //    directly via JSONB instead of keeping a separate index in sync.
+    //    directly via JSONB instead of keeping a separate index in sync. This is the one place
+    //    in the app that legitimately needs to see every tenant's app_state at once (we don't
+    //    know which tenant these credentials belong to until this query resolves it) -- see
+    //    withLoginLookupScope's own comment for why that's safe under RLS.
     if (!tenantKey && pool) {
-      const empRow = await pool.query(
+      const empRow = await withLoginLookupScope(client => client.query(
         `SELECT tenant_key, state, version, u AS matched_user FROM app_state, jsonb_array_elements(state->'users') AS u
          WHERE u->>'email' = $1 AND u->>'pass' = $2 AND COALESCE((u->>'active')::boolean, true) = true
          LIMIT 1`,
         [email, password]
-      );
+      ));
       if (empRow.rowCount) { tenantKey = empRow.rows[0].tenant_key; record = empRow.rows[0]; matchedUser = empRow.rows[0].matched_user; }
     }
 
@@ -474,12 +549,16 @@ app.put('/api/state', requireAuth, async (req, res) => {
   const tenantKey = req.session.tenantKey || TENANT_KEY;
   if (!state || typeof state !== 'object') return res.status(400).json({ error: 'A valid application state is required.' });
   try {
-    const result = expectedVersion === 0
-      ? await pool.query('INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3) ON CONFLICT DO NOTHING RETURNING version, updated_at', [tenantKey, state, req.session.sub])
-      : await pool.query('UPDATE app_state SET state = $1, version = version + 1, updated_at = NOW(), updated_by = $2 WHERE tenant_key = $3 AND version = $4 RETURNING version, updated_at', [state, req.session.sub, tenantKey, expectedVersion]);
+    const { result, version } = await withTenantScope(tenantKey, async client => {
+      const r = expectedVersion === 0
+        ? await client.query('INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3) ON CONFLICT DO NOTHING RETURNING version, updated_at', [tenantKey, state, req.session.sub])
+        : await client.query('UPDATE app_state SET state = $1, version = version + 1, updated_at = NOW(), updated_by = $2 WHERE tenant_key = $3 AND version = $4 RETURNING version, updated_at', [state, req.session.sub, tenantKey, expectedVersion]);
+      if (!r.rowCount) return { result: r, version: null };
+      const v = Number(r.rows[0].version);
+      await client.query('INSERT INTO app_state_audit (tenant_key, version, actor) VALUES ($1, $2, $3)', [tenantKey, v, req.session.sub]);
+      return { result: r, version: v };
+    });
     if (!result.rowCount) return res.status(409).json({ error: 'Newer changes are available. Reload before saving again.' });
-    const version = Number(result.rows[0].version);
-    await pool.query('INSERT INTO app_state_audit (tenant_key, version, actor) VALUES ($1, $2, $3)', [tenantKey, version, req.session.sub]);
     res.json({ ok: true, version, updatedAt: result.rows[0].updated_at });
   } catch (error) {
     res.status(500).json({ error: 'Unable to save application data.', detail: error.message });
@@ -536,10 +615,10 @@ app.post('/api/platform/clients', requirePlatformAdmin, async (req, res) => {
     const client = result.rows[0];
     // Seed this tenant's own app_state row immediately — a client should never exist in the
     // directory without somewhere for its data to actually live.
-    await pool.query(
+    await withTenantScope(tenantKey, client2 => client2.query(
       'INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3) ON CONFLICT (tenant_key) DO NOTHING',
       [tenantKey, defaultTenantState(client), req.session.sub]
-    );
+    ));
     res.status(201).json({ client: toPlatformClientJson(client) });
   } catch (error) {
     if (error.code === '23505') return res.status(409).json({ error: 'A client with that admin email or tenant key already exists.' });
@@ -641,9 +720,15 @@ app.delete('/api/platform/clients/:id', requirePlatformAdmin, async (req, res) =
     if (client.tenant_key === TENANT_KEY) return res.status(403).json({ error: 'The real connected company can never be permanently deleted.' });
     if (client.status !== 'archived') return res.status(409).json({ error: 'Archive this client before deleting it permanently.' });
     await pool.query('DELETE FROM platform_clients WHERE id = $1', [id]);
-    await pool.query('DELETE FROM app_state WHERE tenant_key = $1', [client.tenant_key]);
-    await pool.query('DELETE FROM app_state_audit WHERE tenant_key = $1', [client.tenant_key]);
-    await pool.query('DELETE FROM zk_devices WHERE tenant_key = $1', [client.tenant_key]);
+    await withTenantScope(client.tenant_key, async client2 => {
+      await client2.query('DELETE FROM app_state WHERE tenant_key = $1', [client.tenant_key]);
+      await client2.query('DELETE FROM app_state_audit WHERE tenant_key = $1', [client.tenant_key]);
+      await client2.query('DELETE FROM zk_devices WHERE tenant_key = $1', [client.tenant_key]);
+    });
+    // zk_device_registry is intentionally outside RLS (see initializeDatabase), so this can stay
+    // a plain query -- but it still needs cleaning up here, or a deleted tenant's device serials
+    // would stay claimed forever, permanently unable to be registered to any other company.
+    await pool.query('DELETE FROM zk_device_registry WHERE tenant_key = $1', [client.tenant_key]);
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: 'Unable to delete client.', detail: error.message });
