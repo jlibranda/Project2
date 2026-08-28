@@ -953,110 +953,6 @@
     render();
   };
 
-  function statutoryFactor(grp, period) {
-    return PayrollRuleEngine.statutoryFactor(grp,period || {});
-  }
-
-  window.buildDraftRow = buildDraftRow = function (emp, grp, period) {
-    var from = period && (period.attendanceFrom || period.from) || document.getElementById('pf') && document.getElementById('pf').value || today();
-    var to = period && (period.attendanceTo || period.to) || document.getElementById('pt') && document.getElementById('pt').value || today();
-    var logs = approvedAttendance(emp.id, from, to);
-    var baseBasic = computeBasicByPayType(emp, grp, period);
-    var monthlyRate = Number(emp.salaryPM) || 0;
-    var dailyDivisor = Number(emp.dailyDivisor || COMPANY.dailyDivisor || 22);
-    var dailyRate = monthlyRate && dailyDivisor ? monthlyRate / dailyDivisor : Number(emp.rate) || 0;
-    var absentDays = logs.filter(function (a) { return a.status === 'absent'; }).length;
-    var lateMinutes = logs.reduce(function (sum, a) { return sum + attendanceLateMinutes(a); }, 0);
-    var otHours = logs.reduce(function (sum, a) { return sum + (Number(a.ot) || 0); }, 0);
-    var ndHours = logs.reduce(function (sum, a) { return sum + (Number(a.nd) || 0); }, 0);
-    var absenceDed = +(absentDays * dailyRate).toFixed(2);
-    var lateDed = +(lateMinutes * dailyRate / 8 / 60).toFixed(2);
-    var ot = +(dailyRate / 8 * 1.25 * otHours).toFixed(2);
-    var nd = +(dailyRate / 8 * 0.10 * ndHours).toFixed(2);
-    var basic = +Math.max(0, baseBasic - absenceDed - lateDed).toFixed(2);
-    var gross = +(basic + ot + nd).toFixed(2);
-    var pm = emp.salaryPM || emp.rate * (emp.dailyDivisor || COMPANY.dailyDivisor || 22);
-    var ms = +pm.toFixed(2);
-    var factor = statutoryFactor(grp, period);
-    var sss = +(totalSSS(ms) * factor).toFixed(2);
-    var ph = +(phContrib(ms) * factor).toFixed(2);
-    var pi = +(piContrib(ms) * factor).toFixed(2);
-    var taxFreq = grp.taxMethod || 'monthly';
-    var taxableCompensation = Math.max(0, gross - sss - ph - pi);
-    var tax = +birTaxByFreq(taxableCompensation, taxFreq).toFixed(2);
-    var loan = +(LOANS.filter(function (l) { return l.eid === emp.id && l.status === 'active'; }).reduce(function (s,l) {
-      return s + (Number(l.monthly) || 0) * PayrollRuleEngine.frequencyFactor(grp);
-    }, 0)).toFixed(2);
-    var totalDed = +(sss + ph + pi + tax + loan).toFixed(2);
-    var net = +Math.max(0, gross - totalDed).toFixed(2);
-    return {
-      empId:emp.id, name:emp.name, eid:emp.eid, pos:emp.pos, payType:emp.payType,
-      basic:basic, baseBasic:+baseBasic.toFixed(2), absenceDed:absenceDed, lateDed:lateDed,
-      absentDays:absentDays, lateMinutes:lateMinutes, pr:logs.filter(function (a) { return a.status === 'present' || a.status === 'late'; }).length,
-      ot:ot, nd:nd, otH:otHours, ndH:ndHours, gross:gross,
-      sss:sss, ph:ph, pi:pi, tax:tax, loan:loan, totalDed:totalDed, net:net,
-      applyStatutory:factor > 0, statutoryFactor:factor, taxFreq:taxFreq, taxableCompensation:taxableCompensation,
-      ms:ms, attendanceFrom:from, attendanceTo:to, attendanceApproved:logs.length, _edited:false
-    };
-  };
-
-  window.previewPayroll = previewPayroll = function () {
-    var from = document.getElementById('pf') && document.getElementById('pf').value;
-    var to = document.getElementById('pt') && document.getElementById('pt').value;
-    if (!from || !to) { toast('Please select a pay period.', 'warning'); return; }
-    var grpId = window._prGroup || PAYROLL_GROUPS[0].id;
-    var grp = PAYROLL_GROUPS.find(function (g) { return g.id === grpId; }) || PAYROLL_GROUPS[0];
-    var period = PAY_PERIODS.find(function (p) { return p.id === window._prPeriod; }) || null;
-    var emps = USERS.filter(function (u) { return u.role === 'employee' && document.getElementById('pe'+u.id) && document.getElementById('pe'+u.id).checked; });
-    if (!emps.length) { toast('Select at least one employee.', 'warning'); return; }
-    var pending = periodPendingAttendance(emps.map(function (e) { return e.id; }), from, to);
-    if (pending.length) {
-      toast('Payroll blocked: '+pending.length+' attendance record(s) still need approval.', 'warning', 5500);
-      return;
-    }
-    PAYROLL_DRAFT = {};
-    emps.forEach(function (emp) { PAYROLL_DRAFT[emp.id] = buildDraftRow(emp, grp, period); });
-    window._prPreview = true;
-    render();
-    toast('Preview ready from approved attendance and current PH statutory tables.', 'info');
-  };
-
-  window.runPayroll = runPayroll = function () {
-    var from = document.getElementById('pf') && document.getElementById('pf').value;
-    var to = document.getElementById('pt') && document.getElementById('pt').value;
-    if (!from || !to || !Object.keys(PAYROLL_DRAFT).length) { toast('Preview payroll before submitting it.', 'warning'); return; }
-    var groupId = window._prGroup || PAYROLL_GROUPS[0].id;
-    var grp = PAYROLL_GROUPS.find(function (g) { return g.id === groupId; }) || PAYROLL_GROUPS[0];
-    if (PAYROLLS.some(function (r) { return r.groupId === groupId && r.from === from && r.to === to && r.status === 'pending_approval'; })) {
-      toast('A payroll for this group and period is already awaiting approval.', 'warning');
-      return;
-    }
-    var items = Object.values(PAYROLL_DRAFT).map(function (d) {
-      var adjItems = PAYROLL_ADJ.filter(function (x) { return x.empId === d.empId && x.status === 'approved'; });
-      var adjTotal = adjItems.reduce(function (s,x) { return s + Number(x.amount || 0); }, 0);
-      return Object.assign({}, d, {
-        adjustments:adjTotal,
-        adjustmentIds:adjItems.map(function (x) { return x.id; }),
-        net:+Math.max(0, d.net + adjTotal).toFixed(2)
-      });
-    });
-    var run = {
-      id:nPay++, from:from, to:to, items:items, on:today(), groupId:groupId, groupName:grp.name || 'Standard',
-      periodId:window._prPeriod !== 'custom' ? window._prPeriod : null,
-      status:'pending_approval', preparedBy:user.name, preparedAt:new Date().toISOString(),
-      complianceVersion:COMPLIANCE_VERSION.label
-    };
-    PAYROLLS.push(run);
-    PAYROLL_AUDIT.push({runId:run.id, action:'submitted', by:user.name, at:new Date().toISOString()});
-    PAY_OVERRIDES = {};
-    PAYROLL_DRAFT = {};
-    window._prPreview = false;
-    queueSync('Payroll_Runs','Payroll_Items');
-    toast('Payroll submitted for approval · '+items.length+' employees · Net '+fmt(items.reduce(function (s,i) { return s+i.net; },0)), 'success', 5000);
-    tab = 0;
-    render();
-  };
-
   window.approvePayroll = function (runId) {
     var run = PAYROLLS.find(function (r) { return r.id === runId; });
     if (!run || run.status !== 'pending_approval') return;
@@ -1191,27 +1087,49 @@
     }
     var run = latestApprovedRun();
     if (!run) { toast('Approve and lock a payroll run before generating reports.', 'warning'); return; }
+    /* Government remittance reports must reflect what was ACTUALLY withheld for this specific
+       run/cutoff (i.sss/i.ph/i.pi, already scaled by the pay group's statutory timing factor and
+       any manual Compute-tab override) rather than a blind recompute off monthly salary — a blind
+       recompute silently shows the full monthly contribution even on a semi-monthly/weekly cutoff
+       that only withheld half (or none) of it. Sub-line splits (SSS vs MPF) and employer shares are
+       apportioned from the current rate tables but scaled to reconcile exactly to the actual total. */
+    function statutoryLine(item,code) { return (item.calculationTrace||[]).find(function (l) { return l.code===code; }); }
+    function apportion(actual,theoParts) {
+      var total = theoParts.reduce(function (s,v) { return s+v; },0);
+      if (!total) { var zero = theoParts.map(function () { return 0; }); zero[0] = +actual.toFixed(2); return zero; }
+      var out = theoParts.map(function (v) { return +(actual*(v/total)).toFixed(2); });
+      var sum = out.reduce(function (s,v) { return s+v; },0);
+      out[out.length-1] = +(out[out.length-1]+(actual-sum)).toFixed(2);
+      return out;
+    }
     var headers, rows, filename;
     if (type === 'SSS') {
       headers = ['Employee No.','Employee','SSS No.','Monthly Salary Credit','SSS EE','MPF EE','SSS ER incl. EC','MPF ER','Total'];
       rows = run.items.map(function (i) {
         var e = USERS.find(function (u) { return u.id === i.empId; }) || {};
-        return [i.eid,i.name,e.sss||'',i.ms,sssContrib(i.ms),mpfContrib(i.ms),sssErShare(i.ms),mpfErShare(i.ms),
-          totalSSS(i.ms)+totalSssEr(i.ms)];
+        var actualEE = Number(i.sss||0), sssLine = statutoryLine(i,'SSS');
+        var actualER = sssLine ? Number(sssLine.employerAmount||0) : totalSssEr(i.ms);
+        var eeParts = apportion(actualEE,[sssContrib(i.ms),mpfContrib(i.ms)]);
+        var erParts = apportion(actualER,[sssErShare(i.ms),mpfErShare(i.ms)]);
+        return [i.eid,i.name,e.sss||'',i.ms,eeParts[0],eeParts[1],erParts[0],erParts[1],+(actualEE+actualER).toFixed(2)];
       });
       filename = 'SSS_R3_'+run.from+'_'+run.to+'.csv';
     } else if (type === 'PHIC') {
       headers = ['Employee No.','Employee','PhilHealth No.','Monthly Basic Salary','Employee Share','Employer Share','Total Premium'];
       rows = run.items.map(function (i) {
         var e = USERS.find(function (u) { return u.id === i.empId; }) || {};
-        return [i.eid,i.name,e.ph||'',i.ms,phContrib(i.ms),phErShare(i.ms),phContrib(i.ms)+phErShare(i.ms)];
+        var actualEE = Number(i.ph||0), phicLine = statutoryLine(i,'PHIC');
+        var actualER = phicLine ? Number(phicLine.employerAmount||0) : phErShare(i.ms);
+        return [i.eid,i.name,e.ph||'',i.ms,actualEE,actualER,+(actualEE+actualER).toFixed(2)];
       });
       filename = 'PhilHealth_RF1_'+run.from+'_'+run.to+'.csv';
     } else if (type === 'HDMF') {
       headers = ['Employee No.','Employee','Pag-IBIG MID','Monthly Compensation','Employee Share','Employer Share','Total'];
       rows = run.items.map(function (i) {
         var e = USERS.find(function (u) { return u.id === i.empId; }) || {};
-        return [i.eid,i.name,e.pi||'',i.ms,piContrib(i.ms),piErShare(i.ms),piContrib(i.ms)+piErShare(i.ms)];
+        var actualEE = Number(i.pi||0), hdmfLine = statutoryLine(i,'HDMF');
+        var actualER = hdmfLine ? Number(hdmfLine.employerAmount||0) : piErShare(i.ms);
+        return [i.eid,i.name,e.pi||'',i.ms,actualEE,actualER,+(actualEE+actualER).toFixed(2)];
       });
       filename = 'PagIBIG_MCRF_'+run.from+'_'+run.to+'.csv';
     }

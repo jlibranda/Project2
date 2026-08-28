@@ -2367,6 +2367,7 @@ async function flushSync(){
 let ZK={
   devices:[],                // [{serial,lastSeen,pendingCount}] from the server
   deviceUsers:[],            // [{userId,name,cardNo,serial}] learned from device OPERLOG pushes
+  registeredSerials:[],      // [{serial,registeredAt}] this tenant has claimed — see /api/zk/register-device
   userMapping:{},            // { deviceUserId: employeeId } — admin-edited, persisted with app state
   pulledRecords:[],          // raw pending punches fetched from the server
   importPreview:[],          // mapped+deduped ready to import
@@ -2393,10 +2394,35 @@ async function zkRefreshStatus(){
     const d=await zkApi('/status');
     ZK.devices=d.devices||[];
     ZK.deviceUsers=d.deviceUsers||[];
+    ZK.registeredSerials=d.registeredSerials||[];
     if(d.userMapping&&!Object.keys(ZK.userMapping).length)ZK.userMapping=d.userMapping;
     zkAutoApplyBiometricMatches();
   }catch(e){/* surfaced via the page's own empty/error states */}
   ZK.loading=false;render();
+}
+// Claims a device serial for this company before it's ever configured on the device itself --
+// the device's push protocol carries no login/session of its own (see server.js's
+// resolveDeviceTenant), so this registration step is the only way its punches land in the
+// right company's data instead of silently falling back to whichever company set up the very
+// first device on this deployment.
+async function zkRegisterDevice(){
+  const input=document.getElementById('zk-register-serial');
+  const serial=(input.value||'').trim();
+  if(!serial){alert('Please enter the device\'s serial number.');return;}
+  try{
+    await zkApi('/register-device',{method:'POST',body:JSON.stringify({serial})});
+    input.value='';
+    toast('Device registered to your company. You can now configure it below.','success');
+    await zkRefreshStatus();
+  }catch(e){alert('Could not register device: '+e.message);}
+}
+async function zkUnregisterDevice(serial){
+  if(!confirm(`Un-register "${serial}"? Punches from this device will stop being credited to your company until it's registered again.`))return;
+  try{
+    await zkApi('/unregister-device',{method:'POST',body:JSON.stringify({serial})});
+    toast('Device un-registered.','info');
+    await zkRefreshStatus();
+  }catch(e){alert('Could not un-register device: '+e.message);}
 }
 // Silent background counterpart used by the realtime poll (startRealtime) so newly-enrolled
 // device users (pushed via OPERLOG) show up without needing a manual "Refresh device users"
@@ -2408,6 +2434,7 @@ async function zkPollDeviceUsers(){
     const d=await zkApi('/status');
     ZK.devices=d.devices||[];
     ZK.deviceUsers=d.deviceUsers||[];
+    ZK.registeredSerials=d.registeredSerials||[];
     if(d.userMapping&&!Object.keys(ZK.userMapping).length)ZK.userMapping=d.userMapping;
     zkAutoApplyBiometricMatches();
   }catch(e){return;}
@@ -13150,7 +13177,16 @@ function pgZKSetup(){
   /* ── Tab 0: Connection ── */
   if(tab===0){body=`
     <div class="card" style="margin-bottom:1rem">
-      <div class="card-title" style="margin-bottom:.875rem">Configure on the device</div>
+      <div class="card-title" style="margin-bottom:.5rem">1. Register the device to your company</div>
+      <p style="font-size:13px;color:var(--txt2);margin-bottom:.75rem">Do this <strong>before</strong> configuring the device below — the device's serial number is on a label on the unit itself, or under Menu on its screen. Registering it first makes sure its punches are credited to your company, not whichever company set up a device on this system first.</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:${ZK.registeredSerials.length?'10px':'0'}">
+        <input id="zk-register-serial" class="finput mono" style="font-size:12px;max-width:220px" placeholder="e.g. CLQ8231560088"/>
+        <button class="btn btn-sm btn-primary" onclick="zkRegisterDevice()">📌 Register device</button>
+      </div>
+      ${ZK.registeredSerials.length?`<div style="display:flex;flex-wrap:wrap;gap:6px">${ZK.registeredSerials.map(r=>`<span class="badge b-approved" style="display:inline-flex;align-items:center;gap:6px">🔒 ${esc(r.serial)}<span onclick="zkUnregisterDevice('${esc(r.serial)}')" style="cursor:pointer;opacity:.75;font-size:12px" title="Un-register this device">✕</span></span>`).join('')}</div>`:''}
+    </div>
+    <div class="card" style="margin-bottom:1rem">
+      <div class="card-title" style="margin-bottom:.875rem">2. Configure on the device</div>
       <p style="font-size:13px;color:var(--txt2);margin-bottom:.75rem">This device supports ADMS — it pushes attendance to us, so no local bridge software is needed.</p>
       ${hasOverride?`<div style="font-size:12px;color:var(--green);margin-bottom:8px">✓ Showing your saved working settings (not the auto-detected default).</div>`
         :`<div style="font-size:12px;color:var(--txt3);margin-bottom:8px">Showing the auto-detected default. If your device only accepts a numeric IP, find your actual working address/port (see note below) and save it here.</div>`}
@@ -17741,7 +17777,7 @@ render = function() {
 <script src="/bir-2316-pdf.js?v=20260804-official-form-overlay"></script>
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
-<script src="/compliance.js?v=20260814-summary-total-late-fix"></script>
+<script src="/compliance.js?v=20260823-govt-report-actual-withheld"></script>
 <script src="/enterprise.js?v=20260814-summary-total-late-fix"></script>
 <script src="/payroll-governance.js?v=20260804-annualized-tax"></script>
 <script src="/persistence.js?v=20260814-summary-total-late-fix"></script>
