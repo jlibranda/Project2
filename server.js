@@ -207,6 +207,18 @@ async function initializeDatabase() {
       updated_by TEXT NOT NULL DEFAULT 'system',
       CHECK (id = 1)
     );
+    -- Claims a ZK biometric device serial for one tenant. The device itself pushes to /iclock/*
+    -- with no session/credential of any kind -- it only ever sends its own serial number -- so
+    -- this is the only way the server can know which tenant's data a given device's punches
+    -- belong to. A serial with no row here falls back to the original TENANT_KEY (see
+    -- resolveDeviceTenant below), which keeps the one already-configured device working exactly
+    -- as it always has, without requiring it to be registered retroactively.
+    CREATE TABLE IF NOT EXISTS zk_device_registry (
+      serial TEXT PRIMARY KEY,
+      tenant_key TEXT NOT NULL,
+      registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      registered_by TEXT NOT NULL
+    );
   `);
   // Migrate the one existing real tenant into the directory, exactly once. Purely additive —
   // its tenant_key and app_state row are untouched, so this can never affect the live login
@@ -265,6 +277,16 @@ async function zkAllDevices(tenantKey = TENANT_KEY) {
   if (!pool) return [];
   const result = await pool.query('SELECT serial, last_seen, pending, device_users, commands FROM zk_devices WHERE tenant_key = $1', [tenantKey]);
   return result.rows;
+}
+// The device-facing /iclock/* endpoints have no session -- ZKTeco's ADMS push protocol only
+// ever sends the device's own serial, nothing that identifies a tenant. This is the one place
+// that resolves serial -> tenant, so an unregistered device (including the one real device
+// already configured against this deployment today) safely falls back to the original tenant
+// instead of failing or needing to be registered retroactively.
+async function resolveDeviceTenant(serial) {
+  if (!pool) return TENANT_KEY;
+  const result = await pool.query('SELECT tenant_key FROM zk_device_registry WHERE serial = $1', [serial]);
+  return result.rowCount ? result.rows[0].tenant_key : TENANT_KEY;
 }
 
 // Row-level lock on app_state so this can never race the browser's PUT /api/state —
@@ -639,7 +661,8 @@ function zkKey(userId, date, time) { return userId + '|' + date + '|' + time; }
 
 app.get('/iclock/cdata', async (req, res) => {
   const sn = String(req.query.SN || req.query.sn || 'unknown');
-  await zkMutateDevice(sn, current => current).catch(() => {});
+  const tenantKey = await resolveDeviceTenant(sn).catch(() => TENANT_KEY);
+  await zkMutateDevice(sn, current => current, tenantKey).catch(() => {});
   res.type('text/plain').send(
     `GET OPTION FROM: ${sn}\r\nStamp=9999\r\nOpStamp=0\r\nErrorDelay=60\r\nDelay=30\r\nTransFlag=1111000000\r\nTimeZone=8\r\nRealtime=1\r\nEncrypt=None\r\n`
   );
@@ -651,6 +674,7 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
   const lines = parseAdmsLines(req.body);
   let count = 0;
   try {
+    const tenantKey = await resolveDeviceTenant(sn);
     if (table === 'ATTLOG') {
       const punches = [];
       lines.forEach(line => {
@@ -667,7 +691,7 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
         const time = rawTime.slice(0, 5);
         punches.push({ userId, date, time, statusCode });
       });
-      const record = await readState();
+      const record = await readState(tenantKey);
       const userMapping = record?.state?.zk?.userMapping || {};
       const employees = record?.state?.users || [];
       const shifts = record?.state?.company?.shifts || [];
@@ -697,7 +721,7 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
           await mutateAppState(state => {
             const committed = zkCommitPunches(state, punchesByEmpDate, outOfBufferReasons);
             return { changed: committed > 0 };
-          }, 'zk-device:' + sn);
+          }, 'zk-device:' + sn, tenantKey);
           count += mapped.length;
         } catch (error) {
           console.error('ADMS attendance auto-commit error:', error.message);
@@ -715,9 +739,9 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
             count++;
           });
           return current;
-        });
+        }, tenantKey);
       } else {
-        await zkMutateDevice(sn, current => current); // still touch last_seen
+        await zkMutateDevice(sn, current => current, tenantKey); // still touch last_seen
       }
     } else if (table === 'OPERLOG') {
       // Firmware varies on whether USER lines are tab- or space-delimited (and "USER PIN=16"
@@ -736,9 +760,9 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
           count++;
         });
         return current;
-      });
+      }, tenantKey);
     } else {
-      await zkMutateDevice(sn, current => current);
+      await zkMutateDevice(sn, current => current, tenantKey);
     }
   } catch (error) {
     // Device retries on failure; log and still ack what we could to avoid a stuck retry loop.
@@ -750,13 +774,14 @@ app.post('/iclock/cdata', express.text({ type: '*/*', limit: '4mb' }), async (re
 app.get('/iclock/getrequest', async (req, res) => {
   const sn = String(req.query.SN || req.query.sn || 'unknown');
   try {
+    const tenantKey = await resolveDeviceTenant(sn);
     let toSend = [];
     await zkMutateDevice(sn, current => {
       toSend = (current.commands || []).filter(c => c.status === 'pending');
       const sentAt = new Date().toISOString();
       toSend.forEach(c => { c.status = 'sent'; c.sentAt = sentAt; });
       return current;
-    });
+    }, tenantKey);
     if (!toSend.length) return res.type('text/plain').send('OK');
     res.type('text/plain').send(toSend.map(c => `C:${c.id}:${c.command}`).join('\r\n') + '\r\n');
   } catch (error) {
@@ -782,6 +807,7 @@ app.post('/iclock/devicecmd', express.text({ type: '*/*', limit: '256kb' }), asy
     const kv = Object.assign({}, parseAdmsKV(req.body), req.query);
     const cmdId = Number(kv.ID);
     if (cmdId) {
+      const tenantKey = await resolveDeviceTenant(sn);
       await zkMutateDevice(sn, current => {
         const entry = (current.commands || []).find(c => c.id === cmdId);
         if (entry) {
@@ -790,7 +816,7 @@ app.post('/iclock/devicecmd', express.text({ type: '*/*', limit: '256kb' }), asy
           entry.completedAt = new Date().toISOString();
         }
         return current;
-      });
+      }, tenantKey);
     }
   } catch (error) {
     console.error('ADMS devicecmd error:', error.message);
@@ -804,7 +830,10 @@ app.post('/iclock/devicecmd', express.text({ type: '*/*', limit: '256kb' }), asy
    overwritten by a stale browser save. */
 app.get('/api/zk/status', requireAuth, async (req, res) => {
   const tenantKey = req.session.tenantKey || TENANT_KEY;
-  const [record, devices] = await Promise.all([readState(tenantKey), zkAllDevices(tenantKey)]);
+  const [record, devices, registry] = await Promise.all([
+    readState(tenantKey), zkAllDevices(tenantKey),
+    pool ? pool.query('SELECT serial, registered_at FROM zk_device_registry WHERE tenant_key = $1 ORDER BY registered_at ASC', [tenantKey]) : Promise.resolve({ rows: [] })
+  ]);
   const userMapping = record?.state?.zk?.userMapping || {};
   res.json({
     devices: devices.map(d => ({
@@ -812,8 +841,50 @@ app.get('/api/zk/status', requireAuth, async (req, res) => {
       commands: (d.commands || []).slice(-10).reverse()
     })),
     deviceUsers: devices.flatMap(d => (d.device_users || []).map(u => ({ ...u, serial: d.serial }))),
-    userMapping
+    userMapping,
+    registeredSerials: registry.rows.map(r => ({ serial: r.serial, registeredAt: r.registered_at }))
   });
+});
+// Claims a device serial for the caller's own tenant, so /iclock/* pushes from that serial
+// resolve to this tenant instead of falling back to the original TENANT_KEY (see
+// resolveDeviceTenant). A serial already claimed by a DIFFERENT tenant is refused rather than
+// silently reassigned -- that would mean either a typo or a device that's genuinely changed
+// hands, and either way it shouldn't happen without deliberate confirmation. Re-registering to
+// the SAME tenant (e.g. after a device replacement using the old serial) is a harmless no-op.
+app.post('/api/zk/register-device', requireAuth, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const serial = String(req.body.serial || '').trim();
+  if (!serial) return res.status(400).json({ error: 'A device serial number is required.' });
+  const tenantKey = req.session.tenantKey || TENANT_KEY;
+  try {
+    const existing = await pool.query('SELECT tenant_key FROM zk_device_registry WHERE serial = $1', [serial]);
+    if (existing.rowCount && existing.rows[0].tenant_key !== tenantKey) {
+      return res.status(409).json({ error: 'This device serial is already registered to a different company.' });
+    }
+    await pool.query(
+      `INSERT INTO zk_device_registry (serial, tenant_key, registered_by) VALUES ($1, $2, $3)
+       ON CONFLICT (serial) DO UPDATE SET tenant_key = $2, registered_by = $3, registered_at = NOW()`,
+      [serial, tenantKey, req.session.sub]
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to register device.', detail: error.message });
+  }
+});
+// Releases a serial this tenant registered, e.g. after mis-typing it or decommissioning the
+// device. Scoped to the caller's own tenant_key so one tenant can never release -- and thereby
+// free up for reclaiming -- a serial that actually belongs to someone else.
+app.post('/api/zk/unregister-device', requireAuth, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const serial = String(req.body.serial || '').trim();
+  const tenantKey = req.session.tenantKey || TENANT_KEY;
+  try {
+    const result = await pool.query('DELETE FROM zk_device_registry WHERE serial = $1 AND tenant_key = $2', [serial, tenantKey]);
+    if (!result.rowCount) return res.status(404).json({ error: 'That serial is not registered to your company.' });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to unregister device.', detail: error.message });
+  }
 });
 // Commands are an allowlist, not free-text, so the browser can never queue an arbitrary
 // ADMS directive — only the ones vetted here. CLEAR LOG is destructive on the device (it
