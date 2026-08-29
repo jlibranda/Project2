@@ -110,6 +110,23 @@
   // (that's the only way a valid token exists), this just recovers who they are.
   window.getSessionIdentity=function(){return token?decodeToken(token):null;};
 
+  // The pre-hydrate "quick paint" loading screen (renderLoading(), index.html) reads whatever
+  // localStorage['sr_company_brand_'+tenantKey] already holds, synchronously, before this
+  // file's own async restoreSession() below has fetched anything -- so the very first time a
+  // given tenant is ever entered on this browser, that key doesn't exist yet, and the loading
+  // screen falls back to the neutral AURA default for that one load even though the tenant
+  // itself (Gostoso Cafe, say) is about to render correctly moments later. index.html's own
+  // render() already writes this cache on every render, but that first write doesn't land until
+  // the next render() cycle -- calling this immediately after hydrate() below closes that gap
+  // one render sooner, so a refresh right after entering (or right after this restore) already
+  // has something real to read.
+  function cacheBrandFor(newToken){
+    try{
+      var payload=decodeToken(newToken);
+      if(payload&&payload.tenantKey)localStorage.setItem('sr_company_brand_'+payload.tenantKey,JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
+    }catch(e){}
+  }
+
   // ── God Admin entering/exiting a real client's own session (Enter Portal) ──
   // Distinct from a normal login: the God Admin's own session (token/version/last-saved-
   // snapshot) is parked so it can be restored exactly on exit, rather than requiring the
@@ -126,6 +143,7 @@
     token=newToken;stateVersion=newVersion||0;sessionStorage.setItem('sproutripple_session',token);
     if(newState)hydrate(newState);
     lastSavedPayload=JSON.stringify(snapshot());
+    cacheBrandFor(newToken);
   };
   // Restores God Admin's own session and re-fetches its state fresh from the server, rather
   // than trusting index.html's in-memory _savedAppState snapshot — that plain JS variable does
@@ -145,6 +163,16 @@
       var result=await request('/state');
       stateVersion=result.version||0;
       if(result.state){hydrate(result.state);lastSavedPayload=JSON.stringify(snapshot());}
+      // Same reasoning as restoreSession()'s role==='platform' branch: exiting back to God
+      // Admin's own parked token re-hydrates from the same shared /state.company row a fresh
+      // platform restore would, so it needs the identical forced-AURA reset -- otherwise exiting
+      // a client silently leaves whatever that row's logo/name happen to be on screen instead of
+      // the neutral platform identity.
+      var exitedPayload=decodeToken(token);
+      if(exitedPayload&&exitedPayload.role==='platform'){
+        COMPANY.name='AURA';COMPANY.tagline='People Operations Cloud';COMPANY.initials='A';
+        COMPANY.logo=(typeof AURA_MARK!=='undefined')?AURA_MARK:null;
+      }
     }catch(e){}
     return true;
   };
@@ -267,6 +295,14 @@
           sessionRestoring=false;render();return; // identity no longer resolvable — fall back to the login screen
         }
       }
+      // Refresh the quick-paint cache for every non-platform branch above (impersonated admin,
+      // a client's own direct admin login, a matched employee) now that COMPANY reflects that
+      // tenant's real hydrated branding -- see cacheBrandFor()'s own comment. Skipped for
+      // role==='platform': that branch intentionally forces the neutral AURA identity instead
+      // of a cacheable tenant branding, and God Admin's own tenantKey is the same one the real
+      // connected company (client 1) uses, so caching AURA under it here would otherwise leak
+      // into that company's own direct-admin-login quick paint.
+      if(payload.role!=='platform')cacheBrandFor(token);
       tab=0;modal=null;
       sessionRestoring=false;
       render();
