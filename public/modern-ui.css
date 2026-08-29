@@ -160,7 +160,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
   border-color:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 12%,transparent);background:var(--surface);
 }
 .pill-opt{padding:7px 13px;border-radius:999px;transition:.15s ease}
-.pill-opt:hover{border-color:color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--accent-bg)}
+.pill-opt:hover{border-color:color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--accent-bg);color:var(--accent-bg-ink)}
 .pill-opt.sel{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 10%,transparent)}
 
 /* Tables */
@@ -174,7 +174,10 @@ thead th:first-child{border-radius:9px 0 0 0}
 thead th:last-child{border-radius:0 9px 0 0}
 tbody tr,tbody tr:nth-child(even){background:var(--surface)!important}
 td{padding:12px 13px;border-bottom:1px solid color-mix(in srgb,var(--border) 72%,transparent)}
-tr:hover td{background:color-mix(in srgb,var(--accent-bg) 58%,var(--surface))!important}
+/* No !important on color: a cell with its own inline color (e.g. a semantic highlight like the
+   MPF preview's blue "over threshold" figure) should keep it -- this only needs to beat the
+   plain, unqualified td{color:var(--txt)} default for cells that don't set their own. */
+tr:hover td{background:color-mix(in srgb,var(--accent-bg) 58%,var(--surface))!important;color:var(--accent-bg-ink)}
 tbody tr:last-child td{border-bottom:0}
 
 /* Navigation within pages */
@@ -210,7 +213,7 @@ tbody tr:last-child td{border-bottom:0}
 [data-dark] .card,[data-dark] .metric{background:var(--surface)!important;border-color:var(--border)}
 [data-dark] thead tr,[data-dark] thead th{background:var(--surface2)!important}
 [data-dark] tbody tr,[data-dark] tbody tr:nth-child(even){background:var(--surface)!important}
-[data-dark] tr:hover td{background:var(--accent-bg)!important}
+[data-dark] tr:hover td{background:var(--accent-bg)!important;color:var(--accent-bg-ink)}
 
 @media(max-width:1100px){
   .content{padding:22px 20px 34px}
@@ -488,7 +491,7 @@ tbody tr:last-child td{border-bottom:0}
 .payroll-side-stack{display:flex;flex-direction:column;gap:10px}
 .payroll-quick-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
 .payroll-quick-action{display:flex;align-items:center;gap:9px;padding:9px;border:1px solid var(--border);border-radius:11px;background:var(--surface);color:var(--txt);text-align:left;cursor:pointer;transition:.15s ease}
-.payroll-quick-action:hover{border-color:color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--accent-bg);transform:translateY(-1px)}
+.payroll-quick-action:hover{border-color:color-mix(in srgb,var(--accent) 35%,var(--border));background:var(--accent-bg);color:var(--accent-bg-ink);transform:translateY(-1px)}
 .payroll-quick-action>span{width:30px;height:30px;display:grid;place-items:center;flex:0 0 auto;border-radius:9px;color:var(--accent);background:var(--accent-bg)}
 .payroll-quick-action strong,.payroll-quick-action small{display:block}.payroll-quick-action strong{font-size:10px}.payroll-quick-action small{margin-top:1px;color:var(--txt3);font-size:8px}
 .payroll-content-card{padding:18px}
@@ -510,7 +513,7 @@ tbody tr:last-child td{border-bottom:0}
 .payroll-employee-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:6px;max-height:360px;overflow-y:auto;padding:2px}
 .payroll-employee-row{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:10px;cursor:pointer;border:1px solid var(--border);background:var(--surface);transition:.14s ease}
 .payroll-employee-row:hover{border-color:var(--border2);background:var(--surface2)}
-.payroll-employee-row.selected{border-color:color-mix(in srgb,var(--accent) 45%,var(--border));background:color-mix(in srgb,var(--accent-bg) 55%,var(--surface))}
+.payroll-employee-row.selected{border-color:color-mix(in srgb,var(--accent) 45%,var(--border));background:color-mix(in srgb,var(--accent-bg) 55%,var(--surface));color:var(--accent-bg-ink)}
 .payroll-content-card table{font-variant-numeric:tabular-nums}
 
 @media(max-width:1180px){
