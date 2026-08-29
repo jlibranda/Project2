@@ -873,7 +873,13 @@ let COMPANY={
   buildDate:'2026-06-07',
   themeKey:'indigo',
   accentHex:'#4f46e5',
-  logo:AURA_MARK,        /* base64 data URL of uploaded company logo -- defaults to the AURA mark */
+  logo:null,             /* base64 data URL of uploaded company logo -- null until a real tenant's
+                             hydrated record sets its own (or leaves it null, correctly falling
+                             back to an initials tile). The AURA mark itself is only ever shown
+                             directly by the platform-neutral surfaces (renderLoading/renderLogin's
+                             unscoped case, the God Access console) -- never stored here, since a
+                             real client with no logo of their own must fall back to ITS OWN
+                             initials, not the platform's own brand mark. */
   wallpaper:null,       /* base64 data URL of background wallpaper */
   wallpaperOpacity:0.12,/* watermark strength 0.05–0.30 */
   wallpaperVeil:0.82,   /* 0.50–0.98 — how opaque the surface layer is (higher = more readable) */
@@ -4076,13 +4082,18 @@ function renderDemoAccounts(){
 
 function toggleLoginPassword(){const p=document.getElementById('lp'),b=document.getElementById('login-password-toggle');if(!p||!b)return;p.type=p.type==='password'?'text':'password';b.textContent=p.type==='password'?'Show':'Hide';}
 
+// Only ever rendered while `!user` (see render()'s dispatcher) -- which tenant, if any, is
+// about to be restored isn't known yet at this point, so this always shows the neutral AURA
+// identity directly rather than reading COMPANY (which could still hold a previous tenant's
+// hydrated values, or nothing at all). The real, correctly-hydrated page replaces this the
+// moment restoreSession() finishes -- see AURA_MARK's own comment.
 function renderLoading(){return`<main style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg)">
   <div style="text-align:center">
     <div style="position:relative;width:64px;height:64px;margin:0 auto 22px">
-      <div class="sr-loading-mark"${COMPANY.logo?' style="background:none;box-shadow:none"':''}>${COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'A')}</div>
+      <div class="sr-loading-mark" style="background:none;box-shadow:none"><img src="${AURA_MARK}" alt="AURA logo"/></div>
       <span class="sr-loading-ring"></span>
     </div>
-    <div style="font-weight:700;font-size:15px;color:var(--txt);letter-spacing:-.2px">${esc(COMPANY.name)||'AURA'}</div>
+    <div style="font-weight:700;font-size:15px;color:var(--txt);letter-spacing:-.2px">AURA</div>
     <div style="margin-top:8px;color:var(--txt3);font-size:12.5px;display:flex;align-items:center;justify-content:center;gap:8px">
       <span>Restoring your session</span>
       <span style="display:inline-flex;gap:3px">
@@ -4110,8 +4121,8 @@ function renderLogin(){
     <div class="login-glow login-glow-one"></div><div class="login-glow login-glow-two"></div>
     <div class="login-showcase-inner">
       <div class="login-brand">
-        <div class="login-brand-mark" ${scopedClient?`style="background:${scopedClient.color}"`:''}>${scopedClient?esc(scopedClient.initials):(COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'A'))}</div>
-        <div><strong>${scopedClient?esc(scopedClient.name):esc(COMPANY.name)}</strong><span>People Operations Cloud</span></div>
+        <div class="login-brand-mark" ${scopedClient?`style="background:${scopedClient.color}"`:''}>${scopedClient?esc(scopedClient.initials):`<img src="${AURA_MARK}" alt="AURA logo"/>`}</div>
+        <div><strong>${scopedClient?esc(scopedClient.name):'AURA'}</strong><span>People Operations Cloud</span></div>
       </div>
       <div class="login-hero">
         <div class="login-eyebrow"><span></span> Built for Philippine teams</div>
@@ -4129,7 +4140,7 @@ function renderLogin(){
   </section>
   <section class="login-panel">
     <div class="login-panel-inner">
-      <div class="login-mobile-brand"><div class="login-brand-mark" ${scopedClient?`style="background:${scopedClient.color}"`:''}>${scopedClient?esc(scopedClient.initials):(esc(COMPANY.initials)||'A')}</div><strong>${scopedClient?esc(scopedClient.name):esc(COMPANY.name)}</strong></div>
+      <div class="login-mobile-brand"><div class="login-brand-mark" ${scopedClient?`style="background:${scopedClient.color}"`:''}>${scopedClient?esc(scopedClient.initials):'A'}</div><strong>${scopedClient?esc(scopedClient.name):'AURA'}</strong></div>
       <div class="login-heading"><span class="login-kicker">${scopedClient?'Signing in to':'Secure workspace'}</span><h2>${scopedClient?esc(scopedClient.name):'Welcome back'}</h2><p>${scopedClient?'Sign in with your '+esc(scopedClient.name)+' work email.':'Sign in to continue to your HR and payroll workspace.'}</p></div>
       <form class="login-form" onsubmit="event.preventDefault();doLogin()">
         <div class="field"><label for="le">Work email</label><div class="login-input-wrap"><span>${ico('people',17)}</span><input id="le" type="email" value="${scopedClient?'':'admin@ph.com'}" autocomplete="username"/></div></div>

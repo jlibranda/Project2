@@ -49,7 +49,19 @@
     // predates that feature and therefore has no key for it at all. Object.assign only copies
     // keys saved.company actually has, so an unsaved default like that survives hydration
     // instead of silently disappearing the moment a user logs in.
-    if(saved.company)Object.assign(COMPANY,saved.company);
+    if(saved.company){
+      Object.assign(COMPANY,saved.company);
+      // Identity fields are the one place that partial-merge behavior actively hurts: a tenant
+      // whose stored record predates the logo field (or genuinely has none of its own) has no
+      // 'logo' key in saved.company at all, so Object.assign leaves COMPANY.logo exactly as it
+      // was before this call -- a previous tenant's cached branding, or the platform's own AURA
+      // default -- instead of correctly falling back to blank/initials for THIS tenant. Force
+      // these three to authoritatively reflect what was actually just hydrated (or its absence)
+      // every time, so a real client's own topbar/login never inherits someone else's mark.
+      COMPANY.logo=saved.company.logo||null;
+      COMPANY.name=saved.company.name||'AURA';
+      COMPANY.initials=saved.company.initials||'A';
+    }
     if(saved.employeeNumberConfig)EMP_NUM_CONFIG=saved.employeeNumberConfig;if(saved.statutoryConfig)STATUTORY_CONFIG=saved.statutoryConfig;
     if(saved.approvalConfig)APPROVAL_CONFIG=saved.approvalConfig;if(saved.fieldConfig)FIELD_CONFIG=saved.fieldConfig;
     replaceArray(INCOME_TYPES,saved.incomeTypes);if(saved.attendanceAdjustments)ATTENDANCE_ADJ=saved.attendanceAdjustments;
