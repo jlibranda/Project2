@@ -272,6 +272,13 @@ tr:hover td{background:var(--accent-bg) !important;color:var(--accent-bg-ink)}
 .remit-due{font-size:12px;color:var(--txt3)}
 .check-item{display:flex;align-items:center;gap:8px;padding:5px 0;font-size:13px;cursor:pointer}
 .check-item input{width:auto;accent-color:var(--accent)}
+@keyframes chatGreetIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+@keyframes chatPanelIn{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes chatBubblePulse{0%,100%{box-shadow:0 4px 18px rgba(0,0,0,.22),0 0 0 0 var(--accent-bg)}50%{box-shadow:0 4px 18px rgba(0,0,0,.22),0 0 0 8px transparent}}
+@keyframes chatDotBounce{0%,80%,100%{opacity:.3;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
+.chat-dot{width:5px;height:5px;border-radius:50%;background:var(--txt3);display:inline-block;margin:0 1.5px;animation:chatDotBounce 1.2s ease-in-out infinite}
+.chat-dot:nth-child(2){animation-delay:.15s}
+.chat-dot:nth-child(3){animation-delay:.3s}
 </style>
 <link rel="stylesheet" href="/modern-ui.css?v=20260829-theme-hover-ink"/>
 </head>
@@ -17584,6 +17591,7 @@ function render(){
   </div>
   <div class="shell">${renderSidebar()}<div id="content-area" class="content" style="${sidebarCollapsed?'margin-left:0':''};${(()=>{if(!COMPANY.wallpaper)return'';const v=COMPANY.wallpaperVeil||0.88;const va=Math.round(v*255).toString(16).padStart(2,'0');const bgHex=COMPANY.darkMode?'#0f172a':'#f4f3ef';return'background-image:linear-gradient('+bgHex+va+','+bgHex+va+');background-repeat:repeat;background-size:100% 100%;';})()}">${pg}</div></div>
   ${renderFAB()}
+  ${renderChatWidget()}
   ${renderModal()}`;
   applyWallpaperPreview();
   if(modal&&modal.type==='itBulk'){
@@ -17757,6 +17765,105 @@ function doGlobalSearch(v) {
   box.style.display = 'block';
 }
 
+/* ── AI Chat Widget (floating bubble, every page) ── */
+var chatOpen=false;
+var chatLang=(function(){try{return localStorage.getItem('sr_chat_lang')==='tl'?'tl':'en';}catch(e){return'en';}})();
+var chatLog=[]; /* {role:'user'|'assistant',text} */
+var chatTyping=false;
+var chatGreetShown=false,chatGreetDismissed=false;
+function chatEligible(){return !!(user&&canAccess('assistant')&&!(isPlatformAdmin&&!activeClientId));}
+function setChatLang(l){
+  chatLang=l==='tl'?'tl':'en';
+  try{localStorage.setItem('sr_chat_lang',chatLang);}catch(e){}
+  render();
+}
+function toggleChatWidget(){
+  chatOpen=!chatOpen;
+  chatGreetDismissed=true;
+  if(chatOpen&&!chatLog.length){
+    chatLog.push({role:'assistant',text:chatGreeting()});
+  }
+  render();
+}
+function dismissChatGreeting(){chatGreetDismissed=true;render();}
+function chatGreeting(){
+  var isA=isAdminUser(user)||isPlatformAdmin;
+  var name=(user.name||'').split(' ')[0]||(chatLang==='tl'?'diyan':'there');
+  if(chatLang==='tl')return 'Kumusta, '+name+'! Ako ang AURA Assistant. '+(isA?'Pwede mo akong tanungin tungkol sa iyong workforce data — halimbawa "ilan ang proby namin?" o "sino ang may hawak na leave requests?".':'Pwede mo akong tanungin tungkol sa sarili mong record — halimbawa "ano ang SSS number ko?" o "ilan pang leave credits ko?".');
+  return 'Hi, '+name+'! I\'m the AURA Assistant. '+(isA?'Ask me about your workforce data — e.g. "how many probationary employees do we have?" or "any pending leave requests?".':'Ask me about your own records — e.g. "what\'s my SSS number?" or "how many leave credits do I have left?".');
+}
+function chatExamples(){
+  var isA=isAdminUser(user)||isPlatformAdmin;
+  if(chatLang==='tl')return isA?['Ilan ang proby namin?','Headcount per department','May pending leave ba?']:['Ano ang SSS number ko?','Ilan pang leave credits ko?','Regular na ba ako?'];
+  return isA?['How many probationary employees do we have?','Headcount by department','Any pending leave requests?']:["What's my SSS number?",'How many leave credits do I have left?','Am I still on probation?'];
+}
+function sendChatMessage(text){
+  text=(text||'').trim();
+  if(!text||chatTyping)return;
+  chatLog.push({role:'user',text:text});
+  chatTyping=true;
+  render();
+  var el=document.getElementById('chat-input');if(el)el.value='';
+  setTimeout(function(){
+    var reply=(typeof assistantAnswer==='function')?assistantAnswer(text,chatLang):null;
+    if(!reply)reply=(chatLang==='tl'?'Hindi ko masyadong naintindihan yan, pero subukan mo yung mga halimbawang tanong sa itaas, o bisitahin ang buong HR Assistant page para sa mas detalyadong analysis.':'I\'m not quite able to answer that one yet -- try one of the example questions above, or visit the full HR Assistant page for broader analysis.');
+    chatLog.push({role:'assistant',text:reply});
+    chatTyping=false;
+    render();
+  },500+Math.random()*400);
+}
+function chatKeydown(e){
+  if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChatMessage(e.target.value);}
+}
+function renderChatWidget(){
+  if(!chatEligible())return'';
+  var showGreetBubble=!chatOpen&&!chatGreetDismissed&&chatGreetShown;
+  var html='<div id="chat-root" style="position:fixed;bottom:24px;left:24px;z-index:9899;display:flex;flex-direction:column;align-items:flex-start;gap:10px;font-family:\'Inter\',sans-serif">';
+  if(showGreetBubble){
+    html+='<div id="chat-greet-bubble" style="max-width:250px;background:var(--surface);border:1px solid var(--border);border-radius:14px 14px 14px 4px;padding:12px 14px;box-shadow:0 8px 24px rgba(0,0,0,.15);font-size:12.5px;color:var(--txt);position:relative;animation:chatGreetIn .3s ease">'
+      +'<button onclick="dismissChatGreeting()" style="position:absolute;top:4px;right:6px;background:none;border:none;color:var(--txt3);cursor:pointer;font-size:13px;padding:2px 4px" title="Dismiss">✕</button>'
+      +'<div style="padding-right:14px">'+esc(chatGreeting())+'</div></div>';
+  }
+  if(chatOpen){
+    var msgs=chatLog.map(function(m){
+      var isUser=m.role==='user';
+      return '<div style="display:flex;justify-content:'+(isUser?'flex-end':'flex-start')+';margin-bottom:8px">'
+        +'<div style="max-width:78%;padding:8px 12px;border-radius:'+(isUser?'12px 12px 3px 12px':'12px 12px 12px 3px')+';font-size:12.5px;line-height:1.5;white-space:pre-wrap;background:'+(isUser?'var(--accent)':'var(--surface2)')+';color:'+(isUser?'var(--accent-ink)':'var(--txt)')+'">'+esc(m.text)+'</div></div>';
+    }).join('');
+    if(chatTyping){
+      msgs+='<div style="display:flex;justify-content:flex-start;margin-bottom:8px"><div style="padding:9px 14px;border-radius:12px 12px 12px 3px;background:var(--surface2)"><span class="chat-dot"></span><span class="chat-dot"></span><span class="chat-dot"></span></div></div>';
+    }
+    var exChips=!chatLog.length?'':chatExamples().map(function(q){return '<button onclick="sendChatMessage('+JSON.stringify(q)+')" style="text-align:left;padding:7px 11px;border-radius:9px;border:1px solid var(--border);background:var(--surface);color:var(--txt2);font-size:11.5px;cursor:pointer;margin-bottom:5px;width:100%" onmouseover="this.style.borderColor=\'var(--accent)\';this.style.color=\'var(--accent)\'" onmouseout="this.style.borderColor=\'var(--border)\';this.style.color=\'var(--txt2)\'">'+esc(q)+'</button>';}).join('');
+    html+='<div id="chat-panel" style="width:340px;max-width:calc(100vw - 48px);height:480px;max-height:calc(100vh - 120px);background:var(--surface);border:1px solid var(--border);border-radius:16px;box-shadow:0 16px 48px rgba(0,0,0,.22);display:flex;flex-direction:column;overflow:hidden;animation:chatPanelIn .2s ease">'
+      +'<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--border);background:linear-gradient(135deg,var(--accent),var(--accent2));color:var(--accent-ink)">'
+      +'<div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px">🤖 AURA Assistant</div>'
+      +'<div style="display:flex;align-items:center;gap:4px">'
+      +'<button onclick="setChatLang(\'en\')" style="padding:3px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.4);background:'+(chatLang==='en'?'rgba(255,255,255,.25)':'transparent')+';color:inherit;font-size:10px;font-weight:700;cursor:pointer">EN</button>'
+      +'<button onclick="setChatLang(\'tl\')" style="padding:3px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.4);background:'+(chatLang==='tl'?'rgba(255,255,255,.25)':'transparent')+';color:inherit;font-size:10px;font-weight:700;cursor:pointer">TL</button>'
+      +'<button onclick="toggleChatWidget()" style="margin-left:4px;background:none;border:none;color:inherit;cursor:pointer;font-size:16px;padding:2px 4px" title="Close">✕</button>'
+      +'</div></div>'
+      +'<div id="chat-messages" style="flex:1;overflow-y:auto;padding:14px">'+msgs+'</div>'
+      +(exChips?'<div style="padding:0 14px 10px">'+exChips+'</div>':'')
+      +'<div style="display:flex;gap:8px;padding:12px 14px;border-top:1px solid var(--border)">'
+      +'<input id="chat-input" placeholder="'+(chatLang==='tl'?'Mag-type ng tanong…':'Type a question…')+'" style="flex:1;border:1px solid var(--border);border-radius:9px;padding:9px 12px;font-size:12.5px;background:var(--bg);color:var(--txt)"/>'
+      +'<button onclick="sendChatMessage(document.getElementById(\'chat-input\').value)" style="width:36px;height:36px;border-radius:9px;border:none;background:var(--accent);color:var(--accent-ink);cursor:pointer;font-size:15px;flex-shrink:0">➤</button>'
+      +'</div></div>';
+  }
+  html+='<button id="chat-bubble" onclick="toggleChatWidget()" style="width:54px;height:54px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;color:var(--accent-ink);font-size:24px;cursor:pointer;box-shadow:0 4px 18px rgba(0,0,0,.22);display:flex;align-items:center;justify-content:center;transition:transform .2s;'+(showGreetBubble?'animation:chatBubblePulse 1.6s ease-in-out infinite;':'')+'" onmouseover="this.style.transform=\'scale(1.08)\'" onmouseout="this.style.transform=\'scale(1)\'" title="'+(chatLang==='tl'?'Tumawag ng AURA Assistant':'Chat with AURA Assistant')+'">'+(chatOpen?'✕':'💬')+'</button>';
+  html+='</div>';
+  return html;
+}
+function wireChatWidget(){
+  var input=document.getElementById('chat-input');
+  if(input){input.onkeydown=chatKeydown;if(chatOpen)input.focus();}
+  var box=document.getElementById('chat-messages');
+  if(box)box.scrollTop=box.scrollHeight;
+  if(!chatGreetShown&&chatEligible()){
+    chatGreetShown=true; /* guards the one-time setTimeout below from re-arming on every render */
+    setTimeout(function(){if(!chatOpen&&!chatGreetDismissed)render();},3500);
+  }
+}
+
 /* ── Quick Action FAB ── */
 var fabOpen = false;
 function renderFAB() {
@@ -17883,6 +17990,7 @@ var _origRender = render;
 render = function() {
   _origRender();
   wireFAB();
+  wireChatWidget();
 };
 
 /* ── Global search overlay ── */
@@ -17932,7 +18040,7 @@ render = function() {
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
 <script src="/compliance.js?v=20260823-govt-report-actual-withheld"></script>
-<script src="/enterprise.js?v=20260829-ai-copilot-record-lookup"></script>
+<script src="/enterprise.js?v=20260829-chat-widget-bilingual"></script>
 <script src="/payroll-governance.js?v=20260804-annualized-tax"></script>
 <script src="/persistence.js?v=20260829-hydrate-applies-theme"></script>
 </body>

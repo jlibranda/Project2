@@ -527,6 +527,13 @@
      enforced directly below (not via canAccess, since no permission key can grant
      this) is that a non-admin can never pull up *another* employee's record here
      at all, regardless of what they ask about it. */
+  // Set once per assistantAnswer() call from whichever caller (the floating chat widget's
+  // language toggle, or the older full-page textarea defaulting to that same toggle) --
+  // every response builder below reads it through L() rather than taking a lang argument
+  // itself, so adding a new answer template never means threading a parameter through
+  // another call site.
+  var _curLang='en';
+  function L(en,tl){return _curLang==='tl'?tl:en;}
   function escRe(s){return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
   function findMentionedEmployee(q){
     var norm=' '+(q||'').toLowerCase()+' ';
@@ -550,82 +557,112 @@
     return null;
   }
   function govtNumbersAnswer(target,viewingSelf,which){
-    if(!canAccess(viewingSelf?'self_view_govt':'emp_view_govt'))return viewingSelf?"You don't currently have permission to view your own government ID numbers here. Ask your HR administrator to grant \"My Gov't Numbers\" access.":"You don't have permission to view government ID numbers for other employees.";
-    var who=viewingSelf?'Your':(fmtEmpName(target)+"'s");
+    if(!canAccess(viewingSelf?'self_view_govt':'emp_view_govt')){
+      return viewingSelf
+        ?L("You don't currently have permission to view your own government ID numbers here. Ask your HR administrator to grant \"My Gov't Numbers\" access.","Wala ka pang permiso na makita ang sarili mong mga government ID number dito. Hilingin sa iyong HR administrator na buksan ang \"My Gov't Numbers\" access.")
+        :L("You don't have permission to view government ID numbers for other employees.","Wala kang permiso na makita ang government ID numbers ng ibang empleyado.");
+    }
+    var name=fmtEmpName(target);
     var labels={sss:'SSS number',ph:'PhilHealth number',pi:'Pag-IBIG number',tin:'TIN'};
-    if(which)return who+' '+labels[which]+' is '+(target[which]||'not yet on file')+'.';
-    return who+' government ID numbers — SSS: '+(target.sss||'—')+', PhilHealth: '+(target.ph||'—')+', Pag-IBIG: '+(target.pi||'—')+', TIN: '+(target.tin||'—')+'.';
+    if(which){
+      var val=target[which]||L('not yet on file','wala pang naitala');
+      return viewingSelf
+        ?L('Your '+labels[which]+' is '+val+'.','Ang '+labels[which]+' mo ay '+val+'.')
+        :L(name+"'s "+labels[which]+' is '+val+'.','Ang '+labels[which]+' ni '+name+' ay '+val+'.');
+    }
+    var vals='SSS: '+(target.sss||'—')+', PhilHealth: '+(target.ph||'—')+', Pag-IBIG: '+(target.pi||'—')+', TIN: '+(target.tin||'—');
+    return (viewingSelf?L('Your government ID numbers — ','Ang iyong mga government ID number — '):L(name+"'s government ID numbers — ",'Ang mga government ID number ni '+name+' — '))+vals+'.';
   }
   function leaveBalanceAnswer(target,viewingSelf){
-    if(!canAccess('leave'))return viewingSelf?"You don't currently have permission to view leave information.":"You don't have permission to view leave information for other employees.";
+    if(!canAccess('leave'))return viewingSelf?L("You don't currently have permission to view leave information.","Wala ka pang permiso na makita ang impormasyon ng leave."):L("You don't have permission to view leave information for other employees.","Wala kang permiso na makita ang leave information ng ibang empleyado.");
     var types=(COMPANY.leaveTypes||[]).filter(function(t){return t.active&&leaveTypeEligible(target,t);});
-    var who=viewingSelf?'Your':(fmtEmpName(target)+"'s");
-    if(!types.length)return (viewingSelf?'You have':fmtEmpName(target)+' has')+' no eligible leave types configured.';
-    var parts=types.map(function(t){var b=leaveBalanceFor(target,t.id);return t.name+': '+b.balance+' day'+(b.balance===1?'':'s');});
-    return who+' remaining leave credits — '+parts.join(', ')+'.';
+    var name=fmtEmpName(target);
+    if(!types.length)return viewingSelf?L('You have no eligible leave types configured.','Wala kang naka-configure na eligible na leave types.'):L(name+' has no eligible leave types configured.','Walang naka-configure na eligible leave types para kay '+name+'.');
+    var parts=types.map(function(t){var b=leaveBalanceFor(target,t.id);return t.name+': '+b.balance+' '+L(b.balance===1?'day':'days','araw');});
+    return (viewingSelf?L('Your remaining leave credits — ','Ang natitira mong leave credits — '):L(name+"'s remaining leave credits — ",'Ang natitirang leave credits ni '+name+' — '))+parts.join(', ')+'.';
   }
   function compensationAnswer(target,viewingSelf){
-    if(!canAccess(viewingSelf?'self_view_compensation':'emp_view_compensation'))return viewingSelf?"You don't currently have permission to view your own compensation details.":"You don't have permission to view compensation details for other employees.";
-    var who=viewingSelf?'Your':(fmtEmpName(target)+"'s");
+    if(!canAccess(viewingSelf?'self_view_compensation':'emp_view_compensation'))return viewingSelf?L("You don't currently have permission to view your own compensation details.","Wala ka pang permiso na makita ang sarili mong detalye ng sahod."):L("You don't have permission to view compensation details for other employees.","Wala kang permiso na makita ang sahod ng ibang empleyado.");
+    var name=fmtEmpName(target);
     var monthly=target.salaryPM||(target.rate?target.rate*22:0);
-    return who+' monthly salary is '+fmt(monthly)+' (daily rate '+fmt(target.rate||0)+').';
+    var line=fmt(monthly)+' (daily rate '+fmt(target.rate||0)+')';
+    return viewingSelf?L('Your monthly salary is '+line+'.','Ang buwanang sahod mo ay '+line+'.'):L(name+"'s monthly salary is "+line+'.','Ang buwanang sahod ni '+name+' ay '+line+'.');
   }
   function payslipAnswer(target,viewingSelf){
-    if(!canAccess(viewingSelf?'myslips':'all_payslips'))return viewingSelf?"You don't currently have permission to view your own payslips.":"You don't have permission to view payslips for other employees.";
+    if(!canAccess(viewingSelf?'myslips':'all_payslips'))return viewingSelf?L("You don't currently have permission to view your own payslips.","Wala ka pang permiso na makita ang sarili mong mga payslip."):L("You don't have permission to view payslips for other employees.","Wala kang permiso na makita ang payslips ng ibang empleyado.");
     var mine=PAYROLLS.map(function(r){return {r:r,item:r.items&&r.items.find(function(i){return i.eid===target.id;})};}).filter(function(x){return x.item;});
-    var who=viewingSelf?'Your':(fmtEmpName(target)+"'s");
-    if(!mine.length)return (viewingSelf?'You have':fmtEmpName(target)+' has')+' no payslips on record yet.';
+    var name=fmtEmpName(target);
+    if(!mine.length)return viewingSelf?L('You have no payslips on record yet.','Wala ka pang payslip na naitala.'):L(name+' has no payslips on record yet.','Wala pang naitalang payslip si '+name+'.');
     var last=mine[mine.length-1];
-    return who+' latest payslip ('+last.r.from+' – '+last.r.to+'): gross '+fmt(last.item.gross)+', deductions '+fmt(last.item.total)+', net pay '+fmt(last.item.net)+'.';
+    var detail='gross '+fmt(last.item.gross)+', deductions '+fmt(last.item.total)+', net pay '+fmt(last.item.net);
+    return viewingSelf
+      ?L('Your latest payslip ('+last.r.from+' – '+last.r.to+'): '+detail+'.','Ang huli mong payslip ('+last.r.from+' – '+last.r.to+'): '+detail+'.')
+      :L(name+"'s latest payslip ("+last.r.from+' – '+last.r.to+'): '+detail+'.','Ang huling payslip ni '+name+' ('+last.r.from+' – '+last.r.to+'): '+detail+'.');
   }
   function employmentAnswer(target,viewingSelf){
-    if(!canAccess(viewingSelf?'self_view_employment':'emp_view_employment'))return viewingSelf?"You don't currently have permission to view your own employment info.":"You don't have permission to view employment info for other employees.";
-    var who=viewingSelf?'You are':(fmtEmpName(target)+' is');
-    var typeLabel=target.type==='probationary'?'on probationary status':(target.type||'regular');
-    var probNote=(target.type==='probationary'&&target.probEndDate)?(' (probation ends '+target.probEndDate+')'):'';
-    return who+' currently '+typeLabel+probNote+', working as '+(target.pos||'—')+' in '+(target.dept||'—')+', hired on '+(target.hired||'—')+'.';
+    if(!canAccess(viewingSelf?'self_view_employment':'emp_view_employment'))return viewingSelf?L("You don't currently have permission to view your own employment info.","Wala ka pang permiso na makita ang sarili mong employment info."):L("You don't have permission to view employment info for other employees.","Wala kang permiso na makita ang employment info ng ibang empleyado.");
+    var name=fmtEmpName(target);
+    var typeLabel=target.type==='probationary'?L('on probationary status','nasa probationary status pa'):(target.type||L('regular','regular'));
+    var probNote=(target.type==='probationary'&&target.probEndDate)?L(' (probation ends '+target.probEndDate+')',' (matatapos ang probation sa '+target.probEndDate+')'):'';
+    var tail=L(', working as '+(target.pos||'—')+' in '+(target.dept||'—')+', hired on '+(target.hired||'—')+'.',', bilang '+(target.pos||'—')+' sa '+(target.dept||'—')+', na-hire noong '+(target.hired||'—')+'.');
+    return (viewingSelf?L('You are currently ','Ikaw ay '):L(name+' is currently ','Si '+name+' ay '))+typeLabel+probNote+tail;
   }
   function adminAggregateAnswer(norm){
     if(/\b(proby|probationary|probation)\b/.test(norm)&&/(how many|number of|count|ilan)/.test(norm)){
       var proby=USERS.filter(function(u){return u.role==='employee'&&u.type==='probationary'&&u.status==='active';});
-      return proby.length?('There '+(proby.length===1?'is':'are')+' currently '+proby.length+' probationary employee'+(proby.length===1?'':'s')+': '+proby.map(fmtEmpName).join(', ')+'.'):'No employees are currently on probationary status.';
+      if(!proby.length)return L('No employees are currently on probationary status.','Wala pang empleyadong nasa probationary status sa ngayon.');
+      var names=proby.map(fmtEmpName).join(', ');
+      return L('There '+(proby.length===1?'is':'are')+' currently '+proby.length+' probationary employee'+(proby.length===1?'':'s')+': '+names+'.','May '+proby.length+' (na) empleyadong nasa probationary status sa ngayon: '+names+'.');
     }
-    if(/department/.test(norm)&&/(headcount|breakdown|per|by department|how many)/.test(norm)){
+    if(/department|departamento/.test(norm)&&/(headcount|breakdown|per|by department|how many|bilang)/.test(norm)){
       var byDept={};USERS.filter(function(u){return u.role==='employee'&&u.active!==false;}).forEach(function(u){byDept[u.dept]=(byDept[u.dept]||0)+1;});
-      return 'Headcount by department — '+Object.keys(byDept).map(function(d){return d+': '+byDept[d];}).join(', ')+'.';
+      var parts=Object.keys(byDept).map(function(d){return d+': '+byDept[d];}).join(', ');
+      return L('Headcount by department — ','Bilang ng empleyado kada departamento — ')+parts+'.';
     }
-    if(/(how many|number of|total|count).*(active )?employees?|headcount/.test(norm)){
+    if(/(how many|number of|total|count).*(active )?employees?|headcount|ilang.*empleyado/.test(norm)){
       var active=USERS.filter(function(u){return u.role==='employee'&&u.active!==false;});
-      return 'There are currently '+active.length+' active employee'+(active.length===1?'':'s')+'.';
+      return L('There are currently '+active.length+' active employee'+(active.length===1?'':'s')+'.','May '+active.length+' (na) aktibong empleyado sa ngayon.');
     }
     if(/pending payroll|payroll.*(pending|awaiting|approval)/.test(norm)){
       var h=complianceHealth();
-      return h.pendingPay?(h.pendingPay+' payroll run(s) are awaiting approval.'):'No payroll runs are currently awaiting approval.';
+      return h.pendingPay?L(h.pendingPay+' payroll run(s) are awaiting approval.','May '+h.pendingPay+' payroll run na naghihintay ng approval.'):L('No payroll runs are currently awaiting approval.','Walang payroll run na naghihintay ng approval sa ngayon.');
     }
     if(/(late|absent).*today|attendance exception/.test(norm)){
       var t=today();
       var exc=ATT.filter(function(a){return a.date===t&&(a.status==='late'||a.status==='absent');});
-      return exc.length?(exc.length+' attendance exception(s) today: '+exc.map(function(a){var e=USERS.find(function(u){return u.id===a.eid;});return (e?fmtEmpName(e):'Unknown')+' ('+a.status+')';}).join(', ')+'.'):'No late or absent records today.';
+      if(!exc.length)return L('No late or absent records today.','Walang late o absent ngayong araw.');
+      var list=exc.map(function(a){var e=USERS.find(function(u){return u.id===a.eid;});return (e?fmtEmpName(e):'Unknown')+' ('+a.status+')';}).join(', ');
+      return L(exc.length+' attendance exception(s) today: '+list+'.','May '+exc.length+' attendance exception ngayong araw: '+list+'.');
     }
     if(/pending leave|leave request/.test(norm)){
       var pend=LEAVES.filter(function(l){return l.status==='pending';});
-      return pend.length?(pend.length+' leave request(s) pending approval: '+pend.map(function(l){var e=USERS.find(function(u){return u.id===l.eid;});return (e?fmtEmpName(e):'Unknown')+' — '+l.type;}).join(', ')+'.'):'No leave requests are pending approval.';
+      if(!pend.length)return L('No leave requests are pending approval.','Walang leave request na naghihintay ng approval.');
+      var plist=pend.map(function(l){var e=USERS.find(function(u){return u.id===l.eid;});return (e?fmtEmpName(e):'Unknown')+' — '+l.type;}).join(', ');
+      return L(pend.length+' leave request(s) pending approval: '+plist+'.','May '+pend.length+' leave request na naghihintay ng approval: '+plist+'.');
     }
     if(/new hire|hired this month|joined this month/.test(norm)){
       var ym=today().slice(0,7);
       var hires=USERS.filter(function(u){return u.role==='employee'&&(u.hired||'').slice(0,7)===ym;});
-      return hires.length?(hires.length+' employee(s) hired this month: '+hires.map(fmtEmpName).join(', ')+'.'):'No new hires recorded this month.';
+      if(!hires.length)return L('No new hires recorded this month.','Walang bagong hire na naitala ngayong buwan.');
+      var hnames=hires.map(fmtEmpName).join(', ');
+      return L(hires.length+' employee(s) hired this month: '+hnames+'.','May '+hires.length+' empleyadong na-hire ngayong buwan: '+hnames+'.');
     }
-    if(/birthday/.test(norm)){
+    if(/birthday|kaarawan/.test(norm)){
       var md=today().slice(5,10);
       var soon=USERS.filter(function(u){return u.role==='employee'&&u.active!==false&&u.bday;}).map(function(u){return {u:u,md:u.bday.slice(5,10)};}).filter(function(x){return x.md>=md;}).sort(function(a,b){return a.md<b.md?-1:1;}).slice(0,5);
-      return soon.length?('Upcoming birthdays: '+soon.map(function(x){return fmtEmpName(x.u)+' ('+x.md+')';}).join(', ')+'.'):'No more birthdays coming up this year.';
+      if(!soon.length)return L('No more birthdays coming up this year.','Wala nang paparating na kaarawan sa taong ito.');
+      return L('Upcoming birthdays: ','Paparating na kaarawan: ')+soon.map(function(x){return fmtEmpName(x.u)+' ('+x.md+')';}).join(', ')+'.';
     }
     return null;
   }
   /* Returns an exact answer string, or null when nothing here matched (caller falls
-     back to the generic canned categories below). */
-  function assistantAnswer(q){
+     back to the generic canned categories below). lang ('en'|'tl') controls every
+     response template above via L(); the intent-matching regexes below recognize
+     common English AND Tagalog/Taglish phrasing regardless of that setting -- a user
+     chatting in Tagalog while the toggle is set to English still gets a correct match,
+     just phrased in English. */
+  function assistantAnswer(q,lang){
+    _curLang=lang==='tl'?'tl':'en';
     var isA=isAdminUser(user)||isPlatformAdmin;
     var norm=(q||'').toLowerCase().trim();
     if(!norm||!user)return null;
@@ -633,7 +670,7 @@
     var askingOther=mentioned&&mentioned.id!==user.id;
     // A non-admin naming someone else -- for anything -- never gets routed to that
     // person's record here, regardless of what follows. This isn't a directory tool.
-    if(askingOther&&!isA)return "I can only answer questions about your own records here — ask an HR admin for information about "+fmtEmpName(mentioned)+".";
+    if(askingOther&&!isA)return L("I can only answer questions about your own records here — ask an HR admin for information about "+fmtEmpName(mentioned)+".","Dito, mga tanong lang tungkol sa sarili mong record ang kaya kong sagutin — magtanong na lang sa HR admin tungkol kay "+fmtEmpName(mentioned)+".");
     var target=(isA&&mentioned)?mentioned:(USERS.find(function(u){return u.id===user.id;})||user);
     var viewingSelf=target.id===user.id;
     if(isA&&!mentioned){
@@ -641,16 +678,18 @@
       if(agg)return agg;
     }
     var govt=govtIdType(norm);
-    if(govt||/government id|gov'?t (id|number)/.test(norm))return govtNumbersAnswer(target,viewingSelf,govt);
-    if(/leave (credit|balance)|remaining leave|vacation leave|sick leave credits|leave credits/.test(norm))return leaveBalanceAnswer(target,viewingSelf);
-    if(/payslip|net pay|salary slip/.test(norm))return payslipAnswer(target,viewingSelf);
-    if(/\b(salary|compensation|daily rate|monthly rate)\b/.test(norm))return compensationAnswer(target,viewingSelf);
-    if(/probation|regulariz|employment status|hire date|date hired|department|\bposition\b/.test(norm))return employmentAnswer(target,viewingSelf);
+    if(govt||/government id|gov'?t (id|number)|numero ng gobyerno/.test(norm))return govtNumbersAnswer(target,viewingSelf,govt);
+    if(/leave (credit|balance)|remaining leave|vacation leave|sick leave credits|leave credits|natitira.*leave|leave.*natitira|bakasyon/.test(norm))return leaveBalanceAnswer(target,viewingSelf);
+    if(/payslip|net pay|salary slip|netong sahod/.test(norm))return payslipAnswer(target,viewingSelf);
+    if(/\b(salary|compensation|daily rate|monthly rate)\b|sahod|suweldo|magkano/.test(norm))return compensationAnswer(target,viewingSelf);
+    if(/probation|regulariz|employment status|hire date|date hired|department|\bposition\b|proby pa|regular na ba|posisyon ko|departamento ko/.test(norm))return employmentAnswer(target,viewingSelf);
     return null;
   }
+  window.assistantAnswer=assistantAnswer;
   window.smartAsk=function(){
     var raw=((document.getElementById('aiq')||{}).value||'').trim();if(!raw){toast('Enter a question.','warning');return;}
-    var direct=assistantAnswer(raw);
+    var lang=(typeof chatLang!=='undefined')?chatLang:'en';
+    var direct=assistantAnswer(raw,lang);
     if(direct){AI_HISTORY.unshift({type:'record',text:direct,at:new Date().toISOString()});aiText=direct;render();return;}
     var q=raw.toLowerCase();
     var type=/payroll|salary|payslip/.test(q)?'payroll':/compliance|sss|philhealth|pag-ibig|bir|tax/.test(q)?'compliance':/recruit|candidate|performance|goal|talent/.test(q)?'talent':'workforce';
