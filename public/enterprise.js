@@ -634,7 +634,16 @@
       // it -- a probationary employee whose status was never normalized this way was silently
       // excluded here even though they very much still are one. Every other aggregate count in
       // this file already uses active!==false for exactly this reason.
-      var proby=USERS.filter(function(u){return u.role==='employee'&&u.type==='probationary'&&u.active!==false;});
+      // type==='probationary' is the app's own established convention (PROBATION_EVAL_TYPES
+      // in index.html uses the identical check), so this should already be reliable for the
+      // normal case -- but also count anyone with a still-future probEndDate even if their
+      // type somehow doesn't read 'probationary' (e.g. a record edited directly, or a custom
+      // Employment Types lookup entry that was renamed away from the default code) as a second,
+      // type-independent signal. Excludes a stale probEndDate left over from a past
+      // auto-regularization (checkOffboarding() converts type->'regular' on that date but
+      // doesn't clear the old date), since that comparison is against today, not just "is set".
+      var probyTod=today();
+      var proby=USERS.filter(function(u){return u.role==='employee'&&u.active!==false&&(u.type==='probationary'||(u.probEndDate&&u.probEndDate>probyTod));});
       if(!proby.length)return L('No employees are currently on probationary status.','Wala pang empleyadong nasa probationary status sa ngayon.');
       var names=proby.map(fmtEmpName).join(', ');
       return L('There '+(proby.length===1?'is':'are')+' currently '+proby.length+' probationary employee'+(proby.length===1?'':'s')+': '+names+'.','May '+proby.length+' (na) empleyadong nasa probationary status sa ngayon: '+names+'.');
