@@ -915,9 +915,9 @@ let COMPANY={
   hoursPerDay:8,
   salaryMultiplier:13,
   startOfWeek:'mon', /* Flexible Per Week schedule-type bucket boundary — which day a work week starts on */
-  aiAssistantEnabled:false, /* opt-in: routes the chat widget through the Claude API (POST
+  aiAssistantEnabled:false, /* opt-in: routes the chat widget through the Groq API (POST
                                 /api/assistant/ask) instead of the free built-in assistant --
-                                needs ANTHROPIC_API_KEY configured on the backend */
+                                needs GROQ_API_KEY configured on the backend */
   /* Convenience template only — pre-fills an employee's otFixedTiers the first time their
      Overtime Pay Method is switched to 'fixed'. Each employee's actual tiers are stored on
      their own record afterward and can diverge freely from this template. */
@@ -15218,7 +15218,7 @@ function pgCompanySettings(){
 
     <div class="card">
       <div class="card-title" style="margin-bottom:4px">🤖 AI-Powered Assistant</div>
-      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">The chat widget's default mode is free and instant -- it matches common questions (English and Tagalog) directly against your HR data, with no external service involved. Turning this on routes unmatched or open-ended questions through the Claude API instead for more flexible natural-language understanding. This incurs a small per-question cost on your own Anthropic account and requires <code>ANTHROPIC_API_KEY</code> to be configured on the backend server.</div>
+      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">The chat widget's default mode is free and instant -- it matches common questions (English and Tagalog) directly against your HR data, with no external service involved. Turning this on routes unmatched or open-ended questions through the Groq API instead for more flexible natural-language understanding. Groq offers a free usage tier, and this requires <code>GROQ_API_KEY</code> to be configured on the backend server.</div>
       <label style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span><strong style="font-size:12px">Enable AI-Powered Assistant</strong><br><span style="font-size:10px;color:var(--txt3)">Falls back to the free built-in assistant automatically if this is off, unconfigured, or a request fails.</span></span><input id="co-ai-enabled" type="checkbox" style="width:auto;accent-color:var(--accent)" ${COMPANY.aiAssistantEnabled?'checked':''}/></label>
     </div>
 
@@ -17827,10 +17827,10 @@ function sendChatMessage(text){
   chatTyping=true;
   render();
   var el=document.getElementById('chat-input');if(el)el.value='';
-  // Opt-in Company Settings toggle (COMPANY.aiAssistantEnabled): routes through the Claude API
+  // Opt-in Company Settings toggle (COMPANY.aiAssistantEnabled): routes through the Groq API
   // (server.js's POST /api/assistant/ask) for more flexible natural-language understanding.
   // Falls back to the free deterministic assistant on ANY failure -- the toggle is off, the
-  // backend has no ANTHROPIC_API_KEY configured (503), the API call itself errors, or the
+  // backend has no GROQ_API_KEY configured (503), the API call itself errors, or the
   // network request fails outright -- so a misconfigured or over-budget API never breaks the
   // chat experience, it just quietly loses the extra flexibility for that one message.
   if(COMPANY.aiAssistantEnabled&&typeof window.apiRequest==='function'&&user){

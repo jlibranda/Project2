@@ -660,7 +660,7 @@ function buildAssistantContext(state, session, isAdmin) {
   };
 }
 app.post('/api/assistant/ask', requireAuth, async (req, res) => {
-  const apiKey = (process.env.ANTHROPIC_API_KEY || '').trim();
+  const apiKey = (process.env.GROQ_API_KEY || '').trim();
   if (!apiKey) return res.status(503).json({ error: 'The AI-powered assistant is not configured on this server yet.' });
   const question = String(req.body.question || '').trim();
   if (!question) return res.status(400).json({ error: 'A question is required.' });
@@ -682,31 +682,32 @@ app.post('/api/assistant/ask', requireAuth, async (req, res) => {
       'DATA:',
       JSON.stringify(context)
     ].join('\n');
-    const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
+    const apiRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
+        'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: process.env.ANTHROPIC_ASSISTANT_MODEL || 'claude-sonnet-5',
+        model: process.env.GROQ_ASSISTANT_MODEL || 'openai/gpt-oss-120b',
         max_tokens: 500,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: question }]
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: question }
+        ]
       })
     });
     const data = await apiRes.json().catch(() => ({}));
     if (!apiRes.ok) {
-      console.error('[assistant/ask] Anthropic API error', apiRes.status, JSON.stringify(data));
+      console.error('[assistant/ask] Groq API error', apiRes.status, JSON.stringify(data));
       return res.status(502).json({
         error: data.error?.message || 'The AI assistant request failed.',
         upstreamStatus: apiRes.status,
         upstreamType: data.error?.type || null
       });
     }
-    const block = (data.content || []).find(b => b.type === 'text');
-    res.json({ answer: (block && block.text) || '' });
+    const answer = data.choices?.[0]?.message?.content || '';
+    res.json({ answer });
   } catch (error) {
     console.error('[assistant/ask] request failed', error);
     res.status(500).json({ error: 'Unable to reach the AI assistant.', detail: error.message });
