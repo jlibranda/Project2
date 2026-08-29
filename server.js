@@ -660,7 +660,8 @@ function buildAssistantContext(state, session, isAdmin) {
   };
 }
 app.post('/api/assistant/ask', requireAuth, async (req, res) => {
-  if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ error: 'The AI-powered assistant is not configured on this server yet.' });
+  const apiKey = (process.env.ANTHROPIC_API_KEY || '').trim();
+  if (!apiKey) return res.status(503).json({ error: 'The AI-powered assistant is not configured on this server yet.' });
   const question = String(req.body.question || '').trim();
   if (!question) return res.status(400).json({ error: 'A question is required.' });
   if (question.length > 2000) return res.status(400).json({ error: 'That question is too long.' });
@@ -685,7 +686,7 @@ app.post('/api/assistant/ask', requireAuth, async (req, res) => {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'x-api-key': apiKey,
         'anthropic-version': '2023-06-01'
       },
       body: JSON.stringify({
@@ -696,10 +697,18 @@ app.post('/api/assistant/ask', requireAuth, async (req, res) => {
       })
     });
     const data = await apiRes.json().catch(() => ({}));
-    if (!apiRes.ok) return res.status(502).json({ error: data.error?.message || 'The AI assistant request failed.' });
+    if (!apiRes.ok) {
+      console.error('[assistant/ask] Anthropic API error', apiRes.status, JSON.stringify(data));
+      return res.status(502).json({
+        error: data.error?.message || 'The AI assistant request failed.',
+        upstreamStatus: apiRes.status,
+        upstreamType: data.error?.type || null
+      });
+    }
     const block = (data.content || []).find(b => b.type === 'text');
     res.json({ answer: (block && block.text) || '' });
   } catch (error) {
+    console.error('[assistant/ask] request failed', error);
     res.status(500).json({ error: 'Unable to reach the AI assistant.', detail: error.message });
   }
 });
