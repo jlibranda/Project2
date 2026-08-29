@@ -96,6 +96,12 @@
     nFP=FINAL_PAY_LIST.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
     nSecurityAudit=SECURITY_AUDIT.reduce(function(max,item){return Math.max(max,item.id||0);},0)+1;
     document.title=COMPANY.name+' — HR & Payroll';
+    // applyTheme() (index.html) is otherwise only ever called from the Company Settings page
+    // itself (live preview / save), so a saved custom theme never actually painted the app until
+    // someone happened to revisit that page in the same session -- every fresh load/restore
+    // silently fell back to the default indigo CSS instead of the tenant's own accent color.
+    // Re-apply it here so it's live from the moment this tenant's state is hydrated.
+    if(typeof window.applyTheme==='function')window.applyTheme(COMPANY.themeKey,COMPANY.accentHex);
   }
 
   async function request(path,options){
@@ -184,6 +190,12 @@
       if(exitedPayload&&exitedPayload.role==='platform'){
         COMPANY.name='AURA';COMPANY.tagline='People Operations Cloud';COMPANY.initials='A';
         COMPANY.logo=(typeof AURA_MARK!=='undefined')?AURA_MARK:null;
+        // Same leak this whole identity block exists to close, but for the theme color: the
+        // shared /state.company row hydrate() just re-read from can carry client 1's own chosen
+        // accent, which would otherwise paint God Admin's console the moment applyTheme() (now
+        // called from hydrate()) picks it up.
+        COMPANY.themeKey='indigo';COMPANY.accentHex='#4f46e5';
+        if(typeof window.applyTheme==='function')window.applyTheme('indigo','#4f46e5');
       }
     }catch(e){}
     return true;
@@ -266,6 +278,10 @@
         // overwrites this again with that client's own branding.
         COMPANY.name='AURA';COMPANY.tagline='People Operations Cloud';COMPANY.initials='A';
         COMPANY.logo=(typeof AURA_MARK!=='undefined')?AURA_MARK:null;
+        // Same reasoning as exitImpersonatedSession()'s mirror of this: the theme color is
+        // stored on the same shared row as name/logo, so it needs the identical forced reset.
+        COMPANY.themeKey='indigo';COMPANY.accentHex='#4f46e5';
+        if(typeof window.applyTheme==='function')window.applyTheme('indigo','#4f46e5');
         if(typeof window.loadRealPlatformClients==='function')window.loadRealPlatformClients();
       }else if(payload.role==='admin'&&payload.impersonatedBy){
         // God Admin's Enter Portal, still active across a page reload. Without this branch a
