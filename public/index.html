@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>SproutRipple PH — HR & Payroll Platform</title>
+<title>AURA — People Operations Cloud</title>
 <script>(function(){try{if(localStorage.getItem('sr_dark_mode')==='1')document.documentElement.setAttribute('data-dark','');}catch(e){}})();</script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
 <style>
@@ -850,16 +850,24 @@ const WEEK_START_DAYS=[
   {v:'thu',l:'Thursday'},{v:'fri',l:'Friday'},{v:'sat',l:'Saturday'},
 ];
 
+/* ---- AURA platform mark ----
+   Three staggered, unclosed radiant arcs (indigo -> violet -> coral -> amber) around a warm
+   core -- the default COMPANY.logo below, so the God Access console, the login screen, and the
+   loading screen all render the real AURA mark out of the box instead of a plain initial-letter
+   tile. A client that uploads its own logo (Company Settings) overrides this per tenant, same as
+   before. */
+const AURA_MARK='data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PGRlZnM+PGxpbmVhckdyYWRpZW50IGlkPSJhMSIgeDE9IjAlIiB5MT0iMCUiIHgyPSIxMDAlIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzM3MzBhMyIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iIzhiNWNmNiIvPjwvbGluZWFyR3JhZGllbnQ+PGxpbmVhckdyYWRpZW50IGlkPSJhMiIgeDE9IjAlIiB5MT0iMCUiIHgyPSIxMDAlIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iIzhiNWNmNiIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI2ZiNzE4NSIvPjwvbGluZWFyR3JhZGllbnQ+PGxpbmVhckdyYWRpZW50IGlkPSJhMyIgeDE9IjAlIiB5MT0iMCUiIHgyPSIxMDAlIiB5Mj0iMTAwJSI+PHN0b3Agb2Zmc2V0PSIwJSIgc3RvcC1jb2xvcj0iI2ZiNzE4NSIvPjxzdG9wIG9mZnNldD0iMTAwJSIgc3RvcC1jb2xvcj0iI2ZiYmYyNCIvPjwvbGluZWFyR3JhZGllbnQ+PHJhZGlhbEdyYWRpZW50IGlkPSJhYyIgY3g9IjM1JSIgY3k9IjMwJSIgcj0iNzUlIj48c3RvcCBvZmZzZXQ9IjAlIiBzdG9wLWNvbG9yPSIjZmZmOGVjIi8+PHN0b3Agb2Zmc2V0PSI1NSUiIHN0b3AtY29sb3I9IiNmZGU2OGEiLz48c3RvcCBvZmZzZXQ9IjEwMCUiIHN0b3AtY29sb3I9IiNmYmJmMjQiLz48L3JhZGlhbEdyYWRpZW50PjwvZGVmcz48Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSIyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJ1cmwoI2EzKSIgc3Ryb2tlLXdpZHRoPSIyLjc1IiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1kYXNoYXJyYXk9IjgyLjk0IDY3Ljg2IiB0cmFuc2Zvcm09InJvdGF0ZSgyODAgMzIgMzIpIi8+PGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iMTciIGZpbGw9Im5vbmUiIHN0cm9rZT0idXJsKCNhMikiIHN0cm9rZS13aWR0aD0iNCIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtZGFzaGFycmF5PSI2OS40MyAzNy4zOCIgdHJhbnNmb3JtPSJyb3RhdGUoMTYwIDMyIDMyKSIvPjxjaXJjbGUgY3g9IjMyIiBjeT0iMzIiIHI9IjEwIiBmaWxsPSJub25lIiBzdHJva2U9InVybCgjYTEpIiBzdHJva2Utd2lkdGg9IjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWRhc2hhcnJheT0iNDcuMTIgMTUuNzEiIHRyYW5zZm9ybT0icm90YXRlKC0zMCAzMiAzMikiLz48Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSIzLjQiIGZpbGw9InVybCgjYWMpIi8+PC9zdmc+';
+
 /* ---- COMPANY SETTINGS ---- */
 let COMPANY={
-  name:'SproutRipple PH',
-  tagline:'HR & Payroll Platform',
-  initials:'S',
+  name:'AURA',
+  tagline:'People Operations Cloud',
+  initials:'A',
   version:'1.0.0',
   buildDate:'2026-06-07',
   themeKey:'indigo',
   accentHex:'#4f46e5',
-  logo:null,            /* base64 data URL of uploaded company logo */
+  logo:AURA_MARK,        /* base64 data URL of uploaded company logo -- defaults to the AURA mark */
   wallpaper:null,       /* base64 data URL of background wallpaper */
   wallpaperOpacity:0.12,/* watermark strength 0.05–0.30 */
   wallpaperVeil:0.82,   /* 0.50–0.98 — how opaque the surface layer is (higher = more readable) */
@@ -875,7 +883,7 @@ let COMPANY={
      Overtime Pay Method is switched to 'fixed'. Each employee's actual tiers are stored on
      their own record afterward and can diverge freely from this template. */
   otFixedTiersDefault:{firstHours:2,firstAmount:500,prorateFirstTier:true,firstTierMinimumMinutes:0,succeedingRate:50,prorateSucceedingHours:true,succeedingMinimumMinutes:0},
-  registeredName:'SproutRipple PH',
+  registeredName:'AURA',
   taxIdentificationNo:'',
   rdo:'',
   registeredAddress:'',
@@ -1601,7 +1609,7 @@ function downloadLeaveBalanceTemplate(){
   const emps=USERS.filter(u=>u.role==='employee'&&u.active!==false);
   const types=COMPANY.leaveTypes||[];
   const templateRows=[
-    ['LEAVE BALANCE BULK IMPORT — SproutRipple PH','','',''],
+    ['LEAVE BALANCE BULK IMPORT — AURA','','',''],
     ['Fill in EID, Leave Type Code, Balance, and Reason. One row per employee per leave type.','','',''],
     ['Only active employees are applied — inactive/terminated rows are skipped.','','',''],
     [],
@@ -1725,7 +1733,7 @@ function openBulkAttendance(){
 function downloadAttendanceTemplate(){
   const emps=USERS.filter(u=>u.role==='employee'&&u.active!==false);
   const templateRows=[
-    ['TIME LOG BULK IMPORT — SproutRipple PH','','','','','','',''],
+    ['TIME LOG BULK IMPORT — AURA','','','','','','',''],
     ['Fill in EID, Date, Time In/Out, Status. One row per employee per date. 24-hour time (HH:MM).','','','','','','',''],
     ['Matching EID + Date replaces that day\'s record and is logged to its edit history. Only active employees are applied.','','','','','','',''],
     [],
@@ -1992,7 +2000,7 @@ function downloadPersonalScheduleTemplate(){
   });
   const header=['EID *','Schedule Type','Exempt Late Deduction','Exempt Undertime Deduction'].concat(dayHeaders);
   const templateRows=[
-    ['PERSONAL SCHEDULE BULK IMPORT — SproutRipple PH'],
+    ['PERSONAL SCHEDULE BULK IMPORT — AURA'],
     ['One row per employee. Rest Day = Y means no shift that day — leave that day\'s 4 time columns blank.'],
     ['Times use 24-hour HH:MM format (e.g. 08:00, 17:00). Only active employees are applied.'],
     ['Schedule Type is optional -- leave blank to keep the employee\'s current setting. Valid values: '+SCHEDULE_TYPES.map(t=>t.l).join(', ')+'.'],
@@ -3677,9 +3685,9 @@ function pgPlatformAdmin(){
     <!-- Top nav bar -->
     <div style="background:#1e293b;border-bottom:1px solid #334155;padding:0 2rem;display:flex;align-items:center;height:56px;gap:16px">
       <div style="display:flex;align-items:center;gap:10px">
-        <div style="width:32px;height:32px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:#fff">S</div>
+        <img src="${AURA_MARK}" alt="AURA" style="width:32px;height:32px"/>
         <div>
-          <div style="font-weight:700;font-size:14px;color:#f1f5f9">SproutRipple PH</div>
+          <div style="font-weight:700;font-size:14px;color:#f1f5f9">AURA</div>
           <div style="font-size:10px;color:#64748b;letter-spacing:.5px;text-transform:uppercase">Platform Console</div>
         </div>
       </div>
@@ -4058,10 +4066,10 @@ function toggleLoginPassword(){const p=document.getElementById('lp'),b=document.
 function renderLoading(){return`<main style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg)">
   <div style="text-align:center">
     <div style="position:relative;width:64px;height:64px;margin:0 auto 22px">
-      <div class="sr-loading-mark"${COMPANY.logo?' style="background:none;box-shadow:none"':''}>${COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'S')}</div>
+      <div class="sr-loading-mark"${COMPANY.logo?' style="background:none;box-shadow:none"':''}>${COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'A')}</div>
       <span class="sr-loading-ring"></span>
     </div>
-    <div style="font-weight:700;font-size:15px;color:var(--txt);letter-spacing:-.2px">${esc(COMPANY.name)||'SproutRipple'}</div>
+    <div style="font-weight:700;font-size:15px;color:var(--txt);letter-spacing:-.2px">${esc(COMPANY.name)||'AURA'}</div>
     <div style="margin-top:8px;color:var(--txt3);font-size:12.5px;display:flex;align-items:center;justify-content:center;gap:8px">
       <span>Restoring your session</span>
       <span style="display:inline-flex;gap:3px">
@@ -4085,11 +4093,11 @@ function renderLoading(){return`<main style="min-height:100vh;display:flex;align
 function renderLogin(){
   const scopedClient=loginScopedClientId?PLATFORM_CLIENTS.find(x=>x.id===loginScopedClientId):null;
   return`<main class="login-wrap">
-  <section class="login-showcase" aria-label="SproutRipple platform overview">
+  <section class="login-showcase" aria-label="AURA platform overview">
     <div class="login-glow login-glow-one"></div><div class="login-glow login-glow-two"></div>
     <div class="login-showcase-inner">
       <div class="login-brand">
-        <div class="login-brand-mark" ${scopedClient?`style="background:${scopedClient.color}"`:''}>${scopedClient?esc(scopedClient.initials):(COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'S'))}</div>
+        <div class="login-brand-mark" ${scopedClient?`style="background:${scopedClient.color}"`:''}>${scopedClient?esc(scopedClient.initials):(COMPANY.logo?`<img src="${COMPANY.logo}" alt="${esc(COMPANY.name)} logo"/>`:(esc(COMPANY.initials)||'A'))}</div>
         <div><strong>${scopedClient?esc(scopedClient.name):esc(COMPANY.name)}</strong><span>People Operations Cloud</span></div>
       </div>
       <div class="login-hero">
@@ -4108,7 +4116,7 @@ function renderLogin(){
   </section>
   <section class="login-panel">
     <div class="login-panel-inner">
-      <div class="login-mobile-brand"><div class="login-brand-mark" ${scopedClient?`style="background:${scopedClient.color}"`:''}>${scopedClient?esc(scopedClient.initials):(esc(COMPANY.initials)||'S')}</div><strong>${scopedClient?esc(scopedClient.name):esc(COMPANY.name)}</strong></div>
+      <div class="login-mobile-brand"><div class="login-brand-mark" ${scopedClient?`style="background:${scopedClient.color}"`:''}>${scopedClient?esc(scopedClient.initials):(esc(COMPANY.initials)||'A')}</div><strong>${scopedClient?esc(scopedClient.name):esc(COMPANY.name)}</strong></div>
       <div class="login-heading"><span class="login-kicker">${scopedClient?'Signing in to':'Secure workspace'}</span><h2>${scopedClient?esc(scopedClient.name):'Welcome back'}</h2><p>${scopedClient?'Sign in with your '+esc(scopedClient.name)+' work email.':'Sign in to continue to your HR and payroll workspace.'}</p></div>
       <form class="login-form" onsubmit="event.preventDefault();doLogin()">
         <div class="field"><label for="le">Work email</label><div class="login-input-wrap"><span>${ico('people',17)}</span><input id="le" type="email" value="${scopedClient?'':'admin@ph.com'}" autocomplete="username"/></div></div>
@@ -8212,7 +8220,7 @@ function downloadAdjTemplate(){
 
   /* ── Sheet 1: Template ── */
   var templateRows=[
-    ['PAYROLL ADJUSTMENT UPLOAD TEMPLATE — SproutRipple PH','','','','','',''],
+    ['PAYROLL ADJUSTMENT UPLOAD TEMPLATE — AURA','','','','','',''],
     ['Fill in EID, Pay Item Code, Amount, Effective Date, and Reason.','','','','','',''],
     ['Enter a positive amount. Deduction types are automatically treated as deductions.','','','','','',''],
     [],
@@ -8796,7 +8804,7 @@ function itBulkSave(){
     ['HEALTH_INS','Health Insurance','deductions','false','false','0','false','false','false','false','','','']
   ];
 
-  let csv='/* INCOME / DEDUCTION TYPE BULK UPLOAD TEMPLATE — SproutRipple PH */\n';
+  let csv='/* INCOME / DEDUCTION TYPE BULK UPLOAD TEMPLATE — AURA */\n';
   csv+='/* Category options: '+cats+' */\n';
   csv+='/* Delete these comment rows before uploading */\n\n';
   csv+=headers.join(',')+'\n';
@@ -11008,7 +11016,7 @@ function renderModal(){
       </button>`:''}
     </div>
     <div style="border-top:1px solid var(--border);padding-top:10px">
-      <button onclick="closeM();confirm2('Sign out of SproutRipple PH?',doLogout,{title:'Sign Out',okLabel:'Sign Out',danger:false,icon:'👋'})" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--red);background:var(--red-bg);cursor:pointer;font-size:13px;color:var(--red-txt);width:100%;text-align:left;font-weight:500">
+      <button onclick="closeM();confirm2('Sign out of AURA?',doLogout,{title:'Sign Out',okLabel:'Sign Out',danger:false,icon:'👋'})" style="display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;border:1px solid var(--red);background:var(--red-bg);cursor:pointer;font-size:13px;color:var(--red-txt);width:100%;text-align:left;font-weight:500">
         ${ico('logout',16)} Sign out
       </button>
     </div>`;
@@ -14734,7 +14742,7 @@ function pgGoogleSheets(){
       <div class="card-title" style="margin-bottom:.875rem">How to set up Google Sheets</div>
       <div style="display:grid;gap:10px">
         ${[
-          ['1','Open Google Sheets','Go to <a href="https://sheets.google.com" target="_blank" style="color:var(--accent)">sheets.google.com</a> and create a new spreadsheet. Name it "SproutRipple PH Database".'],
+          ['1','Open Google Sheets','Go to <a href="https://sheets.google.com" target="_blank" style="color:var(--accent)">sheets.google.com</a> and create a new spreadsheet. Name it "AURA Database".'],
           ['2','Open Apps Script','In the spreadsheet: Extensions → Apps Script. Delete default code.'],
           ['3','Paste the script','Paste the entire contents of <strong>sproutripple_sheets.gs</strong> (download below) into the editor. Save (Ctrl+S).'],
           ['4','Run Setup','Click Run → select <strong>setupSheets</strong>. Authorize when prompted. This creates all 11 sheets.'],
@@ -17416,7 +17424,7 @@ function render(){
   <div class="topbar">
     <div style="display:flex;align-items:center;gap:8px">
       <button onclick="sidebarCollapsed=!sidebarCollapsed;render()" style="background:transparent;border:1px solid var(--border);cursor:pointer;padding:5px 8px;border-radius:6px;color:var(--txt3);font-size:16px;flex-shrink:0;line-height:1" title="Toggle sidebar" onmouseover="this.style.background='var(--bg)'" onmouseout="this.style.background='transparent'">${sidebarCollapsed?'☰':'✕'}</button>
-      <div class="brand"><div class="brand-mark${COMPANY.logo?' has-logo':''}">${COMPANY.logo?`<img src="${COMPANY.logo}" style="height:32px;width:auto;max-width:140px;object-fit:contain;display:block" alt="logo"/>`:(esc(COMPANY.initials)||'S')}</div><div class="brand-name">${esc(COMPANY.name)}</div></div>
+      <div class="brand"><div class="brand-mark${COMPANY.logo?' has-logo':''}">${COMPANY.logo?`<img src="${COMPANY.logo}" style="height:32px;width:auto;max-width:140px;object-fit:contain;display:block" alt="logo"/>`:(esc(COMPANY.initials)||'A')}</div><div class="brand-name">${esc(COMPANY.name)}</div></div>
     </div>
     <!-- Global Search trigger -->
     <button onclick="var gs=document.getElementById('gs-wrap');if(gs){gs.style.display='flex';setTimeout(function(){var i=document.getElementById('gs-input');if(i)i.focus();},50);}" style="display:flex;align-items:center;gap:8px;padding:6px 14px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--txt3);font-size:13px;cursor:pointer;flex:1;max-width:280px" title="Global search (Ctrl+K)">
@@ -17465,7 +17473,7 @@ function render(){
         <span style="font-size:10px;color:var(--txt3);margin-left:2px">▾</span>
       </div>
       <!-- Quick sign-out button -->
-      <button onclick="if(typeof confirm2!=='undefined'){confirm2('Sign out of SproutRipple PH?',doLogout,{title:'Sign Out',okLabel:'Sign Out',danger:false,icon:'👋'});}else{if(confirm('Sign out?'))doLogout();}" style="display:flex;align-items:center;gap:5px;padding:5px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;color:var(--txt2)" title="Sign out" onmouseover="this.style.background='var(--red-bg)';this.style.borderColor='var(--red)';this.style.color='var(--red-txt)'" onmouseout="this.style.background='var(--surface)';this.style.borderColor='var(--border)';this.style.color='var(--txt2)'">
+      <button onclick="if(typeof confirm2!=='undefined'){confirm2('Sign out of AURA?',doLogout,{title:'Sign Out',okLabel:'Sign Out',danger:false,icon:'👋'});}else{if(confirm('Sign out?'))doLogout();}" style="display:flex;align-items:center;gap:5px;padding:5px 10px;border-radius:8px;border:1px solid var(--border);background:var(--surface);cursor:pointer;font-size:12px;font-weight:500;color:var(--txt2)" title="Sign out" onmouseover="this.style.background='var(--red-bg)';this.style.borderColor='var(--red)';this.style.color='var(--red-txt)'" onmouseout="this.style.background='var(--surface)';this.style.borderColor='var(--border)';this.style.color='var(--txt2)'">
         ${ico('logout',14)} Sign out
       </button>
     </div>
