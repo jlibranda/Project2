@@ -510,7 +510,27 @@
     if(type==='talent')return 'Talent summary: '+CANDIDATES.filter(function(c){return c.stage!=='rejected'&&c.stage!=='hired';}).length+' active candidate(s), '+JOB_REQUISITIONS.length+' open requisition(s), and '+PERFORMANCE_GOALS.filter(function(g){return g.status==='at_risk';}).length+' goal(s) at risk. Prioritize interview-stage candidates and schedule check-ins for at-risk goals.';
     return 'Workforce pulse: '+USERS.filter(function(u){return u.role==='employee'&&u.active!==false;}).length+' active employees, '+openCases.length+' open service cases, '+ATT.filter(function(a){return a.status==='late'||a.status==='absent';}).length+' attendance exception(s), and '+CANDIDATES.length+' candidates in the recruitment database.';
   }
-  window.runAiInsight=function(type){var text=aiInsight(type);AI_HISTORY.unshift({type:type,text:text,at:new Date().toISOString()});aiText=text;render();};
+  // Canned prompts steering Groq's narrative for each one-click button toward the same
+  // ground it used to cover with a fixed template string -- the system prompt on the backend
+  // (server.js) already forbids inventing any number not present in the JSON context it sends,
+  // so this only shapes which part of that data the model focuses on, never what it reports.
+  var AI_INSIGHT_PROMPTS={
+    payroll:'Give me a payroll readiness analysis: any blockers before running payroll (pending attendance exceptions, unapproved payroll runs, employees missing bank details or government IDs)? Recommend next steps.',
+    compliance:'Review our compliance risks: statutory profile completeness (SSS/PhilHealth/Pag-IBIG/TIN), open employee resolution cases, and anything else notable. Recommend next steps.',
+    talent:'Summarize our talent pipeline: active candidates by stage, open job requisitions, and performance goals at risk. Recommend next steps.',
+    workforce:'Give me a general workforce pulse: headcount, attendance exceptions, open service cases, and recruitment funnel activity. Recommend next steps.'
+  };
+  window.runAiInsight=function(type){
+    var finish=function(text){AI_HISTORY.unshift({type:type,text:text,at:new Date().toISOString()});aiText=text;aiLoad=false;render();};
+    if(COMPANY.aiAssistantEnabled&&typeof window.apiRequest==='function'&&user){
+      aiLoad=true;render();
+      window.apiRequest('/assistant/ask',{method:'POST',body:JSON.stringify({question:AI_INSIGHT_PROMPTS[type]||AI_INSIGHT_PROMPTS.workforce,lang:(typeof chatLang!=='undefined')?chatLang:'en'})})
+        .then(function(r){finish((r&&r.answer)||aiInsight(type));})
+        .catch(function(){finish(aiInsight(type));});
+      return;
+    }
+    finish(aiInsight(type));
+  };
 
   /* ── Personal / record-level Q&A ──────────────────────────────────────────
      The one-click buttons above and the old keyword router below only ever produced
@@ -756,8 +776,19 @@
     var direct=assistantAnswer(raw,lang);
     if(direct){AI_HISTORY.unshift({type:'record',text:direct,at:new Date().toISOString()});aiText=direct;render();return;}
     var q=raw.toLowerCase();
-    var type=/payroll|salary|payslip/.test(q)?'payroll':/compliance|sss|philhealth|pag-ibig|bir|tax/.test(q)?'compliance':/recruit|candidate|performance|goal|talent/.test(q)?'talent':'workforce';
-    runAiInsight(type);
+    var guessedType=/payroll|salary|payslip/.test(q)?'payroll':/compliance|sss|philhealth|pag-ibig|bir|tax/.test(q)?'compliance':/recruit|candidate|performance|goal|talent/.test(q)?'talent':'workforce';
+    var finish=function(text){AI_HISTORY.unshift({type:guessedType,text:text,at:new Date().toISOString()});aiText=text;aiLoad=false;render();};
+    // Unlike the one-click buttons, an open-ended question is sent to Groq verbatim instead of
+    // one of the four canned prompts -- guessedType only decides which local aiInsight() bucket
+    // to fall back to if the AI toggle is off or the call fails, same as before this change.
+    if(COMPANY.aiAssistantEnabled&&typeof window.apiRequest==='function'&&user){
+      aiLoad=true;render();
+      window.apiRequest('/assistant/ask',{method:'POST',body:JSON.stringify({question:raw,lang:lang})})
+        .then(function(r){finish((r&&r.answer)||aiInsight(guessedType));})
+        .catch(function(){finish(aiInsight(guessedType));});
+      return;
+    }
+    finish(aiInsight(guessedType));
   };
   window.pgAssistant=pgAssistant=function(){
     var isA=isAdminUser(user)||isPlatformAdmin;
@@ -766,12 +797,13 @@
       :["What's my SSS number?","How many leave credits do I have left?","Am I still on probation?"];
     return '<div class="page-header"><div><div class="page-title">Workforce AI Copilot</div><div class="page-sub">Operational insights from the current HR, attendance, payroll and talent data</div></div></div>'+
       '<div class="card"><div class="section-header">One-click analysis</div><div class="qs-grid">'+
-      '<button class="qs-btn" onclick="runAiInsight(\'payroll\')">💰 Analyze payroll readiness</button><button class="qs-btn" onclick="runAiInsight(\'compliance\')">🛡 Review compliance risks</button>'+
-      '<button class="qs-btn" onclick="runAiInsight(\'talent\')">🎯 Summarize talent pipeline</button><button class="qs-btn" onclick="runAiInsight(\'workforce\')">📊 Generate workforce pulse</button></div>'+
+      '<button class="qs-btn" '+(aiLoad?'disabled':'')+' onclick="runAiInsight(\'payroll\')">💰 Analyze payroll readiness</button><button class="qs-btn" '+(aiLoad?'disabled':'')+' onclick="runAiInsight(\'compliance\')">🛡 Review compliance risks</button>'+
+      '<button class="qs-btn" '+(aiLoad?'disabled':'')+' onclick="runAiInsight(\'talent\')">🎯 Summarize talent pipeline</button><button class="qs-btn" '+(aiLoad?'disabled':'')+' onclick="runAiInsight(\'workforce\')">📊 Generate workforce pulse</button></div>'+
       '<div class="field"><label>Ask about your workforce data</label><textarea id="aiq" rows="3" placeholder="Example: '+examples[0]+'"></textarea></div>'+
       '<div style="font-size:11px;color:var(--txt3);margin:-4px 0 10px">Try: '+examples.map(function(e){return '“'+esc(e)+'”';}).join(' · ')+(isA?'':' — answers are scoped to your own records only')+'</div>'+
-      '<div class="action-row"><button class="btn btn-primary" onclick="smartAsk()">Analyze</button><button class="btn" onclick="aiText=\'\';render()">Clear</button></div>'+
-      (aiText?'<div class="ai-box"><div style="font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:5px">Decision support · Generated '+new Date().toLocaleTimeString()+'</div>'+esc(aiText)+'</div>':'')+
+      '<div class="action-row"><button class="btn btn-primary" onclick="smartAsk()" '+(aiLoad?'disabled':'')+'>Analyze</button><button class="btn" onclick="aiText=\'\';render()">Clear</button></div>'+
+      (aiLoad?'<div class="ai-box" style="color:var(--txt3);font-style:italic">Generating analysis'+(COMPANY.aiAssistantEnabled?' with AI':'')+'…</div>':
+       aiText?'<div class="ai-box"><div style="font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:5px">Decision support · Generated '+new Date().toLocaleTimeString()+'</div>'+esc(aiText)+'</div>':'')+
       '<div style="font-size:10px;color:var(--txt3);margin-top:10px">Direct data lookups (SSS numbers, leave credits, headcount, etc.) are computed straight from your HR records — always exact. Broader analysis is decision support, not legal or tax advice; statutory filings still require authorized review.</div></div>';
   };
 

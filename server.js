@@ -602,13 +602,14 @@ function buildAssistantContext(state, session, isAdmin) {
   const users = (state.users || []).filter(u => u.role === 'employee');
   const today = new Date().toISOString().slice(0, 10);
   if (isAdmin) {
+    const enterprise = state.enterprise || {};
     return {
       today,
       companyName: state.company?.name || '',
       employees: users.map(u => ({
         name: fmtNameServer(u), department: u.dept, position: u.pos, employmentType: u.type,
         active: u.active !== false, hired: u.hired, probationEndDate: u.probEndDate || null,
-        sss: u.sss, philhealth: u.ph, pagibig: u.pi, tin: u.tin,
+        sss: u.sss, philhealth: u.ph, pagibig: u.pi, tin: u.tin, bank: u.bank, bankAccount: u.bankAccount,
         monthlySalary: u.salaryPM, dailyRate: u.rate, email: u.email,
         manager: [u.managerFirst, u.managerLast].filter(Boolean).join(' ') || null
       })),
@@ -618,6 +619,21 @@ function buildAssistantContext(state, session, isAdmin) {
       pendingPayrollRuns: (state.payrolls || []).filter(r => r.status === 'pending_approval').length,
       attendanceExceptionsToday: (state.attendance || []).filter(a => a.date === today && (a.status === 'late' || a.status === 'absent')).map(a => ({
         employee: fmtNameServer(users.find(u => u.id === a.eid)), status: a.status
+      })),
+      // Recruitment/performance/case data for the admin-only "Workforce AI Copilot" page's
+      // talent-pipeline and workforce-pulse analysis -- irrelevant to the personal chat widget,
+      // but this whole branch only ever runs for a confirmed admin session.
+      candidates: (state.candidates || []).map(c => ({
+        name: c.name, position: c.pos, department: c.dept, stage: c.stage
+      })),
+      jobRequisitions: (enterprise.jobRequisitions || []).map(r => ({
+        title: r.title, department: r.dept, openings: r.openings, filled: r.filled, status: r.status
+      })),
+      performanceGoals: (enterprise.performanceGoals || []).map(g => ({
+        employee: fmtNameServer(users.find(u => u.id === g.eid)), title: g.title, status: g.status, progress: g.progress, target: g.target
+      })),
+      openResolutionCases: (enterprise.resolutionCases || []).filter(c => c.status === 'open' || c.status === 'in_review').map(c => ({
+        employee: fmtNameServer(users.find(u => u.id === c.employeeId)), category: c.category, subject: c.subject, priority: c.priority, status: c.status, dueDate: c.dueDate
       }))
     };
   }
