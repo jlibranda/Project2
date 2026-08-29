@@ -1342,17 +1342,22 @@ function applyTheme(key,hex){
   r.setProperty('--accent',t.accent);
   r.setProperty('--accent2',t.dark);
   r.setProperty('--accent-bg',t.bg);
-  r.setProperty('--accent-txt',t.dark);
   r.setProperty('--accent-ink',readableTextColor(t.accent));
   // --accent-bg is always a pale tint for the 8 named themes (by design, regardless of light/
-  // dark app mode), so base the ink on that pale hex directly -- it reliably comes out dark.
-  // 'custom' is a 12%-alpha overlay (hexToAlpha above) rather than one resolved hex, and that
-  // 12% mostly shows the surface underneath -- over a light surface a pale custom pick still
-  // reads pale, but over dark mode's own dark surface even a pale pick composites to something
-  // closer to dark navy than yellow. Approximate the actual on-screen blend instead of reading
-  // the raw custom hex, or a pale pick in dark mode would wrongly get dark ink on a background
-  // that's actually still dark.
-  r.setProperty('--accent-bg-ink',readableTextColor(key==='custom'?blendOverSurface(hex||COMPANY.accentHex,0.12,!!COMPANY.darkMode):t.bg));
+  // dark app mode), so t.dark (a themed dark shade, e.g. indigo's own #3730a3) reliably reads
+  // fine against it. 'custom' is a 12%-alpha overlay (hexToAlpha above) rather than one resolved
+  // hex, and that 12% mostly shows the surface underneath -- over a light surface a pale custom
+  // pick still reads pale, but over dark mode's own dark surface even a pale pick composites to
+  // something closer to dark navy than the original color. shadeColor(hex,-15) (the old t.dark
+  // for 'custom') ignores that entirely and just darkens the raw hex further, so a custom green
+  // in dark mode produced dark-green text on a background that's *also* dark green -- barely
+  // legible. Approximate the actual on-screen blend instead for both of these, which share the
+  // same "text drawn on --accent-bg" job -- --accent-txt (existing badges, notices, this table
+  // hover style's) and --accent-bg-ink (the newer table-hover-specific one) are the same value
+  // here for exactly that reason.
+  const bgInk=readableTextColor(key==='custom'?blendOverSurface(hex||COMPANY.accentHex,0.12,!!COMPANY.darkMode):t.bg);
+  r.setProperty('--accent-txt',key==='custom'?bgInk:t.dark);
+  r.setProperty('--accent-bg-ink',bgInk);
 }
 function blendOverSurface(hex,alpha,darkMode){
   const h=(hex||'').replace('#','');
