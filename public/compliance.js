@@ -1199,6 +1199,36 @@
     }catch(error){toast('BIR 1601-C PDF could not be generated: '+error.message,'error',7000);}
   };
 
+  window.generateOfficial1604CPDF = async function () {
+    var year=Number(window._bir1604CYear||window._bir2316Year||new Date().getFullYear());
+    var summary=BIR1604CCore.aggregateYear(BIR1601CCore,year,PAYROLLS,FINAL_PAY_LIST),missing=[];
+    if(!summary.employeeCount){toast('No approved payroll or released final pay is reportable for '+year+'.','warning');return;}
+    if(!String(COMPANY.registeredName||COMPANY.name||'').trim())missing.push('registered employer name');
+    if(!String(COMPANY.taxIdentificationNo||'').trim())missing.push('employer TIN');
+    if(!String(COMPANY.rdo||'').trim())missing.push('employer RDO code');
+    if(!String(COMPANY.registeredAddress||'').trim())missing.push('registered address');
+    if(missing.length){toast('Complete Company Settings → BIR Employer Information: '+missing.join(', ')+'.','warning',7500);return;}
+    try{
+      toast('Generating BIR Form 1604-C summary PDF…','info');
+      var data=BIR1604CPdf.buildData({company:COMPANY,year:year,summary:summary});
+      var bytes=await BIR1604CPdf.render(data,window.PDFLib);
+      downloadPdf('BIR_1604C_'+year+'.pdf',bytes);
+      toast('BIR Form 1604-C summary generated. This reports the required figures but is not a scanned copy of the official form -- transcribe onto the official BIR form/eBIRForms before filing.','success',8000);
+    }catch(error){toast('BIR 1604-C PDF could not be generated: '+error.message,'error',7000);}
+  };
+
+  window.generateAlphalistWorksheet = function () {
+    var year=Number(window._bir1604CYear||window._bir2316Year||new Date().getFullYear());
+    var employees=USERS.filter(function(u){return u.role==='employee';});
+    var approvedRuns=PAYROLLS.filter(function(r){return r.status==='approved'||r.status==='locked';});
+    var schedule=BIRAlphalistCore.buildSchedule1(BIR2316Pdf,employees,COMPANY,year,approvedRuns,function(emp){return employeeTaxRecord(emp,year,false);},function(value){return birTaxByFreq(value,'annual',year+'-12-31');});
+    if(!schedule.rows.length){toast('No approved payroll data available for '+year+'.','warning');return;}
+    var rows=[['BIR ALPHALIST -- SCHEDULE 1 (Alphalist of Employees, attachment to Form 1604-C)'],['Tax Year',year],['Employer TIN',COMPANY.taxIdentificationNo||''],['Employer',COMPANY.registeredName||COMPANY.name||''],
+      ['Basis','Approved/locked payroll for the year, same classification engine as the official 2316 PDF (BIR2316Pdf.buildData)'],[]].concat(BIRAlphalistCore.toCsvRows(schedule));
+    downloadCsv('BIR_Alphalist_Schedule1_'+year+'.csv',rows);
+    toast(schedule.rows.length+' employee row(s) exported. This worksheet is not verified byte-for-byte against BIR’s Alphalist Data Entry and Validation Module .DAT format -- use it as source data to key into that module.','success',8000);
+  };
+
   /* Approved/locked payroll runs plus released final-pay records for one employee and tax year,
      normalized to the same {items:[...]} run shape either way. Shared by the PDF generator below
      and the real-data BIR 2316 Report table in pgGovernment() (index.html). */
@@ -1271,7 +1301,11 @@
         return '<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 9px;border:1px solid var(--border);border-radius:7px">'+
           '<div><div style="font-weight:600;font-size:12px">'+esc(fmtEmpName(e))+'</div><div style="font-size:10px;color:var(--txt3)">TIN '+esc(e.tin||'Not set')+'</div></div>'+
           '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end"><button class="btn btn-sm btn-primary" onclick="generateOfficial2316PDF('+e.id+')">Generate official PDF</button><button class="btn btn-sm" onclick="generate2316Worksheet('+e.id+')">CSV worksheet</button></div></div>';
-      }).join('')+'</div></div>';
+      }).join('')+'</div></div>'+
+      '<div class="card" style="margin-top:.75rem;margin-bottom:0;border-left:3px solid var(--red)"><div style="display:flex;gap:12px;align-items:end;justify-content:space-between;flex-wrap:wrap"><div><div class="card-title">BIR Form 1604-C &amp; Alphalist</div>'+
+      '<div class="card-sub">Annual Information Return of Income Taxes Withheld on Compensation, and its required Schedule 1 alphalist attachment — one row per employee, computed from the same approved payroll data as the 2316s above.</div></div><div style="min-width:130px"><label style="font-size:11px;font-weight:700">Tax Year</label><input type="number" min="2000" max="2099" class="finput" value="'+Number(window._bir1604CYear||window._bir2316Year||new Date().getFullYear())+'" onchange="window._bir1604CYear=Number(this.value);render()"/></div></div>'+
+      '<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:11px;color:var(--txt3);margin:10px 0">1604-C is a system-generated summary, not a scanned copy of the official form. The Alphalist worksheet is source data for BIR’s Alphalist Data Entry and Validation Module, not a verified .DAT file — both require review before filing.</div>'+
+      '<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-sm btn-primary" style="flex:1;justify-content:center" onclick="generateOfficial1604CPDF()">Generate 1604-C summary PDF</button><button class="btn btn-sm" style="flex:1;justify-content:center" onclick="generateAlphalistWorksheet()">Download Alphalist (Schedule 1) CSV</button></div></div>';
   };
 
   window.renderBankFile = renderBankFile = function () {
