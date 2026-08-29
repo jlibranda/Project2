@@ -11,7 +11,7 @@
 :root{
   --bg:#f4f3ef;--surface:#fff;--surface2:#faf9f6;--border:#e6e4de;--border2:#ccc9bf;
   --txt:#18171a;--txt2:#6b6a72;--txt3:#9d9ca5;
-  --accent:#4f46e5;--accent2:#6366f1;--accent-bg:#eef2ff;--accent-txt:#3730a3;--accent-ink:#fff;
+  --accent:#4f46e5;--accent2:#6366f1;--accent-bg:#eef2ff;--accent-txt:#3730a3;--accent-ink:#fff;--accent-bg-ink:#111827;
   --green:#059669;--green-bg:#d1fae5;--green-txt:#065f46;
   --amber:#d97706;--amber-bg:#fef3c7;--amber-txt:#92400e;
   --red:#dc2626;--red-bg:#fee2e2;--red-txt:#991b1b;
@@ -26,7 +26,7 @@
   --border:#2d3f55;--border2:#3d526a;
   --txt:#f1f5f9;--txt2:#cbd5e1;--txt3:#64748b;
   --accent:#818cf8;--accent2:#6366f1;--accent-ink:#fff;
-  --accent-bg:#1e1b4b;--accent-txt:#a5b4fc;
+  --accent-bg:#1e1b4b;--accent-txt:#a5b4fc;--accent-bg-ink:#fff;
   --green:#34d399;--green-bg:#064e3b;--green-txt:#6ee7b7;
   --amber:#fbbf24;--amber-bg:#451a03;--amber-txt:#fde68a;
   --red:#f87171;--red-bg:#450a0a;--red-txt:#fca5a5;
@@ -42,7 +42,7 @@
 [data-dark] thead tr,[data-dark] thead th{background:#162032 !important;border-color:#2d3f55}
 [data-dark] tbody tr{background:#1e293b !important}
 [data-dark] tbody tr:nth-child(even){background:#162032 !important}
-[data-dark] tr:hover td{background:#1e3a5f !important}
+[data-dark] tr:hover td{background:var(--accent-bg) !important;color:var(--accent-bg-ink)}
 [data-dark] td{border-color:#2d3f55}
 [data-dark] .field input,[data-dark] .field select,[data-dark] .field textarea,
 [data-dark] input.finput,[data-dark] select.finput,[data-dark] textarea.finput{background:#0f172a;color:#f1f5f9;border-color:#2d3f55}
@@ -199,7 +199,7 @@ tbody tr{background:var(--surface) !important}
 tbody tr:nth-child(even){background:var(--bg) !important}
 td{padding:10px 12px;border-bottom:1px solid var(--border);vertical-align:middle;color:var(--txt)}
 tr:last-child td{border-bottom:none}
-tr:hover td{background:var(--accent-bg) !important}
+tr:hover td{background:var(--accent-bg) !important;color:var(--accent-bg-ink)}
 /* ---- FORMS ---- */
 .field{margin-bottom:12px}
 .field label,.flabel{display:block;font-size:11px;font-weight:600;color:var(--txt3);margin-bottom:4px;text-transform:uppercase;letter-spacing:.5px}
@@ -1344,6 +1344,23 @@ function applyTheme(key,hex){
   r.setProperty('--accent-bg',t.bg);
   r.setProperty('--accent-txt',t.dark);
   r.setProperty('--accent-ink',readableTextColor(t.accent));
+  // --accent-bg is always a pale tint for the 8 named themes (by design, regardless of light/
+  // dark app mode), so base the ink on that pale hex directly -- it reliably comes out dark.
+  // 'custom' is a 12%-alpha overlay (hexToAlpha above) rather than one resolved hex, and that
+  // 12% mostly shows the surface underneath -- over a light surface a pale custom pick still
+  // reads pale, but over dark mode's own dark surface even a pale pick composites to something
+  // closer to dark navy than yellow. Approximate the actual on-screen blend instead of reading
+  // the raw custom hex, or a pale pick in dark mode would wrongly get dark ink on a background
+  // that's actually still dark.
+  r.setProperty('--accent-bg-ink',readableTextColor(key==='custom'?blendOverSurface(hex||COMPANY.accentHex,0.12,!!COMPANY.darkMode):t.bg));
+}
+function blendOverSurface(hex,alpha,darkMode){
+  const h=(hex||'').replace('#','');
+  const surface=darkMode?[30,41,59]:[255,255,255]; // approximates --surface in each mode
+  if(!/^[0-9a-fA-F]{6}$/.test(h))return darkMode?'#1e293b':'#ffffff';
+  const r=parseInt(h.slice(0,2),16),g=parseInt(h.slice(2,4),16),b=parseInt(h.slice(4,6),16);
+  const mix=(c,s)=>Math.round(c*alpha+s*(1-alpha));
+  return'#'+[mix(r,surface[0]),mix(g,surface[1]),mix(b,surface[2])].map(v=>v.toString(16).padStart(2,'0')).join('');
 }
 // The custom color picker lets a user pick literally any hex, including pale ones white text
 // disappears against -- pick black or white for whatever's on top of --accent using the same
@@ -15285,6 +15302,9 @@ function applyDarkMode(on){
   COMPANY.darkMode=!!on;
   if(on){document.documentElement.setAttribute('data-dark','');}
   else{document.documentElement.removeAttribute('data-dark');}
+  // A custom accent color's --accent-bg-ink depends on which surface it's blended over (see
+  // applyTheme()), which just changed -- recompute it for the new mode, same values otherwise.
+  applyTheme((_pendingBrand||COMPANY).themeKey,(_pendingBrand||COMPANY).accentHex);
   applyWallpaperPreview();
   render();
 }
