@@ -716,7 +716,7 @@ const PERM_DEFS=[
   {grp:'Insights',            k:'analytics',          l:'Analytics Dashboard',              desc:'View workforce charts, headcount trends, and turnover metrics',                        sub:false},
   {grp:'Insights',            k:'reports',            l:'Build Reports',                    desc:'Create, filter, and preview HR data reports',                                          sub:false},
   {grp:'Insights',            k:'reports_export',     l:'Export to Excel',                  desc:'Download generated reports as Excel files',                                            sub:true},
-  {grp:'Insights',            k:'assistant',          l:'HR Assistant (AI)',                 desc:'Use the AI-powered HR assistant for queries and drafts',                              sub:false},
+  {grp:'Insights',            k:'assistant',          l:'HR Assistant (AI)',                 desc:'Ask the floating chat widget about your own HR/payroll records -- company-wide analysis (Workforce AI Copilot) is admin-only regardless of this setting',                              sub:false},
 
   /* ── ADMINISTRATION ───────────────────────────────────────── */
   {grp:'Administration',      k:'orgsetup',           l:'Org Structure',                    desc:'Manage company hierarchy, reporting lines, and org chart',                             sub:false},
@@ -4280,7 +4280,7 @@ function sidebarSections(){
     {title:'Tools',items:[
       ...(has('analytics')?[{v:'analytics',k:'chart',l:'Analytics'}]:[]),
       ...(has('analytics')?[{v:'reports',k:'file',l:'Reports'}]:[]),
-      ...(has('assistant')?[{v:'assistant',k:'robot',l:'HR Assistant'}]:[]),
+      ...(isA&&clientHasModule('assistant')?[{v:'assistant',k:'robot',l:'HR Assistant'}]:[]), /* company-wide analysis -- admin-only, unlike the floating chat widget (canAccess('assistant')) */
     ]},
   ].filter(s=>s.items.length>0);
   if(typeof window.sidebarExtraSections==='function'){
@@ -17526,7 +17526,11 @@ function render(){
     else if(view==='performance')pg=gate('performance','Performance',pgPerformance);
     else if(view==='analytics')pg=gate('analytics','Analytics',pgAnalytics);
     else if(view==='reports')pg=gate('reports','Reports',pgReports);
-    else if(view==='assistant')pg=gate('assistant','HR Assistant',pgAssistant);
+    /* Admin-only, hardcoded (not the 'assistant' permission key) -- this full page exposes
+       company-wide aggregate analysis (payroll readiness, compliance risk, talent pipeline,
+       etc.), unlike the floating chat widget which stays scoped to the asking user's own
+       records regardless of who has the 'assistant' permission. */
+    else if(view==='assistant')pg=(isAdminUser(user)||isPlatformAdmin)?pgAssistant():renderAccessDenied('HR Assistant');
     else if(view==='resolution')pg=gate('resolution','Resolution Center',pgResolution);
     else if(view==='teamview')pg=gate('teamview','Team View',pgTeamView);
     else if(view==='orgsetup')pg=gate('orgsetup','Org Structure',pgOrgSetup);
@@ -17924,7 +17928,7 @@ function renderFAB() {
   if (isA || canAccess('payroll'))       acts.push({l:'Process Payroll',ic:'💰', v:'payroll'});
   if (isA || canAccess('leave_approve')) acts.push({l:'Approve Leave', ic:'📋', v:'leave'});
   if (isA || canAccess('reports'))       acts.push({l:'Reports',       ic:'📊', v:'reports'});
-  if (isA || canAccess('assistant'))     acts.push({l:'HR Assistant',  ic:'🤖', v:'assistant'});
+  if (isA)                               acts.push({l:'HR Assistant',  ic:'🤖', v:'assistant'}); /* company-wide analysis -- admin-only */
   if (!acts.length) return '';
   var html = '<div id="fab-root" style="position:fixed;bottom:24px;right:24px;z-index:9900;display:flex;flex-direction:column;align-items:flex-end;gap:8px">';
   if (fabOpen) {
@@ -18090,7 +18094,7 @@ render = function() {
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
 <script src="/compliance.js?v=20260823-govt-report-actual-withheld"></script>
-<script src="/enterprise.js?v=20260829-proby-probenddate-fallback"></script>
+<script src="/enterprise.js?v=20260829-groq-analysis-admin-only"></script>
 <script src="/payroll-governance.js?v=20260804-annualized-tax"></script>
 <script src="/persistence.js?v=20260829-hydrate-applies-theme"></script>
 </body>
