@@ -622,7 +622,11 @@
     return viewingSelf?L('Your email on file is '+email+'.','Ang email mo na naitala ay '+email+'.'):L(name+"'s email on file is "+email+'.','Ang email ni '+name+' na naitala ay '+email+'.');
   }
   function adminAggregateAnswer(norm){
-    if(/\b(proby|probationary|probation)\b/.test(norm)&&/(how many|number of|count|ilan|list|show|who|which|sino)/.test(norm)){
+    // No qualifier ("how many"/"ilan"/etc.) required here -- "proby"/"probationary"/
+    // "probation" on its own, with no specific employee named, is distinctive enough that
+    // an admin using it almost always wants this list. Requiring an exact qualifier phrase
+    // meant close variants ("ilang proby meron tayo", "sino ang mga proby") fell through.
+    if(/\b(proby|probationary|probation)\b/.test(norm)){
       var proby=USERS.filter(function(u){return u.role==='employee'&&u.type==='probationary'&&u.status==='active';});
       if(!proby.length)return L('No employees are currently on probationary status.','Wala pang empleyadong nasa probationary status sa ngayon.');
       var names=proby.map(fmtEmpName).join(', ');
@@ -688,6 +692,15 @@
     var isA=isAdminUser(user)||isPlatformAdmin;
     var norm=(q||'').toLowerCase().trim();
     if(!norm||!user)return null;
+    // Checked before any employee-name matching at all: adminAggregateAnswer()'s patterns
+    // are specific enough (distinctive words like "proby", "headcount", "pending leave")
+    // that a false positive is very unlikely, and this way a company-wide question never
+    // gets silently swallowed just because some employee's first or last name happens to
+    // also appear as a substring somewhere in the question text.
+    if(isA){
+      var agg=adminAggregateAnswer(norm);
+      if(agg)return agg;
+    }
     var mentioned=findMentionedEmployee(q);
     var askingOther=mentioned&&mentioned.id!==user.id;
     // A non-admin naming someone else -- for anything -- never gets routed to that
@@ -695,10 +708,6 @@
     if(askingOther&&!isA)return L("I can only answer questions about your own records here — ask an HR admin for information about "+fmtEmpName(mentioned)+".","Dito, mga tanong lang tungkol sa sarili mong record ang kaya kong sagutin — magtanong na lang sa HR admin tungkol kay "+fmtEmpName(mentioned)+".");
     var target=(isA&&mentioned)?mentioned:(USERS.find(function(u){return u.id===user.id;})||user);
     var viewingSelf=target.id===user.id;
-    if(isA&&!mentioned){
-      var agg=adminAggregateAnswer(norm);
-      if(agg)return agg;
-    }
     var govt=govtIdType(norm);
     if(govt||/government id|gov'?t (id|number)|numero ng gobyerno/.test(norm))return govtNumbersAnswer(target,viewingSelf,govt);
     if(/leave (credit|balance)|remaining leave|vacation leave|sick leave credits|leave credits|natitira.*leave|leave.*natitira|bakasyon/.test(norm))return leaveBalanceAnswer(target,viewingSelf);
