@@ -627,7 +627,14 @@
     // an admin using it almost always wants this list. Requiring an exact qualifier phrase
     // meant close variants ("ilang proby meron tayo", "sino ang mga proby") fell through.
     if(/\b(proby|probationary|probation)\b/.test(norm)){
-      var proby=USERS.filter(function(u){return u.role==='employee'&&u.type==='probationary'&&u.status==='active';});
+      // active!==false, not status==='active' -- status is a separate, less reliable field
+      // that can still carry a legacy 'probationary' value (see checkOffboarding()'s own
+      // self-heal comment in index.html), and that self-heal only ever runs on an employee's
+      // own login, never an admin's, so a real admin session can go its entire life without
+      // it -- a probationary employee whose status was never normalized this way was silently
+      // excluded here even though they very much still are one. Every other aggregate count in
+      // this file already uses active!==false for exactly this reason.
+      var proby=USERS.filter(function(u){return u.role==='employee'&&u.type==='probationary'&&u.active!==false;});
       if(!proby.length)return L('No employees are currently on probationary status.','Wala pang empleyadong nasa probationary status sa ngayon.');
       var names=proby.map(fmtEmpName).join(', ');
       return L('There '+(proby.length===1?'is':'are')+' currently '+proby.length+' probationary employee'+(proby.length===1?'':'s')+': '+names+'.','May '+proby.length+' (na) empleyadong nasa probationary status sa ngayon: '+names+'.');
