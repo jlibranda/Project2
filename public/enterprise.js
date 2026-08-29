@@ -206,8 +206,17 @@
         var undertime=actualLogForDate(c.employeeId,c.requestDate);
         undertime.undertimeMinutes=Math.max(Number(undertime.undertimeMinutes||0),Number(c.requestedMinutes||0));
         undertime.notes=(undertime.notes?undertime.notes+' · ':'')+'Approved undertime: '+undertime.undertimeMinutes+' minute(s)';
-        applyResolutionDecision(undertime);
-        c.linkedType='attendance';c.linkedId=undertime.id;queueSync('Attendance');
+        var utResult=applyResolutionDecision(undertime);
+        c.linkedType='attendance';c.linkedId=undertime.id;
+        // Fully (not just layer-)approved and this day's own pay period already closed while it
+        // sat pending -- credit (here, deduct) the day's pay to whichever payroll runs next
+        // instead of it being silently lost. Unlike creditLateApprovalDay (a flat day rate, right
+        // for a whole replaced/created day like Time Correction/OB/WFH), this amends hours on top
+        // of an otherwise already-paid day, so creditLateApprovalHours computes the exact
+        // undertime-minutes deduction through the real pay-rule engine instead. No-ops for a
+        // period that's still open; the normal run picks it up itself.
+        if(utResult.decision==='approved'&&utResult.message.indexOf('Routed to Layer')<0)creditLateApprovalHours(c.employeeId,c.requestDate,'undertime','UNDERTIME','Approved Undertime');
+        queueSync('Attendance');
       }else if(c.attendanceRequestType==='overtime'){
         // Re-run through otTypeEligibility (not just calculateEligibleHours) so approval also
         // re-validates the Before/After Shift boundary against the schedule at approval time —
@@ -220,8 +229,12 @@
         c.actualTimeOut=actual&&actual.tout||'';
         if(actual){
           actual.ot=otResult.hours;
-          applyResolutionDecision(actual);
+          var otApproveResult=applyResolutionDecision(actual);
           c.linkedType='attendance';c.linkedId=actual.id;
+          // See the undertime branch above -- an amended day, not a whole replaced one, so this
+          // credits the exact OT-hours amount (via the real pay-rule engine) rather than a flat
+          // day rate.
+          if(otApproveResult.decision==='approved'&&otApproveResult.message.indexOf('Routed to Layer')<0)creditLateApprovalHours(c.employeeId,c.requestDate,'overtime','OT_REG','Approved Overtime');
           queueSync('Attendance');
         }
       }else if(c.attendanceRequestType==='rest_day_holiday'){
@@ -236,8 +249,12 @@
         c.actualTimeOut=rdhLogActual&&rdhLogActual.tout||'';
         if(rdhLogActual){
           rdhLogActual.restDayHolidayHours=rdhResult.hours;
-          applyResolutionDecision(rdhLogActual);
+          var rdhApproveResult=applyResolutionDecision(rdhLogActual);
           c.linkedType='attendance';c.linkedId=rdhLogActual.id;
+          // See the undertime branch above -- credits the exact RDH-hours amount (via the real
+          // pay-rule engine, honoring whatever holiday premium code applies) rather than a flat
+          // day rate.
+          if(rdhApproveResult.decision==='approved'&&rdhApproveResult.message.indexOf('Routed to Layer')<0)creditLateApprovalHours(c.employeeId,c.requestDate,'rest_day_holiday','RDH','Approved Rest Day/Holiday Overtime');
           queueSync('Attendance');
         }
       }else if(c.linkedType==='attendance'){
