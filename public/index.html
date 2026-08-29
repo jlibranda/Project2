@@ -7013,6 +7013,45 @@ function creditLateApprovalDay(empId,date,payItemCode,label){
   queueSync('Payroll_Adjustments');
   return true;
 }
+// The peso amount one single day's Overtime/Rest-Day-Holiday/Undertime hours are worth, run
+// through the SAME holiday-classification (TimekeepingCore.periodSummary) and pay-rule
+// (PayrollRuleEngine.calculate) path a live payroll run uses -- scoped to a single-day period
+// with baseBasic/allowances/absences/statutory/tax all zeroed out, so only the OT/RDH/Undertime
+// line for that one day comes back. Used by creditLateApprovalHours below so a late credit for a
+// closed period matches, peso for peso, what an on-time approval would have paid instead of a
+// flat day-rate guess (unlike creditLateApprovalDay, which is correct for a whole replaced/
+// created day like Time Correction/OB/WFH, but wrong for hours layered on top of an otherwise
+// already-paid day).
+function computeSingleDayAttendanceAmount(empId,date,kind){
+  const emp=USERS.find(u=>u.id===empId);
+  const grp=emp&&(PAYROLL_GROUPS.find(g=>g.id===emp.payGroupId)||PAYROLL_GROUPS[0]);
+  if(!emp||!grp)return 0;
+  const summary=TimekeepingCore.periodSummary(ATT,emp,date,date,COMPANY.shifts||[],COMPANY.holidays||[],COMPANY.startOfWeek);
+  const result=PayrollRuleEngine.calculate({employee:emp,group:grp,period:{from:date,to:date},attendance:summary,rules:PAYROLL_RULEBOOK,baseBasic:0,defaultDivisor:COMPANY.dailyDivisor||22,periodDays:1,absenceFallbackPolicy:{mode:'off'},recurringAllowances:[],adjustments:[],annualBenefitContext:{limit:90000,previousEmployerNonTaxable:0,currentEmployerYtdNonTaxable:0},loans:[],statutory:()=>({sssEE:0,sssER:0,phEE:0,phER:0,piEE:0,piER:0}),tax:()=>0,otRates:(typeof OT_RATES==='undefined'?[]:OT_RATES)});
+  if(kind==='overtime')return result.lines.filter(l=>l.code==='OT_REG').reduce((s,l)=>s+l.amount,0);
+  if(kind==='rest_day_holiday'){
+    const codes=Object.keys(summary.restDayHolidayHoursByCode||{}).map(c=>c==='RDH_GENERIC'?'RDH':c);
+    return result.lines.filter(l=>codes.includes(l.code)).reduce((s,l)=>s+l.amount,0);
+  }
+  if(kind==='undertime')return result.lines.filter(l=>l.code==='UNDERTIME').reduce((s,l)=>s+l.amount,0);
+  return 0;
+}
+// Sibling of creditLateApprovalDay for Overtime/Rest-Day-Holiday/Undertime -- these amend an
+// already-existing (and, for a closed period, already-paid) day rather than replacing it whole,
+// so a flat day-rate credit would be wrong; this credits (or, for undertime, deducts) exactly the
+// hours' worth of pay instead. No-ops (and returns false) when the period is still open or there's
+// nothing chargeable, same as creditLateApprovalDay.
+function creditLateApprovalHours(empId,date,kind,payItemCode,label){
+  const emp=USERS.find(u=>u.id===empId);
+  if(!emp||!payrollAlreadyClosedFor(emp,date))return false;
+  const amount=computeSingleDayAttendanceAmount(empId,date,kind);
+  if(!amount)return false;
+  const isDeduction=kind==='undertime';
+  const signedAmount=isDeduction?-Math.abs(amount):Math.abs(amount);
+  PAYROLL_ADJ.push({id:nAdj++,empId:empId,adjType:label,payItemCode:payItemCode,category:isDeduction?'deductions':'earnings',taxable:!isDeduction,direction:isDeduction?'deduction':'income',amount:+signedAmount.toFixed(2),reason:'Late-approved '+label+' for '+date+' — original pay period already closed; credited automatically to the next payroll run.',effectiveDate:date,payPeriodId:null,payPeriodLabel:null,addedBy:user.name,status:'ready',processStatus:'ready',createdAt:today()});
+  queueSync('Payroll_Adjustments');
+  return true;
+}
 function actLeave(id,ok){
   const l=LEAVES.find(x=>x.id===id);
   if(!l)return;
