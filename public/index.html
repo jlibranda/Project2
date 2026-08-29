@@ -14929,8 +14929,32 @@ function ensureBrandDraft(){
 function discardBrandDraft(){
   _pendingBrand=null;
   applyTheme(COMPANY.themeKey,COMPANY.accentHex);
-  render();
+  rerenderPreservingInputs();
   toast('Branding changes discarded.','info');
+}
+/* Staging a logo/theme/wallpaper change re-renders the whole page from COMPANY/_pendingBrand,
+   which would silently wipe any other field the user had already typed but not yet saved (e.g.
+   Company Name) since those plain fields have no draft of their own and are read straight off
+   the live DOM by saveCompany(). Snapshot every id'd form field before the re-render and put the
+   values back afterwards so an in-progress edit survives an incidental branding preview. */
+function rerenderPreservingInputs(){
+  const container=document.getElementById('content-area');
+  const snapshot={};
+  if(container){
+    container.querySelectorAll('input[id],select[id],textarea[id]').forEach(el=>{
+      snapshot[el.id]=el.type==='checkbox'?el.checked:el.value;
+    });
+  }
+  render();
+  const container2=document.getElementById('content-area');
+  if(container2){
+    Object.keys(snapshot).forEach(id=>{
+      const el=container2.querySelector('#'+CSS.escape(id));
+      if(!el)return;
+      if(el.type==='checkbox')el.checked=snapshot[id];
+      else el.value=snapshot[id];
+    });
+  }
 }
 function pgCompanySettings(){
   ensureAnnualizedTaxConfig();
@@ -14961,7 +14985,7 @@ function pgCompanySettings(){
               <input type="file" id="co-logo-file" accept="image/*" style="display:none" onchange="handleLogoUpload(this)"/>
               <div style="display:flex;gap:6px;flex-wrap:wrap">
                 <label for="co-logo-file" class="btn btn-sm" style="cursor:pointer;font-size:12px">📁 Choose File</label>
-                ${b.logo?`<button class="btn btn-sm btn-danger" style="font-size:12px" onclick="ensureBrandDraft().logo=null;render();toast('Logo removed from draft — click Save to apply.','info')">✕ Remove</button>`:''}
+                ${b.logo?`<button class="btn btn-sm btn-danger" style="font-size:12px" onclick="ensureBrandDraft().logo=null;rerenderPreservingInputs();toast('Logo removed from draft — click Save to apply.','info')">✕ Remove</button>`:''}
               </div>
             </div>
           </div>
@@ -15038,11 +15062,11 @@ function pgCompanySettings(){
             <input type="file" id="co-wp-file" accept="image/*" style="display:none" onchange="handleWallpaperUpload(this)"/>
             <label for="co-wp-file" class="btn btn-sm" style="cursor:pointer;font-size:12px">🖼 Upload Wallpaper</label>
             <button class="btn btn-sm" style="font-size:12px" onclick="
-              if(b.logo){const d=ensureBrandDraft();d.wallpaper=d.logo;d.wallpaperMode='tile-large';toast('Logo staged as watermark — click Save to apply.','info');render();}
+              if(b.logo){const d=ensureBrandDraft();d.wallpaper=d.logo;d.wallpaperMode='tile-large';toast('Logo staged as watermark — click Save to apply.','info');rerenderPreservingInputs();}
               else toast('Upload a logo first.','warning')">
               ♻ Use Logo as Watermark
             </button>
-            ${b.wallpaper?`<button class="btn btn-sm btn-danger" style="font-size:12px" onclick="ensureBrandDraft().wallpaper=null;render();toast('Wallpaper removed from draft — click Save to apply.','info')">✕ Remove</button>`:''}
+            ${b.wallpaper?`<button class="btn btn-sm btn-danger" style="font-size:12px" onclick="ensureBrandDraft().wallpaper=null;rerenderPreservingInputs();toast('Wallpaper removed from draft — click Save to apply.','info')">✕ Remove</button>`:''}
           </div>
           ${b.wallpaper?`
           <div class="field" style="margin:0">
@@ -15072,7 +15096,7 @@ function pgCompanySettings(){
             <label>Display Mode</label>
             <div style="display:flex;gap:6px;flex-wrap:wrap">
               ${[['repeat','🔁 Tile Small'],['tile-large','🔳 Tile Large'],['cover','⬛ Cover'],['contain','📐 Contain']].map(([m,l])=>`
-              <button class="btn btn-sm ${b.wallpaperMode===m?'btn-primary':''}" style="font-size:11px" onclick="ensureBrandDraft().wallpaperMode='${m}';render();">${l}</button>`).join('')}
+              <button class="btn btn-sm ${b.wallpaperMode===m?'btn-primary':''}" style="font-size:11px" onclick="ensureBrandDraft().wallpaperMode='${m}';rerenderPreservingInputs();">${l}</button>`).join('')}
             </div>
           </div>`:''}
         </div>
@@ -15181,7 +15205,7 @@ function selectTheme(k,hex){
   // Update color picker and hex field
   const cp=document.getElementById('co-color');if(cp)cp.value=hex||THEMES[k]?.accent||d.accentHex;
   const hx=document.getElementById('co-hex');if(hx)hx.value=hex||THEMES[k]?.accent||d.accentHex;
-  render();
+  rerenderPreservingInputs();
 }
 
 function handleLogoUpload(input){
@@ -15191,7 +15215,7 @@ function handleLogoUpload(input){
   const reader=new FileReader();
   reader.onload=function(e){
     ensureBrandDraft().logo=e.target.result;
-    render();
+    rerenderPreservingInputs();
     toast('Logo staged — click Save Settings to apply.','info');
   };
   reader.readAsDataURL(file);
@@ -15207,7 +15231,7 @@ function handleWallpaperUpload(input){
     d.wallpaper=e.target.result;
     if(!d.wallpaperMode)d.wallpaperMode='repeat';
     if(!d.wallpaperOpacity)d.wallpaperOpacity=0.06;
-    render();
+    rerenderPreservingInputs();
     toast('Wallpaper staged — click Save Settings to apply.','info');
   };
   reader.readAsDataURL(file);
