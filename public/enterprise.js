@@ -607,8 +607,22 @@
     var tail=L(', working as '+(target.pos||'—')+' in '+(target.dept||'—')+', hired on '+(target.hired||'—')+'.',', bilang '+(target.pos||'—')+' sa '+(target.dept||'—')+', na-hire noong '+(target.hired||'—')+'.');
     return (viewingSelf?L('You are currently ','Ikaw ay '):L(name+' is currently ','Si '+name+' ay '))+typeLabel+probNote+tail;
   }
+  function managerAnswer(target,viewingSelf){
+    if(!canAccess(viewingSelf?'self_view_employment':'emp_view_employment'))return viewingSelf?L("You don't currently have permission to view your own reporting chain.","Wala ka pang permiso na makita ang sarili mong reporting chain."):L("You don't have permission to view reporting chain info for other employees.","Wala kang permiso na makita ang reporting chain ng ibang empleyado.");
+    var name=fmtEmpName(target);
+    var mgr=[target.managerFirst,target.managerLast].filter(Boolean).join(' ').trim();
+    if(!mgr)return viewingSelf?L('You have no manager on file.','Wala kang nakatalang manager.'):L(name+' has no manager on file.','Walang nakatalang manager si '+name+'.');
+    var title=target.managerTitle?(' ('+target.managerTitle+')'):'';
+    return viewingSelf?L('Your manager is '+mgr+title+'.','Ang manager mo ay '+mgr+title+'.'):L(name+"'s manager is "+mgr+title+'.','Ang manager ni '+name+' ay '+mgr+title+'.');
+  }
+  function emailAnswer(target,viewingSelf){
+    if(!canAccess(viewingSelf?'self_view_personal':'emp_view_personal'))return viewingSelf?L("You don't currently have permission to view your own contact info.","Wala ka pang permiso na makita ang sarili mong contact info."):L("You don't have permission to view contact info for other employees.","Wala kang permiso na makita ang contact info ng ibang empleyado.");
+    var name=fmtEmpName(target);
+    var email=target.email||L('not on file','wala pang naitala');
+    return viewingSelf?L('Your email on file is '+email+'.','Ang email mo na naitala ay '+email+'.'):L(name+"'s email on file is "+email+'.','Ang email ni '+name+' na naitala ay '+email+'.');
+  }
   function adminAggregateAnswer(norm){
-    if(/\b(proby|probationary|probation)\b/.test(norm)&&/(how many|number of|count|ilan)/.test(norm)){
+    if(/\b(proby|probationary|probation)\b/.test(norm)&&/(how many|number of|count|ilan|list|show|who|which|sino)/.test(norm)){
       var proby=USERS.filter(function(u){return u.role==='employee'&&u.type==='probationary'&&u.status==='active';});
       if(!proby.length)return L('No employees are currently on probationary status.','Wala pang empleyadong nasa probationary status sa ngayon.');
       var names=proby.map(fmtEmpName).join(', ');
@@ -622,6 +636,14 @@
     if(/(how many|number of|total|count).*(active )?employees?|headcount|ilang.*empleyado/.test(norm)){
       var active=USERS.filter(function(u){return u.role==='employee'&&u.active!==false;});
       return L('There are currently '+active.length+' active employee'+(active.length===1?'':'s')+'.','May '+active.length+' (na) aktibong empleyado sa ngayon.');
+    }
+    if(/missing (government|gov'?t) id|incomplete (government|gov'?t) id|missing bank/.test(norm)){
+      var h0=complianceHealth();
+      if(!h0.missingGov.length&&!h0.missingBank.length)return L('No employees currently have missing government IDs or bank details.','Walang empleyadong may kulang na government ID o bank details sa ngayon.');
+      var bits=[];
+      if(h0.missingGov.length)bits.push(L(h0.missingGov.length+' employee(s) with incomplete government IDs: '+h0.missingGov.map(fmtEmpName).join(', '),h0.missingGov.length+' empleyadong may kulang na government ID: '+h0.missingGov.map(fmtEmpName).join(', ')));
+      if(h0.missingBank.length)bits.push(L(h0.missingBank.length+' employee(s) missing bank details: '+h0.missingBank.map(fmtEmpName).join(', '),h0.missingBank.length+' empleyadong kulang sa bank details: '+h0.missingBank.map(fmtEmpName).join(', ')));
+      return bits.join('. ')+'.';
     }
     if(/pending payroll|payroll.*(pending|awaiting|approval)/.test(norm)){
       var h=complianceHealth();
@@ -681,8 +703,10 @@
     if(govt||/government id|gov'?t (id|number)|numero ng gobyerno/.test(norm))return govtNumbersAnswer(target,viewingSelf,govt);
     if(/leave (credit|balance)|remaining leave|vacation leave|sick leave credits|leave credits|natitira.*leave|leave.*natitira|bakasyon/.test(norm))return leaveBalanceAnswer(target,viewingSelf);
     if(/payslip|net pay|salary slip|netong sahod/.test(norm))return payslipAnswer(target,viewingSelf);
-    if(/\b(salary|compensation|daily rate|monthly rate)\b|sahod|suweldo|magkano/.test(norm))return compensationAnswer(target,viewingSelf);
-    if(/probation|regulariz|employment status|hire date|date hired|department|\bposition\b|proby pa|regular na ba|posisyon ko|departamento ko/.test(norm))return employmentAnswer(target,viewingSelf);
+    if(/\b(salary|compensation|daily rate|monthly rate|earn|earns|earning)\b|sahod|suweldo|magkano/.test(norm))return compensationAnswer(target,viewingSelf);
+    if(/\b(manager|supervisor)\b|report(s)? to|reporting (chain|line)|puno/.test(norm))return managerAnswer(target,viewingSelf);
+    if(/\bemail\b|email address/.test(norm))return emailAnswer(target,viewingSelf);
+    if(/probation|regulariz|\bregular\b|employment (status|type)|\bhired\b|hire date|date hired|department|\bposition\b|proby pa|regular na ba|posisyon ko|departamento ko/.test(norm))return employmentAnswer(target,viewingSelf);
     return null;
   }
   window.assistantAnswer=assistantAnswer;
