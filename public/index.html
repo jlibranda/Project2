@@ -4447,8 +4447,19 @@ function pgDashboard(){
   const isA=isAdminUser(user)||isPlatformAdmin;
   const myA=attendanceRecords().filter(a=>a.eid===user.id);
   const pr=myA.filter(a=>a.status==='present').length;
-  const la=myA.filter(a=>a.status==='late').length;
-  const ab=myA.filter(a=>a.status==='absent').length;
+  const lateDates=myA.filter(a=>a.status==='late').map(a=>a.date);
+  const absentDates=myA.filter(a=>a.status==='absent').map(a=>a.date);
+  const la=lateDates.length;
+  const ab=absentDates.length;
+  // Dates sort correctly as plain strings since they're already YYYY-MM-DD. Capped so a
+  // long-tenured employee's all-time count doesn't turn the card into a wall of dates --
+  // the metric-val number above still reflects the true total either way.
+  const fmtDateList=(dates,max=5)=>{
+    const sorted=[...dates].sort().reverse();
+    const shown=sorted.slice(0,max).map(d=>new Date(d+'T00:00:00').toLocaleDateString('en-PH',{month:'short',day:'numeric'}));
+    const extra=sorted.length-max;
+    return shown.join(', ')+(extra>0?` +${extra} more`:'');
+  };
   const totalPayroll=PAYROLLS.length?PAYROLLS[PAYROLLS.length-1].items.reduce((s,i)=>s+i.net,0):0;
   const activeLoans=LOANS.filter(l=>l.status==='active').length;
   return`
@@ -4463,8 +4474,8 @@ function pgDashboard(){
     <div class="metric"><div class="metric-label">Active Loans</div><div class="metric-val" style="color:var(--blue)">${activeLoans}</div><div class="metric-change" style="color:var(--txt3)">Gov't + company</div></div>
     `:`
     <div class="metric"><div class="metric-label">Days Present</div><div class="metric-val" style="color:var(--green)">${pr}</div></div>
-    <div class="metric"><div class="metric-label">Late Arrivals</div><div class="metric-val" style="color:var(--amber)">${la}</div></div>
-    <div class="metric"><div class="metric-label">Absences</div><div class="metric-val" style="color:var(--red)">${ab}</div></div>
+    <div class="metric"><div class="metric-label">Late Arrivals</div><div class="metric-val" style="color:var(--amber)">${la}</div>${la?`<div class="metric-change" style="color:var(--txt3)">${esc(fmtDateList(lateDates))}</div>`:''}</div>
+    <div class="metric"><div class="metric-label">Absences</div><div class="metric-val" style="color:var(--red)">${ab}</div>${ab?`<div class="metric-change" style="color:var(--txt3)">${esc(fmtDateList(absentDates))}</div>`:''}</div>
     <div class="metric"><div class="metric-label">Pending Leaves</div><div class="metric-val" style="color:var(--blue)">${LEAVES.filter(l=>l.eid===user.id&&l.status==='pending').length}</div></div>
     `}
   </div>
