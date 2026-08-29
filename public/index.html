@@ -11,7 +11,7 @@
 :root{
   --bg:#f4f3ef;--surface:#fff;--surface2:#faf9f6;--border:#e6e4de;--border2:#ccc9bf;
   --txt:#18171a;--txt2:#6b6a72;--txt3:#9d9ca5;
-  --accent:#4f46e5;--accent2:#6366f1;--accent-bg:#eef2ff;--accent-txt:#3730a3;
+  --accent:#4f46e5;--accent2:#6366f1;--accent-bg:#eef2ff;--accent-txt:#3730a3;--accent-ink:#fff;
   --green:#059669;--green-bg:#d1fae5;--green-txt:#065f46;
   --amber:#d97706;--amber-bg:#fef3c7;--amber-txt:#92400e;
   --red:#dc2626;--red-bg:#fee2e2;--red-txt:#991b1b;
@@ -25,7 +25,7 @@
   --bg:#0f172a;--surface:#1e293b;--surface2:#162032;
   --border:#2d3f55;--border2:#3d526a;
   --txt:#f1f5f9;--txt2:#cbd5e1;--txt3:#64748b;
-  --accent:#818cf8;--accent2:#6366f1;
+  --accent:#818cf8;--accent2:#6366f1;--accent-ink:#fff;
   --accent-bg:#1e1b4b;--accent-txt:#a5b4fc;
   --green:#34d399;--green-bg:#064e3b;--green-txt:#6ee7b7;
   --amber:#fbbf24;--amber-bg:#451a03;--amber-txt:#fde68a;
@@ -54,8 +54,8 @@
 [data-dark] .ai-box{background:#162032;border-color:#2d3f55}
 [data-dark] .pill-opt,[data-dark] .qs-btn,[data-dark] .btn{background:#1e293b;border-color:#2d3f55;color:#cbd5e1}
 [data-dark] .btn:hover{background:#2d3f55}
-[data-dark] .btn-primary{background:#818cf8;color:#fff;border-color:#818cf8}
-[data-dark] .btn-primary:hover{background:#6366f1}
+[data-dark] .btn-primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+[data-dark] .btn-primary:hover{background:var(--accent2)}
 [data-dark] .btn-danger{background:#f87171;border-color:#f87171}
 [data-dark] .btn-amber{background:#f59e0b;border-color:#f59e0b}
 [data-dark] .modal-overlay{background:rgba(0,0,0,.7)}
@@ -69,13 +69,13 @@ body{font-family:'Inter',sans-serif;background:var(--bg);color:var(--txt);min-he
 .shell{display:flex;min-height:100vh}
 .topbar{position:fixed;top:0;left:0;right:0;height:56px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 1.5rem 0 0;z-index:30}
 .brand{display:flex;align-items:center;gap:10px;padding:0 1.25rem;flex-shrink:0;min-width:0}
-.brand-mark{height:32px;width:32px;min-width:32px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:9px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:14px;overflow:hidden;transition:width .2s}
+.brand-mark{height:32px;width:32px;min-width:32px;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:9px;display:flex;align-items:center;justify-content:center;color:var(--accent-ink);font-weight:700;font-size:14px;overflow:hidden;transition:width .2s}
 .brand-mark.has-logo{width:auto;min-width:32px;max-width:140px;background:transparent}
 .brand-name{font-weight:700;font-size:15px;letter-spacing:-.3px;color:var(--txt)}
 .topbar-right{display:flex;align-items:center;gap:12px}
 .notif-btn{width:34px;height:34px;border-radius:8px;border:1px solid var(--border);background:var(--surface);cursor:pointer;display:flex;align-items:center;justify-content:center;color:var(--txt2)}
 .user-pill{display:flex;align-items:center;gap:8px;padding:5px 10px;border-radius:8px;border:1px solid var(--border);cursor:pointer;background:var(--surface)}
-.avatar{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#4f46e5,#7c3aed);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;flex-shrink:0}
+.avatar{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:var(--accent-ink);flex-shrink:0}
 .avatar.sm{width:24px;height:24px;font-size:9px}
 .avatar.lg{width:40px;height:40px;font-size:13px}
 /* ---- SIDEBAR ---- */
@@ -169,12 +169,12 @@ input[type=checkbox]:disabled:checked::after{
   position:absolute;
   left:5px;top:1px;
   width:4px;height:8px;
-  border:solid #fff;
+  border:solid var(--accent-ink);
   border-width:0 2px 2px 0;
   transform:rotate(45deg);
 }
-.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
-.btn-primary:hover{background:#4338ca}
+.btn-primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn-primary:hover{background:var(--accent2)}
 .btn-primary:disabled,.btn-primary:disabled:hover{background:var(--accent)}
 .btn-success{background:var(--green);color:#fff;border-color:var(--green)}
 .btn-danger{background:var(--red);color:#fff;border-color:var(--red)}
@@ -1343,6 +1343,17 @@ function applyTheme(key,hex){
   r.setProperty('--accent2',t.dark);
   r.setProperty('--accent-bg',t.bg);
   r.setProperty('--accent-txt',t.dark);
+  r.setProperty('--accent-ink',readableTextColor(t.accent));
+}
+// The custom color picker lets a user pick literally any hex, including pale ones white text
+// disappears against -- pick black or white for whatever's on top of --accent using the same
+// YIQ perceived-brightness split browsers/design systems commonly use for this.
+function readableTextColor(hex){
+  const h=(hex||'').replace('#','');
+  if(!/^[0-9a-fA-F]{6}$/.test(h))return'#fff';
+  const r=parseInt(h.slice(0,2),16),g=parseInt(h.slice(2,4),16),b=parseInt(h.slice(4,6),16);
+  const yiq=(r*299+g*587+b*114)/1000;
+  return yiq>=150?'#111827':'#fff';
 }
 function shadeColor(hex,pct){
   const n=parseInt(hex.slice(1),16);
@@ -4855,7 +4866,7 @@ function pgEmployees(){
               {n:'3',t:'Upload & auto-validate',d:'System checks every row. Errors shown per-row — nothing saves until you confirm.'},
               {n:'4',t:'Fix & Import',d:'Click ✎ Fix on any error row to correct it directly in the browser. Then import.'},
             ].map(s=>`<div style="display:flex;gap:10px;align-items:flex-start">
-              <div style="width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px">${s.n}</div>
+              <div style="width:22px;height:22px;border-radius:50%;background:var(--accent);color:var(--accent-ink);font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px">${s.n}</div>
               <div><div style="font-weight:600;font-size:13px">${s.t}</div><div style="font-size:12px;color:var(--txt3);margin-top:2px">${s.d}</div></div>
             </div>`).join('')}
           </div>
@@ -5179,7 +5190,7 @@ function pgEmployees(){
       if(terms.length<=1)return'';
       return`<div style="display:flex;flex-wrap:wrap;align-items:center;gap:5px;margin-top:7px;padding:7px 10px;background:var(--accent-bg);border-radius:8px">
         <span style="font-size:11px;font-weight:600;color:var(--accent-txt);margin-right:2px">Searching ${terms.length} terms:</span>
-        ${terms.map((t,i)=>`<span style="display:inline-flex;align-items:center;gap:4px;background:var(--accent);color:#fff;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:500">
+        ${terms.map((t,i)=>`<span style="display:inline-flex;align-items:center;gap:4px;background:var(--accent);color:var(--accent-ink);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:500">
           ${esc(t)}
           <span onclick="const ts=tokenizeSearch(empSearch);ts.splice(${i},1);setEmpSearch(ts.join('\\n'))" style="cursor:pointer;opacity:.8;font-size:13px;line-height:1">×</span>
         </span>`).join('')}
@@ -10275,7 +10286,7 @@ function pgAnalytics(){
     <div class="card"><div class="card-title" style="margin-bottom:1rem">Headcount by Department</div>
     ${Object.entries(byDept).map(([d,c])=>`<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
       <div style="width:80px;font-size:12px;color:var(--txt2)">${d}</div>
-      <div style="flex:1;background:var(--bg);border-radius:4px;height:18px;overflow:hidden"><div style="background:var(--accent);height:100%;border-radius:4px;width:${c/emps.length*100}%;display:flex;align-items:center;padding-left:6px"><span style="font-size:10px;color:#fff;font-weight:700">${c}</span></div></div>
+      <div style="flex:1;background:var(--bg);border-radius:4px;height:18px;overflow:hidden"><div style="background:var(--accent);height:100%;border-radius:4px;width:${c/emps.length*100}%;display:flex;align-items:center;padding-left:6px"><span style="font-size:10px;color:var(--accent-ink);font-weight:700">${c}</span></div></div>
     </div>`).join('')}
     </div>
     <div class="card"><div class="card-title" style="margin-bottom:1rem">Attendance Breakdown</div>
@@ -12650,7 +12661,7 @@ function renderModal(){
         {n:'4',t:'Download the updated file',d:'Claude will output an updated HTML file. Download it and <strong>replace your old file</strong> with the new one.'},
         {n:'5',t:'Keep a backup',d:'Before replacing, rename your old file (e.g. <em>sproutripple_v1_backup.html</em>) so you can roll back if needed.'},
       ].map(s=>`<div style="display:flex;gap:10px;padding:8px 10px;background:var(--bg);border-radius:7px;border:1px solid var(--border)">
-        <div style="width:22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">${s.n}</div>
+        <div style="width:22px;height:22px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0">${s.n}</div>
         <div><div style="font-weight:600;font-size:12px;margin-bottom:2px">${s.t}</div><div style="font-size:11px;color:var(--txt3)">${s.d}</div></div>
       </div>`).join('')}
     </div>
@@ -12881,7 +12892,7 @@ function renderModal(){
       ${previewChain.length?`<div style="padding:10px 12px;background:var(--accent-bg);border-radius:8px;margin-bottom:14px">
         <div style="font-size:11px;font-weight:700;color:var(--accent-txt);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">Resolved Chain Preview</div>
         <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:12px">
-          <span style="padding:2px 8px;border-radius:5px;background:var(--accent);color:#fff;font-weight:700">${esc(emp.name)}</span>
+          <span style="padding:2px 8px;border-radius:5px;background:var(--accent);color:var(--accent-ink);font-weight:700">${esc(emp.name)}</span>
           ${previewChain.map(l=>`<span style="color:var(--accent-txt)">→</span>
             <span style="padding:2px 8px;border-radius:5px;
               background:${l.mode==='custom'?'var(--amber-bg)':'#fff'};
@@ -14792,7 +14803,7 @@ function pgGoogleSheets(){
           ['5','Deploy as Web App','Deploy → New Deployment → Type: Web App → Execute as: Me → Access: Anyone → Click Deploy. Copy the URL.'],
           ['6','Paste URL above','Paste the Web App URL into the field above. Click Test Connection.'],
         ].map(([n,t,d])=>`<div style="display:flex;gap:12px;align-items:flex-start">
-          <div style="width:26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${n}</div>
+          <div style="width:26px;height:26px;border-radius:50%;background:var(--accent);color:var(--accent-ink);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0">${n}</div>
           <div><div style="font-weight:600;font-size:13px">${t}</div><div style="font-size:12px;color:var(--txt3);margin-top:2px">${d}</div></div>
         </div>`).join('')}
       </div>
@@ -15752,7 +15763,7 @@ function teamViewPendingTab(){
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         ${typeOptions.map(t=>{
           const active=f.types.includes(t.key);
-          return`<button class="btn btn-sm" style="${active?'background:var(--accent);color:#fff;border-color:var(--accent)':''}" onclick="const i=window._teamViewFilters.types.indexOf('${t.key}');if(i>=0)window._teamViewFilters.types.splice(i,1);else window._teamViewFilters.types.push('${t.key}');render()">${esc(t.label)}</button>`;
+          return`<button class="btn btn-sm" style="${active?'background:var(--accent);color:var(--accent-ink);border-color:var(--accent)':''}" onclick="const i=window._teamViewFilters.types.indexOf('${t.key}');if(i>=0)window._teamViewFilters.types.splice(i,1);else window._teamViewFilters.types.push('${t.key}');render()">${esc(t.label)}</button>`;
         }).join('')}
       </div>
     </div>
@@ -16364,7 +16375,7 @@ function pgEmpDetail(){
         ${chain.length?`<div style="padding:8px 10px;background:var(--accent-bg);border-radius:7px;border:1px solid var(--accent)">
           <div style="font-size:11px;font-weight:700;color:var(--accent-txt);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">Approval Chain</div>
           <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:12px">
-            <span style="padding:2px 8px;border-radius:5px;background:var(--accent);color:#fff;font-weight:600">${esc(e.name)}</span>
+            <span style="padding:2px 8px;border-radius:5px;background:var(--accent);color:var(--accent-ink);font-weight:600">${esc(e.name)}</span>
             ${chain.map(l=>`<span style="color:var(--accent-txt)">→</span>
               <span style="padding:2px 8px;border-radius:5px;background:var(--bg);border:1px solid ${l.mode==='custom'?'var(--amber)':'var(--accent)'};color:var(--txt)">
                 ${esc(l.approver.name)}
@@ -17741,7 +17752,7 @@ function renderFAB() {
     });
     html += '</div>';
   }
-  html += '<button id="fab-main" style="width:50px;height:50px;border-radius:50%;background:var(--accent);border:none;color:#fff;font-size:26px;cursor:pointer;box-shadow:0 4px 18px rgba(0,0,0,.2);display:flex;align-items:center;justify-content:center;transition:all .2s" onmouseover="this.style.transform=\'scale(1.08)\'" onmouseout="this.style.transform=\'scale(1)\'" title="Quick Actions (Ctrl+Q)">'+(fabOpen?'×':'+')+'</button>';
+  html += '<button id="fab-main" style="width:50px;height:50px;border-radius:50%;background:var(--accent);border:none;color:var(--accent-ink);font-size:26px;cursor:pointer;box-shadow:0 4px 18px rgba(0,0,0,.2);display:flex;align-items:center;justify-content:center;transition:all .2s" onmouseover="this.style.transform=\'scale(1.08)\'" onmouseout="this.style.transform=\'scale(1)\'" title="Quick Actions (Ctrl+Q)">'+(fabOpen?'×':'+')+'</button>';
   html += '</div>';
   return html;
 }
