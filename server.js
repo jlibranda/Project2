@@ -565,6 +565,145 @@ app.put('/api/state', requireAuth, async (req, res) => {
   }
 });
 
+/* ── AI-powered chat assistant (opt-in, Company Settings toggle) ──
+   The client-side chat widget's own deterministic assistantAnswer() (enterprise.js) is the
+   default and needs no server support at all -- this endpoint only backs the optional
+   "AI-Powered Assistant" toggle, so an admin can trade a per-request API cost for more
+   flexible natural-language understanding. The API key lives only in this process's
+   environment, never sent to or readable by the browser.
+
+   Security model: the LLM never gets live database or tool access. Every request instead
+   hands it one pre-built, permission-scoped JSON snapshot -- an admin's snapshot mirrors
+   exactly what canAccess()-gated admin views already show; a non-admin's snapshot is built
+   by mirroring canAccess()'s own self_view_* checks server-side (serverCanAccess below), field
+   by field, so a permission this account doesn't have simply never reaches the prompt at all,
+   the same as the deterministic assistant already enforces. The one rule no permission key
+   could express -- a non-admin can never see anyone else's record here -- is structural: their
+   snapshot only ever contains their own data to begin with. */
+function fmtNameServer(u) {
+  if (!u) return '';
+  const last = (u.lastName || '').trim().toUpperCase();
+  const first = (u.firstName || '').trim().toUpperCase();
+  if (!last && !first) return u.name || '';
+  const mi = (u.middleName || '').trim().charAt(0).toUpperCase();
+  const suffix = (u.suffix || '').trim().toUpperCase();
+  let out = (last ? last + ', ' : '') + first;
+  if (mi) out += ' ' + mi + '.';
+  if (suffix) out += ', ' + suffix;
+  return out;
+}
+function serverCanAccess(state, me, key) {
+  if (!me) return false;
+  if (me.role === 'admin' || me.accessLevelId === 1) return true;
+  const al = (state.accessLevels || []).find(a => a.id === me.accessLevelId);
+  return !!(al && al.perms && al.perms[key] === true);
+}
+function buildAssistantContext(state, session, isAdmin) {
+  const users = (state.users || []).filter(u => u.role === 'employee');
+  const today = new Date().toISOString().slice(0, 10);
+  if (isAdmin) {
+    return {
+      today,
+      companyName: state.company?.name || '',
+      employees: users.map(u => ({
+        name: fmtNameServer(u), department: u.dept, position: u.pos, employmentType: u.type,
+        active: u.active !== false, hired: u.hired, probationEndDate: u.probEndDate || null,
+        sss: u.sss, philhealth: u.ph, pagibig: u.pi, tin: u.tin,
+        monthlySalary: u.salaryPM, dailyRate: u.rate, email: u.email,
+        manager: [u.managerFirst, u.managerLast].filter(Boolean).join(' ') || null
+      })),
+      pendingLeaveRequests: (state.leaves || []).filter(l => l.status === 'pending').map(l => ({
+        employee: fmtNameServer(users.find(u => u.id === l.eid)), type: l.type
+      })),
+      pendingPayrollRuns: (state.payrolls || []).filter(r => r.status === 'pending_approval').length,
+      attendanceExceptionsToday: (state.attendance || []).filter(a => a.date === today && (a.status === 'late' || a.status === 'absent')).map(a => ({
+        employee: fmtNameServer(users.find(u => u.id === a.eid)), status: a.status
+      }))
+    };
+  }
+  // Non-admin: `me` is the asking employee's own record. A client-admin-only login with no
+  // matching USERS[] entry (persistence.js's synthetic {id:0,...} admin, or here simply no
+  // match at all) leaves `me` undefined -- self stays {} and the note below explains why.
+  const me = users.find(u => u.email === session.sub);
+  const self = {};
+  if (me) {
+    self.name = fmtNameServer(me);
+    if (serverCanAccess(state, me, 'self_view_employment')) {
+      self.department = me.dept; self.position = me.pos; self.employmentType = me.type;
+      self.hired = me.hired; self.probationEndDate = me.probEndDate || null;
+      self.manager = [me.managerFirst, me.managerLast].filter(Boolean).join(' ') || null;
+    }
+    if (serverCanAccess(state, me, 'self_view_govt')) {
+      self.sss = me.sss; self.philhealth = me.ph; self.pagibig = me.pi; self.tin = me.tin;
+    }
+    if (serverCanAccess(state, me, 'self_view_compensation')) {
+      self.monthlySalary = me.salaryPM; self.dailyRate = me.rate;
+    }
+    if (serverCanAccess(state, me, 'self_view_personal')) {
+      self.email = me.email;
+    }
+    if (serverCanAccess(state, me, 'leave')) {
+      const leaveTypes = (state.company?.leaveTypes || []).filter(t => t.active);
+      self.leaveBalances = leaveTypes.map(t => ({
+        type: t.name, balance: (me.leaveBalances && me.leaveBalances[t.id] && me.leaveBalances[t.id].balance) || 0
+      }));
+    }
+    if (serverCanAccess(state, me, 'myslips')) {
+      const mine = (state.payrolls || []).map(r => ({ r, item: (r.items || []).find(i => i.eid === me.id) })).filter(x => x.item);
+      const last = mine[mine.length - 1];
+      if (last) self.latestPayslip = { period: last.r.from + ' - ' + last.r.to, gross: last.item.gross, deductions: last.item.total, net: last.item.net };
+    }
+  }
+  return {
+    today, companyName: state.company?.name || '', me: me ? self : null,
+    note: me ? undefined : "This login isn't tied to a specific employee record, so there's no personal data to show for it."
+  };
+}
+app.post('/api/assistant/ask', requireAuth, async (req, res) => {
+  if (!process.env.ANTHROPIC_API_KEY) return res.status(503).json({ error: 'The AI-powered assistant is not configured on this server yet.' });
+  const question = String(req.body.question || '').trim();
+  if (!question) return res.status(400).json({ error: 'A question is required.' });
+  if (question.length > 2000) return res.status(400).json({ error: 'That question is too long.' });
+  const lang = req.body.lang === 'tl' ? 'tl' : 'en';
+  try {
+    const tenantKey = req.session.tenantKey || TENANT_KEY;
+    const record = await readState(tenantKey);
+    const state = record?.state || {};
+    const isAdmin = req.session.role === 'admin' || req.session.role === 'platform';
+    const context = buildAssistantContext(state, req.session, isAdmin);
+    const systemPrompt = [
+      'You are AURA Assistant, an HR and payroll data assistant embedded in a Philippine HR/payroll system.',
+      'Answer ONLY using the JSON data provided below -- never invent, estimate, or guess a number or fact that is not present in it.',
+      'If the answer is not present in the data, say plainly that you do not have that information rather than guessing.',
+      lang === 'tl' ? 'Respond in Tagalog/Filipino.' : 'Respond in English.',
+      'Be concise -- a few sentences at most, like a helpful coworker, not a report.',
+      '',
+      'DATA:',
+      JSON.stringify(context)
+    ].join('\n');
+    const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: process.env.ANTHROPIC_ASSISTANT_MODEL || 'claude-sonnet-5',
+        max_tokens: 500,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: question }]
+      })
+    });
+    const data = await apiRes.json().catch(() => ({}));
+    if (!apiRes.ok) return res.status(502).json({ error: data.error?.message || 'The AI assistant request failed.' });
+    const block = (data.content || []).find(b => b.type === 'text');
+    res.json({ answer: (block && block.text) || '' });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to reach the AI assistant.', detail: error.message });
+  }
+});
+
 /* ── Platform client directory: lists/creates real, backend-tracked companies.
    Creating one also seeds its own isolated app_state row (defaultTenantState) so it's
    loggable-into immediately — see /api/auth/login below for how a login resolves to it. */
