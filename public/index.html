@@ -814,6 +814,20 @@ let nBundy=1,nZone=10;
 let geoSt={loading:false,lat:null,lng:null,accuracy:null,address:'',zoneResult:null};
 let selfieData=null,camStream=null,clockTmr=null;
 
+/* Decodes the current sessionStorage token's payload (the same shape server.js signs and
+   persistence.js's own decodeToken() reads) without needing that file loaded yet -- this file's
+   inline script runs before persistence.js's <script src> tag, and renderLoading() below needs
+   this at parse time, synchronously, before persistence.js's own restoreSession() has fetched
+   anything. Returns null with no token, an expired one, or one that fails to parse. */
+function decodeSessionToken(){
+  try{
+    var t=sessionStorage.getItem('sproutripple_session');
+    if(!t)return null;
+    var b64=t.split('.')[0].replace(/-/g,'+').replace(/_/g,'/');
+    while(b64.length%4)b64+='=';
+    return JSON.parse(decodeURIComponent(atob(b64).split('').map(function(c){return'%'+('00'+c.charCodeAt(0).toString(16)).slice(-2);}).join('')));
+  }catch(e){return null;}
+}
 /* The pre-login/pre-hydrate "quick paint" branding cache (read below, written in render())
    used to live under one flat localStorage key shared by every tenant on this browser — so
    whichever client's admin logged in here most recently silently overwrote it for everyone
@@ -823,20 +837,14 @@ let selfieData=null,camStream=null,clockTmr=null;
    own tenantKey keeps each real client's cached branding distinct and correctly restored,
    whether logged in directly or entered via God Admin's Enter Portal. */
 function sessionBrandCacheKey(){
-  try{
-    var t=sessionStorage.getItem('sproutripple_session');
-    // No live session token means no reliable tenant identity yet -- returning the old flat
-    // key here (as this used to) is exactly how one browser's most-recently-active client kept
-    // silently painting on top of the next: a fresh God Access load, a different client's
-    // login page, or the moment right after logout all hit this branch with no token, so
-    // "whichever tenant last cached under the flat key" is not a safe guess. Returning null
-    // means the caller shows the neutral default instead of guessing.
-    if(!t)return null;
-    var b64=t.split('.')[0].replace(/-/g,'+').replace(/_/g,'/');
-    while(b64.length%4)b64+='=';
-    var payload=JSON.parse(decodeURIComponent(atob(b64).split('').map(function(c){return'%'+('00'+c.charCodeAt(0).toString(16)).slice(-2);}).join('')));
-    return payload&&payload.tenantKey?'sr_company_brand_'+payload.tenantKey:null;
-  }catch(e){return null;}
+  // No live session token means no reliable tenant identity yet -- returning the old flat
+  // key here (as this used to) is exactly how one browser's most-recently-active client kept
+  // silently painting on top of the next: a fresh God Access load, a different client's
+  // login page, or the moment right after logout all hit this branch with no token, so
+  // "whichever tenant last cached under the flat key" is not a safe guess. Returning null
+  // means the caller shows the neutral default instead of guessing.
+  var payload=decodeSessionToken();
+  return payload&&payload.tenantKey?'sr_company_brand_'+payload.tenantKey:null;
 }
 /* ---- SCHEDULE TYPE ----
  * Governs how Late/Undertime/Overtime are computed for an employee: 'normal' (fixed shift,
@@ -4082,18 +4090,29 @@ function renderDemoAccounts(){
 
 function toggleLoginPassword(){const p=document.getElementById('lp'),b=document.getElementById('login-password-toggle');if(!p||!b)return;p.type=p.type==='password'?'text':'password';b.textContent=p.type==='password'?'Show':'Hide';}
 
-// Only ever rendered while `!user` (see render()'s dispatcher) -- which tenant, if any, is
-// about to be restored isn't known yet at this point, so this always shows the neutral AURA
-// identity directly rather than reading COMPANY (which could still hold a previous tenant's
-// hydrated values, or nothing at all). The real, correctly-hydrated page replaces this the
-// moment restoreSession() finishes -- see AURA_MARK's own comment.
-function renderLoading(){return`<main style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg)">
+// Only ever rendered while `!user && sessionRestoring` (see render()'s dispatcher) -- meaning
+// a session token DOES exist (sessionRestoring is set from it at parse time) and its owner just
+// isn't resolved into `user` yet. That token's own payload already says who this is, though:
+// role==='platform' is God Admin's own session, with no specific client to show, but every
+// other role belongs to a real tenant (a client's own direct login, or an active God Admin
+// impersonation surviving a reload) -- for those, read that exact tenant's own cached branding
+// (written by cacheBrandFor() in persistence.js the moment that session was ever established)
+// so a refresh while genuinely inside a client shows THAT client's own logo, not AURA's. Falls
+// back to AURA only when there's truly nothing to go on yet (platform role, or this tenant's
+// first-ever page load on this browser, before any cache write has happened).
+function renderLoading(){
+  var _p=decodeSessionToken();
+  var _cached=null;
+  if(_p&&_p.role!=='platform'&&_p.tenantKey){try{_cached=JSON.parse(localStorage.getItem('sr_company_brand_'+_p.tenantKey)||'null');}catch(e){}}
+  var _logo=(_cached&&_cached.logo)||AURA_MARK;
+  var _name=(_cached&&_cached.name)||'AURA';
+  return`<main style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg)">
   <div style="text-align:center">
     <div style="position:relative;width:64px;height:64px;margin:0 auto 22px">
-      <div class="sr-loading-mark" style="background:none;box-shadow:none"><img src="${AURA_MARK}" alt="AURA logo"/></div>
+      <div class="sr-loading-mark" style="background:none;box-shadow:none"><img src="${_logo}" alt="${esc(_name)} logo"/></div>
       <span class="sr-loading-ring"></span>
     </div>
-    <div style="font-weight:700;font-size:15px;color:var(--txt);letter-spacing:-.2px">AURA</div>
+    <div style="font-weight:700;font-size:15px;color:var(--txt);letter-spacing:-.2px">${esc(_name)}</div>
     <div style="margin-top:8px;color:var(--txt3);font-size:12.5px;display:flex;align-items:center;justify-content:center;gap:8px">
       <span>Restoring your session</span>
       <span style="display:inline-flex;gap:3px">
