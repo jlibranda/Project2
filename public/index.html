@@ -825,12 +825,18 @@ let selfieData=null,camStream=null,clockTmr=null;
 function sessionBrandCacheKey(){
   try{
     var t=sessionStorage.getItem('sproutripple_session');
-    if(!t)return'sr_company_brand';
+    // No live session token means no reliable tenant identity yet -- returning the old flat
+    // key here (as this used to) is exactly how one browser's most-recently-active client kept
+    // silently painting on top of the next: a fresh God Access load, a different client's
+    // login page, or the moment right after logout all hit this branch with no token, so
+    // "whichever tenant last cached under the flat key" is not a safe guess. Returning null
+    // means the caller shows the neutral default instead of guessing.
+    if(!t)return null;
     var b64=t.split('.')[0].replace(/-/g,'+').replace(/_/g,'/');
     while(b64.length%4)b64+='=';
     var payload=JSON.parse(decodeURIComponent(atob(b64).split('').map(function(c){return'%'+('00'+c.charCodeAt(0).toString(16)).slice(-2);}).join('')));
-    return payload&&payload.tenantKey?'sr_company_brand_'+payload.tenantKey:'sr_company_brand';
-  }catch(e){return'sr_company_brand';}
+    return payload&&payload.tenantKey?'sr_company_brand_'+payload.tenantKey:null;
+  }catch(e){return null;}
 }
 /* ---- SCHEDULE TYPE ----
  * Governs how Late/Undertime/Overtime are computed for an employee: 'normal' (fixed shift,
@@ -898,8 +904,15 @@ let COMPANY={
   darkMode:false,
 };
 try{if(localStorage.getItem('sr_dark_mode')==='1')COMPANY.darkMode=true;}catch(e){}
+// One-time cleanup: browsers that cached a tenant's branding under the old flat 'sr_company_brand'
+// key (before it became tenant-scoped) would otherwise keep leaking that stale entry into every
+// future load that has no session token yet -- God Access, a different client's login page, or
+// the instant after logout -- since nothing else ever overwrites or clears it. Removing it here
+// is a no-op once a browser has already been cleaned.
+try{localStorage.removeItem('sr_company_brand');}catch(e){}
 try{
-  var _cachedBrand=JSON.parse(localStorage.getItem(sessionBrandCacheKey())||'null');
+  var _brandKey=sessionBrandCacheKey();
+  var _cachedBrand=_brandKey?JSON.parse(localStorage.getItem(_brandKey)||'null'):null;
   if(_cachedBrand){
     if(_cachedBrand.logo)COMPANY.logo=_cachedBrand.logo;
     if(_cachedBrand.name)COMPANY.name=_cachedBrand.name;
@@ -17356,13 +17369,14 @@ function render(){
        swap) — COMPANY there is fake preview data, not this session's own real branding. */
     const _browsingLocalDemoClient=!!(activeClientId&&activeClientId!==1&&
       !(PLATFORM_CLIENTS.find(c=>c.id===activeClientId)||{}).tenantKey);
-    /* Also require a live session token — without one, sessionBrandCacheKey() can only fall
-       back to the old shared flat key, and render() still fires once more on logout (after
-       the token is already cleared) with whatever tenant was last active still sitting in
-       COMPANY. Skipping the write here is what keeps that flat key from ever being reused as
-       a leak vector again. */
-    if(!_browsingLocalDemoClient&&sessionStorage.getItem('sproutripple_session')){
-      localStorage.setItem(sessionBrandCacheKey(),JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
+    /* Also require a live session token — render() still fires once more on logout (after the
+       token is already cleared) with whatever tenant was last active still sitting in COMPANY,
+       and sessionBrandCacheKey() returns null with no token (or an unparseable/tenant-less one)
+       precisely so that moment, and any other no-token render, never has anywhere to write a
+       guessable tenant's branding to. */
+    const _brandCacheKey=(!_browsingLocalDemoClient&&sessionStorage.getItem('sproutripple_session'))?sessionBrandCacheKey():null;
+    if(_brandCacheKey){
+      localStorage.setItem(_brandCacheKey,JSON.stringify({logo:COMPANY.logo,name:COMPANY.name,initials:COMPANY.initials}));
     }
   }catch(e){}
   const root=document.getElementById('root');
