@@ -511,20 +511,165 @@
     return 'Workforce pulse: '+USERS.filter(function(u){return u.role==='employee'&&u.active!==false;}).length+' active employees, '+openCases.length+' open service cases, '+ATT.filter(function(a){return a.status==='late'||a.status==='absent';}).length+' attendance exception(s), and '+CANDIDATES.length+' candidates in the recruitment database.';
   }
   window.runAiInsight=function(type){var text=aiInsight(type);AI_HISTORY.unshift({type:type,text:text,at:new Date().toISOString()});aiText=text;render();};
+
+  /* ── Personal / record-level Q&A ──────────────────────────────────────────
+     The one-click buttons above and the old keyword router below only ever produced
+     canned, aggregate paragraphs -- never a real answer to "how many probationary
+     employees do we have" or "what's my SSS number". This answers those directly
+     from the same in-memory data every other page already reads (no external AI
+     call, so answers are always exact -- never a guess -- and free).
+
+     Access control rides on the app's own permission model rather than a bespoke
+     rule: canAccess(key) already returns true unconditionally for an admin/God
+     Admin and otherwise checks the asking user's own access level, so calling it
+     with the matching emp_view_ or self_view_ key here enforces exactly what the
+     Employee Directory and My 201 File pages already enforce. The one hard rule
+     enforced directly below (not via canAccess, since no permission key can grant
+     this) is that a non-admin can never pull up *another* employee's record here
+     at all, regardless of what they ask about it. */
+  function escRe(s){return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&');}
+  function findMentionedEmployee(q){
+    var norm=' '+(q||'').toLowerCase()+' ';
+    var best=null,bestLen=0;
+    USERS.forEach(function(u){
+      if(u.role!=='employee'&&u.role!=='admin')return;
+      var candidates=[fmtEmpName(u),((u.firstName||'')+' '+(u.lastName||'')),u.firstName,u.lastName];
+      candidates.forEach(function(c){
+        c=(c||'').toLowerCase().trim();
+        if(c.length<3)return;
+        if(new RegExp('\\b'+escRe(c)+'\\b').test(norm)&&c.length>bestLen){best=u;bestLen=c.length;}
+      });
+    });
+    return best;
+  }
+  function govtIdType(norm){
+    if(/\bsss\b/.test(norm))return'sss';
+    if(/philhealth/.test(norm))return'ph';
+    if(/pag-?ibig|pagibig/.test(norm))return'pi';
+    if(/\btin\b|bir number/.test(norm))return'tin';
+    return null;
+  }
+  function govtNumbersAnswer(target,viewingSelf,which){
+    if(!canAccess(viewingSelf?'self_view_govt':'emp_view_govt'))return viewingSelf?"You don't currently have permission to view your own government ID numbers here. Ask your HR administrator to grant \"My Gov't Numbers\" access.":"You don't have permission to view government ID numbers for other employees.";
+    var who=viewingSelf?'Your':(fmtEmpName(target)+"'s");
+    var labels={sss:'SSS number',ph:'PhilHealth number',pi:'Pag-IBIG number',tin:'TIN'};
+    if(which)return who+' '+labels[which]+' is '+(target[which]||'not yet on file')+'.';
+    return who+' government ID numbers — SSS: '+(target.sss||'—')+', PhilHealth: '+(target.ph||'—')+', Pag-IBIG: '+(target.pi||'—')+', TIN: '+(target.tin||'—')+'.';
+  }
+  function leaveBalanceAnswer(target,viewingSelf){
+    if(!canAccess('leave'))return viewingSelf?"You don't currently have permission to view leave information.":"You don't have permission to view leave information for other employees.";
+    var types=(COMPANY.leaveTypes||[]).filter(function(t){return t.active&&leaveTypeEligible(target,t);});
+    var who=viewingSelf?'Your':(fmtEmpName(target)+"'s");
+    if(!types.length)return (viewingSelf?'You have':fmtEmpName(target)+' has')+' no eligible leave types configured.';
+    var parts=types.map(function(t){var b=leaveBalanceFor(target,t.id);return t.name+': '+b.balance+' day'+(b.balance===1?'':'s');});
+    return who+' remaining leave credits — '+parts.join(', ')+'.';
+  }
+  function compensationAnswer(target,viewingSelf){
+    if(!canAccess(viewingSelf?'self_view_compensation':'emp_view_compensation'))return viewingSelf?"You don't currently have permission to view your own compensation details.":"You don't have permission to view compensation details for other employees.";
+    var who=viewingSelf?'Your':(fmtEmpName(target)+"'s");
+    var monthly=target.salaryPM||(target.rate?target.rate*22:0);
+    return who+' monthly salary is '+fmt(monthly)+' (daily rate '+fmt(target.rate||0)+').';
+  }
+  function payslipAnswer(target,viewingSelf){
+    if(!canAccess(viewingSelf?'myslips':'all_payslips'))return viewingSelf?"You don't currently have permission to view your own payslips.":"You don't have permission to view payslips for other employees.";
+    var mine=PAYROLLS.map(function(r){return {r:r,item:r.items&&r.items.find(function(i){return i.eid===target.id;})};}).filter(function(x){return x.item;});
+    var who=viewingSelf?'Your':(fmtEmpName(target)+"'s");
+    if(!mine.length)return (viewingSelf?'You have':fmtEmpName(target)+' has')+' no payslips on record yet.';
+    var last=mine[mine.length-1];
+    return who+' latest payslip ('+last.r.from+' – '+last.r.to+'): gross '+fmt(last.item.gross)+', deductions '+fmt(last.item.total)+', net pay '+fmt(last.item.net)+'.';
+  }
+  function employmentAnswer(target,viewingSelf){
+    if(!canAccess(viewingSelf?'self_view_employment':'emp_view_employment'))return viewingSelf?"You don't currently have permission to view your own employment info.":"You don't have permission to view employment info for other employees.";
+    var who=viewingSelf?'You are':(fmtEmpName(target)+' is');
+    var typeLabel=target.type==='probationary'?'on probationary status':(target.type||'regular');
+    var probNote=(target.type==='probationary'&&target.probEndDate)?(' (probation ends '+target.probEndDate+')'):'';
+    return who+' currently '+typeLabel+probNote+', working as '+(target.pos||'—')+' in '+(target.dept||'—')+', hired on '+(target.hired||'—')+'.';
+  }
+  function adminAggregateAnswer(norm){
+    if(/\b(proby|probationary|probation)\b/.test(norm)&&/(how many|number of|count|ilan)/.test(norm)){
+      var proby=USERS.filter(function(u){return u.role==='employee'&&u.type==='probationary'&&u.status==='active';});
+      return proby.length?('There '+(proby.length===1?'is':'are')+' currently '+proby.length+' probationary employee'+(proby.length===1?'':'s')+': '+proby.map(fmtEmpName).join(', ')+'.'):'No employees are currently on probationary status.';
+    }
+    if(/department/.test(norm)&&/(headcount|breakdown|per|by department|how many)/.test(norm)){
+      var byDept={};USERS.filter(function(u){return u.role==='employee'&&u.active!==false;}).forEach(function(u){byDept[u.dept]=(byDept[u.dept]||0)+1;});
+      return 'Headcount by department — '+Object.keys(byDept).map(function(d){return d+': '+byDept[d];}).join(', ')+'.';
+    }
+    if(/(how many|number of|total|count).*(active )?employees?|headcount/.test(norm)){
+      var active=USERS.filter(function(u){return u.role==='employee'&&u.active!==false;});
+      return 'There are currently '+active.length+' active employee'+(active.length===1?'':'s')+'.';
+    }
+    if(/pending payroll|payroll.*(pending|awaiting|approval)/.test(norm)){
+      var h=complianceHealth();
+      return h.pendingPay?(h.pendingPay+' payroll run(s) are awaiting approval.'):'No payroll runs are currently awaiting approval.';
+    }
+    if(/(late|absent).*today|attendance exception/.test(norm)){
+      var t=today();
+      var exc=ATT.filter(function(a){return a.date===t&&(a.status==='late'||a.status==='absent');});
+      return exc.length?(exc.length+' attendance exception(s) today: '+exc.map(function(a){var e=USERS.find(function(u){return u.id===a.eid;});return (e?fmtEmpName(e):'Unknown')+' ('+a.status+')';}).join(', ')+'.'):'No late or absent records today.';
+    }
+    if(/pending leave|leave request/.test(norm)){
+      var pend=LEAVES.filter(function(l){return l.status==='pending';});
+      return pend.length?(pend.length+' leave request(s) pending approval: '+pend.map(function(l){var e=USERS.find(function(u){return u.id===l.eid;});return (e?fmtEmpName(e):'Unknown')+' — '+l.type;}).join(', ')+'.'):'No leave requests are pending approval.';
+    }
+    if(/new hire|hired this month|joined this month/.test(norm)){
+      var ym=today().slice(0,7);
+      var hires=USERS.filter(function(u){return u.role==='employee'&&(u.hired||'').slice(0,7)===ym;});
+      return hires.length?(hires.length+' employee(s) hired this month: '+hires.map(fmtEmpName).join(', ')+'.'):'No new hires recorded this month.';
+    }
+    if(/birthday/.test(norm)){
+      var md=today().slice(5,10);
+      var soon=USERS.filter(function(u){return u.role==='employee'&&u.active!==false&&u.bday;}).map(function(u){return {u:u,md:u.bday.slice(5,10)};}).filter(function(x){return x.md>=md;}).sort(function(a,b){return a.md<b.md?-1:1;}).slice(0,5);
+      return soon.length?('Upcoming birthdays: '+soon.map(function(x){return fmtEmpName(x.u)+' ('+x.md+')';}).join(', ')+'.'):'No more birthdays coming up this year.';
+    }
+    return null;
+  }
+  /* Returns an exact answer string, or null when nothing here matched (caller falls
+     back to the generic canned categories below). */
+  function assistantAnswer(q){
+    var isA=isAdminUser(user)||isPlatformAdmin;
+    var norm=(q||'').toLowerCase().trim();
+    if(!norm||!user)return null;
+    var mentioned=findMentionedEmployee(q);
+    var askingOther=mentioned&&mentioned.id!==user.id;
+    // A non-admin naming someone else -- for anything -- never gets routed to that
+    // person's record here, regardless of what follows. This isn't a directory tool.
+    if(askingOther&&!isA)return "I can only answer questions about your own records here — ask an HR admin for information about "+fmtEmpName(mentioned)+".";
+    var target=(isA&&mentioned)?mentioned:(USERS.find(function(u){return u.id===user.id;})||user);
+    var viewingSelf=target.id===user.id;
+    if(isA&&!mentioned){
+      var agg=adminAggregateAnswer(norm);
+      if(agg)return agg;
+    }
+    var govt=govtIdType(norm);
+    if(govt||/government id|gov'?t (id|number)/.test(norm))return govtNumbersAnswer(target,viewingSelf,govt);
+    if(/leave (credit|balance)|remaining leave|vacation leave|sick leave credits|leave credits/.test(norm))return leaveBalanceAnswer(target,viewingSelf);
+    if(/payslip|net pay|salary slip/.test(norm))return payslipAnswer(target,viewingSelf);
+    if(/\b(salary|compensation|daily rate|monthly rate)\b/.test(norm))return compensationAnswer(target,viewingSelf);
+    if(/probation|regulariz|employment status|hire date|date hired|department|\bposition\b/.test(norm))return employmentAnswer(target,viewingSelf);
+    return null;
+  }
   window.smartAsk=function(){
-    var q=((document.getElementById('aiq')||{}).value||'').trim().toLowerCase();if(!q){toast('Enter a question.','warning');return;}
+    var raw=((document.getElementById('aiq')||{}).value||'').trim();if(!raw){toast('Enter a question.','warning');return;}
+    var direct=assistantAnswer(raw);
+    if(direct){AI_HISTORY.unshift({type:'record',text:direct,at:new Date().toISOString()});aiText=direct;render();return;}
+    var q=raw.toLowerCase();
     var type=/payroll|salary|payslip/.test(q)?'payroll':/compliance|sss|philhealth|pag-ibig|bir|tax/.test(q)?'compliance':/recruit|candidate|performance|goal|talent/.test(q)?'talent':'workforce';
     runAiInsight(type);
   };
   window.pgAssistant=pgAssistant=function(){
+    var isA=isAdminUser(user)||isPlatformAdmin;
+    var examples=isA
+      ?['How many probationary employees do we have?','Headcount by department','Any pending leave requests?']
+      :["What's my SSS number?","How many leave credits do I have left?","Am I still on probation?"];
     return '<div class="page-header"><div><div class="page-title">Workforce AI Copilot</div><div class="page-sub">Operational insights from the current HR, attendance, payroll and talent data</div></div></div>'+
       '<div class="card"><div class="section-header">One-click analysis</div><div class="qs-grid">'+
       '<button class="qs-btn" onclick="runAiInsight(\'payroll\')">💰 Analyze payroll readiness</button><button class="qs-btn" onclick="runAiInsight(\'compliance\')">🛡 Review compliance risks</button>'+
       '<button class="qs-btn" onclick="runAiInsight(\'talent\')">🎯 Summarize talent pipeline</button><button class="qs-btn" onclick="runAiInsight(\'workforce\')">📊 Generate workforce pulse</button></div>'+
-      '<div class="field"><label>Ask about your workforce data</label><textarea id="aiq" rows="3" placeholder="Example: What can delay our next payroll?"></textarea></div>'+
+      '<div class="field"><label>Ask about your workforce data</label><textarea id="aiq" rows="3" placeholder="Example: '+examples[0]+'"></textarea></div>'+
+      '<div style="font-size:11px;color:var(--txt3);margin:-4px 0 10px">Try: '+examples.map(function(e){return '“'+esc(e)+'”';}).join(' · ')+(isA?'':' — answers are scoped to your own records only')+'</div>'+
       '<div class="action-row"><button class="btn btn-primary" onclick="smartAsk()">Analyze</button><button class="btn" onclick="aiText=\'\';render()">Clear</button></div>'+
       (aiText?'<div class="ai-box"><div style="font-size:10px;font-weight:700;color:var(--accent);text-transform:uppercase;margin-bottom:5px">Decision support · Generated '+new Date().toLocaleTimeString()+'</div>'+esc(aiText)+'</div>':'')+
-      '<div style="font-size:10px;color:var(--txt3);margin-top:10px">AI output is decision support, not legal or tax advice. Statutory filings still require authorized review.</div></div>';
+      '<div style="font-size:10px;color:var(--txt3);margin-top:10px">Direct data lookups (SSS numbers, leave credits, headcount, etc.) are computed straight from your HR records — always exact. Broader analysis is decision support, not legal or tax advice; statutory filings still require authorized review.</div></div>';
   };
 
   /*
