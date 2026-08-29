@@ -218,6 +218,14 @@
         isPlatformAdmin=true;
         user={id:0,name:'God Admin',email:payload.sub,role:'platform',initials:'GA'};
         view='platform';
+        // hydrate() above just overwrote COMPANY with whatever /state's shared company row
+        // contains -- but the platform console is never "inside" a specific client, so it must
+        // never show that row's name/logo (which can carry a real tenant's branding, stale or
+        // simply belonging to a different client's own upload). Force the neutral AURA identity
+        // here regardless of what /state returned; entering a real client later legitimately
+        // overwrites this again with that client's own branding.
+        COMPANY.name='AURA';COMPANY.tagline='People Operations Cloud';COMPANY.initials='A';
+        COMPANY.logo=(typeof AURA_MARK!=='undefined')?AURA_MARK:null;
         if(typeof window.loadRealPlatformClients==='function')window.loadRealPlatformClients();
       }else if(payload.role==='admin'&&payload.impersonatedBy){
         // God Admin's Enter Portal, still active across a page reload. Without this branch a
