@@ -915,6 +915,9 @@ let COMPANY={
   hoursPerDay:8,
   salaryMultiplier:13,
   startOfWeek:'mon', /* Flexible Per Week schedule-type bucket boundary — which day a work week starts on */
+  aiAssistantEnabled:false, /* opt-in: routes the chat widget through the Claude API (POST
+                                /api/assistant/ask) instead of the free built-in assistant --
+                                needs ANTHROPIC_API_KEY configured on the backend */
   /* Convenience template only — pre-fills an employee's otFixedTiers the first time their
      Overtime Pay Method is switched to 'fixed'. Each employee's actual tiers are stored on
      their own record afterward and can diverge freely from this template. */
@@ -15213,6 +15216,12 @@ function pgCompanySettings(){
       <div style="padding:9px 11px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;font-size:11px;color:var(--accent-txt)"><strong>Tax table:</strong> ${esc(COMPANY.taxPolicy.taxTableVersion)}<br><span>Annual schedule: 0% / 15% / 20% / 25% / 30% / 35%. Legal basis: BIR RR 11-2018.</span></div>
     </div>
 
+    <div class="card">
+      <div class="card-title" style="margin-bottom:4px">🤖 AI-Powered Assistant</div>
+      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">The chat widget's default mode is free and instant -- it matches common questions (English and Tagalog) directly against your HR data, with no external service involved. Turning this on routes unmatched or open-ended questions through the Claude API instead for more flexible natural-language understanding. This incurs a small per-question cost on your own Anthropic account and requires <code>ANTHROPIC_API_KEY</code> to be configured on the backend server.</div>
+      <label style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span><strong style="font-size:12px">Enable AI-Powered Assistant</strong><br><span style="font-size:10px;color:var(--txt3)">Falls back to the free built-in assistant automatically if this is off, unconfigured, or a request fails.</span></span><input id="co-ai-enabled" type="checkbox" style="width:auto;accent-color:var(--accent)" ${COMPANY.aiAssistantEnabled?'checked':''}/></label>
+    </div>
+
     <div class="card" style="grid-column:span 2;border-left:3px solid var(--red)">
       <div class="card-title" style="margin-bottom:4px">BIR Employer Information (1601-C / 2316)</div>
       <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">Printed directly on the official BIR forms. RDO is stored as text so codes such as <strong>043</strong> keep the leading zero.</div>
@@ -15359,6 +15368,7 @@ function saveCompany(){
   COMPANY.taxPolicy.annualizationEnabled=document.getElementById('co-tax-annualized')?.checked??COMPANY.taxPolicy.annualizationEnabled;
   COMPANY.taxPolicy.autoSuggestDecember=document.getElementById('co-tax-december')?.checked??COMPANY.taxPolicy.autoSuggestDecember;
   COMPANY.taxPolicy.requireConfirmedTaxRecord=document.getElementById('co-tax-confirm')?.checked??COMPANY.taxPolicy.requireConfirmedTaxRecord;
+  COMPANY.aiAssistantEnabled=document.getElementById('co-ai-enabled')?.checked??COMPANY.aiAssistantEnabled;
   const afMode=document.getElementById('co-af-mode')?.value||'off';
   const afSwitchInput=document.getElementById('co-af-switch')?.value;
   if(afMode!=='off'&&!(Number(afSwitchInput)>0)){toast('Switch Point (absent days) is required when a Partial-Period Basic Pay switch-over formula is selected.','warning');return;}
@@ -17806,6 +17816,10 @@ function chatExamples(){
   if(chatLang==='tl')return isA?['Ilan ang proby namin?','Headcount per department','May pending leave ba?']:['Ano ang SSS number ko?','Ilan pang leave credits ko?','Regular na ba ako?'];
   return isA?['How many probationary employees do we have?','Headcount by department','Any pending leave requests?']:["What's my SSS number?",'How many leave credits do I have left?','Am I still on probation?'];
 }
+function chatFallbackReply(text){
+  var reply=(typeof assistantAnswer==='function')?assistantAnswer(text,chatLang):null;
+  return reply||(chatLang==='tl'?'Hindi ko masyadong naintindihan yan, pero subukan mo yung mga halimbawang tanong sa itaas, o bisitahin ang buong HR Assistant page para sa mas detalyadong analysis.':'I\'m not quite able to answer that one yet -- try one of the example questions above, or visit the full HR Assistant page for broader analysis.');
+}
 function sendChatMessage(text){
   text=(text||'').trim();
   if(!text||chatTyping)return;
@@ -17813,10 +17827,21 @@ function sendChatMessage(text){
   chatTyping=true;
   render();
   var el=document.getElementById('chat-input');if(el)el.value='';
+  // Opt-in Company Settings toggle (COMPANY.aiAssistantEnabled): routes through the Claude API
+  // (server.js's POST /api/assistant/ask) for more flexible natural-language understanding.
+  // Falls back to the free deterministic assistant on ANY failure -- the toggle is off, the
+  // backend has no ANTHROPIC_API_KEY configured (503), the API call itself errors, or the
+  // network request fails outright -- so a misconfigured or over-budget API never breaks the
+  // chat experience, it just quietly loses the extra flexibility for that one message.
+  if(COMPANY.aiAssistantEnabled&&typeof window.apiRequest==='function'&&user){
+    window.apiRequest('/assistant/ask',{method:'POST',body:JSON.stringify({question:text,lang:chatLang})})
+      .then(function(r){chatLog.push({role:'assistant',text:(r&&r.answer)||chatFallbackReply(text)});})
+      .catch(function(){chatLog.push({role:'assistant',text:chatFallbackReply(text)});})
+      .then(function(){chatTyping=false;render();});
+    return;
+  }
   setTimeout(function(){
-    var reply=(typeof assistantAnswer==='function')?assistantAnswer(text,chatLang):null;
-    if(!reply)reply=(chatLang==='tl'?'Hindi ko masyadong naintindihan yan, pero subukan mo yung mga halimbawang tanong sa itaas, o bisitahin ang buong HR Assistant page para sa mas detalyadong analysis.':'I\'m not quite able to answer that one yet -- try one of the example questions above, or visit the full HR Assistant page for broader analysis.');
-    chatLog.push({role:'assistant',text:reply});
+    chatLog.push({role:'assistant',text:chatFallbackReply(text)});
     chatTyping=false;
     render();
   },500+Math.random()*400);
@@ -17852,7 +17877,7 @@ function renderChatWidget(){
     var exChips=!chatLog.length?'':chatExamples().map(function(q){return '<button data-chat-example="'+esc(q)+'" style="text-align:left;padding:7px 11px;border-radius:9px;border:1px solid var(--border);background:var(--surface);color:var(--txt2);font-size:11.5px;cursor:pointer;margin-bottom:5px;width:100%;transition:.15s ease" onmouseover="this.style.borderColor=\'var(--accent)\';this.style.color=\'var(--accent)\'" onmouseout="this.style.borderColor=\'var(--border)\';this.style.color=\'var(--txt2)\'">'+esc(q)+'</button>';}).join('');
     html+='<div id="chat-panel" style="width:340px;max-width:calc(100vw - 48px);height:480px;max-height:calc(100vh - 120px);background:var(--surface);border:1px solid var(--border);border-radius:16px;box-shadow:0 16px 48px rgba(0,0,0,.22);display:flex;flex-direction:column;overflow:hidden;animation:chatPanelIn .25s cubic-bezier(.2,.9,.25,1)">'
       +'<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--border);background:linear-gradient(135deg,var(--accent),var(--accent2));color:var(--accent-ink)">'
-      +'<div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px">🤖 AURA Assistant</div>'
+      +'<div style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px">🤖 AURA Assistant'+(COMPANY.aiAssistantEnabled?'<span style="font-size:9px;font-weight:700;background:rgba(255,255,255,.25);padding:2px 6px;border-radius:999px;letter-spacing:.3px">AI</span>':'')+'</div>'
       +'<div style="display:flex;align-items:center;gap:4px">'
       +'<button onclick="setChatLang(\'en\')" style="padding:3px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.4);background:'+(chatLang==='en'?'rgba(255,255,255,.25)':'transparent')+';color:inherit;font-size:10px;font-weight:700;cursor:pointer;transition:.15s ease">EN</button>'
       +'<button onclick="setChatLang(\'tl\')" style="padding:3px 8px;border-radius:6px;border:1px solid rgba(255,255,255,.4);background:'+(chatLang==='tl'?'rgba(255,255,255,.25)':'transparent')+';color:inherit;font-size:10px;font-weight:700;cursor:pointer;transition:.15s ease">TL</button>'
