@@ -276,7 +276,12 @@ tr:hover td{background:var(--accent-bg) !important;color:var(--accent-bg-ink)}
 @keyframes chatPanelIn{from{opacity:0;transform:translateY(14px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
 @keyframes chatMsgIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
 @keyframes chatBubblePulse{0%,100%{box-shadow:0 4px 18px rgba(0,0,0,.22),0 0 0 0 var(--accent-bg)}50%{box-shadow:0 4px 18px rgba(0,0,0,.22),0 0 0 9px transparent}}
-@keyframes chatBubbleIdle{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-3px) scale(1.03)}}
+/* Shadow/glow only, never transform -- a transform-based idle animation continuously
+   relocates the actual clickable hitbox, which makes the button harder to click precisely
+   (confirmed: it fails Playwright's own click-stability check outright, waiting forever for
+   the element to stop moving). A depth/glow pulse reads as "alive" without ever moving the
+   target itself. */
+@keyframes chatBubbleIdle{0%,100%{box-shadow:0 4px 18px rgba(0,0,0,.22)}50%{box-shadow:0 6px 24px rgba(0,0,0,.3),0 0 0 5px var(--accent-bg)}}
 @keyframes chatDotPop{from{transform:scale(0)}to{transform:scale(1)}}
 @keyframes chatDotBounce{0%,60%,100%{opacity:.45;transform:translateY(0) scale(.85)}30%{opacity:1;transform:translateY(-4px) scale(1)}}
 .chat-dot{width:6px;height:6px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:inline-block;margin:0 2px;animation:chatDotBounce 1s ease-in-out infinite}
@@ -18060,7 +18065,7 @@ render = function() {
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
 <script src="/compliance.js?v=20260823-govt-report-actual-withheld"></script>
-<script src="/enterprise.js?v=20260829-robust-aggregate-order"></script>
+<script src="/enterprise.js?v=20260829-proby-status-filter-fix"></script>
 <script src="/payroll-governance.js?v=20260804-annualized-tax"></script>
 <script src="/persistence.js?v=20260829-hydrate-applies-theme"></script>
 </body>
