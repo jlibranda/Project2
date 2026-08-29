@@ -639,7 +639,13 @@
       var names=proby.map(fmtEmpName).join(', ');
       return L('There '+(proby.length===1?'is':'are')+' currently '+proby.length+' probationary employee'+(proby.length===1?'':'s')+': '+names+'.','May '+proby.length+' (na) empleyadong nasa probationary status sa ngayon: '+names+'.');
     }
-    if(/department|departamento/.test(norm)&&/(headcount|breakdown|per|by department|how many|bilang)/.test(norm)){
+    // Excludes "my"/"ko" so an admin genuinely asking about their own department (a real
+    // question if their own login is tied to an actual employee record) still falls through
+    // to the self-lookup below instead of getting a company-wide breakdown back. Without the
+    // "what/which/list/ano" wording here, a bare "what department do we have?" fell all the
+    // way through to the *self* employment-status trigger later, which for an admin login
+    // with no matching employee record of its own answered with blank "—" fields.
+    if(/department|departamento/.test(norm)&&!/\bmy\b|\bko\b/.test(norm)&&/(headcount|breakdown|per|by department|how many|bilang|what|which|list|show|ano|anong|meron|mayroon)/.test(norm)){
       var byDept={};USERS.filter(function(u){return u.role==='employee'&&u.active!==false;}).forEach(function(u){byDept[u.dept]=(byDept[u.dept]||0)+1;});
       var parts=Object.keys(byDept).map(function(d){return d+': '+byDept[d];}).join(', ');
       return L('Headcount by department — ','Bilang ng empleyado kada departamento — ')+parts+'.';
@@ -715,6 +721,15 @@
     if(askingOther&&!isA)return L("I can only answer questions about your own records here — ask an HR admin for information about "+fmtEmpName(mentioned)+".","Dito, mga tanong lang tungkol sa sarili mong record ang kaya kong sagutin — magtanong na lang sa HR admin tungkol kay "+fmtEmpName(mentioned)+".");
     var target=(isA&&mentioned)?mentioned:(USERS.find(function(u){return u.id===user.id;})||user);
     var viewingSelf=target.id===user.id;
+    // A real client's own company-admin login (persistence.js's restoreSession(), the
+    // role==='admin' branch with no USERS[] match) constructs a synthetic {id:0,...} user with
+    // no dept/pos/hired/sss/etc. at all -- there's no actual employee record behind that
+    // login. Asking a personal question with nothing else identified as "self" would otherwise
+    // confidently answer with blank "—" fields instead of the real reason there's nothing to
+    // show. Aggregate company-wide questions (checked above already) are unaffected.
+    if(viewingSelf&&!USERS.some(function(u){return u.id===user.id;})){
+      return L("This admin login isn't tied to a specific employee record, so I don't have personal details (department, SSS number, leave credits, etc.) to show for it. Ask about a specific employee by name instead.","Ang admin login na ito ay hindi naka-link sa isang partikular na employee record, kaya wala akong personal na detalye (department, SSS number, leave credits, atbp.) na maipapakita para dito. Magtanong na lang tungkol sa isang partikular na empleyado sa pamamagitan ng pangalan.");
+    }
     var govt=govtIdType(norm);
     if(govt||/government id|gov'?t (id|number)|numero ng gobyerno/.test(norm))return govtNumbersAnswer(target,viewingSelf,govt);
     if(/leave (credit|balance)|remaining leave|vacation leave|sick leave credits|leave credits|natitira.*leave|leave.*natitira|bakasyon/.test(norm))return leaveBalanceAnswer(target,viewingSelf);
