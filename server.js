@@ -1040,6 +1040,36 @@ app.post('/api/notify', requireAuth, async (req, res) => {
       const verb = payload.decision === 'approved' ? 'approved' : 'rejected';
       await sendAppEmail(employeeEmail, `Your leave request was ${verb}`,
         `<p>Hi ${employeeName},</p><p>Your ${leaveType} request (${from} to ${to}) was <strong>${verb}</strong>${decidedBy ? ' by ' + decidedBy : ''}.</p>`);
+    } else if (type === 'case-filed') {
+      // Attendance forms (time correction, OT, RDH OT, WFH, OB, schedule adjustment, etc.) file
+      // into the same shared Resolution Center queue as general HR/payroll cases -- there's no
+      // single personal approver the way Leave has one, it's routed to a team ("HR Operations"/
+      // "Payroll Team"), so this takes a recipient LIST (every admin, resolved client-side) and
+      // validates each one independently rather than a single address.
+      const recipients = Array.isArray(payload.recipientEmails) ? payload.recipientEmails.map(e => String(e || '').trim()).filter(Boolean) : [];
+      const validated = [];
+      for (const email of recipients) {
+        if (await emailBelongsToTenant(tenantKey, email)) validated.push(email);
+      }
+      if (!validated.length) return res.status(400).json({ error: 'No valid recipients.' });
+      const employeeName = escapeEmailHtml(payload.employeeName || 'An employee');
+      const formLabel = escapeEmailHtml(payload.formLabel || 'attendance request');
+      const date = escapeEmailHtml(payload.date || '');
+      await sendAppEmail(validated, `${payload.formLabel || 'Attendance request'} filed by ${payload.employeeName || 'an employee'}`,
+        `<p>Hi there,</p><p><strong>${employeeName}</strong> filed a <strong>${formLabel}</strong> request${date ? ' for ' + date : ''}.</p><p>Please review it in AURA's Resolution Center.</p>`);
+    } else if (type === 'case-decided') {
+      // Fires from the same resolveCase() action that decides every Resolution Center case --
+      // attendance-linked or not -- so this one trigger covers both "attendance approved/
+      // rejected -> employee" and "resolution case update -> employee" at once; they're the
+      // same underlying action in this app.
+      const employeeEmail = String(payload.employeeEmail || '').trim();
+      if (!employeeEmail || !(await emailBelongsToTenant(tenantKey, employeeEmail))) return res.status(400).json({ error: 'Invalid recipient.' });
+      const employeeName = escapeEmailHtml(payload.employeeName || 'there');
+      const caseSubject = escapeEmailHtml(payload.caseSubject || 'your case');
+      const decidedBy = payload.decidedBy ? escapeEmailHtml(payload.decidedBy) : '';
+      const verb = payload.decision === 'resolved' ? 'approved' : 'rejected';
+      await sendAppEmail(employeeEmail, `Update on ${payload.caseSubject || 'your case'}`,
+        `<p>Hi ${employeeName},</p><p>Your request "<strong>${caseSubject}</strong>" was <strong>${verb}</strong>${decidedBy ? ' by ' + decidedBy : ''}.</p>`);
     } else {
       return res.status(400).json({ error: 'Unknown notification type.' });
     }
