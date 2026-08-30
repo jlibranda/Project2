@@ -67,6 +67,23 @@ railway up
 
 ---
 
+## Environment Variables
+
+Set these on your Railway service (Variables tab). Nothing here is required to run the app locally with demo data — it only matters once real client data is involved.
+
+| Variable | Required for | Notes |
+|---|---|---|
+| `DATABASE_URL` | Real persistence | Without it the app still runs, but nothing is saved between requests. |
+| `API_SESSION_SECRET` | **Every real deployment** | Signs login sessions. The code falls back to a public placeholder value if this isn't set — **set it before any real client uses this deployment**, e.g. `openssl rand -hex 32`. |
+| `GOD_ADMIN_PASSWORD` | Platform (God Admin) login | Falls back to a public default (see Demo Accounts below) until changed here or from Settings. Settings takes priority once set. |
+| `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | The very first tenant's admin login | Falls back to the public demo credentials below until overridden. |
+| `APP_ALLOWED_ORIGINS` | CORS | Comma-separated list of frontend origins allowed to call the API. |
+| `GROQ_API_KEY` | Optional AI-powered chat assistant | Free tier available at [console.groq.com](https://console.groq.com). Feature stays off (falls back to the free built-in assistant) without it. |
+| `RESEND_API_KEY` | Web Bundy guest access (email OTP) | Free tier available at [resend.com](https://resend.com). Without it, the "Open Web Bundy" guest button on the login screen is unusable (fails cleanly with a clear error) rather than falling back to anything less secure. |
+| `BUNDY_OTP_FROM_EMAIL` | Optional | Sender address for Web Bundy OTP emails. Defaults to Resend's sandbox address, which is fine for testing but needs a verified custom domain in Resend for reliable real-world delivery. |
+
+---
+
 ## Run locally
 ```bash
 npm install
@@ -100,6 +117,8 @@ git push -u origin main
 ```
 
 ## Demo Accounts
+These work out of the box for local development and demos only. **Before any real client's data touches a deployment, override `API_SESSION_SECRET`, `GOD_ADMIN_PASSWORD`, and `BOOTSTRAP_ADMIN_EMAIL`/`BOOTSTRAP_ADMIN_PASSWORD`** (see Environment Variables above) — these exact passwords are public in this file.
+
 | Role | Email | Password |
 |------|-------|----------|
 | Admin | admin@ph.com | admin123 |

@@ -4195,19 +4195,210 @@ function renderLogin(){
         <p id="lerr" class="login-error">Invalid email or password. Please check your details and try again.</p>
         <button class="login-submit" type="submit"><span>Sign in to workspace</span><span>→</span></button>
       </form>
-      ${COMPANY.bundyPublicAccess?`<button class="login-bundy" type="button" onclick="doGuestBundy()"><span class="login-bundy-icon">${ico('clock',18)}</span><span><strong>Open Web Bundy</strong><small>Clock in or out without signing in</small></span><span>→</span></button>`:''}
+      ${COMPANY.bundyPublicAccess?`<button class="login-bundy" type="button" onclick="startGuestBundy()"><span class="login-bundy-icon">${ico('clock',18)}</span><span><strong>Open Web Bundy</strong><small>Clock in or out — verified by email</small></span><span>→</span></button>`:''}
       <div class="login-security">${ico('shield',13)} Your session is protected with role-based access.</div>
     </div>
   </section>
 </main>`;}
 
-function doGuestBundy(){
-  /* Public bundy access — ask for employee email to identify */
-  const email=prompt('Enter your company email to access Web Bundy:');
-  if(!email)return;
-  const u=USERS.find(u=>u.email===email.trim()&&u.active!==false);
-  if(!u){alert('Email not found or account disabled. Please contact HR.');return;}
-  user=u;view='webbundy';render();
+/* ── Web Bundy guest access (email OTP) ──────────────────────────────────
+   Replaces a former shortcut that logged straight in as whatever employee's email was typed --
+   no password at all -- which amounted to full account access to anyone who knew (or guessed)
+   an employee's email. A one-time code mailed to that same address now proves inbox access
+   first. This flow is fully self-contained: its own token (never persistence.js's own session
+   token), its own two narrow backend endpoints that accept only that token and do nothing but
+   punch/read today's log, and its own view -- it never touches `user`, `view`, or the main app's
+   session/state at all, so it can't reach anything beyond clocking in/out no matter what. */
+let guestBundy=null; /* {step:'email'|'code'|'kiosk', email, code, busy, error, token, name, todayLogs} */
+function startGuestBundy(){
+  guestBundy={step:'email',email:'',code:'',busy:false,error:'',token:null,name:'',todayLogs:[]};
+  render();
+  requestAnimationFrame(()=>document.getElementById('gb-email')?.focus());
+}
+function cancelGuestBundy(){guestBundy=null;stopBundyCam();render();}
+async function bundyApiRequest(path,options,bundyToken){
+  const headers=Object.assign({'Content-Type':'application/json'},(options&&options.headers)||{});
+  if(bundyToken)headers.Authorization='Bearer '+bundyToken;
+  const res=await fetch((window.apiHost||'')+'/api'+path,Object.assign({},options||{},{headers}));
+  const result=await res.json().catch(()=>({}));
+  if(!res.ok){const err=new Error(result.error||'The data service returned an error.');err.status=res.status;throw err;}
+  return result;
+}
+async function guestBundyRequestCode(){
+  const email=(document.getElementById('gb-email')?.value||'').trim();
+  if(!email){guestBundy.error='Enter your company email.';render();return;}
+  guestBundy.busy=true;guestBundy.error='';render();
+  try{
+    await bundyApiRequest('/bundy/otp/request',{method:'POST',body:JSON.stringify({email})});
+    guestBundy.email=email;guestBundy.step='code';guestBundy.busy=false;render();
+    requestAnimationFrame(()=>document.getElementById('gb-code')?.focus());
+  }catch(e){
+    guestBundy.busy=false;guestBundy.error=e.message||'Unable to send the verification code.';render();
+  }
+}
+function guestBundyChangeEmail(){guestBundy.step='email';guestBundy.code='';guestBundy.error='';render();requestAnimationFrame(()=>document.getElementById('gb-email')?.focus());}
+async function guestBundyVerifyCode(){
+  const code=(document.getElementById('gb-code')?.value||'').trim();
+  if(!code){guestBundy.error='Enter the code from your email.';render();return;}
+  guestBundy.busy=true;guestBundy.error='';render();
+  try{
+    const r=await bundyApiRequest('/bundy/otp/verify',{method:'POST',body:JSON.stringify({email:guestBundy.email,code})});
+    guestBundy.token=r.token;guestBundy.name=r.name||'';guestBundy.busy=false;
+    try{const t=await bundyApiRequest('/bundy/today',{method:'GET'},r.token);guestBundy.todayLogs=t.logs||[];}catch(e){guestBundy.todayLogs=[];}
+    guestBundy.step='kiosk';render();
+    setTimeout(()=>{startBundyClock();if(COMPANY.bundySelfie&&!selfieData&&!camStream)startBundyCam();},120);
+  }catch(e){
+    guestBundy.busy=false;guestBundy.error=e.message||'Incorrect code.';render();
+  }
+}
+async function guestBundyPunch(type){
+  if(!geoSt.lat){alert('Please get your location first before clocking in.');return;}
+  guestBundy.busy=true;render();
+  try{
+    const r=await bundyApiRequest('/bundy/punch',{method:'POST',body:JSON.stringify({
+      type,lat:geoSt.lat,lng:geoSt.lng,accuracy:geoSt.accuracy,address:geoSt.address,
+      withinZone:(geoSt.zoneResult&&geoSt.zoneResult.within)||false,selfie:selfieData
+    })},guestBundy.token);
+    try{const t=await bundyApiRequest('/bundy/today',{method:'GET'},guestBundy.token);guestBundy.todayLogs=t.logs||[];}catch(e){}
+    guestBundy.busy=false;selfieData=null;
+    const zoneNote=(geoSt.zoneResult&&geoSt.zoneResult.within)?'\n✅ Within office zone':'\n⚠ You are outside the office zone';
+    alert((type==='in'?'Clocked IN at '+r.time:'Clocked OUT at '+r.time)+zoneNote);
+    render();setTimeout(startBundyCam,200);
+  }catch(e){
+    guestBundy.busy=false;
+    alert('Could not record the punch: '+(e.message||'Unknown error'));
+    render();
+  }
+}
+function finishGuestBundy(){stopBundyCam();guestBundy=null;selfieData=null;geoSt={loading:false,lat:null,lng:null,accuracy:null,address:'',zoneResult:null};render();}
+function renderGuestBundy(){
+  const g=guestBundy;
+  if(g.step==='kiosk')return renderGuestBundyKiosk();
+  const isCode=g.step==='code';
+  return`<main class="login-wrap">
+  <section class="login-showcase" aria-label="Web Bundy guest access">
+    <div class="login-glow login-glow-one"></div><div class="login-glow login-glow-two"></div>
+    <div class="login-showcase-inner">
+      <div class="login-brand"><div class="login-brand-mark"><img src="${AURA_MARK}" alt="AURA logo"/></div><div><strong>AURA</strong><span>People Operations Cloud</span></div></div>
+      <div class="login-hero">
+        <div class="login-eyebrow"><span></span> Web Bundy · Guest access</div>
+        <h1>Clock in or out,<br/><em>verified by email.</em></h1>
+        <p>No password needed here — just a one-time code sent to your own registered work email, so only you can punch your own time.</p>
+      </div>
+    </div>
+  </section>
+  <section class="login-panel">
+    <div class="login-panel-inner">
+      <div class="login-heading"><span class="login-kicker">${isCode?'Check your email':'Web Bundy'}</span><h2>${isCode?'Enter your code':'Verify your email'}</h2>
+        <p>${isCode?'We sent a 6-digit code to '+esc(g.email)+'. It expires in 5 minutes.':'Enter your company email and we\'ll send you a one-time code.'}</p></div>
+      <form class="login-form" onsubmit="event.preventDefault();${isCode?'guestBundyVerifyCode()':'guestBundyRequestCode()'}">
+        ${isCode
+          ?`<div class="field"><label for="gb-code">Verification code</label><div class="login-input-wrap"><span>${ico('shield',17)}</span><input id="gb-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456" style="letter-spacing:4px;font-weight:700"/></div></div>`
+          :`<div class="field"><label for="gb-email">Work email</label><div class="login-input-wrap"><span>${ico('people',17)}</span><input id="gb-email" type="email" autocomplete="username" placeholder="you@company.com"/></div></div>`
+        }
+        ${g.error?`<p class="login-error" style="display:block">${esc(g.error)}</p>`:''}
+        <button class="login-submit" type="submit" ${g.busy?'disabled':''}><span>${g.busy?'Please wait…':(isCode?'Verify code':'Send code')}</span><span>→</span></button>
+      </form>
+      ${isCode?`<button class="login-bundy" type="button" onclick="guestBundyChangeEmail()"><span class="login-bundy-icon">${ico('clock',18)}</span><span><strong>Use a different email</strong><small>Or resend the code</small></span><span>→</span></button>`:''}
+      <button class="login-bundy" type="button" onclick="cancelGuestBundy()"><span class="login-bundy-icon">${ico('clock',18)}</span><span><strong>Back to sign in</strong><small>Cancel guest access</small></span><span>→</span></button>
+      <div class="login-security">${ico('shield',13)} Your code is single-use and expires in 5 minutes.</div>
+    </div>
+  </section>
+</main>`;
+}
+function renderGuestBundyKiosk(){
+  const g=guestBundy;
+  const todayLogs=g.todayLogs||[];
+  const lastIn=[...todayLogs].reverse().find(b=>b.type==='in');
+  const lastOut=[...todayLogs].reverse().find(b=>b.type==='out');
+  const isClockedIn=lastIn&&(!lastOut||lastIn.datetime>lastOut.datetime);
+  const geo=geoSt;
+  const zoneOk=geo.zoneResult&&geo.zoneResult.within;
+  const zoneColor=!geo.lat?'var(--txt3)':zoneOk?'var(--green)':'var(--red)';
+  return`<main style="min-height:100vh;background:var(--surface2);padding:2rem 1.5rem">
+  <style>@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}.blink{animation:blink 2s infinite}</style>
+  <div style="max-width:840px;margin:0 auto">
+    <div class="page-header"><div>
+      <div class="page-title">Web Bundy — Guest</div>
+      <div class="page-sub">${new Date().toLocaleDateString('en-PH',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</div>
+    </div><div class="action-row"><button class="btn" onclick="finishGuestBundy()">Done — Sign out</button></div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+      <div>
+        <div class="card" style="text-align:center;padding:2rem 1.25rem">
+          <div id="bundy-clock" style="font-size:52px;font-weight:800;font-family:'JetBrains Mono',monospace;letter-spacing:-2px;line-height:1">
+            ${new Date().toLocaleTimeString('en-PH',{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:true})}
+          </div>
+          <div style="margin:12px 0 1.25rem;display:flex;align-items:center;justify-content:center;gap:10px">
+            <div class="avatar" style="width:34px;height:34px;font-size:11px">${ini(g.name||g.email)}</div>
+            <div style="text-align:left">
+              <div style="font-weight:700;font-size:14px">${esc(g.name||g.email)}</div>
+              <div style="font-size:12px;color:var(--txt3)">Verified guest session</div>
+            </div>
+          </div>
+          <div style="display:inline-flex;align-items:center;gap:7px;padding:6px 16px;border-radius:999px;font-size:13px;font-weight:600;margin-bottom:1.5rem;background:${isClockedIn?'var(--green-bg)':'var(--bg)'};color:${isClockedIn?'var(--green-txt)':'var(--txt3)'}">
+            <div class="${isClockedIn?'blink':''}" style="width:9px;height:9px;border-radius:50%;background:${isClockedIn?'var(--green)':'#ccc'}"></div>
+            ${isClockedIn?`Clocked in since ${lastIn.time}`:'Not yet clocked in'}
+          </div>
+          <div style="display:grid;gap:10px">
+            <button class="btn btn-primary" style="padding:15px;font-size:16px;font-weight:700;border-radius:12px;opacity:${!geo.lat||g.busy?'.5':'1'}" onclick="guestBundyPunch('in')" ${!geo.lat||g.busy?'disabled':''}>
+              🟢  Clock In
+            </button>
+            <button class="btn" style="padding:15px;font-size:16px;font-weight:700;border-radius:12px;border-color:${isClockedIn&&geo.lat?'var(--red)':'var(--border)'};color:${isClockedIn&&geo.lat?'var(--red)':'var(--txt3)'};opacity:${!geo.lat||!isClockedIn||g.busy?'.45':'1'}" onclick="guestBundyPunch('out')" ${!geo.lat||!isClockedIn||g.busy?'disabled':''}>
+              🔴  Clock Out
+            </button>
+          </div>
+        </div>
+        ${todayLogs.length?`<div class="card">
+          <div class="card-title" style="margin-bottom:.75rem">Today's punches</div>
+          ${todayLogs.map(b=>`<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">
+            <div style="width:9px;height:9px;border-radius:50%;flex-shrink:0;background:${b.type==='in'?'var(--green)':'var(--red)'}"></div>
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13px;font-weight:600">${b.type==='in'?'Clock In':'Clock Out'} — <span class="mono">${b.time}</span></div>
+              <div style="font-size:11px;color:var(--txt3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${b.address||`${b.lat},${b.lng}`}</div>
+            </div>
+            <div style="flex-shrink:0"><span class="badge ${b.withinZone?'b-approved':'b-absent'}" style="font-size:10px">${b.withinZone?'✓ In zone':'⚠ Out'}</span></div>
+          </div>`).join('')}
+        </div>`:''}
+      </div>
+      <div>
+        <div class="card" style="margin-bottom:1rem">
+          <div class="card-title" style="margin-bottom:.875rem">📍 Your location</div>
+          <div style="border-radius:8px;background:var(--bg);padding:10px 12px;margin-bottom:10px;min-height:60px">
+            ${geo.loading?`<div style="color:var(--txt3);font-style:italic;font-size:13px">⏳ Getting your location...</div>`
+            :geo.lat?`<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:5px">
+                <span style="font-size:18px">${zoneOk?'✅':'⚠️'}</span>
+                <div>
+                  <div style="font-weight:600;font-size:13px;color:${zoneColor}">${zoneOk?`Within zone: ${geo.zoneResult.zone.name} (${geo.zoneResult.distance}m)`:`Outside office zone · ${(geo.zoneResult&&geo.zoneResult.distance)||'?'}m from ${(geo.zoneResult&&geo.zoneResult.zone&&geo.zoneResult.zone.name)||'nearest zone'}`}</div>
+                  <div style="font-size:11px;color:var(--txt3);margin-top:3px">${geo.address}</div>
+                  <div style="font-size:11px;color:var(--txt3)">GPS: ${geo.lat.toFixed(5)}, ${geo.lng.toFixed(5)} · Accuracy: ±${geo.accuracy}m</div>
+                </div>
+              </div>`
+            :`<div style="font-size:13px;color:var(--txt3)">Tap below to get your current location. Make sure location access is allowed in your browser.</div>`}
+          </div>
+          <button class="btn ${geo.lat?'':'btn-primary'}" style="width:100%;font-size:13px" onclick="fetchGeo()">
+            ${geo.loading?'⏳ Getting location…':geo.lat?'🔄 Refresh location':'📍 Get my location'}
+          </button>
+        </div>
+        <div class="card">
+          <div class="card-title" style="margin-bottom:.875rem">📸 Selfie verification ${COMPANY.bundySelfie?'':'<span style="font-size:11px;font-weight:400;color:var(--txt3)">(disabled by admin)</span>'}</div>
+          ${!COMPANY.bundySelfie
+            ?`<div style="text-align:center;padding:1.5rem;color:var(--txt3);font-size:13px">Selfie capture is currently disabled.<br>Contact HR to enable it in Company Settings.</div>`
+            :selfieData
+            ?`<img src="${selfieData}" style="width:100%;border-radius:8px;margin-bottom:8px;display:block"/>
+              <button class="btn" style="width:100%;font-size:13px" onclick="retakeSelfie()">↩ Retake selfie</button>`
+            :`<div style="background:#000;border-radius:10px;overflow:hidden;margin-bottom:8px;aspect-ratio:4/3;position:relative">
+                <video id="selfie-vid" autoplay playsinline muted style="width:100%;height:100%;object-fit:cover;transform:scaleX(-1);display:block"></video>
+                <div id="cam-placeholder" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.6)">
+                  <span style="color:#fff;font-size:12px;padding:5px 12px;background:rgba(255,255,255,.15);border-radius:999px">📷 Starting camera…</span>
+                </div>
+              </div>
+              <button class="btn btn-primary" style="width:100%;font-size:13px" onclick="captureSelfie()">📸 Capture selfie</button>
+              <div style="font-size:11px;color:var(--txt3);margin-top:6px;text-align:center">Selfie is attached to your bundy log for verification</div>`}
+        </div>
+      </div>
+    </div>
+  </div>
+</main>`;
 }
 /* ========== SIDEBAR ========== */
 const SIDEBAR_SECTION_ICON={Overview:'dashboard',People:'people','Time & Attendance':'clock',Payroll:'peso',Talent:'recruit',Setup:'settings',Tools:'chart'};
@@ -17484,6 +17675,7 @@ function render(){
   const root=document.getElementById('root');
   if(!user){
     if(sessionRestoring){root.innerHTML=renderLoading();return;}
+    if(guestBundy){root.innerHTML=renderGuestBundy();return;}
     root.innerHTML=renderLogin();applyWallpaperPreview();return;
   }
   /* Platform admin portal (not inside a client) */
