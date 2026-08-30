@@ -15416,6 +15416,7 @@ const COMPANY_SETTINGS_TABS=[
   {key:'branding',label:'Branding & General'},
   {key:'payroll',label:'Payroll Defaults'},
   {key:'bir',label:'BIR & Tax'},
+  {key:'ai',label:'AI Assistant'},
   {key:'email',label:'Email Templates'},
 ];
 let _coTab='branding';
@@ -15652,12 +15653,6 @@ function pgCompanySettings(){
       <div style="padding:9px 11px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;font-size:11px;color:var(--accent-txt)"><strong>Tax table:</strong> ${esc(COMPANY.taxPolicy.taxTableVersion)}<br><span>Annual schedule: 0% / 15% / 20% / 25% / 30% / 35%. Legal basis: BIR RR 11-2018.</span></div>
     </div>
 
-    <div class="card">
-      <div class="card-title" style="margin-bottom:4px">🤖 AI-Powered Assistant</div>
-      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">The chat widget's default mode is free and instant -- it matches common questions (English and Tagalog) directly against your HR data, with no external service involved. Turning this on routes unmatched or open-ended questions through the Groq API instead for more flexible natural-language understanding. Groq offers a free usage tier, and this requires <code>GROQ_API_KEY</code> to be configured on the backend server.</div>
-      <label style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span><strong style="font-size:12px">Enable AI-Powered Assistant</strong><br><span style="font-size:10px;color:var(--txt3)">Falls back to the free built-in assistant automatically if this is off, unconfigured, or a request fails.</span></span><input id="co-ai-enabled" type="checkbox" style="width:auto;accent-color:var(--accent)" ${COMPANY.aiAssistantEnabled?'checked':''}/></label>
-    </div>
-
     <div class="card" style="grid-column:span 2;border-left:3px solid var(--red)">
       <div class="card-title" style="margin-bottom:4px">BIR Employer Information (1601-C / 2316)</div>
       <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">Printed directly on the official BIR forms. RDO is stored as text so codes such as <strong>043</strong> keep the leading zero.</div>
@@ -15685,6 +15680,16 @@ function pgCompanySettings(){
         <td class="mono" style="font-weight:600">${fmt(totalSSS(ms))}</td>
       </tr>`).join('')}</tbody></table>
       <div style="margin-top:8px;font-size:11px;color:var(--txt3)">To edit MPF rates: Gov't Remittances → Contribution Rates → SSS section</div>
+    </div>
+
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem${_coTab==='ai'?'':';display:none'}">
+
+    <div class="card">
+      <div class="card-title" style="margin-bottom:4px">🤖 AI-Powered Assistant</div>
+      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">The chat widget's default mode is free and instant -- it matches common questions (English and Tagalog) directly against your HR data, with no external service involved. Turning this on routes unmatched or open-ended questions through the Groq API instead for more flexible natural-language understanding. Groq offers a free usage tier, and this requires <code>GROQ_API_KEY</code> to be configured on the backend server.</div>
+      <label style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span><strong style="font-size:12px">Enable AI-Powered Assistant</strong><br><span style="font-size:10px;color:var(--txt3)">Falls back to the free built-in assistant automatically if this is off, unconfigured, or a request fails.</span></span><input id="co-ai-enabled" type="checkbox" style="width:auto;accent-color:var(--accent)" ${COMPANY.aiAssistantEnabled?'checked':''}/></label>
     </div>
 
   </div>
