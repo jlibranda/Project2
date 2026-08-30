@@ -642,6 +642,35 @@
     var email=target.email||L('not on file','wala pang naitala');
     return viewingSelf?L('Your email on file is '+email+'.','Ang email mo na naitala ay '+email+'.'):L(name+"'s email on file is "+email+'.','Ang email ni '+name+' na naitala ay '+email+'.');
   }
+  // General "how does AURA / Philippine payroll work" questions -- policy-level knowledge, never
+  // a specific employee's data, so answerable for ANY user regardless of role or access level
+  // (unlike everything else in this file's assistant, which is gated per employee/permission).
+  // Checked before any employee-name matching in assistantAnswer() so it never needs a `target`.
+  function systemKnowledgeAnswer(norm){
+    if(/overtime|\bot\b.*(rate|premium|comput|paano)|paano.*\bot\b|night differential|holiday pay|rest day pay/.test(norm)){
+      return L('Overtime premiums stack on top of the hourly rate per DOLE rules — ordinary OT is +25%, work on a rest day is +30% (more if that\'s also OT or a holiday), a special holiday is +30%, a regular holiday is a 100% premium (double pay), and night differential (10pm–6am) adds +10%. Exact combinations depend on which apply together on a given day — see Payroll → OT Rate Configuration for this company\'s exact formulas.','Ang overtime premium ay dagdag sa oras-oras na rate ayon sa DOLE rules — ang regular OT ay +25%, ang trabaho sa rest day ay +30% (mas mataas kung OT rin o holiday), ang special holiday ay +30%, ang regular holiday ay 100% premium (doble ang bayad), at ang night differential (10pm–6am) ay +10%. Depende ito sa kombinasyon ng mga ito sa isang araw — tingnan ang Payroll → OT Rate Configuration para sa eksaktong formula ng kumpanyang ito.');
+    }
+    if(/late.*(policy|threshold|half.?day)|absent.*(policy|threshold|lwop)|attendance policy|minimum hours/.test(norm)){
+      var ap=(typeof ATTENDANCE_POLICY!=='undefined'&&ATTENDANCE_POLICY)||{};
+      return L('This company\'s attendance policy: being late by '+(ap.lateHalfDayMinutes||'—')+' minutes or more auto-marks the day Half Day, and working fewer than '+(ap.minHoursFullDay||'—')+' hours can auto-mark it LWOP (Leave Without Pay/Absent).','Ang attendance policy ng kumpanyang ito: ang pagiging late ng '+(ap.lateHalfDayMinutes||'—')+' minuto o higit pa ay awtomatikong magmamarka ng Half Day, at ang pagtatrabaho ng mas mababa sa '+(ap.minHoursFullDay||'—')+' oras ay maaaring awtomatikong magmarka ng LWOP (Leave Without Pay/Absent).');
+    }
+    if(/\b(sss|philhealth|pag-?ibig|pagibig|hdmf)\b.*(rate|contribution|magkano|percent|%)|contribution rate/.test(norm)){
+      var gr=(typeof GOVT_RATES!=='undefined'&&GOVT_RATES)||{};
+      var phRate=gr.philhealth?gr.philhealth.ratePercent:'—';
+      var piRate=gr.pagibig?gr.pagibig.ratePercent:'—';
+      return L('Statutory contributions here: SSS follows a bracket-based Monthly Salary Credit table (with an optional Mandatory Provident Fund portion above a salary threshold), PhilHealth is '+phRate+'% of salary within a floor/ceiling, and Pag-IBIG is '+piRate+'% of salary (lower for low-income earners) capped at a maximum fund salary. See Company Settings → Statutory Tables for the exact current numbers.','Ang statutory contributions dito: sumusunod ang SSS sa bracket-based Monthly Salary Credit table (may opsyonal na Mandatory Provident Fund kapag lumagpas sa threshold ang sahod), ang PhilHealth ay '+phRate+'% ng sahod sa loob ng floor/ceiling, at ang Pag-IBIG ay '+piRate+'% ng sahod (mas mababa para sa mababang kita) na may maximum fund salary cap. Tingnan ang Company Settings → Statutory Tables para sa eksaktong kasalukuyang numero.');
+    }
+    if(/leave approval|paano.*(mag-?approve|umapruba).*leave|approval chain|sino.*(mag-?approve).*leave/.test(norm)){
+      return L('Leave requests route through a multi-layer approval chain resolved from the org chart\'s reporting lines, not one fixed approver — your request goes to your immediate head first, then up the chain as configured.','Ang leave requests ay dumadaan sa multi-layer approval chain batay sa reporting lines ng org chart, hindi iisang approver — pupunta muna ito sa immediate head mo, tapos pataas sa chain ayon sa naka-configure.');
+    }
+    if(/payroll (workflow|stages|process|approval)|paano.*(mag-?approve).*payroll/.test(norm)){
+      return L('Payroll goes through 5 stages before it\'s released: Maker prepares it, then Timekeeping Reviewer, HR Checker, and Finance Checker review it in turn, and an Authorized Approver gives final sign-off before it\'s Locked (immutable). Payslips become available once it reaches that point.','Dumadaan ang payroll sa 5 stages bago ito ma-release: inihahanda ito ng Maker, tapos sinusuri ito nang paisa-isa ng Timekeeping Reviewer, HR Checker, at Finance Checker, at ang Authorized Approver ang huling mag-a-approve bago ito ma-Lock (hindi na mababago). Available na ang payslips kapag naabot na ang stage na iyon.');
+    }
+    if(/what (can|does) (aura|you|this system|this app) do|what.*(features|modules)|ano.*(magagawa|features)/.test(norm)){
+      return L('AURA covers Employee 201 records, Time & Attendance (Web Bundy, shifts, holidays, attendance forms), Leave, Payroll (draft through approval to Locked), Resolution Center, My Payslips, Loans, Recruitment, Performance, Compliance (statutory forms), and Bulk Upload. Ask me about any of these, or about your own records.','Sinasaklaw ng AURA ang Employee 201 records, Time & Attendance (Web Bundy, shifts, holidays, attendance forms), Leave, Payroll (mula draft hanggang Locked), Resolution Center, My Payslips, Loans, Recruitment, Performance, Compliance (statutory forms), at Bulk Upload. Magtanong ka tungkol dito, o tungkol sa sarili mong records.');
+    }
+    return null;
+  }
   function adminAggregateAnswer(norm){
     // No qualifier ("how many"/"ilan"/etc.) required here -- "proby"/"probationary"/
     // "probation" on its own, with no specific employee named, is distinctive enough that
@@ -735,6 +764,10 @@
     var isA=isAdminUser(user)||isPlatformAdmin;
     var norm=(q||'').toLowerCase().trim();
     if(!norm||!user)return null;
+    // Policy/feature knowledge -- never a specific employee's data, so checked first and
+    // answerable regardless of role, before any admin-only or employee-lookup routing below.
+    var knowledge=systemKnowledgeAnswer(norm);
+    if(knowledge)return knowledge;
     // Checked before any employee-name matching at all: adminAggregateAnswer()'s patterns
     // are specific enough (distinctive words like "proby", "headcount", "pending leave")
     // that a false positive is very unlikely, and this way a company-wide question never

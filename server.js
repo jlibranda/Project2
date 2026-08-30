@@ -948,14 +948,55 @@ function serverCanAccess(state, me, key) {
   const al = (state.accessLevels || []).find(a => a.id === me.accessLevelId);
   return !!(al && al.perms && al.perms[key] === true);
 }
+// Static description of how AURA and Philippine payroll/timekeeping rules work in general --
+// never company- or employee-specific, so it's identical for every session regardless of role
+// and safe to include unconditionally. Keeps the assistant grounded on real AURA behavior
+// instead of guessing at how a generic HR system might work.
+const ASSISTANT_SYSTEM_KNOWLEDGE = [
+  'AURA modules: Employee 201 records (personal/employment/compensation/gov\'t IDs/bank details), Org Structure, Time & Attendance (shift setup, holiday calendar, Web Bundy clock-in with selfie capture and email-OTP guest access for kiosks), Attendance Forms (time correction, overtime, rest-day OT, WFH, OB/official business, schedule adjustment), Leave (configurable leave types with a multi-layer approval chain resolved from the org reporting hierarchy, not one fixed approver), Payroll (draft/preview, a 5-stage approval workflow -- Maker, Timekeeping Reviewer, HR Checker, Finance Checker, Authorized Approver -- ending in an immutable Locked run, Pay Calendar & cutoffs, Payroll Groups), Resolution Center (a shared HR Operations / Payroll Team queue for attendance, payroll, payslip, and general cases -- any authorized admin/HR user can resolve one, not a single named approver), My Payslips (employee self-service, visible once a payroll run reaches the relevant stage), Loans, Recruitment (job requisitions, candidates, pipeline stages), Performance (goals, check-ins), Compliance (health scoring, downloadable statutory working papers: SSS R3, PhilHealth RF-1, Pag-IBIG MCRF, BIR 1601-C, BIR 2316, BIR 1604-C), Bulk Upload (employees, adjustments, income/deduction types), and Company Settings (branding, payroll defaults, statutory rate tables, email notification templates).',
+  'How AURA computes pay: Daily Rate = Monthly Salary ÷ the company\'s configured Daily Rate Divisor (standard 22 working days/month). Overtime premiums stack on top of the hourly rate per DOLE rules -- ordinary OT is +25%, work on a rest day is +30% (and stacks further if that rest-day work is also OT, or falls on a holiday), a special (non-working) holiday is +30%, a regular holiday is a 100% premium (double pay), and night differential (10pm-6am) adds +10% -- exact combinations depend on which of these apply together on a given day.',
+  'Attendance rules: a configurable "Late Half Day" minute threshold and a "Minimum Hours for a Full Day" threshold decide automatic attendance status -- falling short of the minimum can auto-mark the day LWOP (Leave Without Pay/Absent). A filing deadline can lock employee self-service filing a set number of days after each pay period\'s attendance window closes (admins/HR are never blocked by it).',
+  'Statutory deductions AURA computes: SSS (bracket-based Monthly Salary Credit, with an optional Mandatory Provident Fund/MPF portion once salary exceeds a configured threshold), PhilHealth (a flat percentage of salary within a configured floor and ceiling), Pag-IBIG/HDMF (a percentage of salary capped at a configured maximum fund salary, with a lower employee rate below a low-income threshold -- the employer share can differ from the employee share depending on the salary tier), and BIR withholding tax (graduated brackets, with an optional year-end or final-pay annualization reconciliation). This company\'s actual currently-configured rates, thresholds, and policy toggles are in DATA.policies when present -- always prefer those exact numbers over this general description.'
+].join('\n\n');
+// Company-wide POLICY/rate configuration -- never a specific employee's confidential data, so
+// it's safe to hand to every session regardless of role, unlike the per-employee branches below.
+// Grounds the assistant's payroll/timekeeping explanations in what this tenant actually has
+// configured (rather than the model guessing at generic textbook numbers), while still keeping
+// it small and curated rather than dumping the entire GOVT_RATES/ATTENDANCE_POLICY objects.
+function buildPolicyContext(state) {
+  const ap = state.attendancePolicy || {};
+  const gr = state.governmentRates || {};
+  const co = state.company || {};
+  return {
+    dailyRateDivisor: co.dailyDivisor ?? null,
+    hoursPerDay: co.hoursPerDay ?? null,
+    salaryMultiplier: co.salaryMultiplier ?? null,
+    attendancePolicy: {
+      lateHalfDayMinutes: ap.lateHalfDayMinutes ?? null,
+      minHoursFullDay: ap.minHoursFullDay ?? null,
+      deductLateFromOT: !!ap.deductLateFromOT,
+      filingDeadlineEnabled: !!ap.filingDeadlineEnabled,
+      filingDeadlineDaysAfterPeriodEnd: ap.filingDeadlineDaysAfterPeriodEnd ?? null
+    },
+    absenceFallbackPolicy: co.absenceFallbackPolicy || null,
+    taxPolicy: co.taxPolicy || null,
+    statutoryRates: {
+      sss: gr.sss ? { ratePercent: gr.sss.ratePercent, mpfEnabled: !!gr.sss.mpfEnabled, mpfThreshold: gr.sss.mpfThreshold, mpfRate: gr.sss.mpfRate } : null,
+      philhealth: gr.philhealth ? { ratePercent: gr.philhealth.ratePercent, minSalary: gr.philhealth.minSalary, minContrib: gr.philhealth.minContrib, maxSalary: gr.philhealth.maxSalary, maxContrib: gr.philhealth.maxContrib } : null,
+      pagibig: gr.pagibig ? { ratePercent: gr.pagibig.ratePercent, lowRatePercent: gr.pagibig.lowRatePercent, lowRateThreshold: gr.pagibig.lowRateThreshold, maxFundSalary: gr.pagibig.maxFundSalary, maxContrib: gr.pagibig.maxContrib } : null
+    }
+  };
+}
 function buildAssistantContext(state, session, isAdmin) {
   const users = (state.users || []).filter(u => u.role === 'employee');
   const today = new Date().toISOString().slice(0, 10);
+  const policies = buildPolicyContext(state);
   if (isAdmin) {
     const enterprise = state.enterprise || {};
     return {
       today,
       companyName: state.company?.name || '',
+      policies,
       employees: users.map(u => ({
         name: fmtNameServer(u), department: u.dept, position: u.pos, employmentType: u.type,
         active: u.active !== false, hired: u.hired, probationEndDate: u.probEndDate || null,
@@ -1021,7 +1062,7 @@ function buildAssistantContext(state, session, isAdmin) {
     }
   }
   return {
-    today, companyName: state.company?.name || '', me: me ? self : null,
+    today, companyName: state.company?.name || '', policies, me: me ? self : null,
     note: me ? undefined : "This login isn't tied to a specific employee record, so there's no personal data to show for it."
   };
 }
@@ -1039,11 +1080,14 @@ app.post('/api/assistant/ask', requireAuth, async (req, res) => {
     const isAdmin = req.session.role === 'admin' || req.session.role === 'platform';
     const context = buildAssistantContext(state, req.session, isAdmin);
     const systemPrompt = [
-      'You are AURA Assistant, an HR and payroll data assistant embedded in a Philippine HR/payroll system.',
-      'Answer ONLY using the JSON data provided below -- never invent, estimate, or guess a number or fact that is not present in it.',
-      'If the answer is not present in the data, say plainly that you do not have that information rather than guessing.',
+      'You are AURA Assistant, an expert HR and payroll assistant embedded in AURA, a Philippine HR/payroll system. You know AURA\'s features end to end and how Philippine HR/payroll rules generally work -- see SYSTEM KNOWLEDGE below. You may explain that freely to anyone, at any access level, since it describes how the software and Philippine payroll rules work in general, not this company\'s or any employee\'s private data.',
+      'For anything specific to this company or a person -- names, numbers, statuses, balances, configured rates -- answer ONLY using the DATA JSON below. Never invent, estimate, or guess a specific fact that is not present in it. Prefer DATA over SYSTEM KNOWLEDGE whenever both cover the same thing (e.g. this company\'s actual configured statutory rates over general PH rates).',
+      'Some data is deliberately left out of DATA based on this user\'s own access level or because it belongs to someone else -- if asked something specific that is not present, say plainly that you do not have that information, and never imply it exists or could be found another way.',
       lang === 'tl' ? 'Respond in Tagalog/Filipino.' : 'Respond in English.',
       'Be concise -- a few sentences at most, like a helpful coworker, not a report.',
+      '',
+      'SYSTEM KNOWLEDGE:',
+      ASSISTANT_SYSTEM_KNOWLEDGE,
       '',
       'DATA:',
       JSON.stringify(context)
