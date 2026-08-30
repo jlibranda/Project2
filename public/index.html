@@ -15412,16 +15412,39 @@ function resetEmailTemplateToDefault(){
   queueSync('Company_Settings');
   toast('Reset to default.','info');
 }
+const COMPANY_SETTINGS_TABS=[
+  {key:'branding',label:'Branding & General'},
+  {key:'payroll',label:'Payroll Defaults'},
+  {key:'bir',label:'BIR & Tax'},
+  {key:'email',label:'Email Templates'},
+];
+let _coTab='branding';
+// rerenderPreservingInputs(), not a plain render() -- switching tabs re-renders the whole page
+// from COMPANY (same as any other render), which would silently reset every plain input back to
+// its last-saved value, discarding anything the admin had typed but not yet clicked Save Settings
+// for, on ANY tab, not just the one being left. See rerenderPreservingInputs()'s own comment.
+function setCoTab(key){_coTab=key;rerenderPreservingInputs();}
 function pgCompanySettings(){
   ensureAnnualizedTaxConfig();
   const b=_pendingBrand||COMPANY;
   const themeColors={indigo:'#4f46e5',emerald:'#059669',blue:'#2563eb',rose:'#e11d48',amber:'#d97706',violet:'#7c3aed',teal:'#0d9488',slate:'#475569',custom:b.accentHex};
+  // Every tab's cards stay mounted in the DOM at all times -- only display:none toggles which
+  // one is visible. saveCompany() reads every field straight off the DOM by id with a fallback
+  // to the existing COMPANY value when an element is missing, and at least one field
+  // (co-divisor) is validated unconditionally on every save -- unmounting a tab's inputs (the
+  // Add Employee wizard's per-tab-DOM approach) would silently drop those fields to their
+  // fallback, or for co-divisor, block the whole Save Settings click with a validation error,
+  // whenever a different tab happened to be open. This keeps the single Save Settings button
+  // exactly as reliable as before the tabs existed.
+  const _cotabbar=`<div style="display:flex;gap:8px;border-bottom:1px solid var(--border);margin-bottom:1rem;overflow-x:auto">${COMPANY_SETTINGS_TABS.map(t=>`<div class="tab${_coTab===t.key?' active':''}" onclick="setCoTab('${t.key}')" style="font-size:12px;white-space:nowrap;cursor:pointer">${t.label}</div>`).join('')}</div>`;
   const _cohtml=`<div class="page-header"><div class="page-title">Company Settings</div>
   <div style="display:flex;gap:8px">
   ${_pendingBrand?'<button class="btn" onclick="discardBrandDraft()">↺ Discard Branding Changes</button>':''}
   <button class="btn btn-primary" onclick="saveCompany()">✓ Save Settings</button></div></div>
 
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+  ${_cotabbar}
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem${_coTab==='branding'?'':';display:none'}">
 
     <!-- Brand Identity -->
     <div class="card" style="grid-column:span 2">
@@ -15558,6 +15581,11 @@ function pgCompanySettings(){
         </div>
       </div>
     </div>
+
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem${_coTab==='payroll'?'':';display:none'}">
+
     <div class="card">
       <div class="card-title" style="margin-bottom:1rem">Payroll Computation Defaults</div>
       <div class="field"><label>Daily Rate Divisor <span style="font-weight:400;color:var(--txt3);font-size:11px">used when computing daily rate from monthly salary</span></label>
@@ -15611,6 +15639,10 @@ function pgCompanySettings(){
       </div>
     </div>
 
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem${_coTab==='bir'?'':';display:none'}">
+
     <div class="card">
       <div class="card-title" style="margin-bottom:4px">BIR Tax & Annualization Policy</div>
       <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">Controls year-end and termination reconciliation. The payroll calendar selects the tax event for each run.</div>
@@ -15654,6 +15686,10 @@ function pgCompanySettings(){
       </tr>`).join('')}</tbody></table>
       <div style="margin-top:8px;font-size:11px;color:var(--txt3)">To edit MPF rates: Gov't Remittances → Contribution Rates → SSS section</div>
     </div>
+
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem${_coTab==='email'?'':';display:none'}">
 
     <!-- Email Templates -->
     <div class="card" style="grid-column:span 2">
