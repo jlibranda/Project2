@@ -987,6 +987,71 @@ function buildPolicyContext(state) {
     }
   };
 }
+// Deeper, admin-only ANALYSIS data -- pre-aggregated summaries, never raw per-record dumps
+// (state.attendance grows unbounded, roughly one row per employee per workday forever), so the
+// assistant can reason about trends/patterns/risks instead of only reciting point-in-time facts,
+// while keeping the payload small and bounded regardless of company size or data history.
+// complianceHealth's scoring formula is mirrored from enterprise.js by hand -- no shared module
+// between the browser bundle and this Node backend.
+function buildAnalyticsContext(state) {
+  const users = (state.users || []).filter(u => u.role === 'employee');
+  const active = users.filter(u => u.active !== false);
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const daysAgo = n => { const d = new Date(); d.setDate(d.getDate() - n); return d.toISOString().slice(0, 10); };
+  const cutoff30 = daysAgo(30), cutoff90 = daysAgo(90);
+
+  const missingGovCount = active.filter(u => !u.sss || !u.ph || !u.pi || !u.tin).length;
+  const missingBankCount = active.filter(u => !u.bank || !u.bankAccount).length;
+  const pendingAttCount = (state.attendance || []).filter(a => a.approvalStatus === 'pending').length;
+  const pendingPayCount = (state.payrolls || []).filter(r => r.status === 'pending_approval').length;
+  const complianceScore = Math.max(0, 100 - missingGovCount * 10 - missingBankCount * 5 - pendingAttCount * 3 - pendingPayCount * 8);
+
+  const byDept = {}, byType = {};
+  active.forEach(u => {
+    const d = u.dept || 'Unassigned', t = u.type || 'unspecified';
+    byDept[d] = (byDept[d] || 0) + 1; byType[t] = (byType[t] || 0) + 1;
+  });
+
+  const recentHires = users.filter(u => u.hired && u.hired >= cutoff90).length;
+  const recentSeparations = users.filter(u => u.active === false && u.effectiveTermDate && u.effectiveTermDate >= cutoff90).length;
+
+  const runs = [...(state.payrolls || [])].sort((a, b) => String(a.to || '').localeCompare(String(b.to || ''))).slice(-6);
+  const payrollCostTrend = runs.map(r => {
+    const items = r.items || [];
+    const sum = key => +items.reduce((s, i) => s + (Number(i[key]) || 0), 0).toFixed(2);
+    return { period: `${r.from || ''} to ${r.to || ''}`, status: r.status, headcount: items.length, totalGross: sum('gross'), totalDeductions: sum('total'), totalNet: sum('net') };
+  });
+
+  const recentAtt = (state.attendance || []).filter(a => a.date >= cutoff30);
+  let lateCount = 0, absentCount = 0, totalOtHours = 0;
+  const otByDept = {};
+  recentAtt.forEach(a => {
+    if (a.status === 'late') lateCount++;
+    if (a.status === 'absent') absentCount++;
+    const ot = Number(a.ot) || 0;
+    if (ot > 0) {
+      totalOtHours += ot;
+      const emp = users.find(u => u.id === a.eid);
+      const dept = emp ? (emp.dept || 'Unassigned') : 'Unassigned';
+      otByDept[dept] = +((otByDept[dept] || 0) + ot).toFixed(2);
+    }
+  });
+
+  const recentLeaves = (state.leaves || []).filter(l => l.filed && l.filed >= cutoff90);
+  const leaveTypeCounts = {};
+  recentLeaves.forEach(l => { leaveTypeCounts[l.type] = (leaveTypeCounts[l.type] || 0) + 1; });
+
+  return {
+    asOf: todayStr,
+    note: 'attendanceLast30Days and leaveLast90Days are pre-aggregated totals over that trailing window, not individual records; payrollCostTrend covers up to the last 6 payroll runs, oldest first.',
+    complianceHealth: { score: complianceScore, missingGovIdCount: missingGovCount, missingBankDetailsCount: missingBankCount, pendingAttendanceApprovals: pendingAttCount, pendingPayrollApprovals: pendingPayCount },
+    headcount: { active: active.length, byDepartment: byDept, byEmploymentType: byType },
+    turnoverLast90Days: { hires: recentHires, separations: recentSeparations },
+    payrollCostTrend,
+    attendanceLast30Days: { lateCount, absentCount, totalOtHours: +totalOtHours.toFixed(2), otHoursByDepartment: otByDept },
+    leaveLast90Days: { totalRequestsFiled: recentLeaves.length, approved: recentLeaves.filter(l => l.status === 'approved').length, rejected: recentLeaves.filter(l => l.status === 'rejected').length, pending: recentLeaves.filter(l => l.status === 'pending').length, byType: leaveTypeCounts }
+  };
+}
 function buildAssistantContext(state, session, isAdmin) {
   const users = (state.users || []).filter(u => u.role === 'employee');
   const today = new Date().toISOString().slice(0, 10);
@@ -997,6 +1062,7 @@ function buildAssistantContext(state, session, isAdmin) {
       today,
       companyName: state.company?.name || '',
       policies,
+      analytics: buildAnalyticsContext(state),
       employees: users.map(u => ({
         name: fmtNameServer(u), department: u.dept, position: u.pos, employmentType: u.type,
         active: u.active !== false, hired: u.hired, probationEndDate: u.probEndDate || null,
@@ -1084,7 +1150,9 @@ app.post('/api/assistant/ask', requireAuth, async (req, res) => {
       'For anything specific to this company or a person -- names, numbers, statuses, balances, configured rates -- answer ONLY using the DATA JSON below. Never invent, estimate, or guess a specific fact that is not present in it. Prefer DATA over SYSTEM KNOWLEDGE whenever both cover the same thing (e.g. this company\'s actual configured statutory rates over general PH rates).',
       'Some data is deliberately left out of DATA based on this user\'s own access level or because it belongs to someone else -- if asked something specific that is not present, say plainly that you do not have that information, and never imply it exists or could be found another way.',
       lang === 'tl' ? 'Respond in Tagalog/Filipino.' : 'Respond in English.',
-      'Be concise -- a few sentences at most, like a helpful coworker, not a report.',
+      isAdmin
+        ? 'You are talking to an admin/HR user. As well as answering direct questions, you may actively ANALYZE DATA.analytics and DATA.employees/payroll/leave/case data -- spot trends, compare periods, flag outliers or risks (e.g. a department with unusually high OT or lateness, a compliance score driven mainly by one factor, a payroll run that jumped versus the prior one), and give a short recommendation when it is clearly warranted. Ground every specific number in DATA -- never invent a trend or figure that is not actually derivable from it. A real analysis can run a short paragraph or a few bullet points when that reads more clearly than prose, but stay a focused briefing, not a long report.'
+        : 'Be concise -- a few sentences at most, like a helpful coworker, not a report.',
       '',
       'SYSTEM KNOWLEDGE:',
       ASSISTANT_SYSTEM_KNOWLEDGE,
@@ -1100,7 +1168,7 @@ app.post('/api/assistant/ask', requireAuth, async (req, res) => {
       },
       body: JSON.stringify({
         model: process.env.GROQ_ASSISTANT_MODEL || 'openai/gpt-oss-120b',
-        max_tokens: 500,
+        max_tokens: isAdmin ? 900 : 500,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: question }
