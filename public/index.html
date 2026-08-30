@@ -15415,7 +15415,8 @@ function resetEmailTemplateToDefault(){
 const COMPANY_SETTINGS_TABS=[
   {key:'branding',label:'Branding & General'},
   {key:'payroll',label:'Payroll Defaults'},
-  {key:'bir',label:'BIR & Tax'},
+  {key:'bir',label:'Statutory Tables'},
+  {key:'ai',label:'AI Assistant'},
   {key:'email',label:'Email Templates'},
 ];
 let _coTab='branding';
@@ -15652,12 +15653,6 @@ function pgCompanySettings(){
       <div style="padding:9px 11px;background:var(--accent-bg);border:1px solid var(--accent);border-radius:8px;font-size:11px;color:var(--accent-txt)"><strong>Tax table:</strong> ${esc(COMPANY.taxPolicy.taxTableVersion)}<br><span>Annual schedule: 0% / 15% / 20% / 25% / 30% / 35%. Legal basis: BIR RR 11-2018.</span></div>
     </div>
 
-    <div class="card">
-      <div class="card-title" style="margin-bottom:4px">🤖 AI-Powered Assistant</div>
-      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">The chat widget's default mode is free and instant -- it matches common questions (English and Tagalog) directly against your HR data, with no external service involved. Turning this on routes unmatched or open-ended questions through the Groq API instead for more flexible natural-language understanding. Groq offers a free usage tier, and this requires <code>GROQ_API_KEY</code> to be configured on the backend server.</div>
-      <label style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span><strong style="font-size:12px">Enable AI-Powered Assistant</strong><br><span style="font-size:10px;color:var(--txt3)">Falls back to the free built-in assistant automatically if this is off, unconfigured, or a request fails.</span></span><input id="co-ai-enabled" type="checkbox" style="width:auto;accent-color:var(--accent)" ${COMPANY.aiAssistantEnabled?'checked':''}/></label>
-    </div>
-
     <div class="card" style="grid-column:span 2;border-left:3px solid var(--red)">
       <div class="card-title" style="margin-bottom:4px">BIR Employer Information (1601-C / 2316)</div>
       <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">Printed directly on the official BIR forms. RDO is stored as text so codes such as <strong>043</strong> keep the leading zero.</div>
@@ -15685,6 +15680,44 @@ function pgCompanySettings(){
         <td class="mono" style="font-weight:600">${fmt(totalSSS(ms))}</td>
       </tr>`).join('')}</tbody></table>
       <div style="margin-top:8px;font-size:11px;color:var(--txt3)">To edit MPF rates: Gov't Remittances → Contribution Rates → SSS section</div>
+    </div>
+
+    <!-- PhilHealth Preview -->
+    <div class="card">
+      <div class="card-title" style="margin-bottom:1rem">PhilHealth Preview</div>
+      <div style="font-size:12px;color:var(--txt3);margin-bottom:8px">${GOVT_RATES.philhealth.ratePercent}% employee share · floor ₱${GOVT_RATES.philhealth.minSalary.toLocaleString()} → ₱${GOVT_RATES.philhealth.minContrib.toLocaleString()} · ceiling ₱${GOVT_RATES.philhealth.maxSalary.toLocaleString()} → ₱${GOVT_RATES.philhealth.maxContrib.toLocaleString()}</div>
+      <table><thead><tr><th>Monthly Salary</th><th>Employee Share</th><th>Employer Share</th><th>Total</th></tr></thead>
+      <tbody>${[15000,20000,22000,25000,30000].map(ms=>`<tr>
+        <td class="mono">${fmt(ms)}</td>
+        <td class="mono" style="font-size:12px">${fmt(phContrib(ms))}</td>
+        <td class="mono" style="font-size:12px">${fmt(phErShare(ms))}</td>
+        <td class="mono" style="font-weight:600">${fmt(+(phContrib(ms)+phErShare(ms)).toFixed(2))}</td>
+      </tr>`).join('')}</tbody></table>
+      <div style="margin-top:8px;font-size:11px;color:var(--txt3)">To edit PhilHealth rates: Gov't Remittances → Contribution Rates → PhilHealth section</div>
+    </div>
+
+    <!-- Pag-IBIG Preview -->
+    <div class="card">
+      <div class="card-title" style="margin-bottom:1rem">Pag-IBIG (HDMF) Preview</div>
+      <div style="font-size:12px;color:var(--txt3);margin-bottom:8px">${GOVT_RATES.pagibig.ratePercent}% employee share (${GOVT_RATES.pagibig.lowRatePercent}% if ≤ ₱${GOVT_RATES.pagibig.lowRateThreshold.toLocaleString()}) · fund salary cap ₱${GOVT_RATES.pagibig.maxFundSalary.toLocaleString()} · max ₱${GOVT_RATES.pagibig.maxContrib.toLocaleString()}</div>
+      <table><thead><tr><th>Monthly Salary</th><th>Employee Share</th><th>Employer Share</th><th>Total</th></tr></thead>
+      <tbody>${[1000,5000,10000,15000,20000].map(ms=>`<tr>
+        <td class="mono">${fmt(ms)}</td>
+        <td class="mono" style="font-size:12px">${fmt(piContrib(ms))}</td>
+        <td class="mono" style="font-size:12px">${fmt(piErShare(ms))}</td>
+        <td class="mono" style="font-weight:600">${fmt(+(piContrib(ms)+piErShare(ms)).toFixed(2))}</td>
+      </tr>`).join('')}</tbody></table>
+      <div style="margin-top:8px;font-size:11px;color:var(--txt3)">To edit Pag-IBIG rates: Gov't Remittances → Contribution Rates → Pag-IBIG section</div>
+    </div>
+
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem${_coTab==='ai'?'':';display:none'}">
+
+    <div class="card">
+      <div class="card-title" style="margin-bottom:4px">🤖 AI-Powered Assistant</div>
+      <div style="font-size:11px;color:var(--txt3);margin-bottom:12px">The chat widget's default mode is free and instant -- it matches common questions (English and Tagalog) directly against your HR data, with no external service involved. Turning this on routes unmatched or open-ended questions through the Groq API instead for more flexible natural-language understanding. Groq offers a free usage tier, and this requires <code>GROQ_API_KEY</code> to be configured on the backend server.</div>
+      <label style="display:flex;align-items:center;justify-content:space-between;gap:12px"><span><strong style="font-size:12px">Enable AI-Powered Assistant</strong><br><span style="font-size:10px;color:var(--txt3)">Falls back to the free built-in assistant automatically if this is off, unconfigured, or a request fails.</span></span><input id="co-ai-enabled" type="checkbox" style="width:auto;accent-color:var(--accent)" ${COMPANY.aiAssistantEnabled?'checked':''}/></label>
     </div>
 
   </div>
