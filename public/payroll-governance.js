@@ -202,6 +202,40 @@
     draft.net=PayrollRuleEngine.money(Math.max(0,draft.gross-draft.totalDed));draft._edited=true;render();
   };
 
+  // Fire-and-forget (server.js's POST /api/notify) -- a failed send never blocks or reverts the
+  // underlying payroll action, it just quietly loses the email. Every payroll workflow stage
+  // (Timekeeping Reviewer, HR Checker, Finance Checker, Authorized Approver) shares the same
+  // 'payroll_approve' permission rather than being tied to specific named individuals, so
+  // "submitted" notifies everyone who holds it -- there's no more specific single recipient to
+  // resolve to, same reasoning as Resolution Center's shared queue in enterprise.js.
+  function notifyPayrollSubmitted(run){
+    if(typeof window.apiRequest!=='function')return;
+    var recipients=USERS.filter(function(u){
+      if(!u.email||u.id===user.id)return false;
+      if(isAdminUser(u))return true;
+      var al=ACCESS_LEVELS.find(function(a){return a.id===u.accessLevelId;});
+      return !!(al&&al.perms&&al.perms.payroll_approve===true);
+    }).map(function(u){return u.email;});
+    if(!recipients.length)return;
+    window.apiRequest('/notify',{method:'POST',body:JSON.stringify({type:'payroll-submitted',payload:{
+      recipientEmails:recipients,period:run.from+' to '+run.to,submittedBy:user.name
+    }})}).catch(function(){});
+  }
+  // One individual email per employee (the backend loops server-side on a single request) --
+  // unlike the admin/HR-facing notifications above, batching every employee's address into one
+  // email's recipient list would expose the whole payroll roster's emails to each other, which
+  // is not something a "your payslip is ready" notice should ever do.
+  function notifyPayslipsReleased(run){
+    if(typeof window.apiRequest!=='function')return;
+    var employees=(run.items||[]).map(function(item){
+      var emp=USERS.find(function(u){return u.id===item.eid;});
+      return emp&&emp.email?{email:emp.email,name:emp.name}:null;
+    }).filter(Boolean);
+    if(!employees.length)return;
+    window.apiRequest('/notify',{method:'POST',body:JSON.stringify({type:'payslip-released',payload:{
+      employees:employees,period:run.from+' to '+run.to
+    }})}).catch(function(){});
+  }
   window.runPayroll=runPayroll=function(){
     var from=document.getElementById('pf')&&document.getElementById('pf').value;
     var to=document.getElementById('pt')&&document.getElementById('pt').value;
@@ -223,6 +257,7 @@
     if(!/^\d{4}-\d{2}$/.test(birReportingMonth||'')){toast('A valid manually selected 1601-C reporting month is required.','warning');return;}
     var run={id:nPay++,from:from,to:to,items:items,on:today(),groupId:groupId,groupName:grp.name||'Standard',periodId:window._prPeriod!=='custom'?window._prPeriod:null,releaseDate:paymentDate,bir1601CMonth:birReportingMonth,includeIn1601C:true,taxEventType:(sourcePeriod&&sourcePeriod.taxEvent)||'regular',taxYear:Number(sourcePeriod&&sourcePeriod.taxYear||birReportingMonth.slice(0,4)),birTaxTableVersion:birTaxVersionSnapshot(paymentDate),status:'pending_approval',approvalStage:1,workflow:[{stage:'maker',label:'HR / Payroll Maker',by:user.name,at:now,status:'completed'}],preparedBy:user.name,preparedAt:now,ruleSnapshot:PAYROLL_RULEBOOK.filter(function(rule){return rule.status==='active';}).map(function(rule){return {id:rule.id,code:rule.code,version:rule.version,effectiveFrom:rule.effectiveFrom,value:rule.value};}),complianceVersion:'Versioned PH Payroll Rule Engine · '+today()};
     PAYROLLS.push(run);PAYROLL_AUDIT.push({runId:run.id,action:'maker_submitted',stage:'maker',by:user.name,at:now});
+    notifyPayrollSubmitted(run);
     items.forEach(function(item){(item.adjustmentIds||[]).forEach(function(id){var adjustment=PAYROLL_ADJ.find(function(a){return a.id===id;});if(adjustment){adjustment.processStatus='submitted_with_payroll';adjustment.payrollRunId=run.id;}});});
     PAYROLL_DRAFT={};window._prPreview=false;window._reprocessRunId=null;queueSync('Payroll_Runs','Payroll_Items','Payroll_Audit','Payroll_Adjustments');toast('Payroll submitted to the Timekeeping Reviewer.','success');tab=0;render();
   };
@@ -250,7 +285,9 @@
     var at=new Date().toISOString();run.status='locked';run.approvedBy=user.name;run.approvedAt=at;run.lockedAt=at;run.immutable=true;
     run.items.forEach(function(item){(item.adjustmentIds||[]).forEach(function(id){var adjustment=PAYROLL_ADJ.find(function(a){return a.id===id;});if(adjustment){adjustment.status='applied';adjustment.processStatus='applied';adjustment.appliedAt=at;adjustment.payrollRunId=run.id;}});});
     var period=PAY_PERIODS.find(function(item){return item.id===run.periodId;});if(period){period.status='closed';period.runId=run.id;period.lockedBy=user.email||user.name;period.lockedAt=today();}
-    PAYROLL_AUDIT.push({runId:run.id,action:'approved_locked_immutable',stage:'authorized_approver',by:user.name,at:at});queueSync('Payroll_Runs','Payroll_Items','Payroll_Audit','Payroll_Adjustments','Payroll_Periods');toast('Payroll approved, locked, and immutable. Corrections now require a retro adjustment or reversal.','success');render();
+    PAYROLL_AUDIT.push({runId:run.id,action:'approved_locked_immutable',stage:'authorized_approver',by:user.name,at:at});
+    notifyPayslipsReleased(run);
+    queueSync('Payroll_Runs','Payroll_Items','Payroll_Audit','Payroll_Adjustments','Payroll_Periods');toast('Payroll approved, locked, and immutable. Corrections now require a retro adjustment or reversal.','success');render();
   }
   window.rejectPayroll=function(runId){
     var run=PAYROLLS.find(function(item){return item.id===runId;});if(!run||run.status!=='pending_approval')return;

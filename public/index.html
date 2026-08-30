@@ -4012,6 +4012,11 @@ function applyPasswordReset(){
   if(!e)return;
   e.pass=newPass;
   closeM();
+  if(e.email&&typeof window.apiRequest==='function'){
+    window.apiRequest('/notify',{method:'POST',body:JSON.stringify({type:'password-changed',payload:{
+      employeeEmail:e.email,employeeName:e.name,changedBy:user.name
+    }})}).catch(()=>{});
+  }
   alert(`✅ Password updated for ${e.name}.\n\nNew password: ${newPass}`);
   render();queueSync('Employees');
 }
@@ -18394,7 +18399,7 @@ render = function() {
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
 <script src="/compliance.js?v=20260823-govt-report-actual-withheld"></script>
 <script src="/enterprise.js?v=20260830-attendance-case-notify"></script>
-<script src="/payroll-governance.js?v=20260804-annualized-tax"></script>
+<script src="/payroll-governance.js?v=20260830-payroll-notify"></script>
 <script src="/persistence.js?v=20260829-hydrate-applies-theme"></script>
 </body>
 </html>

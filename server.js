@@ -568,6 +568,9 @@ function otpCodeEmailHtml(name, code, purposeSentence, expiryMinutes) {
     + `<p style="font-size:28px;font-weight:700;letter-spacing:6px;margin:12px 0">${code}</p>`
     + `<p>This code expires in ${expiryMinutes} minutes. If you didn't request this, you can ignore this email.</p>`;
 }
+function securityAlertHtml(name) {
+  return `<p>Hi ${name || 'there'},</p><p>Your AURA password was just changed.</p><p>If this wasn't you, contact your administrator immediately.</p>`;
+}
 
 /* ── Forgot password (self-service, unauthenticated) ──
    Covers the same two account shapes /api/auth/login resolves against, minus God Admin -- that
@@ -649,6 +652,7 @@ app.post('/api/auth/forgot-password/reset', async (req, res) => {
         return { changed: true };
       }, email, entry.tenantKey);
     }
+    sendAppEmail(email, 'Your AURA password was changed', securityAlertHtml(entry.name)).catch(() => {});
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: 'Unable to reset the password.', detail: error.message });
@@ -678,12 +682,14 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
         u.pass = newPassword;
         return { changed: true };
       }, sub, tenantKey);
+      sendAppEmail(sub, 'Your AURA password was changed', securityAlertHtml(match.firstName || match.name)).catch(() => {});
       return res.json({ ok: true });
     }
     const clientRow = await pool.query('SELECT id, admin_pass FROM platform_clients WHERE tenant_key = $1', [tenantKey]);
     if (!clientRow.rowCount) return res.status(404).json({ error: 'Account not found.' });
     if (clientRow.rows[0].admin_pass !== currentPassword) return res.status(401).json({ error: 'Current password is incorrect.' });
     await pool.query('UPDATE platform_clients SET admin_pass = $1 WHERE id = $2', [newPassword, clientRow.rows[0].id]);
+    sendAppEmail(sub, 'Your AURA password was changed', securityAlertHtml()).catch(() => {});
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: 'Unable to update the password.', detail: error.message });
@@ -1070,6 +1076,47 @@ app.post('/api/notify', requireAuth, async (req, res) => {
       const verb = payload.decision === 'resolved' ? 'approved' : 'rejected';
       await sendAppEmail(employeeEmail, `Update on ${payload.caseSubject || 'your case'}`,
         `<p>Hi ${employeeName},</p><p>Your request "<strong>${caseSubject}</strong>" was <strong>${verb}</strong>${decidedBy ? ' by ' + decidedBy : ''}.</p>`);
+    } else if (type === 'password-changed') {
+      // Admin-reset-for-employee path (applyPasswordReset() in index.html) -- the only password
+      // mutation that doesn't already go through server.js directly, so it's the only one that
+      // needs this as a client-triggered /api/notify call rather than an inline send at the
+      // point of change (see change-password and forgot-password/reset for those).
+      const employeeEmail = String(payload.employeeEmail || '').trim();
+      if (!employeeEmail || !(await emailBelongsToTenant(tenantKey, employeeEmail))) return res.status(400).json({ error: 'Invalid recipient.' });
+      const changedBy = payload.changedBy ? escapeEmailHtml(payload.changedBy) : 'an administrator';
+      await sendAppEmail(employeeEmail, 'Your AURA password was changed',
+        `${securityAlertHtml(escapeEmailHtml(payload.employeeName))}<p>Changed by ${changedBy}.</p>`);
+    } else if (type === 'payroll-submitted') {
+      // Every payroll workflow stage shares the same 'payroll_approve' permission rather than
+      // being tied to a specific named individual (see notifyPayrollSubmitted() in
+      // payroll-governance.js) -- same recipient-list validation as case-filed above.
+      const recipients = Array.isArray(payload.recipientEmails) ? payload.recipientEmails.map(e => String(e || '').trim()).filter(Boolean) : [];
+      const validated = [];
+      for (const email of recipients) {
+        if (await emailBelongsToTenant(tenantKey, email)) validated.push(email);
+      }
+      if (!validated.length) return res.status(400).json({ error: 'No valid recipients.' });
+      const period = escapeEmailHtml(payload.period || '');
+      const submittedBy = escapeEmailHtml(payload.submittedBy || 'A payroll maker');
+      await sendAppEmail(validated, `Payroll submitted for approval${payload.period ? ' (' + payload.period + ')' : ''}`,
+        `<p>Hi there,</p><p><strong>${submittedBy}</strong> submitted a payroll run${period ? ' for <strong>' + period + '</strong>' : ''}.</p><p>Please review it in AURA.</p>`);
+    } else if (type === 'payslip-released') {
+      // One individual email per employee -- batching every employee's address into a single
+      // email's recipient list would expose the whole payroll roster's emails to each other,
+      // which "your payslip is ready" should never do (unlike the admin/HR-facing types above,
+      // where every recipient is already staff who'd reasonably see each other listed).
+      const employees = Array.isArray(payload.employees) ? payload.employees : [];
+      const period = escapeEmailHtml(payload.period || '');
+      let sent = 0;
+      for (const entry of employees) {
+        const email = String((entry && entry.email) || '').trim();
+        if (!email || !(await emailBelongsToTenant(tenantKey, email))) continue;
+        const name = escapeEmailHtml((entry && entry.name) || 'there');
+        await sendAppEmail(email, `Your payslip is ready${payload.period ? ' (' + payload.period + ')' : ''}`,
+          `<p>Hi ${name},</p><p>Your payslip${period ? ' for <strong>' + period + '</strong>' : ''} is now available in AURA under My Payslips.</p>`);
+        sent++;
+      }
+      if (!sent) return res.status(400).json({ error: 'No valid recipients.' });
     } else {
       return res.status(400).json({ error: 'Unknown notification type.' });
     }
