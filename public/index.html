@@ -289,7 +289,7 @@ tr:hover td{background:var(--accent-bg) !important;color:var(--accent-bg-ink)}
 .chat-dot:nth-child(3){animation-delay:.3s}
 #chat-bubble:hover{animation-play-state:paused}
 </style>
-<link rel="stylesheet" href="/modern-ui.css?v=20260829-theme-hover-ink"/>
+<link rel="stylesheet" href="/modern-ui.css?v=20260830-remove-demo-accounts"/>
 </head>
 <body>
 <div id="root"></div>
@@ -3084,8 +3084,6 @@ const yearsService=d=>{
 const pendingLeaves=()=>LEAVES.filter(l=>l.status==='pending').length;
 
 /* ========== AUTH ========== */
-let GOD_PASS='godmode2026'; /* God Admin password — changeable from Settings */
-
 async function doLogin(){
   const e=document.getElementById('le').value.trim();
   const p=document.getElementById('lp').value.trim();
@@ -3100,13 +3098,11 @@ async function doLogin(){
   }
 
   // The backend already authenticated (or rejected) email+password above -- read its verdict
-  // off the signed session it issued instead of re-comparing the typed password against the
-  // frontend's own local GOD_PASS variable. GOD_PASS only ever tracked whatever this ONE browser
-  // tab last saved (or its hardcoded default): a password changed from Settings on a different
-  // device, or after a page reload here, would silently make this check wrong in either
-  // direction -- rejecting the real new password, or (worse) still accepting a since-changed old
-  // one. See saveGodAdminPassword() / POST /api/platform/god-password for where it's genuinely
-  // persisted now.
+  // off the signed session it issued instead of re-comparing the typed password against any
+  // frontend-local copy. A password changed from Settings on a different device, or after a page
+  // reload here, would otherwise silently make a local check wrong in either direction --
+  // rejecting the real new password, or (worse) still accepting a since-changed old one. See
+  // saveGodAdminPassword() / POST /api/platform/god-password for where it's genuinely persisted.
   const loginIdentity=window.getSessionIdentity&&window.getSessionIdentity();
 
   /* ── Platform God Admin ── */
@@ -3185,7 +3181,8 @@ function doLogout(){
 
 /* ═══════════════════════════════════════════════════════════
    PLATFORM GOD MODE — Super-admin portal across all clients
-   Login: god@sproutripple.com / godmode2026
+   Login email: god@sproutripple.com — password is set server-side
+   (GOD_ADMIN_PASSWORD / Settings), never hardcoded here.
    ═══════════════════════════════════════════════════════════ */
 let isPlatformAdmin=false;
 let activeClientId=null; /* which client the platform admin is currently viewing */
@@ -3662,11 +3659,8 @@ function applyAppState(s){
   if(window.applyPayrollGovernanceState)window.applyPayrollGovernanceState(s.payrollGovernance);
 }
 
-// Persists a new God Admin password to the real backend (POST /api/platform/god-password) --
-// previously this only ever changed the frontend-only GOD_PASS variable, so the change silently
-// stopped applying the moment the page reloaded or a different device logged in, while every
-// backend-authorized action (Enter Portal, Log in as user, etc.) kept requiring the original
-// password regardless of what Settings showed as "saved." See godAdminPassword() in server.js.
+// Persists a new God Admin password to the real backend (POST /api/platform/god-password).
+// See godAdminPassword() in server.js for where it's authoritatively stored/checked.
 async function saveGodAdminPassword(){
   const current=document.getElementById('god-pass-current')?.value||'';
   const next=document.getElementById('god-pass-new')?.value?.trim()||'';
@@ -3675,7 +3669,6 @@ async function saveGodAdminPassword(){
   if(!window.apiRequest){alert('Not connected to the data service — cannot change the password right now.');return;}
   try{
     await window.apiRequest('/platform/god-password',{method:'POST',body:JSON.stringify({currentPassword:current,newPassword:next})});
-    GOD_PASS=next;
     document.getElementById('god-pass-current').value='';
     document.getElementById('god-pass-new').value='';
     alert('✅ God Admin password updated. This takes effect immediately for every login and device.');
@@ -4123,23 +4116,6 @@ const ICONS={
 const ico=(k,sz=16,col)=>`<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="none" stroke="${col||'currentColor'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[k]||''}</svg>`;
 
 /* ========== LOGIN ========== */
-function renderDemoAccounts(){
-  const accounts=[
-    ['admin@ph.com','Company Admin','AD','admin123','violet'],
-    ['juan@ph.com','Engineering Employee','JE','emp123','blue'],
-    ['carla@ph.com','Probationary Employee','CE','emp123','cyan'],
-    ['god@sproutripple.com','Platform Administrator','GA',GOD_PASS,'amber'],
-    ['admin@techcorp.ph','TechCorp Enterprise','TC','admin123','green'],
-    ['admin@mav.ph','MAV Starter','MV','admin123','rose'],
-  ];
-  return'<div class="demo-hint">Select an account to autofill its demo credentials.</div><div class="demo-account-list">'+
-    accounts.map(function(a){
-      var e=a[0],l=a[1],abbr=a[2],p=a[3],tone=a[4];
-      return'<button type="button" class="demo-account" onclick="document.getElementById(\'le\').value=\''+e+'\';document.getElementById(\'lp\').value=\''+p+'\';document.getElementById(\'le\').focus()">'+
-        '<span class="demo-avatar '+tone+'">'+abbr+'</span><span class="demo-account-copy"><strong>'+e+'</strong><small>'+l+'</small></span><span class="demo-arrow">→</span></button>';
-    }).join('')+'</div>';
-}
-
 function toggleLoginPassword(){const p=document.getElementById('lp'),b=document.getElementById('login-password-toggle');if(!p||!b)return;p.type=p.type==='password'?'text':'password';b.textContent=p.type==='password'?'Show':'Hide';}
 
 // Only ever rendered while `!user && sessionRestoring` (see render()'s dispatcher) -- meaning
@@ -4220,7 +4196,6 @@ function renderLogin(){
         <button class="login-submit" type="submit"><span>Sign in to workspace</span><span>→</span></button>
       </form>
       ${COMPANY.bundyPublicAccess?`<button class="login-bundy" type="button" onclick="doGuestBundy()"><span class="login-bundy-icon">${ico('clock',18)}</span><span><strong>Open Web Bundy</strong><small>Clock in or out without signing in</small></span><span>→</span></button>`:''}
-      ${scopedClient?'':`<details class="demo-accounts"><summary><span>Explore demo accounts</span><span class="demo-summary-icon">+</span></summary><div class="demo-accounts-body">${renderDemoAccounts()}</div></details>`}
       <div class="login-security">${ico('shield',13)} Your session is protected with role-based access.</div>
     </div>
   </section>
