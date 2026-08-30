@@ -568,8 +568,83 @@ function otpCodeEmailHtml(name, code, purposeSentence, expiryMinutes) {
     + `<p style="font-size:28px;font-weight:700;letter-spacing:6px;margin:12px 0">${code}</p>`
     + `<p>This code expires in ${expiryMinutes} minutes. If you didn't request this, you can ignore this email.</p>`;
 }
-function securityAlertHtml(name) {
-  return `<p>Hi ${name || 'there'},</p><p>Your AURA password was just changed.</p><p>If this wasn't you, contact your administrator immediately.</p>`;
+// Built-in wording for every outbound notification email -- an admin can override subject/body
+// per tenant from Company Settings (saved to state.company.emailTemplates[type]); composeEmail()
+// below falls back to these whenever a tenant hasn't customized a given type. Keep this list and
+// its {{placeholder}} names in sync with EMAIL_NOTIFICATION_TYPES in public/index.html (the
+// Settings UI's copy of the same static legend -- there's no shared module between the Node
+// backend and the browser bundle, so the two are intentionally duplicated).
+const DEFAULT_EMAIL_TEMPLATES = {
+  'leave-filed': {
+    subject: 'Leave request from {{employeeName}}',
+    body: 'Hi {{approverName}},\n\n{{employeeName}} filed a {{leaveType}} request for {{days}} day(s), from {{from}} to {{to}}.\n\nPlease review it in AURA.'
+  },
+  'leave-decided': {
+    subject: 'Your leave request was {{decision}}',
+    body: 'Hi {{employeeName}},\n\nYour {{leaveType}} request ({{from}} to {{to}}) was {{decision}} by {{decidedBy}}.'
+  },
+  'case-filed': {
+    subject: '{{formLabel}} filed by {{employeeName}}',
+    body: "Hi there,\n\n{{employeeName}} filed a {{formLabel}} request for {{date}}.\n\nPlease review it in AURA's Resolution Center."
+  },
+  'case-decided': {
+    subject: 'Update on {{caseSubject}}',
+    body: 'Hi {{employeeName}},\n\nYour request "{{caseSubject}}" was {{decision}} by {{decidedBy}}.'
+  },
+  'password-changed': {
+    subject: 'Your AURA password was changed',
+    body: "Hi {{employeeName}},\n\nYour AURA password was just changed by {{changedBy}}.\n\nIf this wasn't you, contact your administrator immediately."
+  },
+  'payroll-submitted': {
+    subject: 'Payroll submitted for approval ({{period}})',
+    body: 'Hi there,\n\n{{submittedBy}} submitted a payroll run for {{period}}.\n\nPlease review it in AURA.'
+  },
+  'payslip-released': {
+    subject: 'Your payslip is ready ({{period}})',
+    body: 'Hi {{employeeName}},\n\nYour payslip for {{period}} is now available in AURA under My Payslips.'
+  },
+  'employee-welcome': {
+    subject: 'Welcome to AURA',
+    body: "Hi {{employeeName}},\n\n{{addedBy}} just set up your AURA account.\n\nYour login:\nEmail: {{employeeEmail}}\nPassword: {{tempPassword}}\n\nWe recommend changing your password after your first login.\n\nSign in at your company's AURA link to get started."
+  },
+  'employee-offboarded': {
+    subject: 'Employee offboarded: {{employeeName}}',
+    body: 'Hi there,\n\n{{employeeName}} ({{eid}}) access to AURA was disabled by {{offboardedBy}}.'
+  }
+};
+// Subject lines are plain text (an email header, never rendered as HTML), so placeholders are
+// substituted with their raw values -- no escaping.
+function substitutePlain(text, vars) {
+  return String(text || '')
+    .replace(/\{\{(\w+)\}\}/g, (m, key) => (key in vars) ? String(vars[key]) : m)
+    .replace(/[\r\n]+/g, ' ')
+    .trim();
+}
+// Body templates are admin-authored plain text, never raw HTML -- the whole literal template is
+// escaped FIRST (so an admin can't inject markup/script into an email sent on their behalf), then
+// {{placeholders}} (which survive escaping intact) are substituted with escaped runtime values,
+// and blank-line-separated paragraphs become <p>/<br> for basic formatting.
+function renderTemplateBody(text, vars) {
+  let escaped = escapeEmailHtml(text || '');
+  escaped = escaped.replace(/\{\{(\w+)\}\}/g, (m, key) => (key in vars) ? escapeEmailHtml(String(vars[key])) : m);
+  return escaped.split(/\n{2,}/).map(p => '<p>' + p.replace(/\n/g, '<br>') + '</p>').join('');
+}
+// Looks up the tenant's own customized subject/body for `type` (state.company.emailTemplates,
+// edited from Company Settings) and falls back to DEFAULT_EMAIL_TEMPLATES when the tenant hasn't
+// customized it. Every /api/notify send and every inline password-changed alert compose through
+// this one function, so a tenant's customization applies consistently everywhere that email type
+// is sent from.
+async function composeEmail(tenantKey, type, vars) {
+  const def = DEFAULT_EMAIL_TEMPLATES[type];
+  if (!def) throw new Error('Unknown email template type: ' + type);
+  let custom = null;
+  try {
+    const record = await readState(tenantKey);
+    custom = record?.state?.company?.emailTemplates?.[type] || null;
+  } catch {}
+  const subjectSrc = (custom && custom.subject) ? custom.subject : def.subject;
+  const bodySrc = (custom && custom.body) ? custom.body : def.body;
+  return { subject: substitutePlain(subjectSrc, vars), html: renderTemplateBody(bodySrc, vars) };
 }
 
 /* ── Forgot password (self-service, unauthenticated) ──
@@ -601,7 +676,7 @@ app.post('/api/auth/forgot-password/request', async (req, res) => {
     if (clientRow.rowCount) {
       const c = clientRow.rows[0];
       const code = generateOtpCode();
-      passwordResetOtps.set(email, { codeHash: hashOtpCode(code), expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0, accountType: 'client-admin', clientId: c.id, name: c.name });
+      passwordResetOtps.set(email, { codeHash: hashOtpCode(code), expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0, accountType: 'client-admin', clientId: c.id, tenantKey: c.tenant_key, name: c.name });
       await sendAppEmail(email, 'Reset your AURA password', otpCodeEmailHtml(c.name, code, 'Use this code to reset your password:', 10));
       return res.json({ ok: true });
     }
@@ -652,7 +727,8 @@ app.post('/api/auth/forgot-password/reset', async (req, res) => {
         return { changed: true };
       }, email, entry.tenantKey);
     }
-    sendAppEmail(email, 'Your AURA password was changed', securityAlertHtml(entry.name)).catch(() => {});
+    composeEmail(entry.tenantKey, 'password-changed', { employeeName: entry.name || 'there', changedBy: 'you (via Forgot Password)' })
+      .then(({ subject, html }) => sendAppEmail(email, subject, html)).catch(() => {});
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: 'Unable to reset the password.', detail: error.message });
@@ -682,14 +758,16 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
         u.pass = newPassword;
         return { changed: true };
       }, sub, tenantKey);
-      sendAppEmail(sub, 'Your AURA password was changed', securityAlertHtml(match.firstName || match.name)).catch(() => {});
+      composeEmail(tenantKey, 'password-changed', { employeeName: match.firstName || match.name || 'there', changedBy: 'you' })
+        .then(({ subject, html }) => sendAppEmail(sub, subject, html)).catch(() => {});
       return res.json({ ok: true });
     }
     const clientRow = await pool.query('SELECT id, admin_pass FROM platform_clients WHERE tenant_key = $1', [tenantKey]);
     if (!clientRow.rowCount) return res.status(404).json({ error: 'Account not found.' });
     if (clientRow.rows[0].admin_pass !== currentPassword) return res.status(401).json({ error: 'Current password is incorrect.' });
     await pool.query('UPDATE platform_clients SET admin_pass = $1 WHERE id = $2', [newPassword, clientRow.rows[0].id]);
-    sendAppEmail(sub, 'Your AURA password was changed', securityAlertHtml()).catch(() => {});
+    composeEmail(tenantKey, 'password-changed', { employeeName: 'there', changedBy: 'you' })
+      .then(({ subject, html }) => sendAppEmail(sub, subject, html)).catch(() => {});
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: 'Unable to update the password.', detail: error.message });
@@ -1042,25 +1120,20 @@ app.post('/api/notify', requireAuth, async (req, res) => {
     if (type === 'leave-filed') {
       const approverEmail = String(payload.approverEmail || '').trim();
       if (!approverEmail || !(await emailBelongsToTenant(tenantKey, approverEmail))) return res.status(400).json({ error: 'Invalid recipient.' });
-      const approverName = escapeEmailHtml(payload.approverName || 'there');
-      const employeeName = escapeEmailHtml(payload.employeeName || 'An employee');
-      const leaveType = escapeEmailHtml(payload.leaveType || 'leave');
-      const from = escapeEmailHtml(payload.from || '');
-      const to = escapeEmailHtml(payload.to || '');
-      const days = escapeEmailHtml(payload.days ?? '');
-      await sendAppEmail(approverEmail, `Leave request from ${payload.employeeName || 'an employee'}`,
-        `<p>Hi ${approverName},</p><p><strong>${employeeName}</strong> filed a ${leaveType} request for ${days} day(s), ${from} to ${to}.</p><p>Please review it in AURA.</p>`);
+      const { subject, html } = await composeEmail(tenantKey, 'leave-filed', {
+        approverName: payload.approverName || 'there', employeeName: payload.employeeName || 'An employee',
+        leaveType: payload.leaveType || 'leave', from: payload.from || '', to: payload.to || '', days: payload.days ?? ''
+      });
+      await sendAppEmail(approverEmail, subject, html);
     } else if (type === 'leave-decided') {
       const employeeEmail = String(payload.employeeEmail || '').trim();
       if (!employeeEmail || !(await emailBelongsToTenant(tenantKey, employeeEmail))) return res.status(400).json({ error: 'Invalid recipient.' });
-      const employeeName = escapeEmailHtml(payload.employeeName || 'there');
-      const leaveType = escapeEmailHtml(payload.leaveType || 'leave');
-      const from = escapeEmailHtml(payload.from || '');
-      const to = escapeEmailHtml(payload.to || '');
-      const decidedBy = payload.decidedBy ? escapeEmailHtml(payload.decidedBy) : '';
-      const verb = payload.decision === 'approved' ? 'approved' : 'rejected';
-      await sendAppEmail(employeeEmail, `Your leave request was ${verb}`,
-        `<p>Hi ${employeeName},</p><p>Your ${leaveType} request (${from} to ${to}) was <strong>${verb}</strong>${decidedBy ? ' by ' + decidedBy : ''}.</p>`);
+      const { subject, html } = await composeEmail(tenantKey, 'leave-decided', {
+        employeeName: payload.employeeName || 'there', leaveType: payload.leaveType || 'leave',
+        from: payload.from || '', to: payload.to || '',
+        decision: payload.decision === 'approved' ? 'approved' : 'rejected', decidedBy: payload.decidedBy || 'your approver'
+      });
+      await sendAppEmail(employeeEmail, subject, html);
     } else if (type === 'case-filed') {
       // Attendance forms (time correction, OT, RDH OT, WFH, OB, schedule adjustment, etc.) file
       // into the same shared Resolution Center queue as general HR/payroll cases -- there's no
@@ -1073,11 +1146,11 @@ app.post('/api/notify', requireAuth, async (req, res) => {
         if (await emailBelongsToTenant(tenantKey, email)) validated.push(email);
       }
       if (!validated.length) return res.status(400).json({ error: 'No valid recipients.' });
-      const employeeName = escapeEmailHtml(payload.employeeName || 'An employee');
-      const formLabel = escapeEmailHtml(payload.formLabel || 'attendance request');
-      const date = escapeEmailHtml(payload.date || '');
-      await sendAppEmail(validated, `${payload.formLabel || 'Attendance request'} filed by ${payload.employeeName || 'an employee'}`,
-        `<p>Hi there,</p><p><strong>${employeeName}</strong> filed a <strong>${formLabel}</strong> request${date ? ' for ' + date : ''}.</p><p>Please review it in AURA's Resolution Center.</p>`);
+      const { subject, html } = await composeEmail(tenantKey, 'case-filed', {
+        employeeName: payload.employeeName || 'An employee', formLabel: payload.formLabel || 'attendance request',
+        date: payload.date || '(no date given)'
+      });
+      await sendAppEmail(validated, subject, html);
     } else if (type === 'case-decided') {
       // Fires from the same resolveCase() action that decides every Resolution Center case --
       // attendance-linked or not -- so this one trigger covers both "attendance approved/
@@ -1085,12 +1158,11 @@ app.post('/api/notify', requireAuth, async (req, res) => {
       // same underlying action in this app.
       const employeeEmail = String(payload.employeeEmail || '').trim();
       if (!employeeEmail || !(await emailBelongsToTenant(tenantKey, employeeEmail))) return res.status(400).json({ error: 'Invalid recipient.' });
-      const employeeName = escapeEmailHtml(payload.employeeName || 'there');
-      const caseSubject = escapeEmailHtml(payload.caseSubject || 'your case');
-      const decidedBy = payload.decidedBy ? escapeEmailHtml(payload.decidedBy) : '';
-      const verb = payload.decision === 'resolved' ? 'approved' : 'rejected';
-      await sendAppEmail(employeeEmail, `Update on ${payload.caseSubject || 'your case'}`,
-        `<p>Hi ${employeeName},</p><p>Your request "<strong>${caseSubject}</strong>" was <strong>${verb}</strong>${decidedBy ? ' by ' + decidedBy : ''}.</p>`);
+      const { subject, html } = await composeEmail(tenantKey, 'case-decided', {
+        employeeName: payload.employeeName || 'there', caseSubject: payload.caseSubject || 'your case',
+        decision: payload.decision === 'resolved' ? 'approved' : 'rejected', decidedBy: payload.decidedBy || 'your admin team'
+      });
+      await sendAppEmail(employeeEmail, subject, html);
     } else if (type === 'password-changed') {
       // Admin-reset-for-employee path (applyPasswordReset() in index.html) -- the only password
       // mutation that doesn't already go through server.js directly, so it's the only one that
@@ -1098,9 +1170,10 @@ app.post('/api/notify', requireAuth, async (req, res) => {
       // point of change (see change-password and forgot-password/reset for those).
       const employeeEmail = String(payload.employeeEmail || '').trim();
       if (!employeeEmail || !(await emailBelongsToTenant(tenantKey, employeeEmail))) return res.status(400).json({ error: 'Invalid recipient.' });
-      const changedBy = payload.changedBy ? escapeEmailHtml(payload.changedBy) : 'an administrator';
-      await sendAppEmail(employeeEmail, 'Your AURA password was changed',
-        `${securityAlertHtml(escapeEmailHtml(payload.employeeName))}<p>Changed by ${changedBy}.</p>`);
+      const { subject, html } = await composeEmail(tenantKey, 'password-changed', {
+        employeeName: payload.employeeName || 'there', changedBy: payload.changedBy || 'an administrator'
+      });
+      await sendAppEmail(employeeEmail, subject, html);
     } else if (type === 'payroll-submitted') {
       // Every payroll workflow stage shares the same 'payroll_approve' permission rather than
       // being tied to a specific named individual (see notifyPayrollSubmitted() in
@@ -1111,24 +1184,23 @@ app.post('/api/notify', requireAuth, async (req, res) => {
         if (await emailBelongsToTenant(tenantKey, email)) validated.push(email);
       }
       if (!validated.length) return res.status(400).json({ error: 'No valid recipients.' });
-      const period = escapeEmailHtml(payload.period || '');
-      const submittedBy = escapeEmailHtml(payload.submittedBy || 'A payroll maker');
-      await sendAppEmail(validated, `Payroll submitted for approval${payload.period ? ' (' + payload.period + ')' : ''}`,
-        `<p>Hi there,</p><p><strong>${submittedBy}</strong> submitted a payroll run${period ? ' for <strong>' + period + '</strong>' : ''}.</p><p>Please review it in AURA.</p>`);
+      const { subject, html } = await composeEmail(tenantKey, 'payroll-submitted', {
+        submittedBy: payload.submittedBy || 'A payroll maker', period: payload.period || 'the current period'
+      });
+      await sendAppEmail(validated, subject, html);
     } else if (type === 'payslip-released') {
       // One individual email per employee -- batching every employee's address into a single
       // email's recipient list would expose the whole payroll roster's emails to each other,
       // which "your payslip is ready" should never do (unlike the admin/HR-facing types above,
       // where every recipient is already staff who'd reasonably see each other listed).
       const employees = Array.isArray(payload.employees) ? payload.employees : [];
-      const period = escapeEmailHtml(payload.period || '');
+      const period = payload.period || 'the current period';
       let sent = 0;
       for (const entry of employees) {
         const email = String((entry && entry.email) || '').trim();
         if (!email || !(await emailBelongsToTenant(tenantKey, email))) continue;
-        const name = escapeEmailHtml((entry && entry.name) || 'there');
-        await sendAppEmail(email, `Your payslip is ready${payload.period ? ' (' + payload.period + ')' : ''}`,
-          `<p>Hi ${name},</p><p>Your payslip${period ? ' for <strong>' + period + '</strong>' : ''} is now available in AURA under My Payslips.</p>`);
+        const { subject, html } = await composeEmail(tenantKey, 'payslip-released', { employeeName: (entry && entry.name) || 'there', period });
+        await sendAppEmail(email, subject, html);
         sent++;
       }
       if (!sent) return res.status(400).json({ error: 'No valid recipients.' });
@@ -1141,13 +1213,11 @@ app.post('/api/notify', requireAuth, async (req, res) => {
       if (!(await callerHasPerm(tenantKey, req.session, 'emp_add'))) return res.status(403).json({ error: 'Employee management access required.' });
       const employeeEmail = String(payload.employeeEmail || '').trim();
       if (!employeeEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(employeeEmail)) return res.status(400).json({ error: 'Invalid recipient.' });
-      const employeeName = escapeEmailHtml(payload.employeeName || 'there');
-      const addedBy = escapeEmailHtml(payload.addedBy || 'your HR team');
-      const tempPassword = payload.tempPassword ? escapeEmailHtml(payload.tempPassword) : '';
-      await sendAppEmail(employeeEmail, 'Welcome to AURA',
-        `<p>Hi ${employeeName},</p><p>${addedBy} just set up your AURA account.</p>`
-        + (tempPassword ? `<p>Your login:</p><p>Email: <strong>${escapeEmailHtml(employeeEmail)}</strong><br>Password: <strong>${tempPassword}</strong></p><p>We recommend changing your password after your first login.</p>` : '')
-        + `<p>Sign in at your company's AURA link to get started.</p>`);
+      const { subject, html } = await composeEmail(tenantKey, 'employee-welcome', {
+        employeeName: payload.employeeName || 'there', employeeEmail, tempPassword: payload.tempPassword || '',
+        addedBy: payload.addedBy || 'your HR team'
+      });
+      await sendAppEmail(employeeEmail, subject, html);
     } else if (type === 'employee-offboarded') {
       const recipients = Array.isArray(payload.recipientEmails) ? payload.recipientEmails.map(e => String(e || '').trim()).filter(Boolean) : [];
       const validated = [];
@@ -1155,11 +1225,10 @@ app.post('/api/notify', requireAuth, async (req, res) => {
         if (await emailBelongsToTenant(tenantKey, email)) validated.push(email);
       }
       if (!validated.length) return res.status(400).json({ error: 'No valid recipients.' });
-      const employeeName = escapeEmailHtml(payload.employeeName || 'An employee');
-      const eid = payload.eid ? escapeEmailHtml(payload.eid) : '';
-      const offboardedBy = escapeEmailHtml(payload.offboardedBy || 'System');
-      await sendAppEmail(validated, `Employee offboarded: ${payload.employeeName || 'an employee'}`,
-        `<p>Hi there,</p><p><strong>${employeeName}</strong>${eid ? ' (' + eid + ')' : ''}'s AURA access was disabled by ${offboardedBy}.</p>`);
+      const { subject, html } = await composeEmail(tenantKey, 'employee-offboarded', {
+        employeeName: payload.employeeName || 'An employee', eid: payload.eid || '—', offboardedBy: payload.offboardedBy || 'System'
+      });
+      await sendAppEmail(validated, subject, html);
     } else {
       return res.status(400).json({ error: 'Unknown notification type.' });
     }
