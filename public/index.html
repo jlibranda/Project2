@@ -15415,7 +15415,7 @@ function resetEmailTemplateToDefault(){
 const COMPANY_SETTINGS_TABS=[
   {key:'branding',label:'Branding & General'},
   {key:'payroll',label:'Payroll Defaults'},
-  {key:'bir',label:'BIR & Tax'},
+  {key:'bir',label:'Statutory Tables'},
   {key:'ai',label:'AI Assistant'},
   {key:'email',label:'Email Templates'},
 ];
@@ -15680,6 +15680,34 @@ function pgCompanySettings(){
         <td class="mono" style="font-weight:600">${fmt(totalSSS(ms))}</td>
       </tr>`).join('')}</tbody></table>
       <div style="margin-top:8px;font-size:11px;color:var(--txt3)">To edit MPF rates: Gov't Remittances → Contribution Rates → SSS section</div>
+    </div>
+
+    <!-- PhilHealth Preview -->
+    <div class="card">
+      <div class="card-title" style="margin-bottom:1rem">PhilHealth Preview</div>
+      <div style="font-size:12px;color:var(--txt3);margin-bottom:8px">${GOVT_RATES.philhealth.ratePercent}% employee share · floor ₱${GOVT_RATES.philhealth.minSalary.toLocaleString()} → ₱${GOVT_RATES.philhealth.minContrib.toLocaleString()} · ceiling ₱${GOVT_RATES.philhealth.maxSalary.toLocaleString()} → ₱${GOVT_RATES.philhealth.maxContrib.toLocaleString()}</div>
+      <table><thead><tr><th>Monthly Salary</th><th>Employee Share</th><th>Employer Share</th><th>Total</th></tr></thead>
+      <tbody>${[15000,20000,22000,25000,30000].map(ms=>`<tr>
+        <td class="mono">${fmt(ms)}</td>
+        <td class="mono" style="font-size:12px">${fmt(phContrib(ms))}</td>
+        <td class="mono" style="font-size:12px">${fmt(phErShare(ms))}</td>
+        <td class="mono" style="font-weight:600">${fmt(+(phContrib(ms)+phErShare(ms)).toFixed(2))}</td>
+      </tr>`).join('')}</tbody></table>
+      <div style="margin-top:8px;font-size:11px;color:var(--txt3)">To edit PhilHealth rates: Gov't Remittances → Contribution Rates → PhilHealth section</div>
+    </div>
+
+    <!-- Pag-IBIG Preview -->
+    <div class="card">
+      <div class="card-title" style="margin-bottom:1rem">Pag-IBIG (HDMF) Preview</div>
+      <div style="font-size:12px;color:var(--txt3);margin-bottom:8px">${GOVT_RATES.pagibig.ratePercent}% employee share (${GOVT_RATES.pagibig.lowRatePercent}% if ≤ ₱${GOVT_RATES.pagibig.lowRateThreshold.toLocaleString()}) · fund salary cap ₱${GOVT_RATES.pagibig.maxFundSalary.toLocaleString()} · max ₱${GOVT_RATES.pagibig.maxContrib.toLocaleString()}</div>
+      <table><thead><tr><th>Monthly Salary</th><th>Employee Share</th><th>Employer Share</th><th>Total</th></tr></thead>
+      <tbody>${[1000,5000,10000,15000,20000].map(ms=>`<tr>
+        <td class="mono">${fmt(ms)}</td>
+        <td class="mono" style="font-size:12px">${fmt(piContrib(ms))}</td>
+        <td class="mono" style="font-size:12px">${fmt(piErShare(ms))}</td>
+        <td class="mono" style="font-weight:600">${fmt(+(piContrib(ms)+piErShare(ms)).toFixed(2))}</td>
+      </tr>`).join('')}</tbody></table>
+      <div style="margin-top:8px;font-size:11px;color:var(--txt3)">To edit Pag-IBIG rates: Gov't Remittances → Contribution Rates → Pag-IBIG section</div>
     </div>
 
   </div>
