@@ -11271,6 +11271,30 @@ function renderModal(){
       <button class="btn btn-primary" onclick="${isNew?'saveNewLevel()':'saveEditLevel()'}">✓ ${isNew?'Create Level':'Save Changes'}</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
+  }else if(modal.type==='emailTemplateEdit'){
+    const t=EMAIL_NOTIFICATION_TYPES.find(x=>x.key===modal.key);
+    const isCustom=!!(COMPANY.emailTemplates&&COMPANY.emailTemplates[modal.key]);
+    inner=`<div class="modal-title">✎ ${esc(t?t.label:modal.key)}<button class="close-x" onclick="closeMConfirmed()">×</button></div>
+    <div style="font-size:12px;color:var(--txt3);margin-bottom:14px">${esc(t?t.desc:'')}</div>
+    <div class="field" style="margin-bottom:10px">
+      <label>Subject</label>
+      <input id="et-subject" class="finput" value="${esc(modal.subject)}" oninput="modal.subject=this.value"/>
+    </div>
+    <div class="field" style="margin-bottom:10px">
+      <label>Message</label>
+      <textarea id="et-body" class="finput" rows="9" style="font-family:inherit;resize:vertical;line-height:1.5" oninput="modal.body=this.value">${esc(modal.body)}</textarea>
+    </div>
+    <div style="font-size:11px;color:var(--txt3);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 11px;margin-bottom:14px">
+      <strong>Available placeholders:</strong> ${(t?t.vars:[]).map(v=>`<code style="background:var(--card);padding:1px 5px;border-radius:4px;margin-right:4px">{{${v}}}</code>`).join('')}
+      <div style="margin-top:5px">These are filled in automatically when the email is sent. Leave a blank line between paragraphs.</div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:space-between;align-items:center">
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="saveEmailTemplateEdit()">💾 Save</button>
+        <button class="btn" onclick="closeM()">Cancel</button>
+      </div>
+      ${isCustom?`<button class="btn btn-sm" style="color:var(--red)" onclick="resetEmailTemplateToDefault()">↺ Reset to Default</button>`:''}
+    </div>`;
   }else if(modal.type==='impersonatePicker'){
     const client=PLATFORM_CLIENTS.find(x=>x.id===modal.clientId);
     const pickerSearch=modal.pickerSearch||'';
@@ -13365,7 +13389,7 @@ function renderModal(){
     }
   }
   const attDetailMaximized=modal&&modal.type==='attReportDetail'&&modal.maximized;
-  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeMConfirmed()"><div class="modal-box" style="${attDetailMaximized?'width:96vw;max-width:96vw;height:90vh;max-height:90vh':modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance'||modal.type==='bulkAttendance'||modal.type==='attReportDetail'||modal.type==='shiftEditor'||modal.type==='personalScheduleEditor'||modal.type==='bulkPersonalSchedule')?'width:1100px;max-width:98vw':''}">${inner}</div></div>`;
+  const html=`<div class="modal-overlay" onclick="if(event.target===this)closeMConfirmed()"><div class="modal-box" style="${attDetailMaximized?'width:96vw;max-width:96vw;height:90vh;max-height:90vh':modal&&(modal.type==='itBulk'||modal.type==='bulkAdj'||modal.type==='bulkLeaveBalance'||modal.type==='bulkAttendance'||modal.type==='attReportDetail'||modal.type==='shiftEditor'||modal.type==='personalScheduleEditor'||modal.type==='bulkPersonalSchedule')?'width:1100px;max-width:98vw':modal&&modal.type==='emailTemplateEdit'?'width:640px;max-width:95vw':''}">${inner}</div></div>`;
   setTimeout(updatePayGroupPreview,0);
   return html;
 }
@@ -15336,6 +15360,58 @@ function rerenderPreservingInputs(){
     });
   }
 }
+// Mirrors DEFAULT_EMAIL_TEMPLATES + placeholder vars in server.js -- no shared module between
+// the browser bundle and the Node backend, so kept in sync by hand. This copy only drives the
+// Company Settings editor UI (labels, descriptions, default text for "Reset to Default", and the
+// placeholder legend); the actual outbound email always composes server-side against its own copy.
+const EMAIL_NOTIFICATION_TYPES=[
+  {key:'leave-filed',label:'Leave request filed',desc:'Sent to the approver when an employee files a leave request.',vars:['approverName','employeeName','leaveType','from','to','days']},
+  {key:'leave-decided',label:'Leave request decided',desc:'Sent to the employee when their leave request is approved or rejected.',vars:['employeeName','leaveType','from','to','decision','decidedBy']},
+  {key:'case-filed',label:'Attendance form filed',desc:'Sent to HR/Payroll admins when an employee files an attendance form (time correction, OT, WFH, OB, etc.).',vars:['employeeName','formLabel','date']},
+  {key:'case-decided',label:'Resolution Center case decided',desc:'Sent to the employee when their Resolution Center case is resolved.',vars:['employeeName','caseSubject','decision','decidedBy']},
+  {key:'password-changed',label:'Password changed alert',desc:"Sent whenever a password changes — self-service, forgot password, or an admin resetting an employee's password.",vars:['employeeName','changedBy']},
+  {key:'payroll-submitted',label:'Payroll submitted for approval',desc:'Sent to everyone with payroll approval access when a payroll run is submitted.',vars:['submittedBy','period']},
+  {key:'payslip-released',label:'Payslip released',desc:'Sent individually to each employee when their payslip becomes available.',vars:['employeeName','period']},
+  {key:'employee-welcome',label:'New employee welcome',desc:"Sent to a new hire with their AURA login when they're added (single or bulk upload).",vars:['employeeName','employeeEmail','tempPassword','addedBy']},
+  {key:'employee-offboarded',label:'Employee offboarded',desc:"Sent to admins when an employee's access is disabled.",vars:['employeeName','eid','offboardedBy']},
+];
+const DEFAULT_EMAIL_TEMPLATES={
+  'leave-filed':{subject:'Leave request from {{employeeName}}',body:'Hi {{approverName}},\n\n{{employeeName}} filed a {{leaveType}} request for {{days}} day(s), from {{from}} to {{to}}.\n\nPlease review it in AURA.'},
+  'leave-decided':{subject:'Your leave request was {{decision}}',body:'Hi {{employeeName}},\n\nYour {{leaveType}} request ({{from}} to {{to}}) was {{decision}} by {{decidedBy}}.'},
+  'case-filed':{subject:'{{formLabel}} filed by {{employeeName}}',body:"Hi there,\n\n{{employeeName}} filed a {{formLabel}} request for {{date}}.\n\nPlease review it in AURA's Resolution Center."},
+  'case-decided':{subject:'Update on {{caseSubject}}',body:'Hi {{employeeName}},\n\nYour request "{{caseSubject}}" was {{decision}} by {{decidedBy}}.'},
+  'password-changed':{subject:'Your AURA password was changed',body:"Hi {{employeeName}},\n\nYour AURA password was just changed by {{changedBy}}.\n\nIf this wasn't you, contact your administrator immediately."},
+  'payroll-submitted':{subject:'Payroll submitted for approval ({{period}})',body:'Hi there,\n\n{{submittedBy}} submitted a payroll run for {{period}}.\n\nPlease review it in AURA.'},
+  'payslip-released':{subject:'Your payslip is ready ({{period}})',body:'Hi {{employeeName}},\n\nYour payslip for {{period}} is now available in AURA under My Payslips.'},
+  'employee-welcome':{subject:'Welcome to AURA',body:"Hi {{employeeName}},\n\n{{addedBy}} just set up your AURA account.\n\nYour login:\nEmail: {{employeeEmail}}\nPassword: {{tempPassword}}\n\nWe recommend changing your password after your first login.\n\nSign in at your company's AURA link to get started."},
+  'employee-offboarded':{subject:'Employee offboarded: {{employeeName}}',body:'Hi there,\n\n{{employeeName}} ({{eid}}) access to AURA was disabled by {{offboardedBy}}.'},
+};
+function openEmailTemplateEdit(key){
+  const def=DEFAULT_EMAIL_TEMPLATES[key];
+  if(!def)return;
+  const custom=COMPANY.emailTemplates&&COMPANY.emailTemplates[key];
+  modal={type:'emailTemplateEdit',key,subject:(custom&&custom.subject)||def.subject,body:(custom&&custom.body)||def.body};
+  render();
+}
+function saveEmailTemplateEdit(){
+  if(!modal||modal.type!=='emailTemplateEdit')return;
+  const subject=(modal.subject||'').trim();
+  const body=(modal.body||'').trim();
+  if(!subject||!body){alert('Subject and message body are both required.');return;}
+  if(!COMPANY.emailTemplates)COMPANY.emailTemplates={};
+  COMPANY.emailTemplates[modal.key]={subject,body};
+  closeM();
+  queueSync('Company_Settings');
+  toast('Email template saved.','success');
+}
+function resetEmailTemplateToDefault(){
+  if(!modal||modal.type!=='emailTemplateEdit')return;
+  if(!confirm('Reset this email to the default subject and message?'))return;
+  if(COMPANY.emailTemplates)delete COMPANY.emailTemplates[modal.key];
+  closeM();
+  queueSync('Company_Settings');
+  toast('Reset to default.','info');
+}
 function pgCompanySettings(){
   ensureAnnualizedTaxConfig();
   const b=_pendingBrand||COMPANY;
@@ -15577,6 +15653,24 @@ function pgCompanySettings(){
         <td class="mono" style="font-weight:600">${fmt(totalSSS(ms))}</td>
       </tr>`).join('')}</tbody></table>
       <div style="margin-top:8px;font-size:11px;color:var(--txt3)">To edit MPF rates: Gov't Remittances → Contribution Rates → SSS section</div>
+    </div>
+
+    <!-- Email Templates -->
+    <div class="card" style="grid-column:span 2">
+      <div class="card-title" style="margin-bottom:.25rem">Email Templates</div>
+      <div style="font-size:12px;color:var(--txt3);margin-bottom:1rem">Customize the subject and message for each automatic notification email. Emails still get sent automatically on the same triggers — this only changes the wording.</div>
+      <div style="display:grid;gap:8px">
+        ${EMAIL_NOTIFICATION_TYPES.map(t=>{
+          const custom=COMPANY.emailTemplates&&COMPANY.emailTemplates[t.key];
+          return`<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:8px">
+            <div style="flex:1">
+              <div style="font-weight:600;font-size:13px">${esc(t.label)}${custom?' <span style="font-size:10px;font-weight:600;color:var(--accent);background:var(--accent-bg);padding:2px 7px;border-radius:999px">Customized</span>':''}</div>
+              <div style="font-size:11px;color:var(--txt3)">${esc(t.desc)}</div>
+            </div>
+            <button class="btn btn-sm" onclick="openEmailTemplateEdit('${t.key}')">✎ Edit</button>
+          </div>`;
+        }).join('')}
+      </div>
     </div>
 
   </div>`;
