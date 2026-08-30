@@ -4015,6 +4015,30 @@ function applyPasswordReset(){
   alert(`✅ Password updated for ${e.name}.\n\nNew password: ${newPass}`);
   render();queueSync('Employees');
 }
+// Goes through the backend (unlike applyPasswordReset() above, which is fine mutating USERS[]
+// client-side since an admin resetting an EMPLOYEE's password always has a real USERS[] entry
+// to save into via the normal full-state PUT). The CURRENTLY LOGGED IN user changing their own
+// password might instead be a company-admin login (platform_clients.admin_pass, not a USERS[]
+// entry at all) -- a client-only mutation here would silently do nothing for that case, and
+// never actually checked the current password either. See POST /api/auth/change-password.
+async function submitChangeOwnPassword(){
+  const old=document.getElementById('cp-old')?.value?.trim();
+  const np=document.getElementById('cp-new')?.value?.trim();
+  const np2=document.getElementById('cp-new2')?.value?.trim();
+  const err=document.getElementById('cp-err');
+  const showErr=msg=>{err.textContent=msg;err.style.display='block';};
+  if(!old||!np||!np2){showErr('All fields are required.');return;}
+  if(np.length<6){showErr('New password must be at least 6 characters.');return;}
+  if(np!==np2){showErr('New passwords do not match.');return;}
+  if(!window.apiRequest){showErr('Not connected to the data service — cannot change your password right now.');return;}
+  try{
+    await window.apiRequest('/auth/change-password',{method:'POST',body:JSON.stringify({currentPassword:old,newPassword:np})});
+    const u=USERS.find(x=>x.id===user.id);if(u)u.pass=np;
+    closeM();toast('Password updated successfully!','success');
+  }catch(e){
+    showErr(e.message||'Unable to update your password.');
+  }
+}
 function goView(v){
   if(view==='webbundy'){stopBundyCam();}
   if(!canAccess(v)&&user.role!=='admin'){alert('You do not have access to this module.');return;}
@@ -4192,6 +4216,7 @@ function renderLogin(){
       <form class="login-form" onsubmit="event.preventDefault();doLogin()">
         <div class="field"><label for="le">Work email</label><div class="login-input-wrap"><span>${ico('people',17)}</span><input id="le" type="email" value="${scopedClient?'':'admin@ph.com'}" autocomplete="username"/></div></div>
         <div class="field"><div class="login-label-row"><label for="lp">Password</label><span>Protected access</span></div><div class="login-input-wrap"><span>${ico('shield',17)}</span><input id="lp" type="password" value="${scopedClient?'':'admin123'}" autocomplete="current-password"/><button id="login-password-toggle" type="button" onclick="toggleLoginPassword()" aria-label="Show or hide password">Show</button></div></div>
+        <div style="text-align:right;margin:-4px 0 2px"><button type="button" onclick="startForgotPassword()" style="background:none;border:none;color:var(--accent);font-size:12px;cursor:pointer;padding:0">Forgot password?</button></div>
         <p id="lerr" class="login-error">Invalid email or password. Please check your details and try again.</p>
         <button class="login-submit" type="submit"><span>Sign in to workspace</span><span>→</span></button>
       </form>
@@ -4216,9 +4241,11 @@ function startGuestBundy(){
   requestAnimationFrame(()=>document.getElementById('gb-email')?.focus());
 }
 function cancelGuestBundy(){guestBundy=null;stopBundyCam();render();}
-async function bundyApiRequest(path,options,bundyToken){
+// Shared by every pre-login/token-scoped flow on this page (guest Web Bundy, forgot password) --
+// unlike window.apiRequest (persistence.js), this never touches the main session token.
+async function publicApiRequest(path,options,bearerToken){
   const headers=Object.assign({'Content-Type':'application/json'},(options&&options.headers)||{});
-  if(bundyToken)headers.Authorization='Bearer '+bundyToken;
+  if(bearerToken)headers.Authorization='Bearer '+bearerToken;
   const res=await fetch((window.apiHost||'')+'/api'+path,Object.assign({},options||{},{headers}));
   const result=await res.json().catch(()=>({}));
   if(!res.ok){const err=new Error(result.error||'The data service returned an error.');err.status=res.status;throw err;}
@@ -4229,7 +4256,7 @@ async function guestBundyRequestCode(){
   if(!email){guestBundy.error='Enter your company email.';render();return;}
   guestBundy.busy=true;guestBundy.error='';render();
   try{
-    await bundyApiRequest('/bundy/otp/request',{method:'POST',body:JSON.stringify({email})});
+    await publicApiRequest('/bundy/otp/request',{method:'POST',body:JSON.stringify({email})});
     guestBundy.email=email;guestBundy.step='code';guestBundy.busy=false;render();
     requestAnimationFrame(()=>document.getElementById('gb-code')?.focus());
   }catch(e){
@@ -4242,9 +4269,9 @@ async function guestBundyVerifyCode(){
   if(!code){guestBundy.error='Enter the code from your email.';render();return;}
   guestBundy.busy=true;guestBundy.error='';render();
   try{
-    const r=await bundyApiRequest('/bundy/otp/verify',{method:'POST',body:JSON.stringify({email:guestBundy.email,code})});
+    const r=await publicApiRequest('/bundy/otp/verify',{method:'POST',body:JSON.stringify({email:guestBundy.email,code})});
     guestBundy.token=r.token;guestBundy.name=r.name||'';guestBundy.busy=false;
-    try{const t=await bundyApiRequest('/bundy/today',{method:'GET'},r.token);guestBundy.todayLogs=t.logs||[];}catch(e){guestBundy.todayLogs=[];}
+    try{const t=await publicApiRequest('/bundy/today',{method:'GET'},r.token);guestBundy.todayLogs=t.logs||[];}catch(e){guestBundy.todayLogs=[];}
     guestBundy.step='kiosk';render();
     setTimeout(()=>{startBundyClock();if(COMPANY.bundySelfie&&!selfieData&&!camStream)startBundyCam();},120);
   }catch(e){
@@ -4255,11 +4282,11 @@ async function guestBundyPunch(type){
   if(!geoSt.lat){alert('Please get your location first before clocking in.');return;}
   guestBundy.busy=true;render();
   try{
-    const r=await bundyApiRequest('/bundy/punch',{method:'POST',body:JSON.stringify({
+    const r=await publicApiRequest('/bundy/punch',{method:'POST',body:JSON.stringify({
       type,lat:geoSt.lat,lng:geoSt.lng,accuracy:geoSt.accuracy,address:geoSt.address,
       withinZone:(geoSt.zoneResult&&geoSt.zoneResult.within)||false,selfie:selfieData
     })},guestBundy.token);
-    try{const t=await bundyApiRequest('/bundy/today',{method:'GET'},guestBundy.token);guestBundy.todayLogs=t.logs||[];}catch(e){}
+    try{const t=await publicApiRequest('/bundy/today',{method:'GET'},guestBundy.token);guestBundy.todayLogs=t.logs||[];}catch(e){}
     guestBundy.busy=false;selfieData=null;
     const zoneNote=(geoSt.zoneResult&&geoSt.zoneResult.within)?'\n✅ Within office zone':'\n⚠ You are outside the office zone';
     alert((type==='in'?'Clocked IN at '+r.time:'Clocked OUT at '+r.time)+zoneNote);
@@ -4400,6 +4427,85 @@ function renderGuestBundyKiosk(){
   </div>
 </main>`;
 }
+
+/* ── Forgot password (self-service, email OTP) ────────────────────────────
+   Same shape as the guest Web Bundy flow above (email -> code, via publicApiRequest), but ends
+   by resetting a password server-side instead of issuing a scoped token. Covers both a real
+   employee's login and a company's own admin login (server.js resolves which one the email
+   belongs to) -- never touches `user`/`view`/the main session either. */
+let forgotPassword=null; /* {step:'email'|'reset', email, code, newPass, newPass2, busy, error} */
+function startForgotPassword(){
+  forgotPassword={step:'email',email:'',code:'',newPass:'',newPass2:'',busy:false,error:''};
+  render();
+  requestAnimationFrame(()=>document.getElementById('fp-email')?.focus());
+}
+function cancelForgotPassword(){forgotPassword=null;render();}
+function forgotPasswordChangeEmail(){forgotPassword.step='email';forgotPassword.code='';forgotPassword.error='';render();requestAnimationFrame(()=>document.getElementById('fp-email')?.focus());}
+async function forgotPasswordRequestCode(){
+  const email=(document.getElementById('fp-email')?.value||'').trim();
+  if(!email){forgotPassword.error='Enter your email.';render();return;}
+  forgotPassword.busy=true;forgotPassword.error='';render();
+  try{
+    await publicApiRequest('/auth/forgot-password/request',{method:'POST',body:JSON.stringify({email})});
+    forgotPassword.email=email;forgotPassword.step='reset';forgotPassword.busy=false;render();
+    requestAnimationFrame(()=>document.getElementById('fp-code')?.focus());
+  }catch(e){
+    forgotPassword.busy=false;forgotPassword.error=e.message||'Unable to send the verification code.';render();
+  }
+}
+async function forgotPasswordSubmitReset(){
+  const code=(document.getElementById('fp-code')?.value||'').trim();
+  const np=(document.getElementById('fp-new')?.value||'').trim();
+  const np2=(document.getElementById('fp-new2')?.value||'').trim();
+  if(!code||!np||!np2){forgotPassword.error='All fields are required.';render();return;}
+  if(np.length<6){forgotPassword.error='New password must be at least 6 characters.';render();return;}
+  if(np!==np2){forgotPassword.error='New passwords do not match.';render();return;}
+  forgotPassword.busy=true;forgotPassword.error='';render();
+  try{
+    await publicApiRequest('/auth/forgot-password/reset',{method:'POST',body:JSON.stringify({email:forgotPassword.email,code,newPassword:np})});
+    forgotPassword=null;render();
+    toast('Password reset. You can sign in with your new password now.','success');
+  }catch(e){
+    forgotPassword.busy=false;forgotPassword.error=e.message||'Unable to reset your password.';render();
+  }
+}
+function renderForgotPassword(){
+  const f=forgotPassword;
+  const isReset=f.step==='reset';
+  return`<main class="login-wrap">
+  <section class="login-showcase" aria-label="Forgot password">
+    <div class="login-glow login-glow-one"></div><div class="login-glow login-glow-two"></div>
+    <div class="login-showcase-inner">
+      <div class="login-brand"><div class="login-brand-mark"><img src="${AURA_MARK}" alt="AURA logo"/></div><div><strong>AURA</strong><span>People Operations Cloud</span></div></div>
+      <div class="login-hero">
+        <div class="login-eyebrow"><span></span> Forgot password</div>
+        <h1>Back in,<br/><em>verified by email.</em></h1>
+        <p>A one-time code sent to your own registered email lets you set a new password — no need to wait on IT or HR.</p>
+      </div>
+    </div>
+  </section>
+  <section class="login-panel">
+    <div class="login-panel-inner">
+      <div class="login-heading"><span class="login-kicker">${isReset?'Check your email':'Forgot password'}</span><h2>${isReset?'Set a new password':'Verify your email'}</h2>
+        <p>${isReset?'We sent a 6-digit code to '+esc(f.email)+'. It expires in 10 minutes.':'Enter your work email and we\'ll send you a one-time code.'}</p></div>
+      <form class="login-form" onsubmit="event.preventDefault();${isReset?'forgotPasswordSubmitReset()':'forgotPasswordRequestCode()'}">
+        ${isReset
+          ?`<div class="field"><label for="fp-code">Verification code</label><div class="login-input-wrap"><span>${ico('shield',17)}</span><input id="fp-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456" style="letter-spacing:4px;font-weight:700"/></div></div>
+        <div class="field"><label for="fp-new">New password</label><div class="login-input-wrap"><span>${ico('shield',17)}</span><input id="fp-new" type="password" autocomplete="new-password" placeholder="Min. 6 characters"/></div></div>
+        <div class="field"><label for="fp-new2">Confirm new password</label><div class="login-input-wrap"><span>${ico('shield',17)}</span><input id="fp-new2" type="password" autocomplete="new-password" placeholder="Repeat new password"/></div></div>`
+          :`<div class="field"><label for="fp-email">Work email</label><div class="login-input-wrap"><span>${ico('people',17)}</span><input id="fp-email" type="email" autocomplete="username" placeholder="you@company.com"/></div></div>`
+        }
+        ${f.error?`<p class="login-error" style="display:block">${esc(f.error)}</p>`:''}
+        <button class="login-submit" type="submit" ${f.busy?'disabled':''}><span>${f.busy?'Please wait…':(isReset?'Reset password':'Send code')}</span><span>→</span></button>
+      </form>
+      ${isReset?`<button class="login-bundy" type="button" onclick="forgotPasswordChangeEmail()"><span class="login-bundy-icon">${ico('clock',18)}</span><span><strong>Use a different email</strong><small>Or resend the code</small></span><span>→</span></button>`:''}
+      <button class="login-bundy" type="button" onclick="cancelForgotPassword()"><span class="login-bundy-icon">${ico('clock',18)}</span><span><strong>Back to sign in</strong><small>Cancel password reset</small></span><span>→</span></button>
+      <div class="login-security">${ico('shield',13)} Your code is single-use and expires in 10 minutes.</div>
+    </div>
+  </section>
+</main>`;
+}
+
 /* ========== SIDEBAR ========== */
 const SIDEBAR_SECTION_ICON={Overview:'dashboard',People:'people','Time & Attendance':'clock',Payroll:'peso',Talent:'recruit',Setup:'settings',Tools:'chart'};
 function sidebarSections(){
@@ -11314,18 +11420,7 @@ function renderModal(){
     </div>
     <div id="cp-err" style="display:none;padding:8px 12px;background:var(--red-bg);border-radius:7px;font-size:12px;color:var(--red-txt);margin-bottom:10px"></div>
     <div style="display:flex;gap:8px">
-      <button class="btn btn-primary" onclick="
-        const old=document.getElementById('cp-old')?.value?.trim();
-        const np=document.getElementById('cp-new')?.value?.trim();
-        const np2=document.getElementById('cp-new2')?.value?.trim();
-        const err=document.getElementById('cp-err');
-        if(!old||!np||!np2){err.textContent='All fields are required.';err.style.display='block';return;}
-        if(user.pass&&old!==user.pass){err.textContent='Current password is incorrect.';err.style.display='block';return;}
-        if(np.length<6){err.textContent='New password must be at least 6 characters.';err.style.display='block';return;}
-        if(np!==np2){err.textContent='New passwords do not match.';err.style.display='block';return;}
-        user.pass=np;const u=USERS.find(x=>x.id===user.id);if(u)u.pass=np;
-        closeM();toast('Password updated successfully!','success');
-      ">✓ Update Password</button>
+      <button class="btn btn-primary" onclick="submitChangeOwnPassword()">✓ Update Password</button>
       <button class="btn" onclick="closeM()">Cancel</button>
     </div>`;
   }else if(modal.type==='holidayEditor'){
@@ -17676,6 +17771,7 @@ function render(){
   if(!user){
     if(sessionRestoring){root.innerHTML=renderLoading();return;}
     if(guestBundy){root.innerHTML=renderGuestBundy();return;}
+    if(forgotPassword){root.innerHTML=renderForgotPassword();return;}
     root.innerHTML=renderLogin();applyWallpaperPreview();return;
   }
   /* Platform admin portal (not inside a client) */

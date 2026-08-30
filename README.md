@@ -79,8 +79,8 @@ Set these on your Railway service (Variables tab). Nothing here is required to r
 | `BOOTSTRAP_ADMIN_EMAIL` / `BOOTSTRAP_ADMIN_PASSWORD` | The very first tenant's admin login | Falls back to the public demo credentials below until overridden. |
 | `APP_ALLOWED_ORIGINS` | CORS | Comma-separated list of frontend origins allowed to call the API. |
 | `GROQ_API_KEY` | Optional AI-powered chat assistant | Free tier available at [console.groq.com](https://console.groq.com). Feature stays off (falls back to the free built-in assistant) without it. |
-| `RESEND_API_KEY` | Web Bundy guest access (email OTP) | Free tier available at [resend.com](https://resend.com). Without it, the "Open Web Bundy" guest button on the login screen is unusable (fails cleanly with a clear error) rather than falling back to anything less secure. |
-| `BUNDY_OTP_FROM_EMAIL` | Optional | Sender address for Web Bundy OTP emails. Defaults to Resend's sandbox address, which is fine for testing but needs a verified custom domain in Resend for reliable real-world delivery. |
+| `RESEND_API_KEY` | Any transactional email (Web Bundy guest access, Forgot Password) | Free tier available at [resend.com](https://resend.com). Without it, those flows fail cleanly with a clear error rather than falling back to anything less secure. |
+| `EMAIL_FROM` | Optional | Sender address for all app emails (OTP codes, notifications). Defaults to Resend's sandbox address, which is fine for testing but needs a verified custom domain in Resend for reliable real-world delivery. |
 
 ---
 
