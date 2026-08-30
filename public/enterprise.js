@@ -642,12 +642,45 @@
     var email=target.email||L('not on file','wala pang naitala');
     return viewingSelf?L('Your email on file is '+email+'.','Ang email mo na naitala ay '+email+'.'):L(name+"'s email on file is "+email+'.','Ang email ni '+name+' na naitala ay '+email+'.');
   }
+  // "Why was I late/absent this cutoff, and was my OT paid" -- self-service only (the app never
+  // lets a non-admin ask about anyone else through this widget at all, per the askingOther guard
+  // in assistantAnswer(), so there's no "about a named employee" branch to write here). Answers
+  // against the MOST RECENT payroll run only, since reliably parsing an arbitrary cutoff out of
+  // free text isn't something simple pattern matching can do -- the Groq-powered tier (when
+  // enabled) handles an arbitrary named cutoff by reasoning over the same underlying data
+  // (me.attendanceHistory / me.payslipHistory in buildAssistantContext, server.js).
+  function attendanceExplainAnswer(target,viewingSelf){
+    if(!viewingSelf)return null;
+    if(!canAccess('self_view_attendance'))return L('You don\'t currently have permission to view your own attendance detail here. Ask your HR administrator to grant "My Attendance & Payslip Detail" access.','Wala ka pang permiso na makita ang detalye ng sarili mong attendance dito. Hilingin sa iyong HR administrator na buksan ang "My Attendance & Payslip Detail" access.');
+    var mine=PAYROLLS.map(function(r){return {r:r,item:r.items&&r.items.find(function(i){return i.eid===target.id;})};}).filter(function(x){return x.item;});
+    if(!mine.length)return L('You have no payroll cutoff on record yet.','Wala ka pang naitalang payroll cutoff.');
+    var last=mine[mine.length-1];
+    var recs=ATT.filter(function(a){return a.eid===target.id&&a.date>=last.r.from&&a.date<=last.r.to;});
+    var lateRecs=recs.filter(function(a){return a.status==='late';});
+    var absentRecs=recs.filter(function(a){return a.status==='absent';});
+    var otHours=last.item.otH||0,otPay=last.item.ot||0;
+    var period=last.r.from+' – '+last.r.to;
+    var bits=[];
+    bits.push(lateRecs.length
+      ?L('late on '+lateRecs.map(function(a){return a.date+(a.notes?' ('+a.notes+')':'');}).join(', '),'na-late noong '+lateRecs.map(function(a){return a.date+(a.notes?' ('+a.notes+')':'');}).join(', '))
+      :L('no late marks','walang late'));
+    bits.push(absentRecs.length
+      ?L('absent on '+absentRecs.map(function(a){return a.date+(a.notes?' ('+a.notes+')':'');}).join(', '),'absent noong '+absentRecs.map(function(a){return a.date+(a.notes?' ('+a.notes+')':'');}).join(', '))
+      :L('no absences','walang absent'));
+    bits.push(otHours>0
+      ?L('overtime: '+otHours+' hour(s), paid '+fmt(otPay),'overtime: '+otHours+' oras, nabayaran ng '+fmt(otPay))
+      :L('no overtime recorded','walang naitalang overtime'));
+    return L('For your latest cutoff ('+period+') — ','Para sa pinakahuli mong cutoff ('+period+') — ')+bits.join('; ')+'.';
+  }
   // General "how does AURA / Philippine payroll work" questions -- policy-level knowledge, never
   // a specific employee's data, so answerable for ANY user regardless of role or access level
   // (unlike everything else in this file's assistant, which is gated per employee/permission).
   // Checked before any employee-name matching in assistantAnswer() so it never needs a `target`.
   function systemKnowledgeAnswer(norm){
-    if(/overtime|\bot\b.*(rate|premium|comput|paano)|paano.*\bot\b|night differential|holiday pay|rest day pay/.test(norm)){
+    // Excludes "my"/"ko"-phrased questions ("was my overtime paid", "OT ko") -- those are a
+    // personal question about a specific cutoff, answered instead by attendanceExplainAnswer()
+    // further down in assistantAnswer(), not this general "how does OT work" explainer.
+    if(!/\bmy\b|\bko\b/.test(norm)&&/overtime|\bot\b.*(rate|premium|comput|paano)|paano.*\bot\b|night differential|holiday pay|rest day pay/.test(norm)){
       return L('Overtime premiums stack on top of the hourly rate per DOLE rules — ordinary OT is +25%, work on a rest day is +30% (more if that\'s also OT or a holiday), a special holiday is +30%, a regular holiday is a 100% premium (double pay), and night differential (10pm–6am) adds +10%. Exact combinations depend on which apply together on a given day — see Payroll → OT Rate Configuration for this company\'s exact formulas.','Ang overtime premium ay dagdag sa oras-oras na rate ayon sa DOLE rules — ang regular OT ay +25%, ang trabaho sa rest day ay +30% (mas mataas kung OT rin o holiday), ang special holiday ay +30%, ang regular holiday ay 100% premium (doble ang bayad), at ang night differential (10pm–6am) ay +10%. Depende ito sa kombinasyon ng mga ito sa isang araw — tingnan ang Payroll → OT Rate Configuration para sa eksaktong formula ng kumpanyang ito.');
     }
     if(/late.*(policy|threshold|half.?day)|absent.*(policy|threshold|lwop)|attendance policy|minimum hours/.test(norm)){
@@ -792,6 +825,10 @@
     // show. Aggregate company-wide questions (checked above already) are unaffected.
     if(viewingSelf&&!USERS.some(function(u){return u.id===user.id;})){
       return L("This admin login isn't tied to a specific employee record, so I don't have personal details (department, SSS number, leave credits, etc.) to show for it. Ask about a specific employee by name instead.","Ang admin login na ito ay hindi naka-link sa isang partikular na employee record, kaya wala akong personal na detalye (department, SSS number, leave credits, atbp.) na maipapakita para dito. Magtanong na lang tungkol sa isang partikular na empleyado sa pamamagitan ng pangalan.");
+    }
+    if(/why.*(late|absent)|bakit.*(late|absent)|was my (ot|overtime) paid|(ot|overtime).*paid|nabayaran.*(ot|overtime)|na-?late ba ako|absent ba ako/.test(norm)){
+      var explain=attendanceExplainAnswer(target,viewingSelf);
+      if(explain)return explain;
     }
     var govt=govtIdType(norm);
     if(govt||/government id|gov'?t (id|number)|numero ng gobyerno/.test(norm))return govtNumbersAnswer(target,viewingSelf,govt);

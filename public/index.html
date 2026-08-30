@@ -671,6 +671,7 @@ const PERM_DEFS=[
   {grp:'Self-Service',        k:'self_view_allowances',l:'My Recurring Allowances',         desc:'See own recurring allowances (transportation, rice subsidy, etc.)',                     sub:true},
   {grp:'Self-Service',        k:'self_view_emergency', l:'My Emergency Contacts',           desc:'See own emergency contact names, relationships, numbers, and addresses',                sub:true},
   {grp:'Self-Service',        k:'self_view_movements', l:'My Movement History',             desc:'See own position, transfer, and salary change history',                                sub:true},
+  {grp:'Self-Service',        k:'self_view_attendance',l:'My Attendance & Payslip Detail',   desc:'See own attendance records (late/absent/OT) and itemized payslip breakdown per cutoff, including via the AI assistant', sub:true},
   {grp:'Self-Service',        k:'onboarding',         l:'Onboarding Tasks',                desc:'Complete and view personal onboarding checklist',                                       sub:false},
   {grp:'Self-Service',        k:'profilechanges',     l:'Profile Change Requests',         desc:'Submit changes to own profile for HR approval',                                         sub:false},
   {grp:'Self-Service',        k:'profile_approve',    l:'Approve Profile Changes',         desc:'Review and approve or reject employee self-edit requests',                              sub:true},
@@ -730,13 +731,13 @@ const PERM_DEFS=[
 
 const ACCESS_PRESETS={
   'Employee':{
-    dashboard:true,myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,emp_view_personal:true,
+    dashboard:true,myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,self_view_attendance:true,emp_view_personal:true,
     webbundy:true,attendance:true,leave:true,leave_apply:true,
     myslips:true,loans:true,loans_apply:true,
     performance:true,perf_self:true,assistant:true,profilechanges:true,resolution:true,teamview:true,
   },
   'Team Leader':{
-    dashboard:true,employees:true,emp_view_personal:true,emp_view_employment:true,myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,
+    dashboard:true,employees:true,emp_view_personal:true,emp_view_employment:true,myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,self_view_attendance:true,
     webbundy:true,attendance:true,att_edit:true,bundyadmin:true,
     leave:true,leave_apply:true,leave_approve:true,
     myslips:true,loans:true,loans_apply:true,
@@ -747,7 +748,7 @@ const ACCESS_PRESETS={
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_compensation:true,emp_view_govt:true,emp_view_banking:true,emp_view_documents:true,emp_view_movements:true,
     emp_edit:true,emp_edit_personal:true,emp_edit_employment:true,emp_edit_govt:true,emp_add:true,emp_export:true,emp_reset_password:true,emp_toggle_active:true,
-    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,onboarding:true,profilechanges:true,profile_approve:true,
+    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,self_view_attendance:true,onboarding:true,profilechanges:true,profile_approve:true,
     webbundy:true,attendance:true,att_edit:true,bundyadmin:true,
     leave:true,leave_apply:true,leave_approve:true,leave_credits:true,
     government:true,myslips:true,all_payslips:true,loans:true,loans_apply:true,loans_approve:true,
@@ -759,7 +760,7 @@ const ACCESS_PRESETS={
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_compensation:true,emp_view_govt:true,emp_view_banking:true,emp_view_movements:true,
     emp_edit:true,emp_edit_compensation:true,emp_edit_govt:true,emp_edit_banking:true,emp_export:true,
-    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,profilechanges:true,
+    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,self_view_attendance:true,profilechanges:true,
     webbundy:true,attendance:true,att_edit:true,bundyadmin:true,
     leave:true,leave_apply:true,
     payroll:true,payroll_approve:true,government:true,myslips:true,all_payslips:true,loans:true,loans_approve:true,
@@ -768,7 +769,7 @@ const ACCESS_PRESETS={
   'Department Head':{
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_movements:true,
-    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,onboarding:true,profilechanges:true,profile_approve:true,
+    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,self_view_attendance:true,onboarding:true,profilechanges:true,profile_approve:true,
     webbundy:true,attendance:true,bundyadmin:true,
     leave:true,leave_apply:true,leave_approve:true,
     myslips:true,loans:true,loans_apply:true,
@@ -778,20 +779,20 @@ const ACCESS_PRESETS={
   'Finance Officer':{
     dashboard:true,
     employees:true,emp_view_employment:true,emp_view_compensation:true,emp_view_banking:true,emp_export:true,
-    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,
+    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,self_view_attendance:true,
     webbundy:true,attendance:true,leave:true,leave_apply:true,
     payroll:true,payroll_approve:true,government:true,myslips:true,all_payslips:true,loans:true,loans_approve:true,
     analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,teamview:true,
   },
   'IT Admin':{
-    dashboard:true,myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,
+    dashboard:true,myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,self_view_attendance:true,
     webbundy:true,leave:true,leave_apply:true,myslips:true,
     accesssetup:true,access_manage:true,gsheets:true,zksetup:true,assistant:true,resolution:true,teamview:true,
   },
   'Auditor':{
     dashboard:true,
     employees:true,emp_view_personal:true,emp_view_employment:true,emp_view_compensation:true,emp_view_govt:true,emp_view_movements:true,emp_export:true,
-    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,attendance:true,bundyadmin:true,leave:true,
+    myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,self_view_attendance:true,attendance:true,bundyadmin:true,leave:true,
     myslips:true,all_payslips:true,government:true,loans:true,
     analytics:true,reports:true,reports_export:true,assistant:true,resolution:true,teamview:true,
   },
@@ -18590,7 +18591,7 @@ render = function() {
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
 <script src="/compliance.js?v=20260823-govt-report-actual-withheld"></script>
-<script src="/enterprise.js?v=20260830-assistant-expert"></script>
+<script src="/enterprise.js?v=20260830-attendance-explain"></script>
 <script src="/payroll-governance.js?v=20260830-payroll-notify"></script>
 <script src="/persistence.js?v=20260829-hydrate-applies-theme"></script>
 </body>
