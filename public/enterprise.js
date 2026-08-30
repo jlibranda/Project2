@@ -147,6 +147,7 @@
     if(!notes.trim()){toast('Resolution notes are required for the audit trail.','warning');return;}
     c.status=decision==='resolved'?'resolved':'rejected';
     c.resolution=notes.trim();c.resolvedBy=user.name;c.resolvedAt=new Date().toISOString();
+    notifyCaseDecided(c,decision);
     // A resolved case establishes that the request is legitimate (eligible, within policy) --
     // it is not itself the record's full approval sign-off. The linked attendance record(s)
     // still go through applyAttendanceDecision() so multi-layer approval chains (Company
@@ -2126,6 +2127,29 @@
       '<div class="tabs">'+tabs.map(function(t,i){return '<div class="tab'+(i===activeIdx?' active':'')+'" onclick="window._attendanceFormKey=null;goTab('+i+')">'+t+(i===0&&admin?redBubble(pendingCount):'')+'</div>';}).join('')+'</div><div class="card">'+body+'</div>';
   }
 
+  // Fire-and-forget (server.js's POST /api/notify) -- a failed send never blocks or reverts the
+  // underlying filing/decision, it just quietly loses the email. Resolution Center cases have no
+  // single personal approver the way Leave does -- every category routes to a shared admin/HR
+  // queue ("HR Operations"/"Payroll Team"), so filing notifies every admin in the tenant instead
+  // of one specific person, and a decision notifies the case's own employee. This same "decided"
+  // trigger covers both attendance-linked cases and general Resolution Center cases, since
+  // resolveCase() is the one function that decides all of them.
+  function notifyCaseFiled(employeeId,employeeName,formLabel,date){
+    if(typeof window.apiRequest!=='function')return;
+    var recipients=USERS.filter(function(u){return isAdminUser(u)&&u.email&&u.id!==employeeId;}).map(function(u){return u.email;});
+    if(!recipients.length)return;
+    window.apiRequest('/notify',{method:'POST',body:JSON.stringify({type:'case-filed',payload:{
+      recipientEmails:recipients,employeeName:employeeName,formLabel:formLabel,date:date
+    }})}).catch(function(){});
+  }
+  function notifyCaseDecided(caseObj,decision){
+    if(typeof window.apiRequest!=='function')return;
+    var emp=USERS.find(function(u){return u.id===caseObj.employeeId;});
+    if(!emp||!emp.email)return;
+    window.apiRequest('/notify',{method:'POST',body:JSON.stringify({type:'case-decided',payload:{
+      employeeEmail:emp.email,employeeName:emp.name,caseSubject:caseObj.subject,decision:decision,decidedBy:user.name
+    }})}).catch(function(){});
+  }
   window.submitAttendanceFormRequest=function(){
     var form=ATTENDANCE_FORM_CONFIG.find(function(f){return f.key===window._attendanceFormKey&&f.visible;});
     if(!form){toast('This attendance form is not currently available.','warning');return;}
@@ -2144,6 +2168,7 @@
         var correctionId=nextCaseId++,correctionDue=new Date();correctionDue.setDate(correctionDue.getDate()+4);
         RESOLUTION_CASES.push({id:correctionId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(correctionId).padStart(3,'0'),employeeId:correctionTarget.id,category:'Attendance',subject:form.label+' · '+row.date,description:(correctionTarget.id!==user.id?'Filed by '+user.name+' on behalf of '+correctionTarget.name+'\n':'')+'Request date: '+row.date+'\nPunch: '+(row.punchType==='time_out'?'Time Out':'Time In')+'\nCorrect time: '+row.correctedTime+'\nDetails: '+reason,priority:'normal',status:'open',linkedType:correctionLinked?'attendance':'',linkedId:correctionLinked?correctionLinked.id:null,attendanceRequestType:'time_correction',requestDate:row.date,requestEndDate:row.date,punchType:row.punchType,correctedTime:row.correctedTime,batchId:batchId,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:correctionDue.toISOString().slice(0,10),resolution:''});
       });
+      notifyCaseFiled(correctionTarget.id,correctionTarget.name,form.label,corrections.length>1?corrections[0].date+' (+'+(corrections.length-1)+' more)':corrections[0].date);
       window._correctionRows=null;window._correctionOnBehalfEid=null;window._attendanceFormKey=null;
       toast(corrections.length+' time correction request(s) submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
     }
@@ -2161,6 +2186,7 @@
       }).join('\n');
       var schedId=nextCaseId++,schedDue=new Date();schedDue.setDate(schedDue.getDate()+4);
       RESOLUTION_CASES.push({id:schedId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(schedId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+fromDate+(toDate!==fromDate?' to '+toDate:''),description:'Assigned shift: '+assignedShiftText(user.shiftId)+'\nEffectivity: '+fromDate+' to '+toDate+'\n'+schedSummary+'\nDetails: '+reason,priority:'normal',status:'open',linkedType:'',linkedId:null,attendanceRequestType:form.key,requestDate:fromDate,requestEndDate:toDate,scheduleDays:schedRows,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:schedDue.toISOString().slice(0,10),resolution:''});
+      notifyCaseFiled(user.id,user.name,form.label,fromDate);
       window._scheduleAdjRows=null;window._scheduleAdjFrom=null;window._scheduleAdjTo=null;window._attendanceFormKey=null;
       toast('Schedule adjustment submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
     }
@@ -2179,6 +2205,7 @@
       rdhDetails.push('Actual log: '+rdhLog.tin+' – '+rdhLog.tout,'Eligible Rest Day/Holiday overtime hours (net of 1-hr break): '+rdhCheck.hours.toFixed(2),'Details: '+reason);
       var rdhId=nextCaseId++,rdhDue=new Date();rdhDue.setDate(rdhDue.getDate()+2);
       RESOLUTION_CASES.push({id:rdhId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(rdhId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:rdhDetails.join('\n'),priority:'high',status:'open',linkedType:'attendance',linkedId:rdhLog.id,attendanceRequestType:form.key,requestDate:date,requestEndDate:date,requestedStart:rdhReqStart,requestedEnd:rdhReqEnd,rdhType:rdhType,eligibleHours:rdhCheck.hours,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:rdhDue.toISOString().slice(0,10),resolution:''});
+      notifyCaseFiled(user.id,user.name,form.label,date);
       window._attendanceFormKey=null;
       toast('Rest Day/Holiday overtime submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
     }
@@ -2194,6 +2221,7 @@
       var otDetails=['Request date: '+date,'Type: '+otTypeLabel+' Overtime','Requested OT: '+otReqStart+' – '+otReqEnd,'Actual log: '+otLog.tin+' – '+otLog.tout,'Estimated eligible hours: '+otCheck.hours.toFixed(2),'Details: '+reason];
       var otId=nextCaseId++,otDue=new Date();otDue.setDate(otDue.getDate()+2);
       RESOLUTION_CASES.push({id:otId,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(otId).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:otDetails.join('\n'),priority:'high',status:'open',linkedType:'attendance',linkedId:otLog.id,attendanceRequestType:form.key,requestDate:date,requestEndDate:date,requestedStart:otReqStart,requestedEnd:otReqEnd,otType:otType,eligibleHours:otCheck.hours,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:otDue.toISOString().slice(0,10),resolution:''});
+      notifyCaseFiled(user.id,user.name,form.label,date);
       window._attendanceFormKey=null;
       toast('Overtime request submitted for approval.','success');tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();return;
     }
@@ -2215,6 +2243,7 @@
       details.push('Details: '+reason);
       var id=nextCaseId++,due=new Date();due.setDate(due.getDate()+4);
       RESOLUTION_CASES.push({id:id,caseNo:'CASE-'+new Date().getFullYear()+'-'+String(id).padStart(3,'0'),employeeId:user.id,category:'Attendance',subject:form.label+' · '+date,description:details.join('\n'),priority:'normal',status:'open',linkedType:linked?'attendance':'',linkedId:linked?linked.id:null,attendanceRequestType:form.key,requestDate:date,requestEndDate:value('att-form-end')||date,requestedStart:tin,requestedEnd:tout,requestedMinutes:Number(value('att-form-minutes')||0),punchType:value('att-form-punch'),correctedTime:value('att-form-time'),eligibleHours:null,submittedBy:user.name,submittedAt:new Date().toISOString(),owner:'HR Operations',dueDate:due.toISOString().slice(0,10),resolution:''});
+    notifyCaseFiled(user.id,user.name,form.label,date);
     window._attendanceFormKey=null;
     toast(form.label+' submitted for approval.','success');
     tab=(isAdminUser(user)||isPlatformAdmin)?1:0;render();
