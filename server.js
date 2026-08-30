@@ -1018,6 +1018,21 @@ async function emailBelongsToTenant(tenantKey, email) {
 function escapeEmailHtml(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
+// Mirrors the frontend's own isAdminUser()/canAccess() logic against the CALLER's own already-
+// persisted account (never the target of the action), so it doesn't hit the same debounced-
+// autosave race a check against a just-created record would. Used only where a notification
+// type's recipient can't be verified via emailBelongsToTenant instead (see employee-welcome).
+async function callerHasPerm(tenantKey, session, permKey) {
+  if (session.role === 'platform') return true;
+  const record = await readState(tenantKey);
+  const state = record?.state;
+  if (!state) return false;
+  const caller = (state.users || []).find(u => String(u.email || '').toLowerCase() === String(session.sub || '').toLowerCase());
+  if (!caller) return session.role === 'admin'; // synthetic company-admin login (platform_clients.admin_email) has no USERS[] row
+  if (caller.role === 'admin' || caller.accessLevelId === 1) return true;
+  const level = (state.accessLevels || []).find(a => a.id === caller.accessLevelId);
+  return !!(level && level.perms && level.perms[permKey] === true);
+}
 app.post('/api/notify', requireAuth, async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Notifications require the database to be configured.' });
   const type = String(req.body.type || '');
@@ -1117,6 +1132,34 @@ app.post('/api/notify', requireAuth, async (req, res) => {
         sent++;
       }
       if (!sent) return res.status(400).json({ error: 'No valid recipients.' });
+    } else if (type === 'employee-welcome') {
+      // The new hire was only just pushed into USERS client-side -- it hasn't reached the
+      // persisted tenant state yet (the debounced autosave lands ~700ms later), so
+      // emailBelongsToTenant can't confirm this recipient the way every other type does.
+      // callerHasPerm substitutes for it: only someone who actually holds emp_add (checked
+      // against their own, already-persisted account) can trigger this send.
+      if (!(await callerHasPerm(tenantKey, req.session, 'emp_add'))) return res.status(403).json({ error: 'Employee management access required.' });
+      const employeeEmail = String(payload.employeeEmail || '').trim();
+      if (!employeeEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(employeeEmail)) return res.status(400).json({ error: 'Invalid recipient.' });
+      const employeeName = escapeEmailHtml(payload.employeeName || 'there');
+      const addedBy = escapeEmailHtml(payload.addedBy || 'your HR team');
+      const tempPassword = payload.tempPassword ? escapeEmailHtml(payload.tempPassword) : '';
+      await sendAppEmail(employeeEmail, 'Welcome to AURA',
+        `<p>Hi ${employeeName},</p><p>${addedBy} just set up your AURA account.</p>`
+        + (tempPassword ? `<p>Your login:</p><p>Email: <strong>${escapeEmailHtml(employeeEmail)}</strong><br>Password: <strong>${tempPassword}</strong></p><p>We recommend changing your password after your first login.</p>` : '')
+        + `<p>Sign in at your company's AURA link to get started.</p>`);
+    } else if (type === 'employee-offboarded') {
+      const recipients = Array.isArray(payload.recipientEmails) ? payload.recipientEmails.map(e => String(e || '').trim()).filter(Boolean) : [];
+      const validated = [];
+      for (const email of recipients) {
+        if (await emailBelongsToTenant(tenantKey, email)) validated.push(email);
+      }
+      if (!validated.length) return res.status(400).json({ error: 'No valid recipients.' });
+      const employeeName = escapeEmailHtml(payload.employeeName || 'An employee');
+      const eid = payload.eid ? escapeEmailHtml(payload.eid) : '';
+      const offboardedBy = escapeEmailHtml(payload.offboardedBy || 'System');
+      await sendAppEmail(validated, `Employee offboarded: ${payload.employeeName || 'an employee'}`,
+        `<p>Hi there,</p><p><strong>${employeeName}</strong>${eid ? ' (' + eid + ')' : ''}'s AURA access was disabled by ${offboardedBy}.</p>`);
     } else {
       return res.status(400).json({ error: 'Unknown notification type.' });
     }

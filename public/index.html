@@ -1328,6 +1328,7 @@ function checkOffboarding(){
         transferNotes.push(`${u.name}'s ${pending.length} pending approval(s) (attendance and/or leave) moved to ${successor?successor.name:'no one (no one configured above them in the hierarchy)'}`);
       }
       u.active=false;u.status='terminated';u.projectedAttrition=false;terminated++;
+      notifyEmployeeOffboarded(u,'Automatic (effective termination date reached)');
     }else if(u.effectiveTermDate>tod&&u.terminationType&&u.terminationType!=='N/A'){
       u.projectedAttrition=true;u.active=true;
     }
@@ -6684,7 +6685,7 @@ function confirmBulkUpload(validatedRows){
     const itY=inclTime===true||inclTime==='Y'||inclTime==='y'||inclTime==='true'?'Y':'N';
     const customVals={};
     allCustom.forEach(f=>{if(r[f.key]!==undefined)customVals[f.key]=r[f.key];});
-    USERS.push({
+    const newEmp={
       ...r,...customVals,id:newId,eid,
       name:`${r.firstName} ${r.lastName}`.trim(),
       address:r.permanentAddress||r.city||'',
@@ -6711,7 +6712,9 @@ function confirmBulkUpload(validatedRows){
       terminationType:'',mutual:'',regrettable:'',attritionCode:'',rehireable:'TBD',
       projectedAttrition:false,
       movements:[],
-    });
+    };
+    USERS.push(newEmp);
+    notifyEmployeeWelcome(newEmp,r.pass);
     added++;
   });
   bulkResults=null;
@@ -7523,6 +7526,28 @@ function notifyLeaveDecision(emp,leaveType,s,e,decision){
   if(!emp||!emp.email||typeof window.apiRequest!=='function')return;
   window.apiRequest('/notify',{method:'POST',body:JSON.stringify({type:'leave-decided',payload:{
     employeeEmail:emp.email,employeeName:emp.name,leaveType,from:s,to:e,decision,decidedBy:user.name
+  }})}).catch(()=>{});
+}
+// Welcome email for a brand-new employee, sent to the address the admin just typed into the
+// Add Employee / Bulk Upload form. Unlike every other /api/notify type, the recipient can't be
+// checked against the tenant's already-persisted state — the record was only just pushed into
+// USERS locally and the debounced autosave (queueDatabaseSave, 700ms) hasn't landed yet, so
+// server.js gates this type on the caller's own admin role instead of emailBelongsToTenant.
+function notifyEmployeeWelcome(emp,tempPass){
+  if(!emp||!emp.email||typeof window.apiRequest!=='function')return;
+  window.apiRequest('/notify',{method:'POST',body:JSON.stringify({type:'employee-welcome',payload:{
+    employeeEmail:emp.email,employeeName:emp.name,tempPassword:tempPass,addedBy:user?.name||'HR'
+  }})}).catch(()=>{});
+}
+// HR/admin alert when an employee's access is disabled (manual termination or the automatic
+// effective-date sweep in checkOffboarding()) -- every other admin already in the tenant, same
+// recipient-resolution pattern as notifyPayrollSubmitted/notifyCaseFiled.
+function notifyEmployeeOffboarded(emp,offboardedBy){
+  if(!emp||typeof window.apiRequest!=='function')return;
+  const recipients=USERS.filter(u=>u.email&&u.id!==emp.id&&isAdminUser(u)).map(u=>u.email);
+  if(!recipients.length)return;
+  window.apiRequest('/notify',{method:'POST',body:JSON.stringify({type:'employee-offboarded',payload:{
+    recipientEmails:recipients,employeeName:emp.name,eid:emp.eid,offboardedBy:offboardedBy||'System'
   }})}).catch(()=>{});
 }
 function submitLeave(){
@@ -13492,6 +13517,7 @@ function saveEmp(){
   };
   USERS.push(newEmp);
   queueSync('Employees');
+  notifyEmployeeWelcome(newEmp,ae.pass);
   const blankGovt=['sss','ph','pi','tin'].filter(k=>!newEmp[k]||newEmp[k]==='—').map(k=>GOVT_FORMATS[k]?.label||k);
   const blankNote=blankGovt.length?`\n\n⚠ Not yet provided: ${blankGovt.join(', ')} — can be added later from the employee's 201 file.`:'';
   alert(`✅ ${newEmp.name} (${newEmp.eid}) added!\nLogin: ${ae.email} / ${ae.pass}${blankNote}`);
@@ -17347,6 +17373,7 @@ function confirmApprovalTransferAndFinishSave(){
   if(replacement)redirectApprovalsFrom(e.eid,replacement.eid);
   mergeEmpDraft(e,pending.draftToApply,pending.reason,pending.movementInfo);
   e.active=false;e.status='terminated';e.projectedAttrition=false;
+  notifyEmployeeOffboarded(e,user?.name);
   if(e.terminationType&&e.terminationType!==''&&e.terminationType!=='N/A'){
     alert(`⚠ Access automatically disabled for ${e.name} — "${e.terminationType}".`+(replacement?`\n\nApprovals transferred to ${replacement.name}.`:''));
   }
@@ -17431,10 +17458,12 @@ function applyEmpSave(reason){
       alert(`ℹ Projected Attrition noted for ${e.name}.\n\nEffective date: ${e.effectiveTermDate}\n\nAccess remains active until that date is reached.`);
     } else if((hasReachedDate||!e.effectiveTermDate)&&e.active!==false){
       e.active=false;e.status='terminated';e.projectedAttrition=false;
+      notifyEmployeeOffboarded(e,user?.name);
       alert(`⚠ Access automatically disabled for ${e.name} — "${e.terminationType}".`);
     }
   } else if(e.effectiveTermDate&&e.effectiveTermDate<=tod&&e.active!==false){
     e.active=false;e.status='terminated';e.projectedAttrition=false;
+    notifyEmployeeOffboarded(e,user?.name);
   }
   finishEmpSaveAfterTermination(e,draftToApply);
 }
