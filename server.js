@@ -74,7 +74,12 @@ function verifyToken(token) {
 function requireAuth(req, res, next) {
   try {
     const payload = verifyToken((req.headers.authorization || '').replace(/^Bearer\s+/i, ''));
-    if (!payload) return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
+    // A signed token alone isn't enough here -- a Web Bundy guest token (see requireBundyAuth
+    // below) is validly signed too, but it must never be usable for anything beyond the two
+    // narrow bundy endpoints. Rejecting it explicitly here, rather than only ever issuing it
+    // the "right" scope, means every endpoint using requireAuth is safe by construction even if
+    // a future one forgets to think about this.
+    if (!payload || payload.purpose === 'bundy-punch') return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
     req.session = payload;
     next();
   } catch {
@@ -534,6 +539,141 @@ app.post('/api/auth/login', async (req, res) => {
     res.status(500).json({ error: 'Unable to sign in to the data service.', detail: error.message });
   }
 });
+
+/* ── Web Bundy guest access (email OTP) ──
+   Replaces the old "type any employee's email, no password, get in" guest shortcut, which
+   effectively granted full account access to anyone who knew (or guessed) an employee's email --
+   see the readiness-audit finding this closes. An OTP mailed to that same employee's own address
+   proves inbox access before anything is issued, and the token this flow ends with (purpose:
+   'bundy-punch', 20-minute expiry) is only ever accepted by the two narrow endpoints below, never
+   by /api/state or anything else -- a verified guest can punch in/out and read today's own log,
+   nothing more, regardless of what the underlying employee record could otherwise see. */
+const bundyOtps = new Map(); // email -> { codeHash, expiresAt, attempts, tenantKey, eid, name }
+function hashOtpCode(code) {
+  return crypto.createHash('sha256').update(String(code)).digest('hex');
+}
+async function sendBundyOtpEmail(toEmail, name, code) {
+  const apiKey = (process.env.RESEND_API_KEY || '').trim();
+  if (!apiKey) throw new Error('Email verification is not configured on this server yet.');
+  const from = process.env.BUNDY_OTP_FROM_EMAIL || 'AURA Web Bundy <onboarding@resend.dev>';
+  const apiRes = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      from,
+      to: [toEmail],
+      subject: `Your Web Bundy code: ${code}`,
+      html: `<p>Hi ${name},</p><p>Your Web Bundy verification code is:</p>`
+        + `<p style="font-size:28px;font-weight:700;letter-spacing:6px;margin:12px 0">${code}</p>`
+        + `<p>This code expires in 5 minutes. If you didn't request this, you can ignore this email.</p>`
+    })
+  });
+  if (!apiRes.ok) {
+    const data = await apiRes.json().catch(() => ({}));
+    throw new Error(data.message || 'Failed to send the verification email.');
+  }
+}
+function requireBundyAuth(req, res, next) {
+  const payload = verifyToken((req.headers.authorization || '').replace(/^Bearer\s+/i, ''));
+  if (!payload || payload.purpose !== 'bundy-punch') return res.status(401).json({ error: 'Your verification has expired. Please verify your email again.' });
+  req.bundy = payload;
+  next();
+}
+app.post('/api/bundy/otp/request', async (req, res) => {
+  try {
+    const email = String(req.body.email || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ error: 'Email is required.' });
+    if (!pool) return res.status(503).json({ error: 'Web Bundy guest access requires the database to be configured.' });
+    const found = await withLoginLookupScope(client => client.query(
+      `SELECT tenant_key, u AS matched_user FROM app_state, jsonb_array_elements(state->'users') AS u
+       WHERE u->>'email' = $1 AND COALESCE((u->>'active')::boolean, true) = true
+       LIMIT 1`,
+      [email]
+    ));
+    if (!found.rowCount) return res.status(404).json({ error: 'Email not found or account disabled. Please contact HR.' });
+    const { tenant_key: tenantKey, matched_user: matchedUser } = found.rows[0];
+    const name = matchedUser.firstName || (matchedUser.name || '').split(' ')[0] || 'there';
+    const code = String(crypto.randomInt(100000, 1000000));
+    bundyOtps.set(email, { codeHash: hashOtpCode(code), expiresAt: Date.now() + 5 * 60 * 1000, attempts: 0, tenantKey, eid: matchedUser.id, name });
+    await sendBundyOtpEmail(email, name, code);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Unable to send the verification code.' });
+  }
+});
+app.post('/api/bundy/otp/verify', (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const code = String(req.body.code || '').trim();
+  const entry = bundyOtps.get(email);
+  if (!entry) return res.status(400).json({ error: 'Request a new code first.' });
+  if (Date.now() > entry.expiresAt) { bundyOtps.delete(email); return res.status(400).json({ error: 'That code expired. Request a new one.' }); }
+  entry.attempts += 1;
+  if (entry.attempts > 5) { bundyOtps.delete(email); return res.status(429).json({ error: 'Too many attempts. Request a new code.' }); }
+  const suppliedHash = hashOtpCode(code);
+  const expectedHash = entry.codeHash;
+  const match = suppliedHash.length === expectedHash.length && crypto.timingSafeEqual(Buffer.from(suppliedHash), Buffer.from(expectedHash));
+  if (!match) return res.status(401).json({ error: 'Incorrect code.' });
+  bundyOtps.delete(email);
+  const token = sign({ sub: email, tenantKey: entry.tenantKey, eid: entry.eid, purpose: 'bundy-punch', exp: Date.now() + 20 * 60 * 1000 });
+  res.json({ token, name: entry.name });
+});
+app.get('/api/bundy/today', requireBundyAuth, async (req, res) => {
+  try {
+    const { tenantKey, eid } = req.bundy;
+    const record = await readState(tenantKey);
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const logs = ((record?.state?.bundyLogs) || []).filter(b => b.eid === eid && b.date === todayStr);
+    res.json({ logs });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to load today’s log.', detail: error.message });
+  }
+});
+app.post('/api/bundy/punch', requireBundyAuth, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const { tenantKey, eid } = req.bundy;
+  const type = req.body.type === 'out' ? 'out' : 'in';
+  const { lat, lng, accuracy, address, withinZone, selfie } = req.body;
+  try {
+    await mutateAppState(state => {
+      state.users = state.users || [];
+      state.attendance = state.attendance || [];
+      state.bundyLogs = state.bundyLogs || [];
+      const employee = state.users.find(u => u.id === eid);
+      if (!employee) return { changed: false };
+      const now = new Date();
+      const todayStr = now.toISOString().slice(0, 10);
+      const nextBundyId = state.bundyLogs.reduce((max, b) => Math.max(max, b.id || 0), 0) + 1;
+      const entry = {
+        id: nextBundyId, eid, empName: fmtNameServer(employee), type, date: todayStr,
+        time: now.toTimeString().slice(0, 5), datetime: now.toISOString(),
+        lat, lng, accuracy, address, withinZone: !!withinZone, selfie: selfie || null,
+        source: 'web-bundy-guest'
+      };
+      state.bundyLogs.push(entry);
+      const todaysPunches = state.bundyLogs
+        .filter(b => b.eid === eid && b.date === todayStr)
+        .map(b => ({ time: b.time, kind: b.type, source: 'web-bundy', receivedAt: b.datetime }));
+      const existing = TimekeepingCore.canonicalRecord(state.attendance, eid, todayStr);
+      const mergedPunches = TimekeepingCore.mergePunches(existing && existing.punches, todaysPunches);
+      const schedule = TimekeepingCore.scheduleForDate(employee, todayStr, state.company?.shifts || []);
+      const isRest = TimekeepingCore.isRestDay(employee, todayStr, state.company?.shifts || []);
+      const noPolicy = employee.scheduleType === 'exempted' || employee.scheduleType === 'flexWeek';
+      const rawComputed = TimekeepingCore.computeFromPunches(mergedPunches, schedule, isRest, employee.scheduleType) || {};
+      const computed = (isRest || noPolicy) ? rawComputed : TimekeepingCore.applyAttendancePolicy(rawComputed, schedule, state.attendancePolicy || {});
+      const nextAttId = state.attendance.reduce((max, a) => Math.max(max, a.id || 0), 0) + 1;
+      TimekeepingCore.upsert(state.attendance, eid, todayStr, {
+        ...computed, punches: mergedPunches,
+        status: (computed.lwop || computed.incomplete) ? 'absent' : isRest ? 'present' : (computed.lateMinutes > 0 ? 'late' : 'present'),
+        notes: 'Web Bundy (guest, email-verified)', ot: 0, approvalStatus: 'approved', filedBy: fmtNameServer(employee)
+      }, () => nextAttId, fmtNameServer(employee));
+      return { changed: true, entry };
+    }, req.bundy.sub, tenantKey);
+    res.json({ ok: true, time: new Date().toTimeString().slice(0, 5), type });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to record the punch.', detail: error.message });
+  }
+});
+
 app.get('/api/state', requireAuth, async (req, res) => {
   try {
     const record = await readState(req.session.tenantKey || TENANT_KEY);
