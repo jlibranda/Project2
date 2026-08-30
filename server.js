@@ -540,6 +540,156 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+/* ── Shared transactional email + one-time-code helpers ──
+   Used by Web Bundy guest access, forgot-password, and (eventually) filing/approval
+   notifications -- one Resend integration and one code-hashing scheme for all of them. */
+function hashOtpCode(code) {
+  return crypto.createHash('sha256').update(String(code)).digest('hex');
+}
+function generateOtpCode() {
+  return String(crypto.randomInt(100000, 1000000));
+}
+async function sendAppEmail(to, subject, html) {
+  const apiKey = (process.env.RESEND_API_KEY || '').trim();
+  if (!apiKey) throw new Error('Email delivery is not configured on this server yet.');
+  const from = process.env.EMAIL_FROM || process.env.BUNDY_OTP_FROM_EMAIL || 'AURA <onboarding@resend.dev>';
+  const apiRes = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify({ from, to: Array.isArray(to) ? to : [to], subject, html })
+  });
+  if (!apiRes.ok) {
+    const data = await apiRes.json().catch(() => ({}));
+    throw new Error(data.message || 'Failed to send email.');
+  }
+}
+function otpCodeEmailHtml(name, code, purposeSentence, expiryMinutes) {
+  return `<p>Hi ${name},</p><p>${purposeSentence}</p>`
+    + `<p style="font-size:28px;font-weight:700;letter-spacing:6px;margin:12px 0">${code}</p>`
+    + `<p>This code expires in ${expiryMinutes} minutes. If you didn't request this, you can ignore this email.</p>`;
+}
+
+/* ── Forgot password (self-service, unauthenticated) ──
+   Covers the same two account shapes /api/auth/login resolves against, minus God Admin -- that
+   platform-wide identity has no real inbox behind its address, so its password stays
+   changeable only from Settings (requires the current password) as before. Mirrors the login
+   endpoint's own tenant-resolution order: the legacy/bootstrap tenant's own employees first,
+   then a real client's own company-admin account, then any other tenant's employee (the one
+   legitimate cross-tenant lookup, same as login's). */
+const passwordResetOtps = new Map(); // email -> { codeHash, expiresAt, attempts, accountType, tenantKey|clientId, userId, name }
+app.post('/api/auth/forgot-password/request', async (req, res) => {
+  try {
+    const email = String(req.body.email || '').trim().toLowerCase();
+    if (!email) return res.status(400).json({ error: 'Email is required.' });
+    if (!pool) return res.status(503).json({ error: 'Password reset requires the database to be configured.' });
+
+    const legacyRecord = await readState(TENANT_KEY);
+    const legacyUsers = legacyRecord?.state?.users || [];
+    const legacyMatch = legacyUsers.find(u => String(u.email || '').toLowerCase() === email && u.active !== false);
+    if (legacyMatch) {
+      const name = legacyMatch.firstName || (legacyMatch.name || '').split(' ')[0] || 'there';
+      const code = generateOtpCode();
+      passwordResetOtps.set(email, { codeHash: hashOtpCode(code), expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0, accountType: 'tenant-user', tenantKey: TENANT_KEY, userId: legacyMatch.id, name });
+      await sendAppEmail(email, 'Reset your AURA password', otpCodeEmailHtml(name, code, 'Use this code to reset your password:', 10));
+      return res.json({ ok: true });
+    }
+
+    const clientRow = await pool.query('SELECT id, name, tenant_key FROM platform_clients WHERE admin_email = $1', [email]);
+    if (clientRow.rowCount) {
+      const c = clientRow.rows[0];
+      const code = generateOtpCode();
+      passwordResetOtps.set(email, { codeHash: hashOtpCode(code), expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0, accountType: 'client-admin', clientId: c.id, name: c.name });
+      await sendAppEmail(email, 'Reset your AURA password', otpCodeEmailHtml(c.name, code, 'Use this code to reset your password:', 10));
+      return res.json({ ok: true });
+    }
+
+    const empRow = await withLoginLookupScope(client => client.query(
+      `SELECT tenant_key, u AS matched_user FROM app_state, jsonb_array_elements(state->'users') AS u
+       WHERE u->>'email' = $1 AND COALESCE((u->>'active')::boolean, true) = true
+       LIMIT 1`,
+      [email]
+    ));
+    if (empRow.rowCount) {
+      const { tenant_key: tenantKey, matched_user: matchedUser } = empRow.rows[0];
+      const name = matchedUser.firstName || (matchedUser.name || '').split(' ')[0] || 'there';
+      const code = generateOtpCode();
+      passwordResetOtps.set(email, { codeHash: hashOtpCode(code), expiresAt: Date.now() + 10 * 60 * 1000, attempts: 0, accountType: 'tenant-user', tenantKey, userId: matchedUser.id, name });
+      await sendAppEmail(email, 'Reset your AURA password', otpCodeEmailHtml(name, code, 'Use this code to reset your password:', 10));
+      return res.json({ ok: true });
+    }
+
+    res.status(404).json({ error: 'No account found with that email.' });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Unable to send the verification code.' });
+  }
+});
+app.post('/api/auth/forgot-password/reset', async (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const code = String(req.body.code || '').trim();
+  const newPassword = String(req.body.newPassword || '');
+  if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+  if (!pool) return res.status(503).json({ error: 'Password reset requires the database to be configured.' });
+  const entry = passwordResetOtps.get(email);
+  if (!entry) return res.status(400).json({ error: 'Request a new code first.' });
+  if (Date.now() > entry.expiresAt) { passwordResetOtps.delete(email); return res.status(400).json({ error: 'That code expired. Request a new one.' }); }
+  entry.attempts += 1;
+  if (entry.attempts > 5) { passwordResetOtps.delete(email); return res.status(429).json({ error: 'Too many attempts. Request a new code.' }); }
+  const suppliedHash = hashOtpCode(code);
+  const match = suppliedHash.length === entry.codeHash.length && crypto.timingSafeEqual(Buffer.from(suppliedHash), Buffer.from(entry.codeHash));
+  if (!match) return res.status(401).json({ error: 'Incorrect code.' });
+  passwordResetOtps.delete(email);
+  try {
+    if (entry.accountType === 'client-admin') {
+      await pool.query('UPDATE platform_clients SET admin_pass = $1 WHERE id = $2', [newPassword, entry.clientId]);
+    } else {
+      await mutateAppState(state => {
+        const u = (state.users || []).find(x => x.id === entry.userId);
+        if (!u) return { changed: false };
+        u.pass = newPassword;
+        return { changed: true };
+      }, email, entry.tenantKey);
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to reset the password.', detail: error.message });
+  }
+});
+// Self-service password change for an already-logged-in user -- covers both a real employee
+// (state.users[] entry) and a company's own admin login (platform_clients.admin_pass), which
+// live in two entirely different places. The frontend's previous "Change Password" modal only
+// ever mutated USERS[] client-side and relied on the next full /api/state save to persist it,
+// which silently did nothing for an admin-type login (no matching USERS[] entry to find at
+// all) while also never actually checking the current password server-side.
+app.post('/api/auth/change-password', requireAuth, async (req, res) => {
+  const currentPassword = String(req.body.currentPassword || '');
+  const newPassword = String(req.body.newPassword || '');
+  if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters.' });
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const { tenantKey, sub } = req.session;
+  try {
+    const record = await readState(tenantKey);
+    const users = record?.state?.users || [];
+    const match = users.find(u => String(u.email || '').toLowerCase() === String(sub || '').toLowerCase());
+    if (match) {
+      if (match.pass !== currentPassword) return res.status(401).json({ error: 'Current password is incorrect.' });
+      await mutateAppState(state => {
+        const u = (state.users || []).find(x => x.id === match.id);
+        if (!u) return { changed: false };
+        u.pass = newPassword;
+        return { changed: true };
+      }, sub, tenantKey);
+      return res.json({ ok: true });
+    }
+    const clientRow = await pool.query('SELECT id, admin_pass FROM platform_clients WHERE tenant_key = $1', [tenantKey]);
+    if (!clientRow.rowCount) return res.status(404).json({ error: 'Account not found.' });
+    if (clientRow.rows[0].admin_pass !== currentPassword) return res.status(401).json({ error: 'Current password is incorrect.' });
+    await pool.query('UPDATE platform_clients SET admin_pass = $1 WHERE id = $2', [newPassword, clientRow.rows[0].id]);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to update the password.', detail: error.message });
+  }
+});
+
 /* ── Web Bundy guest access (email OTP) ──
    Replaces the old "type any employee's email, no password, get in" guest shortcut, which
    effectively granted full account access to anyone who knew (or guessed) an employee's email --
@@ -549,30 +699,6 @@ app.post('/api/auth/login', async (req, res) => {
    by /api/state or anything else -- a verified guest can punch in/out and read today's own log,
    nothing more, regardless of what the underlying employee record could otherwise see. */
 const bundyOtps = new Map(); // email -> { codeHash, expiresAt, attempts, tenantKey, eid, name }
-function hashOtpCode(code) {
-  return crypto.createHash('sha256').update(String(code)).digest('hex');
-}
-async function sendBundyOtpEmail(toEmail, name, code) {
-  const apiKey = (process.env.RESEND_API_KEY || '').trim();
-  if (!apiKey) throw new Error('Email verification is not configured on this server yet.');
-  const from = process.env.BUNDY_OTP_FROM_EMAIL || 'AURA Web Bundy <onboarding@resend.dev>';
-  const apiRes = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      from,
-      to: [toEmail],
-      subject: `Your Web Bundy code: ${code}`,
-      html: `<p>Hi ${name},</p><p>Your Web Bundy verification code is:</p>`
-        + `<p style="font-size:28px;font-weight:700;letter-spacing:6px;margin:12px 0">${code}</p>`
-        + `<p>This code expires in 5 minutes. If you didn't request this, you can ignore this email.</p>`
-    })
-  });
-  if (!apiRes.ok) {
-    const data = await apiRes.json().catch(() => ({}));
-    throw new Error(data.message || 'Failed to send the verification email.');
-  }
-}
 function requireBundyAuth(req, res, next) {
   const payload = verifyToken((req.headers.authorization || '').replace(/^Bearer\s+/i, ''));
   if (!payload || payload.purpose !== 'bundy-punch') return res.status(401).json({ error: 'Your verification has expired. Please verify your email again.' });
@@ -593,9 +719,9 @@ app.post('/api/bundy/otp/request', async (req, res) => {
     if (!found.rowCount) return res.status(404).json({ error: 'Email not found or account disabled. Please contact HR.' });
     const { tenant_key: tenantKey, matched_user: matchedUser } = found.rows[0];
     const name = matchedUser.firstName || (matchedUser.name || '').split(' ')[0] || 'there';
-    const code = String(crypto.randomInt(100000, 1000000));
+    const code = generateOtpCode();
     bundyOtps.set(email, { codeHash: hashOtpCode(code), expiresAt: Date.now() + 5 * 60 * 1000, attempts: 0, tenantKey, eid: matchedUser.id, name });
-    await sendBundyOtpEmail(email, name, code);
+    await sendAppEmail(email, `Your Web Bundy code: ${code}`, otpCodeEmailHtml(name, code, 'Your Web Bundy verification code is:', 5));
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Unable to send the verification code.' });
