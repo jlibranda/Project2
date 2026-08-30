@@ -1019,7 +1019,9 @@ function buildAnalyticsContext(state) {
   const payrollCostTrend = runs.map(r => {
     const items = r.items || [];
     const sum = key => +items.reduce((s, i) => s + (Number(i[key]) || 0), 0).toFixed(2);
-    return { period: `${r.from || ''} to ${r.to || ''}`, status: r.status, headcount: items.length, totalGross: sum('gross'), totalDeductions: sum('total'), totalNet: sum('net') };
+    // totalDed, not total -- a real payroll item has no `total` field, so this previously
+    // silently summed to 0 for every run (item[key] || 0 masked the undefined).
+    return { period: `${r.from || ''} to ${r.to || ''}`, status: r.status, headcount: items.length, totalGross: sum('gross'), totalDeductions: sum('totalDed'), totalNet: sum('net') };
   });
 
   const recentAtt = (state.attendance || []).filter(a => a.date >= cutoff30);
@@ -1122,9 +1124,34 @@ function buildAssistantContext(state, session, isAdmin) {
       }));
     }
     if (serverCanAccess(state, me, 'myslips')) {
-      const mine = (state.payrolls || []).map(r => ({ r, item: (r.items || []).find(i => i.eid === me.id) })).filter(x => x.item);
-      const last = mine[mine.length - 1];
-      if (last) self.latestPayslip = { period: last.r.from + ' - ' + last.r.to, gross: last.item.gross, deductions: last.item.total, net: last.item.net };
+      // Last 6 runs this employee appears in (not just the latest) so the assistant can answer
+      // about a specific past cutoff, not only "how much was I paid most recently". item.total
+      // does not exist on a real payroll item (the actual field is item.totalDed) -- this used to
+      // silently read undefined here, meaning "deductions" was always missing/zero; fixed below.
+      const mine = (state.payrolls || []).map(r => ({ r, item: (r.items || []).find(i => i.eid === me.id) })).filter(x => x.item).slice(-6);
+      self.payslipHistory = mine.map(({ r, item }) => ({
+        period: `${r.from || ''} - ${r.to || ''}`, status: r.status,
+        basicPay: item.basic ?? null, otPay: item.ot ?? null, otHours: item.otH ?? null, nightDiffPay: item.nd ?? null,
+        gross: item.gross ?? null, totalDeductions: item.totalDed ?? null, net: item.net ?? null
+      }));
+    }
+    if (serverCanAccess(state, me, 'self_view_attendance')) {
+      // Own attendance records for roughly the last 90 days -- enough to cover the current and
+      // prior couple of cutoffs without unbounded growth (state.attendance otherwise keeps every
+      // record forever). `notes` already carries the human-readable reason a day was marked late/
+      // half-day/LWOP (see applyAttendancePolicy's policyNotes, folded into notes when the record
+      // is written), so the assistant can explain "why" from real data instead of guessing.
+      const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - 90);
+      const cutoffStr = cutoff.toISOString().slice(0, 10);
+      self.attendanceHistory = (state.attendance || [])
+        .filter(a => a.eid === me.id && a.date >= cutoffStr)
+        .sort((a, b) => String(a.date).localeCompare(String(b.date)))
+        .map(a => ({
+          date: a.date, status: a.status, timeIn: a.tin || null, timeOut: a.tout || null,
+          lateMinutes: a.lateMinutes ?? null, undertimeMinutes: a.undertimeMinutes ?? null,
+          otHours: a.ot ?? null, nightDiffHours: a.nd ?? null,
+          approvalStatus: a.approvalStatus || null, notes: a.notes || null
+        }));
     }
   }
   return {
@@ -1152,7 +1179,7 @@ app.post('/api/assistant/ask', requireAuth, async (req, res) => {
       lang === 'tl' ? 'Respond in Tagalog/Filipino.' : 'Respond in English.',
       isAdmin
         ? 'You are talking to an admin/HR user. As well as answering direct questions, you may actively ANALYZE DATA.analytics and DATA.employees/payroll/leave/case data -- spot trends, compare periods, flag outliers or risks (e.g. a department with unusually high OT or lateness, a compliance score driven mainly by one factor, a payroll run that jumped versus the prior one), and give a short recommendation when it is clearly warranted. Ground every specific number in DATA -- never invent a trend or figure that is not actually derivable from it. A real analysis can run a short paragraph or a few bullet points when that reads more clearly than prose, but stay a focused briefing, not a long report.'
-        : 'Be concise -- a few sentences at most, like a helpful coworker, not a report.',
+        : 'Be concise -- a few sentences at most, like a helpful coworker, not a report. When DATA.me.attendanceHistory and DATA.me.payslipHistory are both present, you can explain a specific cutoff -- match a payslipHistory entry\'s period (its from/to dates) against attendanceHistory records falling inside that same date range to answer things like "why was I marked late/absent that cutoff" (attendanceHistory.notes usually states the exact reason, e.g. a late-minutes threshold) and "was my overtime paid, and how much" (payslipHistory.otPay is the actual peso amount paid for that cutoff, otHours is the hours). If the employee names a cutoff/date not covered by what\'s in DATA, say you only have the periods listed there.',
       '',
       'SYSTEM KNOWLEDGE:',
       ASSISTANT_SYSTEM_KNOWLEDGE,
