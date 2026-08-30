@@ -368,26 +368,12 @@ tbody tr:last-child td{border-bottom:0}
 .login-bundy:hover{border-color:#c7c9ff;background:#fafaff;transform:translateY(-1px)}
 .login-bundy-icon{width:38px;height:38px;display:grid;place-items:center;flex:0 0 auto;border-radius:10px;color:#5557cc;background:#eef0ff}
 .login-bundy>span:nth-child(2){flex:1}.login-bundy strong{display:block;font-size:11px}.login-bundy small{display:block;margin-top:2px;color:#98a2b3;font-size:9px}.login-bundy>span:last-child{color:#98a2b3;font-size:17px}
-.demo-accounts{margin-top:22px;border-top:1px solid #eceff3}
-.demo-accounts summary{display:flex;align-items:center;justify-content:space-between;padding:16px 2px 10px;color:#667085;font-size:11px;font-weight:700;cursor:pointer;list-style:none}
-.demo-accounts summary::-webkit-details-marker{display:none}
-.demo-summary-icon{width:22px;height:22px;display:grid;place-items:center;border-radius:7px;background:#f2f4f7;color:#667085;font-size:15px;transition:.18s ease}
-.demo-accounts[open] .demo-summary-icon{transform:rotate(45deg);background:#eef0ff;color:#5557cc}
-.demo-accounts-body{padding-top:4px}
-.demo-hint{margin-bottom:9px;color:#98a2b3;font-size:10px}
-.demo-account-list{display:grid;grid-template-columns:1fr 1fr;gap:7px}
-.demo-account{min-width:0;display:flex;align-items:center;gap:9px;padding:8px;border:1px solid #eaecf0;border-radius:11px;background:#fff;color:#344054;text-align:left;cursor:pointer;transition:.15s ease}
-.demo-account:hover{border-color:#c7c9ff;background:#fafaff;transform:translateY(-1px)}
-.demo-avatar{width:29px;height:29px;display:grid;place-items:center;flex:0 0 auto;border-radius:9px;font-size:8px;font-weight:800}
-.demo-avatar.violet{color:#5557cc;background:#eef0ff}.demo-avatar.blue{color:#175cd3;background:#eff8ff}.demo-avatar.cyan{color:#0e7090;background:#ecfdff}.demo-avatar.amber{color:#b54708;background:#fffaeb}.demo-avatar.green{color:#067647;background:#ecfdf3}.demo-avatar.rose{color:#c01048;background:#fff1f3}
-.demo-account-copy{min-width:0;flex:1}.demo-account-copy strong,.demo-account-copy small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.demo-account-copy strong{font-size:9px}.demo-account-copy small{margin-top:1px;color:#98a2b3;font-size:8px}.demo-arrow{color:#b0b7c3;font-size:13px}
 .login-security{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:18px;color:#98a2b3;font-size:9px}
 
 [data-dark] .login-panel{background:#0f172a}
 [data-dark] .login-heading h2,[data-dark] .login-input-wrap input{color:#f8fafc!important}
 [data-dark] .login-heading p,[data-dark] .login-form .field label{color:#a8b4c8}
-[data-dark] .login-input-wrap,[data-dark] .login-bundy,[data-dark] .demo-account{background:#111a2d;border-color:#26344d;color:#dbe4f3}
-[data-dark] .demo-accounts{border-color:#26344d}
+[data-dark] .login-input-wrap,[data-dark] .login-bundy{background:#111a2d;border-color:#26344d;color:#dbe4f3}
 
 @media(max-width:1050px){
   .login-wrap{grid-template-columns:minmax(430px,.9fr) minmax(430px,1.1fr)}
@@ -410,7 +396,6 @@ tbody tr:last-child td{border-bottom:0}
   .login-panel{align-items:flex-start;padding:26px 18px 34px}
   .login-mobile-brand{margin-bottom:38px}
   .login-heading h2{font-size:29px}
-  .demo-account-list{grid-template-columns:1fr}
 }
 
 /* Full-width authenticated workspace */
