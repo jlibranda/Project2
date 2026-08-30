@@ -7443,8 +7443,17 @@ function actLeave(id,ok){
   if(!l)return;
   const result=applyLeaveDecision(l,ok?'approved':'rejected');
   if(!result.ok){toast(result.message,'warning');return;}
+  const decidedEmp=USERS.find(u=>u.id===l.eid);
+  if(result.final){
+    notifyLeaveDecision(decidedEmp,l.type,l.s,l.e,result.decision);
+  }else{
+    // Not final -- approved at this layer but routed to the next one, same as a fresh filing
+    // except addressed to whoever is now the current approver.
+    const nextApprover=decidedEmp?getApprovalChain(decidedEmp.eid).find(c=>c.layer===l.approvalLayer)?.approver:null;
+    notifyLeaveApprover(nextApprover,l.type,l.s,l.e,l.days);
+  }
   if(result.final&&result.decision==='approved'){
-    const emp=USERS.find(u=>u.id===l.eid),t=(COMPANY.leaveTypes||[]).find(x=>x.name===l.type);
+    const emp=decidedEmp,t=(COMPANY.leaveTypes||[]).find(x=>x.name===l.type);
     const deductDays=l.paidDays!==undefined?l.paidDays:l.days; /* older records predate the paid/unpaid split — deduct the full amount as before */
     if(emp&&t&&deductDays>0){
       if(!emp.leaveBalances)emp.leaveBalances={};
@@ -7496,6 +7505,21 @@ function markAttendanceForApprovedLeave(l,emp){
   });
   queueSync('Attendance');
 }
+// Fire-and-forget email notifications (server.js's POST /api/notify) -- a failed send here
+// never blocks or reverts the underlying leave action, it just quietly loses the email.
+function notifyLeaveApprover(approver,leaveType,s,e,days){
+  if(!approver||!approver.email||typeof window.apiRequest!=='function')return;
+  window.apiRequest('/notify',{method:'POST',body:JSON.stringify({type:'leave-filed',payload:{
+    approverEmail:approver.email,approverName:approver.name,employeeName:user.name,
+    leaveType,from:s,to:e,days
+  }})}).catch(()=>{});
+}
+function notifyLeaveDecision(emp,leaveType,s,e,decision){
+  if(!emp||!emp.email||typeof window.apiRequest!=='function')return;
+  window.apiRequest('/notify',{method:'POST',body:JSON.stringify({type:'leave-decided',payload:{
+    employeeEmail:emp.email,employeeName:emp.name,leaveType,from:s,to:e,decision,decidedBy:user.name
+  }})}).catch(()=>{});
+}
 function submitLeave(){
   const type=document.getElementById('lt').value,dayType=document.getElementById('ldaytype').value,s=document.getElementById('ls').value,e=document.getElementById('le2').value,reason=document.getElementById('lr').value.trim();
   updateLeaveComputation(); /* ensure window._leaveDays reflects the current form state before reading it */
@@ -7518,6 +7542,7 @@ function submitLeave(){
   }
   LEAVES.push({id:nLeave++,eid:user.id,type,s,e,reason,status:'pending',filed:today(),days,paidDays,unpaidDays,dayType,halfDayLabel:halfLabel,approvalLayer:1});
   queueSync('Leave_Requests');
+  notifyLeaveApprover(getApprovalChain(user.eid).find(c=>c.layer===1)?.approver,type,s,e,days);
   window._leaveDraft=null; /* clear the draft so the next visit to File Leave starts fresh */
   alert('Leave request submitted!'+(unpaidDays>0?' ('+unpaidDays+' day(s) will be unpaid.)':''));
   goTab(isAdminUser(user)?1:0);

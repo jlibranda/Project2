@@ -996,6 +996,59 @@ app.post('/api/assistant/ask', requireAuth, async (req, res) => {
   }
 });
 
+/* ── Filing/approval email notifications ──
+   The client already knows exactly who to notify (it resolves the approval chain itself, the
+   same logic Team View and the approvals list already run) -- this endpoint just sends the
+   email, so it has to independently confirm the named recipient is actually a real account in
+   the caller's own tenant before sending anything. Without that check, any authenticated user
+   could name an arbitrary external address here and turn this into an open mail relay. */
+async function emailBelongsToTenant(tenantKey, email) {
+  const record = await readState(tenantKey);
+  const users = record?.state?.users || [];
+  if (users.some(u => String(u.email || '').toLowerCase() === email.toLowerCase())) return true;
+  const clientRow = await pool.query('SELECT 1 FROM platform_clients WHERE tenant_key = $1 AND admin_email = $2', [tenantKey, email]);
+  return clientRow.rowCount > 0;
+}
+function escapeEmailHtml(s) {
+  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+app.post('/api/notify', requireAuth, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Notifications require the database to be configured.' });
+  const type = String(req.body.type || '');
+  const payload = req.body.payload || {};
+  const tenantKey = req.session.tenantKey;
+  try {
+    if (type === 'leave-filed') {
+      const approverEmail = String(payload.approverEmail || '').trim();
+      if (!approverEmail || !(await emailBelongsToTenant(tenantKey, approverEmail))) return res.status(400).json({ error: 'Invalid recipient.' });
+      const approverName = escapeEmailHtml(payload.approverName || 'there');
+      const employeeName = escapeEmailHtml(payload.employeeName || 'An employee');
+      const leaveType = escapeEmailHtml(payload.leaveType || 'leave');
+      const from = escapeEmailHtml(payload.from || '');
+      const to = escapeEmailHtml(payload.to || '');
+      const days = escapeEmailHtml(payload.days ?? '');
+      await sendAppEmail(approverEmail, `Leave request from ${payload.employeeName || 'an employee'}`,
+        `<p>Hi ${approverName},</p><p><strong>${employeeName}</strong> filed a ${leaveType} request for ${days} day(s), ${from} to ${to}.</p><p>Please review it in AURA.</p>`);
+    } else if (type === 'leave-decided') {
+      const employeeEmail = String(payload.employeeEmail || '').trim();
+      if (!employeeEmail || !(await emailBelongsToTenant(tenantKey, employeeEmail))) return res.status(400).json({ error: 'Invalid recipient.' });
+      const employeeName = escapeEmailHtml(payload.employeeName || 'there');
+      const leaveType = escapeEmailHtml(payload.leaveType || 'leave');
+      const from = escapeEmailHtml(payload.from || '');
+      const to = escapeEmailHtml(payload.to || '');
+      const decidedBy = payload.decidedBy ? escapeEmailHtml(payload.decidedBy) : '';
+      const verb = payload.decision === 'approved' ? 'approved' : 'rejected';
+      await sendAppEmail(employeeEmail, `Your leave request was ${verb}`,
+        `<p>Hi ${employeeName},</p><p>Your ${leaveType} request (${from} to ${to}) was <strong>${verb}</strong>${decidedBy ? ' by ' + decidedBy : ''}.</p>`);
+    } else {
+      return res.status(400).json({ error: 'Unknown notification type.' });
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Unable to send notification.' });
+  }
+});
+
 /* ── Platform client directory: lists/creates real, backend-tracked companies.
    Creating one also seeds its own isolated app_state row (defaultTenantState) so it's
    loggable-into immediately — see /api/auth/login below for how a login resolves to it. */
