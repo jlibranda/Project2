@@ -31,8 +31,23 @@ const KNOWN_DEFAULTS = {
   BOOTSTRAP_ADMIN_PASSWORD: 'admin123'
 };
 
+// Matches the app's own account password minimum (server.js's normal login/change-password
+// validation) -- deliberately kept at 6, never raised independently for these two env-sourced
+// credentials, so this is one shared constant rather than a second policy that could drift.
+const MIN_PASSWORD_LENGTH = 6;
+
 function isProduction(env) {
   return env.NODE_ENV === 'production';
+}
+
+// Whether `value` is acceptable as a real replacement credential: present, not the known public
+// default, and at least MIN_PASSWORD_LENGTH characters. Shared between the two validate*
+// functions below (the "no DB credential yet" branch) and server.js's own auto-rotation gate (an
+// unsafe STORED credential is only rotated when the env var offered as its replacement actually
+// clears this bar -- a 1-character GOD_ADMIN_PASSWORD must never become the new stored credential
+// any more than it should have been the fallback in the first place).
+function isSafeReplacementCredential(value, knownDefault) {
+  return typeof value === 'string' && value.length > 0 && value !== knownDefault && value.length >= MIN_PASSWORD_LENGTH;
 }
 
 function validateSessionSecret(env = process.env) {
@@ -58,12 +73,12 @@ function validateGodAdminCredential({ env = process.env, hasDbCredential, dbCred
   if (!isProduction(env)) return { ok: true, problems: [] };
   if (hasDbCredential) {
     if (dbCredentialIsKnownDefault) {
-      return { ok: false, problems: ['The God Admin password stored in the database is the known public default (godmode2026), just bcrypt-hashed -- a hash of a known password is not a secret. A server that refuses to boot can never be logged into to change it via Settings, so set a real, non-default GOD_ADMIN_PASSWORD and restart -- the stored credential is rotated to match it automatically at boot (see server.js\'s DB-aware credential check), no direct database access needed.'] };
+      return { ok: false, problems: [`The God Admin password stored in the database is the known public default (godmode2026), just bcrypt-hashed -- a hash of a known password is not a secret. A server that refuses to boot can never be logged into to change it via Settings, so set a real, non-default GOD_ADMIN_PASSWORD (at least ${MIN_PASSWORD_LENGTH} characters) and restart -- the stored credential is rotated to match it automatically at boot (see server.js\'s DB-aware credential check), no direct database access needed.`] };
     }
     return { ok: true, problems: [] };
   }
-  if (!env.GOD_ADMIN_PASSWORD || env.GOD_ADMIN_PASSWORD === KNOWN_DEFAULTS.GOD_ADMIN_PASSWORD) {
-    return { ok: false, problems: ['No God Admin password exists in the database yet, and GOD_ADMIN_PASSWORD is missing or set to the known public default (godmode2026). Set a real GOD_ADMIN_PASSWORD before starting -- production must never authenticate with the public default because this env var was left unset.'] };
+  if (!isSafeReplacementCredential(env.GOD_ADMIN_PASSWORD, KNOWN_DEFAULTS.GOD_ADMIN_PASSWORD)) {
+    return { ok: false, problems: [`No God Admin password exists in the database yet, and GOD_ADMIN_PASSWORD is missing, set to the known public default (godmode2026), or shorter than the required ${MIN_PASSWORD_LENGTH}-character minimum. Set a real GOD_ADMIN_PASSWORD (at least ${MIN_PASSWORD_LENGTH} characters, not the public default) before starting -- production must never authenticate with the public default because this env var was left unset or too weak.`] };
   }
   return { ok: true, problems: [] };
 }
@@ -79,14 +94,14 @@ function validateBootstrapCredential({ env = process.env, tenantRowExists, boots
   if (!isProduction(env)) return { ok: true, problems: [] };
   if (tenantRowExists) {
     if (bootstrapCredentialIsKnownDefault) {
-      return { ok: false, problems: ['The bootstrap admin password stored in the database is the known public default (admin123), just bcrypt-hashed -- a hash of a known password is not a secret. A server that refuses to boot can never be logged into to change it via Settings, so set a real, non-default BOOTSTRAP_ADMIN_PASSWORD and restart -- the stored credential is rotated to match it automatically at boot (see server.js\'s DB-aware credential check), no direct database access needed.'] };
+      return { ok: false, problems: [`The bootstrap admin password stored in the database is the known public default (admin123), just bcrypt-hashed -- a hash of a known password is not a secret. A server that refuses to boot can never be logged into to change it via Settings, so set a real, non-default BOOTSTRAP_ADMIN_PASSWORD (at least ${MIN_PASSWORD_LENGTH} characters) and restart -- the stored credential is rotated to match it automatically at boot (see server.js\'s DB-aware credential check), no direct database access needed.`] };
     }
     return { ok: true, problems: [] };
   }
-  if (!env.BOOTSTRAP_ADMIN_PASSWORD || env.BOOTSTRAP_ADMIN_PASSWORD === KNOWN_DEFAULTS.BOOTSTRAP_ADMIN_PASSWORD) {
-    return { ok: false, problems: ['The initial tenant/admin row does not exist yet, and BOOTSTRAP_ADMIN_PASSWORD is missing or set to the known public default (admin123). Set a real BOOTSTRAP_ADMIN_PASSWORD before the first boot that creates it -- production must never create that row with the public default because this env var was left unset.'] };
+  if (!isSafeReplacementCredential(env.BOOTSTRAP_ADMIN_PASSWORD, KNOWN_DEFAULTS.BOOTSTRAP_ADMIN_PASSWORD)) {
+    return { ok: false, problems: [`The initial tenant/admin row does not exist yet, and BOOTSTRAP_ADMIN_PASSWORD is missing, set to the known public default (admin123), or shorter than the required ${MIN_PASSWORD_LENGTH}-character minimum. Set a real BOOTSTRAP_ADMIN_PASSWORD (at least ${MIN_PASSWORD_LENGTH} characters, not the public default) before the first boot that creates it -- production must never create that row with the public default because this env var was left unset or too weak.`] };
   }
   return { ok: true, problems: [] };
 }
 
-module.exports = { validateSessionSecret, validateGodAdminCredential, validateBootstrapCredential, KNOWN_DEFAULTS };
+module.exports = { validateSessionSecret, validateGodAdminCredential, validateBootstrapCredential, KNOWN_DEFAULTS, MIN_PASSWORD_LENGTH, isSafeReplacementCredential };
