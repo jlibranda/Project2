@@ -6,7 +6,7 @@ const TimekeepingCore = require('./public/timekeeping-core.js');
 const { hashPassword, verifyPassword, looksLikeHash } = require('./server/passwords.js');
 const { createAuthorization, hasPermission, resolveCaller, isAdminCaller } = require('./server/authorization.js');
 const { canActOnRecord, applyChainDecision, applyForceApprove } = require('./server/approval-chain.js');
-const { calculateLeaveRequest, finalizeLeaveApproval, projectLeaveDecisionEmployeeForSession } = require('./server/leave-service.js');
+const { calculateLeaveRequest, finalizeLeaveApproval, projectLeaveDecisionEmployeeForSession, projectAttendancePatchForSession } = require('./server/leave-service.js');
 const { buildScopedStateForEmployee, applyEmployeeStateOverlay } = require('./server/state-serialization.js');
 const { ensureAuditTable, auditLog } = require('./server/audit.js');
 const { validateSessionSecret, validateGodAdminCredential, validateBootstrapCredential, KNOWN_DEFAULTS, isSafeReplacementCredential } = require('./server/secrets.js');
@@ -1373,7 +1373,7 @@ app.post('/api/leaves', requireAuth, async (req, res) => {
       }
       const calc = calculateLeaveRequest(state, caller, req.body, acknowledgeShortfall);
       if (!calc.ok) {
-        outcome = { error: calc.needsAcknowledgment ? 409 : 400, message: calc.error, needsAcknowledgment: calc.needsAcknowledgment, computed: calc.computed };
+        outcome = { error: calc.needsAcknowledgment ? 409 : 400, message: calc.error, needsAcknowledgment: calc.needsAcknowledgment, computed: calc.computed, invalidCalendarDate: calc.invalidCalendarDate };
         return { changed: false };
       }
       state.leaves = Array.isArray(state.leaves) ? state.leaves : [];
@@ -1384,9 +1384,20 @@ app.post('/api/leaves', requireAuth, async (req, res) => {
       return { changed: true };
     }, req.session.sub, tenantKey);
     if (outcome && outcome.error) {
+      if (outcome.invalidCalendarDate) {
+        await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'invalid_calendar_date_rejected', target: null, meta: {} });
+      }
       return res.status(outcome.error).json({ error: outcome.message, needsAcknowledgment: outcome.needsAcknowledgment, computed: outcome.computed });
     }
-    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_filed', target: String(outcome.record.id), meta: { type: outcome.record.type, days: outcome.record.days } });
+    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_filed', target: String(outcome.record.id), meta: { type: outcome.record.type, days: outcome.record.days, dayType: outcome.record.dayType } });
+    // The canonical date/fraction footprint is frozen the moment a request is filed (server/
+    // leave-service.js's buildLeaveDayAllocation) so a later schedule change can never silently
+    // add or drop a date at approval time -- day-counts/dates only, no PII, matching every other
+    // audit event's own posture.
+    await auditLog(pool, {
+      tenantKey, actor: req.session.sub, action: 'leave_allocation_snapshot_created', target: String(outcome.record.id),
+      meta: { dates: (outcome.record.leaveAllocation || []).map(a => a.date), dayType: outcome.record.dayType }
+    });
     res.json({ ok: true, record: outcome.record, version: result.version });
   } catch (error) {
     res.status(500).json({ error: 'Unable to file leave request.', detail: error.message });
@@ -1421,6 +1432,7 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
       const decisionResult = applyChainDecision(record, decision, actorName, caller && caller.eid, gate.chain, gate.currentLayer, 'status');
       let sideEffects = null;
       let canSeePayrollAdjustments = false;
+      let canSeeAttendanceDetail = false;
       if (decisionResult.final && decision === 'approved') {
         sideEffects = finalizeLeaveApproval(state, record, actorName);
         // Payroll-adjustment DETAIL (amount, daily-rate-derived figures) is only for a caller who
@@ -1429,6 +1441,12 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
         // late-payroll credit. Computed here (inside the transaction, where `state`/`caller` are
         // authoritative) rather than trusting anything about the caller from outside it.
         canSeePayrollAdjustments = isAdminCaller(req.session, caller) || hasPermission(state, req.session, 'payroll');
+        // Full attendance record DETAIL (Time In/Out, raw punches, OT/ND/undertime, edit history)
+        // is likewise only for a caller who already has a legitimate reason to see it -- admin,
+        // att_edit, or payroll. A leave_approve-only manager gets just the safe patch projection
+        // built below (projectAttendancePatchForSession), never the raw timekeeping detail, just
+        // because their approval happened to touch Attendance.
+        canSeeAttendanceDetail = isAdminCaller(req.session, caller) || hasPermission(state, req.session, 'att_edit') || hasPermission(state, req.session, 'payroll');
         // TEST-ONLY fault injection, proving finalizeLeaveApproval's in-memory mutations (balance/
         // attendance/payroll, already applied to `state` above) roll back together with the
         // decision itself if anything downstream in this same transaction fails -- mutateAppState's
@@ -1440,7 +1458,7 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
           throw new Error('Injected test failure after finalization side effects (rollback proof) -- not a real error.');
         }
       }
-      outcome = { record, decisionResult, sideEffects, canSeePayrollAdjustments };
+      outcome = { record, decisionResult, sideEffects, canSeePayrollAdjustments, canSeeAttendanceDetail };
       return { changed: true };
     }, req.session.sub, tenantKey);
     if (outcome && outcome.error) {
@@ -1458,7 +1476,8 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
     // (projectLeaveDecisionEmployeeForSession, server/leave-service.js -- id + leaveBalances only,
     // for every caller, admin included); payroll adjustment DETAIL is included only for a caller
     // who already has payroll visibility, everyone else gets just a safe created/count indicator.
-    let employeePatch, attendanceRecords, payrollAdjustmentCreated = false, payrollAdjustmentCount = 0, payrollAdjustments;
+    let employeePatch, attendanceRecords, attendancePatches, attendanceUpdated = false, attendanceDates,
+      payrollAdjustmentCreated = false, payrollAdjustmentCount = 0, payrollAdjustments;
     if (outcome.sideEffects) {
       const fx = outcome.sideEffects;
       await auditLog(pool, {
@@ -1473,10 +1492,36 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
         await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_balance_recalculated_at_approval', target: String(id), meta: outcome.record.balanceRecalculation });
       }
       if (fx.duplicateAdjustmentsSkipped > 0) {
-        await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'duplicate_leave_payroll_adjustment_skipped', target: String(id), meta: { count: fx.duplicateAdjustmentsSkipped } });
+        await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'duplicate_leave_payroll_adjustment_skipped', target: String(id), meta: { count: fx.duplicateAdjustmentsSkipped, legacyAdjustmentMismatches: fx.legacyAdjustmentMismatches } });
+      }
+      if (fx.allocationDerivedAtApproval) {
+        await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_allocation_derived_at_approval', target: String(id), meta: { dates: (outcome.record.leaveAllocation || []).map(a => a.date) } });
+      }
+      if (fx.scheduleChangedSinceFiling) {
+        await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'schedule_changed_after_leave_filing', target: String(id), meta: {} });
+      }
+      const halfDayTouched = fx.attendanceRecords.filter(r => r.leaveDayType);
+      if (halfDayTouched.length) {
+        await auditLog(pool, {
+          tenantKey, actor: req.session.sub, action: 'half_day_leave_finalized', target: String(id),
+          meta: halfDayTouched.map(r => ({ date: r.date, dayType: r.leaveDayType, otherHalfWorked: !!r.otherHalfWorked }))
+        });
+      }
+      if (fx.payrollAdjustments.length) {
+        await auditLog(pool, {
+          tenantKey, actor: req.session.sub, action: 'leave_fraction_paid', target: String(id),
+          meta: fx.payrollAdjustments.map(a => ({ date: a.sourceDate, fraction: a.sourceFraction, amount: a.amount }))
+        });
       }
       employeePatch = projectLeaveDecisionEmployeeForSession(fx.employee);
-      attendanceRecords = fx.attendanceRecords;
+      attendanceUpdated = fx.attendanceRecords.length > 0;
+      attendanceDates = fx.attendanceRecords.map(r => r.date);
+      attendancePatches = fx.attendanceRecords.map(projectAttendancePatchForSession);
+      if (outcome.canSeeAttendanceDetail) {
+        attendanceRecords = fx.attendanceRecords;
+      } else if (attendanceUpdated) {
+        await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'attendance_response_scoped', target: String(id), meta: { recordCount: fx.attendanceRecords.length } });
+      }
       payrollAdjustmentCount = fx.payrollAdjustments.length;
       payrollAdjustmentCreated = payrollAdjustmentCount > 0;
       if (payrollAdjustmentCreated && outcome.canSeePayrollAdjustments) {
@@ -1485,7 +1530,8 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
     }
     res.json({
       ok: true, record: outcome.record, message: outcome.decisionResult.message, final: outcome.decisionResult.final, version: result.version,
-      employeePatch, attendanceRecords, payrollAdjustmentCreated, payrollAdjustmentCount, payrollAdjustments
+      employeePatch, attendanceRecords, attendanceUpdated, attendanceDates, attendancePatches,
+      payrollAdjustmentCreated, payrollAdjustmentCount, payrollAdjustments
     });
   } catch (error) {
     res.status(500).json({ error: 'Unable to record the decision.', detail: error.message });

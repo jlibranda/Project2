@@ -932,7 +932,12 @@ async function testLeaveIntegrityAndFinalization() {
     accessLevels: [
       { id: 1, name: 'Super Admin', perms: {} },
       { id: 2, name: 'Employee', perms: { leave: true, leave_apply: true } },
-      { id: 3, name: 'Manager', perms: { leave: true, leave_apply: true, leave_approve: true } }
+      { id: 3, name: 'Manager', perms: { leave: true, leave_apply: true, leave_approve: true } },
+      // Issue 21 (attendance-response privacy): two more "can see full attendance" holders besides
+      // admin -- att_edit and payroll each independently grant it, leave_approve alone (Manager,
+      // above) must not.
+      { id: 4, name: 'Att Edit Manager', perms: { leave: true, leave_apply: true, leave_approve: true, att_edit: true } },
+      { id: 5, name: 'Payroll Manager', perms: { leave: true, leave_apply: true, leave_approve: true, payroll: true } }
     ],
     approvalConfig: { maxLayers: 4, defaultLayers: 1, perEmployee: {} },
     users: [
@@ -962,7 +967,38 @@ async function testLeaveIntegrityAndFinalization() {
       // Dedicated to the concurrent/pending-balance revalidation scenario -- starts at a clean,
       // known balance of 5, untouched by any other test in this fixture.
       { id: 6, email: 'balanceemp@lv.test', pass: await passHash('balanceemplvpass1'), role: 'employee', accessLevelId: 2, name: 'Balance Emp LV', eid: 'E-LVBALANCE', active: true,
-        salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 5, adjustments: [] } } }
+        salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 5, adjustments: [] } } },
+      // Half-day scenarios (issues 16-18) -- assigned to the same Mon-Fri shift as shiftemp, so
+      // Sat/Sun rest-day rejection and AM/PM segment derivation both apply. Two dedicated
+      // employees so the "other half worked" and "other half not worked" paths never interfere
+      // with each other's attendance/payroll state.
+      { id: 7, email: 'halfworked@lv.test', pass: await passHash('halfworkedlvpass1'), role: 'employee', accessLevelId: 2, name: 'Half Worked LV', eid: 'E-LVHALFW', active: true,
+        shiftId: 1, salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } } },
+      { id: 8, email: 'halfnotworked@lv.test', pass: await passHash('halfnotworkedlvpass1'), role: 'employee', accessLevelId: 2, name: 'Half Not Worked LV', eid: 'E-LVHALFNW', active: true,
+        shiftId: 1, salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } } },
+      // Issue 19/20 (fractional/duplicate payroll-adjustment amounts) -- no shift assigned (every
+      // calendar day counts), balance reset via direct SQL between sub-scenarios exactly like the
+      // existing CB-partial pattern above.
+      { id: 9, email: 'fractest@lv.test', pass: await passHash('fractestlvpass1'), role: 'employee', accessLevelId: 2, name: 'Frac Test LV', eid: 'E-LVFRAC', active: true,
+        salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 0.5, adjustments: [] } } },
+      // Issue 21 (attendance-response privacy) -- carries the same confidential fields as rep,
+      // but with no immediateHeadEid so the existing empty-chain/leave_approve-floor authorization
+      // pattern lets any of mgr/attmgr/payrollmgr/admin act on it independently, isolating each
+      // sub-scenario's approver.
+      { id: 10, email: 'privsubj@lv.test', pass: await passHash('privsubjlvpass1'), role: 'employee', accessLevelId: 2, name: 'Priv Subj LV', eid: 'E-LVPRIV', active: true,
+        salaryPM: 22000, rate: 1000, payGroupId: 1,
+        sss: '11-2233445-6', ph: '22-334455667-8', pi: '2233-4455-6677', tin: '223-344-556-000',
+        bank: 'Metrobank', bankAccount: '9988776655', leaveBalances: { 1: { balance: 10, adjustments: [] } } },
+      { id: 11, email: 'attmgr@lv.test', pass: await passHash('attmgrlvpass1'), role: 'employee', accessLevelId: 4, name: 'Att Edit Mgr LV', eid: 'E-LVATTMGR', active: true },
+      { id: 12, email: 'payrollmgr@lv.test', pass: await passHash('payrollmgrlvpass1'), role: 'employee', accessLevelId: 5, name: 'Payroll Mgr LV', eid: 'E-LVPAYMGR', active: true },
+      // Issue 22 (schedule snapshot) -- its own dedicated shift (id 2, identical Mon-Fri/Sat-Sun
+      // shape to shift 1) so mutating its schedule mid-test can never affect shiftemp/halfworked/
+      // halfnotworked, all pinned to shift 1.
+      { id: 13, email: 'schedsnap@lv.test', pass: await passHash('schedsnaplvpass1'), role: 'employee', accessLevelId: 2, name: 'Sched Snap LV', eid: 'E-LVSCHEDSNAP', active: true,
+        shiftId: 2, salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } } },
+      // Issue 23 (impossible calendar dates) -- no shift, isolated from every other balance/date test.
+      { id: 14, email: 'datecheck@lv.test', pass: await passHash('datechecklvpass1'), role: 'employee', accessLevelId: 2, name: 'Date Check LV', eid: 'E-LVDATECHECK', active: true,
+        salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } } }
     ],
     attendance: [], leaves: [], loans: [], payrolls: [],
     payPeriods: [
@@ -980,6 +1016,21 @@ async function testLeaveIntegrityAndFinalization() {
       // assigned here. 2026-09-04 is a Friday, 2026-09-05/06 are Sat/Sun, 2026-09-07 is a Monday.
       shifts: [{
         id: 1, name: 'Mon-Fri 9-6',
+        schedule: {
+          mon: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          tue: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          wed: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          thu: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          fri: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          sat: { restDay: true, start: '', end: '', breakStart: '', breakEnd: '' },
+          sun: { restDay: true, start: '', end: '', breakStart: '', breakEnd: '' }
+        }
+      },
+      // Issue 22's own dedicated shift -- identical Mon-Fri 9-6/Sat-Sun-rest shape to shift 1 at
+      // seed time, mutated mid-test to make Saturday a workday, without touching shift 1 (which
+      // shiftemp/halfworked/halfnotworked all still rely on elsewhere in this fixture).
+      {
+        id: 2, name: 'Mon-Fri 9-6 (schedule-snapshot copy)',
         schedule: {
           mon: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
           tue: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
@@ -1021,6 +1072,14 @@ async function testLeaveIntegrityAndFinalization() {
     const mgrToken = await login('mgr@lv.test', 'mgrlvpass1');
     const repToken = await login('rep@lv.test', 'replvpass1');
     const shiftEmpToken = await login('shiftemp@lv.test', 'shiftemplvpass1');
+    const halfWorkedToken = await login('halfworked@lv.test', 'halfworkedlvpass1');
+    const halfNotWorkedToken = await login('halfnotworked@lv.test', 'halfnotworkedlvpass1');
+    const fracTestToken = await login('fractest@lv.test', 'fractestlvpass1');
+    const privSubjToken = await login('privsubj@lv.test', 'privsubjlvpass1');
+    const attMgrToken = await login('attmgr@lv.test', 'attmgrlvpass1');
+    const payrollMgrToken = await login('payrollmgr@lv.test', 'payrollmgrlvpass1');
+    const schedSnapToken = await login('schedsnap@lv.test', 'schedsnaplvpass1');
+    const dateCheckToken = await login('datecheck@lv.test', 'datechecklvpass1');
 
     // ── Leave Integrity (server-side calculation/validation) ──────────────────────────────────
     let r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-05', endDate: '2026-09-05', reason: 'test', dayType: 'whole', days: -10, paidDays: -10, unpaidDays: -10 }) }, empToken);
@@ -1282,6 +1341,257 @@ async function testLeaveIntegrityAndFinalization() {
     assertEqual(r.status, 400, '36. invalid dayType: xyz returns 400');
     const afterInvalidDayType = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
     assert(!afterInvalidDayType.leaves.some(l => l.reason === 'invalid daytype test'), '37. invalid dayType does not create a leave record');
+
+    // ── Issue 16: half-day leave cannot be filed on a scheduled rest day ──────────────────────
+    // 2026-09-12/13 are a Saturday/Sunday, real rest days under shift 1 (halfworked's shift).
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-12', reason: 'half am on saturday', dayType: 'half_am' }) }, halfWorkedToken);
+    assertEqual(r.status, 400, '38. half_am leave on a Saturday (rest day) is rejected with 400');
+    assert(/rest day/i.test(r.body.error || ''), '38b. the rejection message explains it is a rest day');
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-13', reason: 'half pm on sunday', dayType: 'half_pm' }) }, halfWorkedToken);
+    assertEqual(r.status, 400, '39. half_pm leave on a Sunday (rest day) is rejected with 400');
+    const afterRestDayHalfDay = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    assert(!afterRestDayHalfDay.leaves.some(l => l.eid === 7 && (l.s === '2026-09-12' || l.s === '2026-09-13')), '40. no leave record was created for either rejected rest-day half-day request');
+
+    // ── Issue 17: half-day paid leave + valid other-half work = full payable day, but only 0.5
+    // leave credit is consumed -- never converted into a full-day leave ────────────────────────
+    // Seed the PM punches BEFORE filing, mirroring the real order of events: the employee actually
+    // worked the afternoon, then files for the morning off.
+    {
+      const row = await pg.query("SELECT state, version FROM app_state WHERE tenant_key = $1", [tenantKey]);
+      const st = row.rows[0].state;
+      st.attendance.push({ id: 900, eid: 7, date: '2026-09-08', tin: '13:05', tout: '18:00', status: 'present', ot: 0, nd: 0, notes: '', punches: [], active: true });
+      await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
+    }
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-08', reason: 'half am, worked pm', dayType: 'half_am' }) }, halfWorkedToken);
+    assertEqual(r.status, 200, '41-setup. half_am leave with pre-existing PM punches is accepted');
+    assertEqual(r.body.record.days, 0.5, '41. half-day leave.days is 0.5, never converted to a full day');
+    const halfWorkedLeaveId = r.body.record.id;
+    r = await call('/api/leaves/' + halfWorkedLeaveId + '/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, '42-setup. admin approves the half_am (worked PM) request');
+    assertEqual(r.body.final, true, '42-setup2. single-layer chain finalizes immediately');
+    let afterHW = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    let hwAtt = afterHW.attendance.find(a => a.eid === 7 && a.date === '2026-09-08');
+    assertEqual(hwAtt.tin, '13:05', '42. the real PM Time In is preserved, never erased');
+    assertEqual(hwAtt.tout, '18:00', '43. the real PM Time Out is preserved, never erased');
+    assert(hwAtt.status !== 'absent', '44. attendance status is never forced to absent when the other half was genuinely worked');
+    assertEqual(hwAtt.leaveFraction, 0.5, '45. attendance carries leaveFraction:0.5, not a full day');
+    assertEqual(hwAtt.leaveDayType, 'half_am', '46. attendance carries the half-day type');
+    let hwEmp = afterHW.users.find(u => u.id === 7);
+    assertEqual(hwEmp.leaveBalances['1'].balance, 9.5, '47. exactly 0.5 leave credit is deducted, not a full day');
+    let hwAdj = afterHW.payrollAdjustments.find(a => a.sourceType === 'leave' && a.sourceLeaveId === halfWorkedLeaveId && a.sourceDate === '2026-09-08');
+    assert(!!hwAdj, '48. a late-approval payroll adjustment is created for the leave portion (period already closed)');
+    assertEqual(hwAdj.amount, 500, '49. the adjustment credits exactly half the daily rate (₱500), never a full ₱1000 -- the worked half was already correctly paid by normal attendance payroll');
+
+    // ── Issue 18: half-day paid leave WITHOUT valid other-half work -- only 0.5 is paid, no
+    // automatic extra 0.5, whether the pay period is closed OR still open ─────────────────────────
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-09', reason: 'half am, no pm work', dayType: 'half_am' }) }, halfNotWorkedToken);
+    assertEqual(r.status, 200, '50-setup. half_am leave with no PM attendance at all is accepted');
+    const halfNotWorkedLeaveId = r.body.record.id;
+    r = await call('/api/leaves/' + halfNotWorkedLeaveId + '/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, '51-setup. admin approves the half_am (no PM work) request -- closed period');
+    let afterHNW = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    let hnwAtt = afterHNW.attendance.find(a => a.eid === 8 && a.date === '2026-09-09');
+    assertEqual(hnwAtt.status, 'absent', '51. with no valid other-half work, the date is marked absent -- the existing (unmodified) absence-deduction rules apply, no new paid concept is invented');
+    assertEqual(hnwAtt.leaveFraction, 0.5, '52. attendance still records the legitimate 0.5 leave via metadata');
+    let hnwEmp = afterHNW.users.find(u => u.id === 8);
+    assertEqual(hnwEmp.leaveBalances['1'].balance, 9.5, '53. exactly 0.5 leave credit is deducted, matching the leave portion actually granted');
+    let hnwAdj = afterHNW.payrollAdjustments.find(a => a.sourceType === 'leave' && a.sourceLeaveId === halfNotWorkedLeaveId && a.sourceDate === '2026-09-09');
+    assert(!!hnwAdj, '54. the 0.5 leave portion is still credited (closed period)');
+    assertEqual(hnwAdj.amount, 500, '55. only ₱500 (0.5 day) is credited, never a full ₱1000 -- the other half is not automatically paid');
+
+    // Same shape, on a date whose pay period is still OPEN -- without a positive credit here, the
+    // open period's own future run would deduct the WHOLE day (status:'absent') for what was
+    // actually a half-approved leave; crediting the 0.5 leave portion regardless of period status
+    // is what nets out to the correct "0.5 paid + 0.5 absent/unpaid" via the existing, unmodified
+    // absence-deduction formula.
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-10-06', reason: 'half pm, no am work, open period', dayType: 'half_pm' }) }, halfNotWorkedToken);
+    assertEqual(r.status, 200, '56-setup. half_pm leave with no AM attendance, open-period date, is accepted');
+    const halfNotWorkedOpenLeaveId = r.body.record.id;
+    r = await call('/api/leaves/' + halfNotWorkedOpenLeaveId + '/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, '56. admin approves the half_pm (no AM work) request -- open period');
+    let afterHNWOpen = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    let hnwOpenAtt = afterHNWOpen.attendance.find(a => a.eid === 8 && a.date === '2026-10-06');
+    assertEqual(hnwOpenAtt.status, 'absent', '57. still marked absent for the uncovered half even though the period is open');
+    let hnwOpenAdj = afterHNWOpen.payrollAdjustments.find(a => a.sourceType === 'leave' && a.sourceLeaveId === halfNotWorkedOpenLeaveId && a.sourceDate === '2026-10-06');
+    assert(!!hnwOpenAdj, '58. the 0.5 leave portion is credited even though the pay period is still open');
+    assertEqual(hnwOpenAdj.amount, 500, '59. still exactly ₱500, never a full ₱1000');
+
+    // ── Issue 19/20: fractional and duplicate/legacy-mismatch payroll-adjustment handling ────────
+    {
+      const seedFracLeave = async (id, s, e, days) => {
+        const row = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
+        const st = row.rows[0].state;
+        // Deliberately no leaveAllocation -- exercises the legacy-derivation path (issue 14) at
+        // the same time as the fractional-payroll fix (issues 1/9/19).
+        st.leaves.push({ id, eid: 9, type: 'VL', s, e, reason: 'fraction test', status: 'pending', filed: s, days, paidDays: days, unpaidDays: 0, dayType: 'whole', approvalLayer: 1 });
+        await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
+      };
+      const setFracBalance = async balance => {
+        const row = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
+        const st = row.rows[0].state;
+        st.users.find(u => u.id === 9).leaveBalances['1'].balance = balance;
+        await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
+      };
+
+      // 0.5 paid day (balance-limited) -> exactly ₱500, not ₱1000.
+      await setFracBalance(0.5);
+      await seedFracLeave(600, '2026-09-05', '2026-09-05', 1);
+      r = await call('/api/leaves/600/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+      assertEqual(r.status, 200, '60-setup. 0.5-paid-day leave (balance-limited) approves successfully');
+      let afterFrac = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+      let fracAdjs = afterFrac.payrollAdjustments.filter(a => a.sourceLeaveId === 600);
+      assertEqual(fracAdjs.length, 1, '60. exactly one adjustment is created for a single 0.5-day date');
+      assertEqual(fracAdjs[0].amount, 500, '61. a 0.5 paid day credits exactly ₱500, not a full ₱1000');
+      const leave600 = afterFrac.leaves.find(l => l.id === 600);
+      assertEqual(leave600.allocationDerivedAtApproval, true, '61b. the legacy record (no leaveAllocation at filing) had one derived and persisted at approval');
+
+      // 1.5 paid days across 2 eligible dates -> ₱1000 (day 1, full) + ₱500 (day 2, half) = ₱1500
+      // total, NOT ₱2000 (the old integer-counted bug credited a full daily rate to both dates).
+      await setFracBalance(1.5);
+      await seedFracLeave(601, '2026-09-10', '2026-09-11', 2);
+      r = await call('/api/leaves/601/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+      assertEqual(r.status, 200, '62-setup. 1.5-paid-day leave across 2 dates approves successfully');
+      afterFrac = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+      fracAdjs = afterFrac.payrollAdjustments.filter(a => a.sourceLeaveId === 601).sort((a, b) => a.sourceDate.localeCompare(b.sourceDate));
+      assertEqual(fracAdjs.length, 2, '62. two adjustments are created, one per eligible date');
+      assertEqual(fracAdjs[0].amount, 1000, '63. the first date is credited a full day (₱1000)');
+      assertEqual(fracAdjs[1].amount, 500, '64. the second date is credited only the remaining half (₱500)');
+      assertEqual(fracAdjs.reduce((sum, a) => sum + a.amount, 0), 1500, '65. the total credited across both dates is exactly ₱1500, not ₱2000');
+
+      // 2 full paid days -- whole-number behavior unchanged -- credits exactly ₱2000.
+      await setFracBalance(2);
+      await seedFracLeave(602, '2026-09-14', '2026-09-15', 2);
+      r = await call('/api/leaves/602/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+      assertEqual(r.status, 200, '66-setup. 2 full paid days across 2 dates approves successfully');
+      afterFrac = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+      fracAdjs = afterFrac.payrollAdjustments.filter(a => a.sourceLeaveId === 602);
+      assertEqual(fracAdjs.reduce((sum, a) => sum + a.amount, 0), 2000, '66. 2 full paid days still credit exactly ₱2000 -- whole-day behavior is unchanged');
+
+      // Issue 20: pre-seed a STALE full-day (₱1000) adjustment for a leave/date about to be
+      // finalized as a half-day (0.5 -> ₱500 expected) -- finalization must not blindly trust or
+      // duplicate it; it's left alone and flagged for review, never silently doubled or corrected.
+      await setFracBalance(10);
+      {
+        const row = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
+        const st = row.rows[0].state;
+        st.leaves.push({ id: 603, eid: 9, type: 'VL', s: '2026-09-12', e: '2026-09-12', reason: 'legacy mismatch test', status: 'pending', filed: '2026-09-12', days: 1, paidDays: 0.5, unpaidDays: 0.5, dayType: 'half_am', halfDayLabel: 'Half Day — First Half', approvalLayer: 1 });
+        st.payrollAdjustments = st.payrollAdjustments || [];
+        const staleId = st.payrollAdjustments.reduce((max, a) => Math.max(max, Number(a.id) || 0), 0) + 1;
+        st.payrollAdjustments.push({
+          id: staleId, empId: 9, adjType: 'Legacy Full Day', payItemCode: 'LEAVE_PAY', category: 'earnings', taxable: true, direction: 'income',
+          amount: 1000, reason: 'legacy pre-fraction-aware adjustment', effectiveDate: '2026-09-12', payPeriodId: null, payPeriodLabel: null,
+          addedBy: 'seed', status: 'ready', processStatus: 'ready', createdAt: '2026-09-01', sourceType: 'leave', sourceLeaveId: 603, sourceDate: '2026-09-12'
+        });
+        await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
+      }
+      r = await call('/api/leaves/603/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+      assertEqual(r.status, 200, '67-setup. the half-day leave with a pre-existing stale full-day adjustment still approves');
+      afterFrac = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+      const mismatchAdjs = afterFrac.payrollAdjustments.filter(a => a.sourceLeaveId === 603);
+      assertEqual(mismatchAdjs.length, 1, '67. no second adjustment is created for the same leave/date -- the stale one is left alone, not duplicated');
+      assertEqual(mismatchAdjs[0].amount, 1000, '68. the pre-existing (stale, mismatched) adjustment amount is untouched, not silently corrected or doubled');
+      const mismatchAudit = await pg.query("SELECT meta FROM security_audit_log WHERE tenant_key = $1 AND action = 'duplicate_leave_payroll_adjustment_skipped' AND target = '603' ORDER BY id DESC LIMIT 1", [tenantKey]);
+      assert(mismatchAudit.rowCount === 1 && Number(mismatchAudit.rows[0].meta.legacyAdjustmentMismatches) >= 1, '69. the mismatch is flagged in the audit log for review (legacyAdjustmentMismatches >= 1)');
+    }
+
+    // ── Issue 21: attendance-response privacy scoping ─────────────────────────────────────────
+    // Explicit ids well clear of the auto-increment range (which by now has already passed 600s
+    // from the fractional-payroll block above, and keeps climbing with every real POST /api/leaves
+    // filed in this same block) -- avoids a duplicate-id collision between a manually seeded
+    // record and one the server auto-assigns.
+    const seedPrivLeave = async (id, s, e) => {
+      const row = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
+      const st = row.rows[0].state;
+      st.leaves.push({ id, eid: 10, type: 'VL', s, e, reason: 'privacy test', status: 'pending', filed: s, days: 1, paidDays: 1, unpaidDays: 0, dayType: 'whole', approvalLayer: 1 });
+      await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
+    };
+    // leave_approve only (mgr) -- must NOT receive raw attendance detail.
+    await seedPrivLeave(7700, '2026-09-08', '2026-09-08');
+    r = await call('/api/leaves/7700/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, mgrToken);
+    assertEqual(r.status, 200, "70-setup. mgr (leave_approve only) approves privsubj's leave");
+    assert(r.body.attendanceRecords === undefined, '70. leave_approve-only manager does NOT receive full attendanceRecords');
+    assertEqual(r.body.attendanceUpdated, true, '71. attendanceUpdated flag is still true');
+    assert(Array.isArray(r.body.attendanceDates) && r.body.attendanceDates.includes('2026-09-08'), '72. attendanceDates still tells the approver which date(s) were touched');
+    assert(Array.isArray(r.body.attendancePatches) && r.body.attendancePatches.length === 1, '73. attendancePatches carries the safe per-record projection');
+    // This is a whole-day leave, so leaveFraction/leaveDayType are undefined and JSON.stringify
+    // drops them entirely over the wire -- the allowed-fields check still holds (every key present
+    // is one of the safe six), just with the half-day-only ones naturally absent here.
+    const allowedPatchKeys = new Set(['id', 'eid', 'date', 'status', 'leaveFraction', 'leaveDayType']);
+    assert(Object.keys(r.body.attendancePatches[0]).every(k => allowedPatchKeys.has(k)), '74. the safe patch only ever contains keys from {id,eid,date,status,leaveFraction,leaveDayType} -- no more');
+    const privRaw = JSON.stringify(r.body);
+    assert(!privRaw.includes('"tin"') && !privRaw.includes('"tout"') && !privRaw.includes('"punches"') && !/"ot":/.test(privRaw) && !/"nd":/.test(privRaw) && !privRaw.includes('undertimeMinutes') && !privRaw.includes('"edits"'),
+      '75. the raw response body never contains tin/tout/punches/ot/nd/undertimeMinutes/edits');
+
+    // att_edit (no admin, no payroll) -- DOES receive full attendance detail.
+    await seedPrivLeave(7701, '2026-09-09', '2026-09-09');
+    r = await call('/api/leaves/7701/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, attMgrToken);
+    assertEqual(r.status, 200, "76-setup. attmgr (att_edit) approves privsubj's leave");
+    assert(Array.isArray(r.body.attendanceRecords) && r.body.attendanceRecords.length === 1, '76. a caller with att_edit DOES receive full attendanceRecords');
+    assert('tin' in r.body.attendanceRecords[0] && 'tout' in r.body.attendanceRecords[0], '77. the full record includes tin/tout fields');
+
+    // payroll (no admin, no att_edit) -- ALSO receives full attendance detail.
+    await seedPrivLeave(7702, '2026-09-10', '2026-09-10');
+    r = await call('/api/leaves/7702/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, payrollMgrToken);
+    assertEqual(r.status, 200, "78-setup. payrollmgr (payroll) approves privsubj's leave");
+    assert(Array.isArray(r.body.attendanceRecords) && r.body.attendanceRecords.length === 1, '78. a caller with payroll permission also receives full attendanceRecords');
+
+    // admin -- unchanged.
+    await seedPrivLeave(7703, '2026-09-11', '2026-09-11');
+    r = await call('/api/leaves/7703/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, "79-setup. admin approves privsubj's leave");
+    assert(Array.isArray(r.body.attendanceRecords), '79. admin still receives full attendanceRecords');
+
+    // Half-day leave for the same privacy-scoped subject, filed and auto-assigned an id by the
+    // real endpoint (safe now that every manually-seeded 77xx id above already exists, so the
+    // server's own next-id counter can never collide with one of them) -- leaveFraction/
+    // leaveDayType ARE present this time (privsubj has no shift, so the "other half" can never be
+    // validated, but the metadata itself is still populated), still never with tin/tout/punches.
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-16', reason: 'half day privacy check', dayType: 'half_am' }) }, privSubjToken);
+    assertEqual(r.status, 200, "79b-setup. privsubj files a half_am request");
+    const privHalfLeaveId = r.body.record.id;
+    r = await call('/api/leaves/' + privHalfLeaveId + '/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, mgrToken);
+    assertEqual(r.status, 200, "79b-setup2. mgr approves the half-day request");
+    assertEqual(r.body.attendancePatches[0].leaveFraction, 0.5, '79b. the safe patch DOES include leaveFraction for a half-day record');
+    assertEqual(r.body.attendancePatches[0].leaveDayType, 'half_am', '79c. and leaveDayType, without ever including tin/tout/punches');
+
+    // ── Issue 22: leave date allocation is frozen at filing, immune to a later schedule change ──
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-04', endDate: '2026-09-07', reason: 'schedule snapshot test', dayType: 'whole' }) }, schedSnapToken);
+    assertEqual(r.status, 200, '80-setup. schedsnap files a Friday-Monday whole-day request under shift 2 (Sat/Sun rest)');
+    assertEqual(r.body.record.days, 2, '80. 2 days computed at filing time (Sat/Sun excluded)');
+    assertEqual((r.body.record.leaveAllocation || []).map(a => a.date).join(','), '2026-09-04,2026-09-07', '81. the filed allocation is frozen to exactly Friday and Monday');
+    const schedSnapLeaveId = r.body.record.id;
+    // Change shift 2's schedule so Saturday becomes a normal workday -- simulates HR editing the
+    // shift template AFTER this request was filed but BEFORE it's approved.
+    {
+      const row = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
+      const st = row.rows[0].state;
+      const shift2 = st.company.shifts.find(s => s.id === 2);
+      shift2.schedule.sat = { restDay: false, start: '09:00', end: '13:00', breakStart: '', breakEnd: '' };
+      await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
+    }
+    r = await call('/api/leaves/' + schedSnapLeaveId + '/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, '82-setup. admin approves after the schedule changed');
+    const afterSchedSnap = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    const schedSnapAttDates = afterSchedSnap.attendance.filter(a => a.eid === 13).map(a => a.date).sort();
+    assertEqual(schedSnapAttDates.join(','), '2026-09-04,2026-09-07', '82. finalization still only touches Friday and Monday -- Saturday (now a workday) was never silently added');
+    const schedSnapEmp = afterSchedSnap.users.find(u => u.id === 13);
+    assertEqual(schedSnapEmp.leaveBalances['1'].balance, 8, '83. balance deduction remains consistent with the originally-filed 2-day request (10 -> 8), not 3');
+    const auditDrift = await pg.query("SELECT meta FROM security_audit_log WHERE tenant_key = $1 AND action = 'schedule_changed_after_leave_filing' AND target = $2 ORDER BY id DESC LIMIT 1", [tenantKey, String(schedSnapLeaveId)]);
+    assertEqual(auditDrift.rowCount, 1, '84. a schedule-changed-since-filing audit event was recorded for visibility (the frozen allocation is still what was actually used)');
+
+    // ── Issue 23: impossible calendar dates are rejected, not just regex-shaped ones ──────────
+    const badDates = ['2026-02-31', '2026-04-31', '2026-13-01', '2026-00-10'];
+    for (const bad of badDates) {
+      r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: bad, endDate: bad, reason: 'bad date test', dayType: 'whole' }) }, dateCheckToken);
+      assertEqual(r.status, 400, `85. impossible calendar date ${bad} is rejected with 400`);
+    }
+    const afterBadDates = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    assert(!afterBadDates.leaves.some(l => l.eid === 14), '86. none of the impossible-date requests created a leave record');
+    const auditBadDate = await pg.query("SELECT COUNT(*)::int AS c FROM security_audit_log WHERE tenant_key = $1 AND action = 'invalid_calendar_date_rejected'", [tenantKey]);
+    assert(auditBadDate.rows[0].c >= badDates.length, '87. each impossible-date rejection is audited');
+    // A genuinely valid leap-year date is still accepted.
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2028-02-29', endDate: '2028-02-29', reason: 'valid leap date', dayType: 'whole', acknowledgeShortfall: true }) }, dateCheckToken);
+    assertEqual(r.status, 200, '88. a genuinely valid leap-year date (2028-02-29) is accepted');
 
   } finally {
     try { child.kill(); } catch {}

@@ -7507,10 +7507,26 @@ async function actLeave(id,ok){
   // projectLeaveDecisionEmployeeForSession) -- an approver who only holds leave_approve must never
   // receive this employee's salary/government IDs/bank details/etc. just for approving a leave.
   if(res.employeePatch&&decidedEmp)Object.assign(decidedEmp,res.employeePatch);
-  if(Array.isArray(res.attendanceRecords))res.attendanceRecords.forEach(rec=>{
-    const idx=ATT.findIndex(a=>a.id===rec.id);
-    if(idx>=0)ATT[idx]=rec;else ATT.push(rec);
-  });
+  if(Array.isArray(res.attendanceRecords)){
+    // Full detail -- this caller has admin/att_edit/payroll access (server.js decides, not this
+    // check). Safe to replace/insert wholesale, exactly as before.
+    res.attendanceRecords.forEach(rec=>{
+      const idx=ATT.findIndex(a=>a.id===rec.id);
+      if(idx>=0)ATT[idx]=rec;else ATT.push(rec);
+    });
+  }else if(Array.isArray(res.attendancePatches)){
+    // A leave-only approver (no att_edit/payroll) gets just the safe patch projection --
+    // {id,eid,date,status,leaveFraction,leaveDayType}, never Time In/Out, raw punches, OT/ND/
+    // undertime, or edit history. Merge only those fields onto whatever's already loaded locally
+    // rather than overwriting wholesale, so a richer record this tab may already hold (e.g. this
+    // same manager also has att_edit elsewhere) is never clobbered down to the reduced shape. A
+    // brand-new local stub is created only when nothing existed locally at all.
+    res.attendancePatches.forEach(patch=>{
+      const idx=ATT.findIndex(a=>a.id===patch.id);
+      if(idx>=0)Object.assign(ATT[idx],patch);
+      else ATT.push(Object.assign({tin:'',tout:'',ot:0,nd:0,notes:'',punches:[]},patch));
+    });
+  }
   if(Array.isArray(res.payrollAdjustments))res.payrollAdjustments.forEach(adj=>{
     if(!PAYROLL_ADJ.some(a=>a.id===adj.id))PAYROLL_ADJ.push(adj);
   });
