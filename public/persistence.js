@@ -211,7 +211,26 @@
       lastAttemptedPayload=payload;
       var result=await request('/state',{method:'PUT',body:JSON.stringify({version:stateVersion,state:state})});
       stateVersion=result.version;
-      lastSavedPayload=payload;
+      // Present only for an employee-role session (see PUT /api/state): the server only ever
+      // persists that session's own records in a few self-service slices, silently discarding
+      // anything else the payload tried to change -- so what actually landed can differ from
+      // what we asked to save. Re-hydrate from it so the UI never shows something as "saved"
+      // that didn't actually persist. Skipped when the two are already identical (the common
+      // case -- a plain leave/attendance filing round-trips unchanged), so a routine autosave
+      // never triggers an unnecessary re-render that could disrupt whatever the user is doing
+      // elsewhere on the page right now.
+      if(result.state){
+        var actualPayload=JSON.stringify(result.state);
+        if(actualPayload!==payload){
+          hydrate(result.state);
+          lastSavedPayload=JSON.stringify(snapshot());
+          render();
+        }else{
+          lastSavedPayload=payload;
+        }
+      }else{
+        lastSavedPayload=payload;
+      }
     }catch(error){
       if(error.status===409)toast('This data changed in another session. Please reload before editing further.','warning');
       else toast('Changes could not be saved to the database. '+error.message,'warning');
