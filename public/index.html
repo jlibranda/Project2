@@ -7485,8 +7485,8 @@ function creditLateApprovalHours(empId,date,kind,payItemCode,label){
 // deducts the leave balance, mirrors the approved days into Attendance, and creates any
 // late-approval payroll adjustment, all inside the SAME transaction as the decision itself. This
 // function no longer computes any of that locally: it only ever hydrates local state from the
-// server's authoritative response (record/employee/attendanceRecords/payrollAdjustments) so the
-// UI reflects what actually got persisted, never what this tab assumed would happen. That also
+// server's authoritative response (record/employeePatch/attendanceRecords/payrollAdjustments) so
+// the UI reflects what actually got persisted, never what this tab assumed would happen. That also
 // closes the previous gap where an employee-role approver's OWN secondary writes (balance/
 // attendance) would silently be discarded by the employee write overlay even though the core
 // decision persisted -- there's no secondary write from the frontend to discard anymore.
@@ -7503,7 +7503,10 @@ async function actLeave(id,ok){
   Object.assign(l,res.record);
   if(window.syncStateVersion)window.syncStateVersion(res.version);
   const decidedEmp=USERS.find(u=>u.id===l.eid);
-  if(res.employee&&decidedEmp)Object.assign(decidedEmp,res.employee);
+  // employeePatch is deliberately minimal (id + leaveBalances only, server/leave-service.js's
+  // projectLeaveDecisionEmployeeForSession) -- an approver who only holds leave_approve must never
+  // receive this employee's salary/government IDs/bank details/etc. just for approving a leave.
+  if(res.employeePatch&&decidedEmp)Object.assign(decidedEmp,res.employeePatch);
   if(Array.isArray(res.attendanceRecords))res.attendanceRecords.forEach(rec=>{
     const idx=ATT.findIndex(a=>a.id===rec.id);
     if(idx>=0)ATT[idx]=rec;else ATT.push(rec);

@@ -795,6 +795,68 @@ async function testDbAwareProductionSecrets() {
     assert(ready, 'PC8. an already-initialized deployment boots fine without BOOTSTRAP_ADMIN_PASSWORD once its tenant row already exists (and its stored credential is safe)');
   }
 
+  // 9/10/11: the shared MIN_PASSWORD_LENGTH=6 floor (isSafeReplacementCredential) actually gates
+  // GOD_ADMIN_PASSWORD/BOOTSTRAP_ADMIN_PASSWORD independently of the known-default check -- a
+  // too-short but otherwise non-default value must still fail, and exactly 6 characters must pass.
+  {
+    await resetGodRow();
+    const port = Number(PORT) + 19;
+    const { ready, exitCode } = await bootAttempt({ ...godEnv({ GOD_ADMIN_PASSWORD: 'x' }), PORT: String(port) }, port, 3000);
+    assert(!ready && exitCode !== null && exitCode !== 0, 'PC9. production + no DB God credential + GOD_ADMIN_PASSWORD shorter than 6 chars fails startup');
+  }
+  {
+    const freshTenantKey = 'test-fresh-prod-' + Date.now() + '-short';
+    const port = Number(PORT) + 20;
+    const env = {
+      ...process.env, NODE_ENV: 'production', DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET,
+      APP_TENANT_KEY: freshTenantKey, GOD_ADMIN_PASSWORD: 'a-real-non-default-god-admin-password-xyz',
+      BOOTSTRAP_ADMIN_PASSWORD: '12345', PORT: String(port)
+    };
+    const { ready, exitCode } = await bootAttempt(env, port, 3000);
+    assert(!ready && exitCode !== null && exitCode !== 0, 'PC10. fresh production tenant + BOOTSTRAP_ADMIN_PASSWORD shorter than 6 chars (12345) fails startup');
+  }
+  {
+    // PC11: exactly 6 characters, not a known default -- the floor, not one character below it --
+    // is accepted for both credentials (fresh tenant + no existing God row, so both checks run).
+    await resetGodRow();
+    const freshTenantKey = 'test-fresh-prod-' + Date.now() + '-six';
+    const port = Number(PORT) + 22;
+    const env = {
+      ...process.env, NODE_ENV: 'production', DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET,
+      APP_TENANT_KEY: freshTenantKey, GOD_ADMIN_PASSWORD: 'abcdef', BOOTSTRAP_ADMIN_PASSWORD: 'ghijkl',
+      BOOTSTRAP_ADMIN_EMAIL: 'six-char-pc11-' + Date.now() + '@ph.com', PORT: String(port)
+    };
+    const { ready } = await bootAttempt(env, port, 8000);
+    assert(ready, 'PC11. production + GOD_ADMIN_PASSWORD/BOOTSTRAP_ADMIN_PASSWORD of exactly 6 characters (not a known default) boots successfully');
+  }
+  await resetGodRow();
+
+  // PC12: a known default is still rejected even though it happens to be >=6 characters long --
+  // the length floor is an ADDITIONAL requirement, never a substitute for the default check.
+  {
+    const port = Number(PORT) + 23;
+    const { ready, exitCode } = await bootAttempt({ ...godEnv({ GOD_ADMIN_PASSWORD: 'godmode2026' }), PORT: String(port) }, port, 3000);
+    assert(!ready && exitCode !== null && exitCode !== 0, 'PC12. production + GOD_ADMIN_PASSWORD=godmode2026 (11 chars, still the known default) fails despite being long enough');
+  }
+  await resetGodRow();
+
+  // PC13: a safe, already-stored DB credential (God Admin row + tenant row both pre-existing and
+  // safe) boots without EITHER env var set at all -- confirms the length floor only governs the
+  // "about to become the real credential" branch, not deployments that already have a real one.
+  {
+    const hashOfSafe = await bcrypt.hash('an-existing-safe-god-admin-credential-' + Date.now(), 10);
+    await pg.query('INSERT INTO platform_admin_credential (id, password, updated_by) VALUES (1, $1, $2)', [hashOfSafe, 'seed']);
+    const port = Number(PORT) + 24;
+    const env = {
+      ...process.env, NODE_ENV: 'production', DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET,
+      APP_TENANT_KEY: 'test-legacy-tenant', PORT: String(port)
+    };
+    delete env.GOD_ADMIN_PASSWORD; delete env.BOOTSTRAP_ADMIN_PASSWORD;
+    const { ready } = await bootAttempt(env, port, 8000);
+    assert(ready, 'PC13. safe existing DB God Admin + bootstrap credentials allow boot with neither GOD_ADMIN_PASSWORD nor BOOTSTRAP_ADMIN_PASSWORD set');
+  }
+  await resetGodRow();
+
   await pg.end();
 }
 
@@ -884,18 +946,51 @@ async function testLeaveIntegrityAndFinalization() {
       // Reports to mgr -- used for the "manager approval produces the same side effects as admin"
       // test (29), so a non-admin approver actually has to be the one whose actorName lands on
       // reviewedBy/the balance-adjustment record.
+      // Carries every confidential field the privacy-scoped leave-decision response (Issue 1/11)
+      // must never leak to a leave_approve-only manager -- compensation, government IDs, and bank
+      // details, mirroring the real fields buildAssistantContext()/the employee record actually use.
       { id: 4, email: 'rep@lv.test', pass: await passHash('replvpass1'), role: 'employee', accessLevelId: 2, name: 'Rep LV', eid: 'E-LVREP', immediateHeadEid: 'E-LVMGR', active: true,
-        salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } } }
+        salaryPM: 22000, rate: 1000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } },
+        sss: '34-1234567-8', ph: '12-345678901-2', pi: '1234-5678-9012', tin: '123-456-789-000',
+        bank: 'BDO', bankAccount: '0012345678901' },
+      // Assigned to the Mon-Fri shift below (id 1) -- Sat/Sun are real, configured rest days for
+      // this employee specifically, unlike every other user in this fixture (no shiftId = every
+      // calendar day counts, which is fine for the tests above but can't exercise rest-day
+      // exclusion at all).
+      { id: 5, email: 'shiftemp@lv.test', pass: await passHash('shiftemplvpass1'), role: 'employee', accessLevelId: 2, name: 'Shift Emp LV', eid: 'E-LVSHIFT', active: true,
+        shiftId: 1, salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } } },
+      // Dedicated to the concurrent/pending-balance revalidation scenario -- starts at a clean,
+      // known balance of 5, untouched by any other test in this fixture.
+      { id: 6, email: 'balanceemp@lv.test', pass: await passHash('balanceemplvpass1'), role: 'employee', accessLevelId: 2, name: 'Balance Emp LV', eid: 'E-LVBALANCE', active: true,
+        salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 5, adjustments: [] } } }
     ],
     attendance: [], leaves: [], loans: [], payrolls: [],
     payPeriods: [
       // Covers the closed-period leave date (2026-09-05) -- payrollAlreadyClosedFor() should find
-      // this and trigger a late-approval credit.
+      // this and trigger a late-approval credit. Also covers the Fri-Mon eligible-date range
+      // (2026-09-04 to 2026-09-07) used by the rest-day tests below.
       { id: 1, groupId: 1, from: '2026-09-01', to: '2026-09-15', attendanceFrom: '2026-09-01', attendanceTo: '2026-09-15', status: 'closed' },
       // Covers the open-period leave date (2026-10-05) -- no credit should be created for this one.
       { id: 2, groupId: 1, from: '2026-10-01', to: '2026-10-15', attendanceFrom: '2026-10-01', attendanceTo: '2026-10-15', status: 'open' }
     ],
-    company: { name: 'Leave Finalize Co', dailyDivisor: 22, leaveTypes: [{ id: 1, name: 'VL', paid: true, active: true }, { id: 2, name: 'Unpaid Leave', paid: false, active: true }] },
+    company: {
+      name: 'Leave Finalize Co', dailyDivisor: 22,
+      leaveTypes: [{ id: 1, name: 'VL', paid: true, active: true }, { id: 2, name: 'Unpaid Leave', paid: false, active: true }],
+      // Mon-Fri, 9-6, with Saturday and Sunday as real configured rest days -- shiftemp (id 5) is
+      // assigned here. 2026-09-04 is a Friday, 2026-09-05/06 are Sat/Sun, 2026-09-07 is a Monday.
+      shifts: [{
+        id: 1, name: 'Mon-Fri 9-6',
+        schedule: {
+          mon: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          tue: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          wed: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          thu: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          fri: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          sat: { restDay: true, start: '', end: '', breakStart: '', breakEnd: '' },
+          sun: { restDay: true, start: '', end: '', breakStart: '', breakEnd: '' }
+        }
+      }]
+    },
     org: [], lookups: {}, changeRequests: [], onboarding: [], candidates: [], performance: []
   };
   await pg.query('DELETE FROM app_state WHERE tenant_key = $1', [tenantKey]);
@@ -925,6 +1020,7 @@ async function testLeaveIntegrityAndFinalization() {
     const empToken = await login('emp@lv.test', 'emplvpass1');
     const mgrToken = await login('mgr@lv.test', 'mgrlvpass1');
     const repToken = await login('rep@lv.test', 'replvpass1');
+    const shiftEmpToken = await login('shiftemp@lv.test', 'shiftemplvpass1');
 
     // ── Leave Integrity (server-side calculation/validation) ──────────────────────────────────
     let r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-05', endDate: '2026-09-05', reason: 'test', dayType: 'whole', days: -10, paidDays: -10, unpaidDays: -10 }) }, empToken);
@@ -987,9 +1083,10 @@ async function testLeaveIntegrityAndFinalization() {
     const adjForDate = after.rows[0].state.payrollAdjustments.find(a => a.empId === 2 && a.effectiveDate === '2026-09-05');
     assert(!!adjForDate && adjForDate.amount === 1000 && adjForDate.payItemCode === 'LEAVE_PAY', '25. final leave approval creates the expected late payroll adjustment for a date whose pay period already closed (₱22000/22 = ₱1000)');
 
-    assert(r.body.employee && r.body.employee.leaveBalances && r.body.employee.pass === undefined, '26. the decision response hands back the authoritative employee/attendance/payroll results together (and never a password hash)');
+    assert(r.body.employeePatch && r.body.employeePatch.leaveBalances && r.body.employeePatch.pass === undefined, '26. the decision response hands back the authoritative employeePatch/attendance/payroll results together (and never a password hash)');
+    assertEqual(Object.keys(r.body.employeePatch).sort().join(','), 'id,leaveBalances', '26d. employeePatch is minimal -- only id and leaveBalances, not the full employee record');
     assert(Array.isArray(r.body.attendanceRecords) && r.body.attendanceRecords.length === 1, '26b. the same response includes the attendance record it created');
-    assert(Array.isArray(r.body.payrollAdjustments) && r.body.payrollAdjustments.length === 1, '26c. the same response includes the payroll adjustment it created');
+    assert(Array.isArray(r.body.payrollAdjustments) && r.body.payrollAdjustments.length === 1, '26c. the same response includes the payroll adjustment it created (admin caller, has payroll visibility)');
 
     // 27/28: an injected failure during finalization rolls back the ENTIRE transaction -- the
     // decision itself included. Uses a second, otherwise-identical leave so the already-approved
@@ -1025,12 +1122,166 @@ async function testLeaveIntegrityAndFinalization() {
     assert(!!repAdj && repAdj.amount === 1000, '29c. and creates the late-approval payroll adjustment exactly like admin\'s approval does');
     assert(repAtt.reviewedBy === 'Mgr LV', '29d. the attendance record correctly attributes the manager as reviewer, not admin');
 
+    // ── Issue 1/11: response authorization -- mgr (leave_approve only, no payroll permission)
+    // finalized rep's leave above (r is still that decision response). The response must carry
+    // rep's leaveBalances patch but never her compensation, government IDs, bank details, or the
+    // raw payroll adjustment amount -- scan both the structured fields AND the serialized body so a
+    // future regression that smuggles a field in elsewhere is still caught.
+    const mgrDecisionBody = JSON.stringify(r.body);
+    assert(r.body.employeePatch && r.body.employeePatch.leaveBalances && r.body.employeePatch.leaveBalances['1'] && r.body.employeePatch.leaveBalances['1'].balance === 9,
+      '29e. the leave_approve-only manager still receives the subordinate\'s leaveBalances patch');
+    assertEqual(Object.keys(r.body.employeePatch).sort().join(','), 'id,leaveBalances', '29f. employeePatch given to a leave-only manager is still exactly {id, leaveBalances}');
+    assert(r.body.employeePatch.salaryPM === undefined && r.body.employeePatch.rate === undefined, '29g. employeePatch never carries salary/rate');
+    assert(!mgrDecisionBody.includes('22000') && !mgrDecisionBody.includes('"rate":1000'), '29h. the raw response body never contains rep\'s monthly salary or daily rate values');
+    assert(!mgrDecisionBody.includes('34-1234567-8') && !mgrDecisionBody.includes('12-345678901-2') && !mgrDecisionBody.includes('1234-5678-9012') && !mgrDecisionBody.includes('123-456-789-000'),
+      '29i. the raw response body never contains rep\'s SSS/PhilHealth/Pag-IBIG/TIN');
+    assert(!mgrDecisionBody.includes('BDO') && !mgrDecisionBody.includes('0012345678901'), '29j. the raw response body never contains rep\'s bank name or account number');
+    assert(!mgrDecisionBody.includes('replvpass1') && !mgrDecisionBody.toLowerCase().includes('$2b$'), '29k. the raw response body never contains rep\'s password or password hash');
+    assertEqual(r.body.payrollAdjustmentCreated, true, '29l. the leave-only manager still learns a payroll adjustment was created (boolean flag)');
+    assertEqual(r.body.payrollAdjustmentCount, 1, '29m. and the count');
+    assert(r.body.payrollAdjustments === undefined, '29n. but NOT the full payrollAdjustments array (no amount/daily-rate/period detail) -- mgr lacks the payroll permission');
+
+    // Same finalization, but the caller (admin) DOES have payroll visibility -- full adjustment
+    // detail (amount, period, everything) is included. Uses a fresh leave so it's an independent
+    // finalization from 29's, still on rep, still under mgr's own decision permission path but this
+    // time decided by admin to exercise the "payroll-authorized caller" branch specifically.
+    await seedLeave(104, 4, '2026-09-08', '2026-09-08', 1);
+    r = await call('/api/leaves/104/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, '29o-setup. admin (payroll-authorized) approves another of rep\'s leaves');
+    assertEqual(r.body.payrollAdjustmentCreated, true, '29o. admin caller also gets the created flag');
+    assert(Array.isArray(r.body.payrollAdjustments) && r.body.payrollAdjustments.length === 1 && typeof r.body.payrollAdjustments[0].amount === 'number',
+      '29p. an admin/payroll-authorized caller DOES receive full adjustment detail including amount');
+
     // No adjustment for an OPEN period: a leave whose date falls in the still-open October period
     // gets balance + attendance effects, but no payroll adjustment (the normal run will pick it up).
     await seedLeave(103, 2, '2026-10-05', '2026-10-05', 1);
     r = await call('/api/leaves/103/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
     assertEqual(r.status, 200, 'TX-open-setup. approval on an open-period date succeeds');
     assertEqual((r.body.payrollAdjustments || []).length, 0, 'TX-open. no late-approval payroll adjustment is created for a date whose pay period is still open');
+
+    // ── Eligible-date tests: shiftemp (Mon-Fri shift, real Sat/Sun rest days) files Friday
+    // (2026-09-04) through Monday (2026-09-07) ─────────────────────────────────────────────────
+    const LeaveService = require('../server/leave-service.js');
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-04', endDate: '2026-09-07', reason: 'long weekend', dayType: 'whole' }) }, shiftEmpToken);
+    assertEqual(r.status, 200, 'ED-setup. Friday-to-Monday request is accepted');
+    assertEqual(r.body.record.days, 2, '10. server calculates 2 leave days for a Fri-Mon request when Sat/Sun are configured rest days');
+    const shiftLeaveId = r.body.record.id;
+
+    // 11/12/13: the exact eligible-date list, checked directly against the canonical helper --
+    // Friday and Monday only, Saturday and Sunday excluded.
+    const shiftEmpRow = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    const shiftEmployee = shiftEmpRow.users.find(u => u.id === 5);
+    const eligible = LeaveService.eligibleLeaveDates(shiftEmpRow, shiftEmployee, '2026-09-04', '2026-09-07');
+    assertEqual(eligible.join(','), '2026-09-04,2026-09-07', '11. eligible dates are exactly Friday and Monday');
+    assert(!eligible.includes('2026-09-05'), '12. Saturday is excluded from the eligible date list');
+    assert(!eligible.includes('2026-09-06'), '13. Sunday is excluded from the eligible date list');
+
+    r = await call('/api/leaves/' + shiftLeaveId + '/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, 'ED-approve. admin approves the Fri-Mon request');
+    assertEqual(r.body.final, true, 'ED-approve2. single-layer chain finalizes immediately');
+
+    const afterEd = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    const fridayAtt = afterEd.attendance.find(a => a.eid === 5 && a.date === '2026-09-04');
+    const mondayAtt = afterEd.attendance.find(a => a.eid === 5 && a.date === '2026-09-07');
+    const satAtt = afterEd.attendance.find(a => a.eid === 5 && a.date === '2026-09-05');
+    const sunAtt = afterEd.attendance.find(a => a.eid === 5 && a.date === '2026-09-06');
+    assert(!!fridayAtt && fridayAtt.status === 'leave', '14. attendance exists for Friday');
+    assert(!!mondayAtt && mondayAtt.status === 'leave', '15. attendance exists for Monday');
+    assert(!satAtt, '16. no leave attendance is created for Saturday');
+    assert(!sunAtt, '17. no leave attendance is created for Sunday');
+
+    const fridayAdj = afterEd.payrollAdjustments.find(a => a.empId === 5 && a.effectiveDate === '2026-09-04');
+    const mondayAdj = afterEd.payrollAdjustments.find(a => a.empId === 5 && a.effectiveDate === '2026-09-07');
+    const satAdj = afterEd.payrollAdjustments.find(a => a.empId === 5 && a.effectiveDate === '2026-09-05');
+    const sunAdj = afterEd.payrollAdjustments.find(a => a.empId === 5 && a.effectiveDate === '2026-09-06');
+    assert(!!fridayAdj, '18. late leave credit created for Friday');
+    assert(!!mondayAdj, '19. late leave credit created for Monday');
+    assert(!satAdj, '20. no adjustment for Saturday');
+    assert(!sunAdj, '21. no adjustment for Sunday');
+
+    // ── Concurrent/pending balance tests: balanceemp (id 6) starts at 5 ───────────────────────
+    // Leave A and Leave B both filed (via direct seed, mirroring what the server itself would
+    // have computed) while the balance was still 5 -- both recorded as 5 paid / 0 unpaid, exactly
+    // what calculateLeaveRequest would have produced for either one filed alone at that balance.
+    const seedBalanceLeave = async (id, s, e, days, paidDays, unpaidDays) => {
+      const row = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
+      const st = row.rows[0].state;
+      st.leaves.push({ id, eid: 6, type: 'VL', s, e, reason: 'concurrent-balance scenario', status: 'pending', filed: s, days, paidDays, unpaidDays, dayType: 'whole', approvalLayer: 1 });
+      await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
+    };
+    await seedBalanceLeave(200, '2026-11-02', '2026-11-06', 5, 5, 0); // Leave A
+    await seedBalanceLeave(201, '2026-11-09', '2026-11-13', 5, 5, 0); // Leave B, same balance snapshot
+
+    r = await call('/api/leaves/200/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, 'CB-A. Leave A approves successfully');
+    let balanceRow = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    assertEqual(balanceRow.users.find(u => u.id === 6).leaveBalances['1'].balance, 0, '22. balance is 0 after Leave A consumes all 5 days');
+
+    r = await call('/api/leaves/201/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, 'CB-B. Leave B still approves successfully (not blocked outright)');
+    balanceRow = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    const balanceEmpAfterB = balanceRow.users.find(u => u.id === 6);
+    assert(balanceEmpAfterB.leaveBalances['1'].balance >= 0, '23. balance never becomes negative even though Leave B was originally filed as 5 paid days against an already-exhausted balance');
+    assertEqual(balanceEmpAfterB.leaveBalances['1'].balance, 0, '23b. balance is exactly 0, not negative');
+    const leaveBAfter = balanceRow.leaves.find(l => l.id === 201);
+    assertEqual(leaveBAfter.paidDays, 0, '24. Leave B\'s final paidDays is recalculated to 0 at approval time (current balance was already 0)');
+    assertEqual(leaveBAfter.unpaidDays, 5, '25. Leave B\'s final unpaidDays is recalculated to 5');
+    const leaveBAttDates = balanceRow.attendance.filter(a => a.eid === 6 && a.date >= '2026-11-09' && a.date <= '2026-11-13');
+    assertEqual(leaveBAttDates.length, 5, '26. Leave B\'s attendance still reflects all 5 approved leave dates even though none of them are paid');
+    const leaveBAdjustments = balanceRow.payrollAdjustments.filter(a => a.sourceType === 'leave' && a.sourceLeaveId === 201);
+    assertEqual(leaveBAdjustments.length, 0, '27. no paid-leave payroll adjustment is generated for Leave B (fully unpaid after recalculation)');
+    assert(!!leaveBAfter.balanceRecalculation && leaveBAfter.balanceRecalculation.originallyFiledPaidDays === 5 && leaveBAfter.balanceRecalculation.finalPaidDays === 0, '28. the leave record itself carries an auditable trace of the paid/unpaid split change');
+    const auditRows28 = await pg.query("SELECT meta FROM security_audit_log WHERE tenant_key = $1 AND action = 'leave_balance_recalculated_at_approval' ORDER BY id DESC LIMIT 1", [tenantKey]);
+    assert(auditRows28.rowCount === 1 && auditRows28.rows[0].meta.finalPaidDays === 0, '28b. audit log also records the paid/unpaid split change');
+
+    // Partial-balance variant: a later top-up brings the balance to 2 (simulating some other,
+    // already-applied adjustment), then a fresh 5-day request finalizes as 2 paid + 3 unpaid,
+    // landing on exactly 0, never negative.
+    let topUpRow = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    topUpRow.users.find(u => u.id === 6).leaveBalances['1'].balance = 2;
+    await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [topUpRow, tenantKey]);
+    await seedBalanceLeave(202, '2026-11-16', '2026-11-20', 5, 5, 0);
+    r = await call('/api/leaves/202/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, 'CB-partial. the partial-balance leave approves successfully');
+    const partialRow = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    const leave202 = partialRow.leaves.find(l => l.id === 202);
+    assertEqual(leave202.paidDays, 2, 'CB-partial2. a 5-day request against a balance of 2 finalizes as 2 paid days');
+    assertEqual(leave202.unpaidDays, 3, 'CB-partial3. and 3 unpaid days');
+    assertEqual(partialRow.users.find(u => u.id === 6).leaveBalances['1'].balance, 0, 'CB-partial4. balance lands on exactly 0, not -3');
+
+    // ── Duplicate payroll adjustment tests: creditLateApprovalDay tested directly, per-unit ────
+    // No server/DB round trip needed -- this exercises the pure function against an in-memory
+    // state, exactly as Issue 14 explicitly allows ("test the helper directly or through final
+    // approval").
+    {
+      const unitState = { payPeriods: [{ id: 1, groupId: 1, from: '2026-09-01', to: '2026-09-15', attendanceFrom: '2026-09-01', attendanceTo: '2026-09-15', status: 'closed' }], payrollAdjustments: [] };
+      const unitEmployee = { id: 999, payGroupId: 1, salaryPM: 22000 };
+      const leaveA = { id: 501 }, leaveB = { id: 502 };
+      let ur = LeaveService.creditLateApprovalDay(unitState, unitEmployee, leaveA, '2026-09-05', 'LEAVE_PAY', 'Test', 'Tester');
+      assert(ur.created === true, '29. one eligible closed-period leave date creates one adjustment');
+      ur = LeaveService.creditLateApprovalDay(unitState, unitEmployee, leaveA, '2026-09-05', 'LEAVE_PAY', 'Test', 'Tester');
+      assert(ur.created === false && ur.duplicate === true, '30. attempting the same sourceLeaveId/sourceDate again does not create another adjustment');
+      assertEqual(unitState.payrollAdjustments.length, 1, '30b. still only one adjustment exists after the duplicate attempt');
+      ur = LeaveService.creditLateApprovalDay(unitState, unitEmployee, leaveB, '2026-09-05', 'LEAVE_PAY', 'Test', 'Tester');
+      assert(ur.created === true, '31. a different leave request ID can create its own valid adjustment for the same date');
+      ur = LeaveService.creditLateApprovalDay(unitState, unitEmployee, leaveA, '2026-09-06', 'LEAVE_PAY', 'Test', 'Tester');
+      assert(ur.created === true, '32. a different effective date can create its own adjustment');
+      assertEqual(unitState.payrollAdjustments.length, 3, '32b. three distinct adjustments now exist (A/05, B/05, A/06)');
+    }
+
+    // ── dayType tests ───────────────────────────────────────────────────────────────────────
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-07', endDate: '2026-12-07', reason: 'whole day test', dayType: 'whole' }) }, empToken);
+    assertEqual(r.status, 200, '33. dayType: whole works');
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-08', reason: 'half am test', dayType: 'half_am' }) }, empToken);
+    assertEqual(r.status, 200, '34-setup. dayType: half_am is accepted');
+    assertEqual(r.body.record.days, 0.5, '34. dayType: half_am creates a 0.5 day request');
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-09', reason: 'half pm test', dayType: 'half_pm' }) }, empToken);
+    assertEqual(r.status, 200, '35-setup. dayType: half_pm is accepted');
+    assertEqual(r.body.record.days, 0.5, '35. dayType: half_pm creates a 0.5 day request');
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-10', endDate: '2026-12-10', reason: 'invalid daytype test', dayType: 'xyz' }) }, empToken);
+    assertEqual(r.status, 400, '36. invalid dayType: xyz returns 400');
+    const afterInvalidDayType = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    assert(!afterInvalidDayType.leaves.some(l => l.reason === 'invalid daytype test'), '37. invalid dayType does not create a leave record');
 
   } finally {
     try { child.kill(); } catch {}

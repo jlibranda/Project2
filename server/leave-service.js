@@ -18,24 +18,38 @@ const DAY_TYPES = new Set(['whole', 'half_am', 'half_pm']);
 const HALF_DAY_LABELS = { half_am: 'Half Day — First Half', half_pm: 'Half Day — Second Half' };
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-// Exact port of countLeaveWorkingDays(startStr, endStr) in public/index.html -- calendar days in
-// the inclusive range minus the employee's scheduled rest days, or every calendar day if the
-// employee has no shift assigned (nothing to check rest days against).
-function countLeaveWorkingDays(state, employee, startStr, endStr) {
-  if (!startStr || !endStr || endStr < startStr) return 0;
+// THE canonical eligible-leave-date list -- calendar dates in the inclusive range that count as an
+// actual leave day, excluding the employee's scheduled rest days (or every calendar day if the
+// employee has no shift assigned, since there's no schedule to check rest days against). This is
+// the single source of truth every per-date leave effect must use: day-count calculation at
+// filing, approved-leave attendance generation, and late-approval payroll crediting all used to
+// independently decide "which dates does this leave cover" -- filing correctly excluded rest days
+// (countLeaveWorkingDays, below, is now just this function's length) but finalization used to loop
+// every calendar date via leaveDateRange() instead, which could mark a rest day as 'leave' in
+// Attendance and even generate a late-payroll credit for a day the employee was never scheduled to
+// work, while skipping the actual eligible workday that credit should have gone to instead.
+function eligibleLeaveDates(state, employee, startStr, endStr) {
+  if (!startStr || !endStr || endStr < startStr) return [];
   const shifts = (state.company && state.company.shifts) || [];
-  let count = 0;
+  const dates = [];
   let cursor = new Date(startStr + 'T00:00:00Z');
   const last = new Date(endStr + 'T00:00:00Z');
   let guard = 0;
   while (cursor <= last && guard < 3660) { // ~10 years, matches the spirit of leaveDateRange's own 366-day cap
     const ds = cursor.toISOString().slice(0, 10);
     const isRest = (employee && employee.shiftId) ? TimekeepingCore.isRestDay(employee, ds, shifts) : false;
-    if (!isRest) count++;
+    if (!isRest) dates.push(ds);
     cursor.setUTCDate(cursor.getUTCDate() + 1);
     guard++;
   }
-  return count;
+  return dates;
+}
+
+// Exact port of countLeaveWorkingDays(startStr, endStr) in public/index.html -- now simply the
+// length of the one canonical eligible-date list above, so filing's day count and finalization's
+// per-date effects can never disagree about which dates a leave actually covers.
+function countLeaveWorkingDays(state, employee, startStr, endStr) {
+  return eligibleLeaveDates(state, employee, startStr, endStr).length;
 }
 
 // Exact port of leaveBalanceFor(emp, typeId) in public/index.html.
@@ -76,7 +90,18 @@ function leaveDateRange(s, e) {
 function calculateLeaveRequest(state, employee, input, acknowledgeShortfall) {
   const type = String((input && input.type) || '').trim();
   const reason = String((input && input.reason) || '').trim();
-  const dayType = DAY_TYPES.has(input && input.dayType) ? input.dayType : 'whole';
+  // A dayType that's simply absent defaults to 'whole' (the client's own default) -- but one that
+  // IS supplied and isn't a recognized value is rejected outright rather than silently coerced to
+  // 'whole', so a forged/garbage value can never be misread as a legitimate whole-day request.
+  const dayTypeInput = input && input.dayType;
+  let dayType;
+  if (dayTypeInput === undefined || dayTypeInput === null || dayTypeInput === '') {
+    dayType = 'whole';
+  } else if (DAY_TYPES.has(dayTypeInput)) {
+    dayType = dayTypeInput;
+  } else {
+    return { ok: false, error: 'Invalid leave day type.' };
+  }
   const startDate = String((input && (input.startDate ?? input.s)) || '').trim();
   let endDate = String((input && (input.endDate ?? input.e)) || '').trim();
 
@@ -144,26 +169,33 @@ function payrollAlreadyClosedFor(state, employee, date) {
 }
 
 // Exact port of creditLateApprovalDay(empId, date, payItemCode, label) in public/index.html,
-// operating on `state.payrollAdjustments` instead of the client's PAYROLL_ADJ global. Returns the
-// created adjustment record (a live reference into state.payrollAdjustments) iff a credit was
-// actually created (period already closed, and the employee has a nonzero daily rate), or null --
-// exactly like the client version's true/false, but returning the record itself so the caller can
-// hand it back to the frontend instead of the frontend staying unaware a new adjustment now exists.
-function creditLateApprovalDay(state, employee, date, payItemCode, label, actorName) {
-  if (!employee || !payrollAlreadyClosedFor(state, employee, date)) return null;
-  const amount = employeeDailyRate(state, employee);
-  if (!amount) return null;
+// operating on `state.payrollAdjustments` instead of the client's PAYROLL_ADJ global -- plus
+// explicit source linkage (sourceType/sourceLeaveId/sourceDate) and a duplicate check against it,
+// so a retry/recovery path can never double-credit the same leave/date/pay-item combination even
+// though a finalized leave is already blocked from being re-decided through the normal endpoint.
+// Returns { created, duplicate, adjustment }:
+//   - created:true  -- a brand new adjustment was just added (adjustment is the new record).
+//   - duplicate:true -- an equivalent adjustment already existed (adjustment is the EXISTING
+//     record, not a new one) -- this date already has its credit, just not created THIS call.
+//   - both false -- no credit is due at all (period still open, or no daily rate).
+function creditLateApprovalDay(state, employee, leaveRecord, date, payItemCode, label, actorName) {
+  if (!employee || !payrollAlreadyClosedFor(state, employee, date)) return { created: false, duplicate: false, adjustment: null };
   state.payrollAdjustments = Array.isArray(state.payrollAdjustments) ? state.payrollAdjustments : [];
+  const existing = state.payrollAdjustments.find(a => a && a.sourceType === 'leave' && a.sourceLeaveId === leaveRecord.id && a.sourceDate === date && a.payItemCode === payItemCode);
+  if (existing) return { created: false, duplicate: true, adjustment: existing };
+  const amount = employeeDailyRate(state, employee);
+  if (!amount) return { created: false, duplicate: false, adjustment: null };
   const nextId = state.payrollAdjustments.reduce((max, r) => Math.max(max, Number(r && r.id) || 0), 0) + 1;
   const todayStr = new Date().toISOString().slice(0, 10);
   const adjustment = {
     id: nextId, empId: employee.id, adjType: label, payItemCode, category: 'earnings', taxable: true, direction: 'income',
     amount: +amount.toFixed(2),
     reason: `Late-approved ${label} for ${date} — original pay period already closed; credited automatically to the next payroll run.`,
-    effectiveDate: date, payPeriodId: null, payPeriodLabel: null, addedBy: actorName, status: 'ready', processStatus: 'ready', createdAt: todayStr
+    effectiveDate: date, payPeriodId: null, payPeriodLabel: null, addedBy: actorName, status: 'ready', processStatus: 'ready', createdAt: todayStr,
+    sourceType: 'leave', sourceLeaveId: leaveRecord.id, sourceDate: date
   };
   state.payrollAdjustments.push(adjustment);
-  return adjustment;
+  return { created: true, duplicate: false, adjustment };
 }
 
 // Exact port of markAttendanceForApprovedLeave(l, emp) in public/index.html, operating on
@@ -173,14 +205,20 @@ function creditLateApprovalDay(state, employee, date, payItemCode, label, actorN
 // pre-approved (this already went through the leave approval chain -- it doesn't need a second
 // attendance approval cycle on top), sourced and reviewed by the server, never the employee's
 // original filing payload.
+//
+// `eligibleDates` is the precomputed canonical list (eligibleLeaveDates, above) -- passed in
+// rather than recomputed here so the caller (finalizeLeaveApproval) always drives every per-date
+// leave effect off the exact same list. This is what keeps a rest day out of Attendance: a
+// Friday-to-Monday request with a Sat/Sun rest-day schedule now only ever touches Friday and
+// Monday, never the two rest days in between.
 // Returns the array of attendance records touched (created or updated), each a live reference
 // into state.attendance, so the caller can hand them back to the frontend.
-function markAttendanceForApprovedLeave(state, leaveRecord, employee, actorName) {
+function markAttendanceForApprovedLeave(state, leaveRecord, employee, actorName, eligibleDates) {
   state.attendance = Array.isArray(state.attendance) ? state.attendance : [];
   let nextId = state.attendance.reduce((max, r) => Math.max(max, Number(r && r.id) || 0), 0) + 1;
   const now = new Date().toISOString();
   const touched = [];
-  leaveDateRange(leaveRecord.s, leaveRecord.e).forEach(date => {
+  eligibleDates.forEach(date => {
     const existing = TimekeepingCore.consolidate(state.attendance, employee.id, date);
     const hasRealLog = existing && existing.tin && existing.tout && existing.status !== 'leave';
     if (hasRealLog) {
@@ -209,13 +247,53 @@ function markAttendanceForApprovedLeave(state, leaveRecord, employee, actorName)
 function finalizeLeaveApproval(state, leaveRecord, actorName) {
   const users = state.users || [];
   const employee = users.find(u => u.id === leaveRecord.eid);
-  if (!employee) return { balanceDeducted: 0, employee: null, attendanceRecords: [], payrollAdjustments: [] };
+  if (!employee) return { balanceDeducted: 0, employee: null, attendanceRecords: [], payrollAdjustments: [], balanceRecalculated: false, duplicateAdjustmentsSkipped: 0 };
 
   const leaveTypes = (state.company && state.company.leaveTypes) || [];
   const t = leaveTypes.find(x => x.name === leaveRecord.type);
-  // Older records predate the paid/unpaid split -- deduct the full amount as before, same
-  // fallback actLeave() itself used.
-  const deductDays = leaveRecord.paidDays !== undefined ? leaveRecord.paidDays : leaveRecord.days;
+
+  // Total requested days never changes at approval time (it's a function of the calendar/schedule,
+  // fixed at filing) -- older records that predate the paid/unpaid split fall back to their own
+  // days field, same as before.
+  const requestedDays = Number.isFinite(Number(leaveRecord.days))
+    ? Number(leaveRecord.days)
+    : (Number(leaveRecord.paidDays) || 0) + (Number(leaveRecord.unpaidDays) || 0);
+  const originallyFiledPaidDays = leaveRecord.paidDays !== undefined ? Number(leaveRecord.paidDays) : requestedDays;
+  const originallyFiledUnpaidDays = Number(leaveRecord.unpaidDays) || 0;
+
+  // Revalidate the paid/unpaid split against the CURRENT balance, not the balance as it stood at
+  // filing time -- two requests filed against the same balance (before either was decided) must
+  // not both blindly deduct their originally-filed paidDays, or the balance can go negative. The
+  // split can only ever get MORE conservative here (paid days can only shrink, never grow, since
+  // requestedDays itself never changes) -- if the current balance still covers the full request,
+  // this is a no-op.
+  let deductDays = originallyFiledPaidDays;
+  let balanceRecalculated = false;
+  if (t) {
+    const bucket = (employee.leaveBalances && employee.leaveBalances[t.id]) || { balance: 0, adjustments: [] };
+    const currentBalance = Number.isFinite(Number(bucket.balance)) ? Number(bucket.balance) : 0;
+    let recalculatedPaidDays, recalculatedUnpaidDays;
+    if (t.paid) {
+      recalculatedPaidDays = Math.max(0, Math.min(requestedDays, currentBalance));
+      recalculatedUnpaidDays = +(requestedDays - recalculatedPaidDays).toFixed(3);
+    } else {
+      recalculatedPaidDays = 0;
+      recalculatedUnpaidDays = requestedDays;
+    }
+    if (recalculatedPaidDays !== originallyFiledPaidDays || recalculatedUnpaidDays !== originallyFiledUnpaidDays) {
+      balanceRecalculated = true;
+      leaveRecord.balanceRecalculation = {
+        originallyFiledPaidDays, originallyFiledUnpaidDays,
+        finalPaidDays: recalculatedPaidDays, finalUnpaidDays: recalculatedUnpaidDays,
+        recalculatedAt: new Date().toISOString(), recalculatedBy: actorName
+      };
+    }
+    // Update the leave record itself to the recalculated split -- what actually gets applied
+    // below (balance deduction, payroll credit) and what the record shows afterward must agree.
+    leaveRecord.paidDays = recalculatedPaidDays;
+    leaveRecord.unpaidDays = recalculatedUnpaidDays;
+    deductDays = recalculatedPaidDays;
+  }
 
   let balanceDeducted = 0;
   if (t && deductDays > 0) {
@@ -232,26 +310,51 @@ function finalizeLeaveApproval(state, leaveRecord, actorName) {
     balanceDeducted = deductDays;
   }
 
-  const attendanceRecords = markAttendanceForApprovedLeave(state, leaveRecord, employee, actorName);
+  // Attendance still reflects every approved eligible leave day (all of them, paid or unpaid --
+  // the employee is still on approved leave for the full requested span), computed once here and
+  // reused for the payroll-credit loop below so both effects agree on exactly which dates count.
+  const eligibleDates = eligibleLeaveDates(state, employee, leaveRecord.s, leaveRecord.e);
+  const attendanceRecords = markAttendanceForApprovedLeave(state, leaveRecord, employee, actorName, eligibleDates);
 
   const payrollAdjustments = [];
+  let duplicateAdjustmentsSkipped = 0;
   if (t && t.paid && deductDays > 0) {
     let credited = 0;
-    for (const date of leaveDateRange(leaveRecord.s, leaveRecord.e)) {
+    for (const date of eligibleDates) {
       if (credited >= deductDays) break;
-      const adjustment = creditLateApprovalDay(state, employee, date, 'LEAVE_PAY', 'Approved Leave (' + leaveRecord.type + ')', actorName);
-      if (adjustment) {
+      const result = creditLateApprovalDay(state, employee, leaveRecord, date, 'LEAVE_PAY', 'Approved Leave (' + leaveRecord.type + ')', actorName);
+      if (result.created) {
         credited++;
-        payrollAdjustments.push(adjustment);
+        payrollAdjustments.push(result.adjustment);
+      } else if (result.duplicate) {
+        // This date already has its credit from an earlier call -- counts toward the quota (it's
+        // covered, just not newly created) so the loop doesn't over-credit later eligible dates.
+        credited++;
+        duplicateAdjustmentsSkipped++;
       }
     }
   }
 
-  return { balanceDeducted, employee, attendanceRecords, payrollAdjustments };
+  return { balanceDeducted, employee, attendanceRecords, payrollAdjustments, balanceRecalculated, duplicateAdjustmentsSkipped };
+}
+
+// The leave-decision response used to hand back the ENTIRE finalized employee record (everything
+// but the password hash) so an approver's UI could refresh the leave balance it just changed --
+// but an employee-role manager holding only `leave_approve` has no business receiving that
+// employee's salary, government IDs, bank details, or any other compensation/personal field just
+// because they approved a leave request. This is the one thing finalizeLeaveApproval's
+// side-effect actually changes on the employee record that the approving UI needs back, and
+// nothing else -- deliberately NOT reusing buildScopedStateForEmployee's own directory/self
+// projections (state-serialization.js), since those are a different concern (what a whole SESSION
+// may see) and don't even include leaveBalances at all. Same minimal shape for every caller,
+// admin included -- nothing about finalizing a leave needs more than this, regardless of who did it.
+function projectLeaveDecisionEmployeeForSession(employee) {
+  if (!employee) return null;
+  return { id: employee.id, leaveBalances: employee.leaveBalances || {} };
 }
 
 module.exports = {
-  countLeaveWorkingDays, leaveBalanceFor, leaveDateRange, calculateLeaveRequest,
+  countLeaveWorkingDays, leaveBalanceFor, leaveDateRange, eligibleLeaveDates, calculateLeaveRequest,
   employeeDailyRate, payrollAlreadyClosedFor, creditLateApprovalDay, markAttendanceForApprovedLeave,
-  finalizeLeaveApproval
+  finalizeLeaveApproval, projectLeaveDecisionEmployeeForSession
 };

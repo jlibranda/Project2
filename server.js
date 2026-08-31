@@ -6,10 +6,10 @@ const TimekeepingCore = require('./public/timekeeping-core.js');
 const { hashPassword, verifyPassword, looksLikeHash } = require('./server/passwords.js');
 const { createAuthorization, hasPermission, resolveCaller, isAdminCaller } = require('./server/authorization.js');
 const { canActOnRecord, applyChainDecision, applyForceApprove } = require('./server/approval-chain.js');
-const { calculateLeaveRequest, finalizeLeaveApproval } = require('./server/leave-service.js');
+const { calculateLeaveRequest, finalizeLeaveApproval, projectLeaveDecisionEmployeeForSession } = require('./server/leave-service.js');
 const { buildScopedStateForEmployee, applyEmployeeStateOverlay } = require('./server/state-serialization.js');
 const { ensureAuditTable, auditLog } = require('./server/audit.js');
-const { validateSessionSecret, validateGodAdminCredential, validateBootstrapCredential, KNOWN_DEFAULTS } = require('./server/secrets.js');
+const { validateSessionSecret, validateGodAdminCredential, validateBootstrapCredential, KNOWN_DEFAULTS, isSafeReplacementCredential } = require('./server/secrets.js');
 const { createRateLimiter } = require('./server/rate-limit.js');
 
 const app = express();
@@ -309,14 +309,17 @@ async function initializeDatabase() {
     // needing direct database access to recover. Only fires when the stored value is actually
     // unsafe -- a safe existing credential is never overwritten just because an old env var
     // happens to still be set.
-    if (godIsKnownDefault && process.env.GOD_ADMIN_PASSWORD && process.env.GOD_ADMIN_PASSWORD !== KNOWN_DEFAULTS.GOD_ADMIN_PASSWORD) {
+    if (godIsKnownDefault && isSafeReplacementCredential(process.env.GOD_ADMIN_PASSWORD, KNOWN_DEFAULTS.GOD_ADMIN_PASSWORD)) {
       await setGodAdminPassword(process.env.GOD_ADMIN_PASSWORD, 'system:unsafe-credential-auto-rotation');
       console.warn('[SECURITY] The stored God Admin password was a hash of the known public default -- rotated automatically at boot to match GOD_ADMIN_PASSWORD. Safe to unset the env var afterward if you prefer managing it via Settings.');
       await auditLog(pool, { tenantKey: null, actor: 'system', action: 'unsafe_production_credential_rotated', target: 'god_admin', meta: {} });
     } else {
       const godCheck = validateGodAdminCredential({ hasDbCredential: godHasDb, dbCredentialIsKnownDefault: godIsKnownDefault });
       if (!godCheck.ok) {
-        if (godIsKnownDefault) await auditLog(pool, { tenantKey: null, actor: 'system', action: 'unsafe_production_credential_detected', target: 'god_admin', meta: {} });
+        // Audited either way -- godIsKnownDefault distinguishes "the DB already has an unsafe
+        // hash and no safe env-var replacement was offered" from "no DB credential yet, and the
+        // env var is missing, the known default, or shorter than the required minimum length".
+        await auditLog(pool, { tenantKey: null, actor: 'system', action: godIsKnownDefault ? 'unsafe_production_credential_detected' : 'unsafe_production_credential_rejected', target: 'god_admin', meta: {} });
         failStartup(godCheck.problems);
       }
     }
@@ -326,14 +329,14 @@ async function initializeDatabase() {
     // Same auto-rotation escape hatch as above, for the same reason: once the tenant row already
     // exists, there is no UI path to fix an unsafe stored admin_pass without the server booting
     // first.
-    if (bootstrapIsKnownDefault && process.env.BOOTSTRAP_ADMIN_PASSWORD && process.env.BOOTSTRAP_ADMIN_PASSWORD !== KNOWN_DEFAULTS.BOOTSTRAP_ADMIN_PASSWORD) {
+    if (bootstrapIsKnownDefault && isSafeReplacementCredential(process.env.BOOTSTRAP_ADMIN_PASSWORD, KNOWN_DEFAULTS.BOOTSTRAP_ADMIN_PASSWORD)) {
       await pool.query('UPDATE platform_clients SET admin_pass = $1 WHERE tenant_key = $2', [await hashPassword(process.env.BOOTSTRAP_ADMIN_PASSWORD), TENANT_KEY]);
       console.warn('[SECURITY] The stored bootstrap admin password was a hash of the known public default -- rotated automatically at boot to match BOOTSTRAP_ADMIN_PASSWORD. Safe to unset the env var afterward if you prefer managing it via Settings.');
       await auditLog(pool, { tenantKey: TENANT_KEY, actor: 'system', action: 'unsafe_production_credential_rotated', target: 'bootstrap_admin', meta: {} });
     } else {
       const bootstrapCheck = validateBootstrapCredential({ tenantRowExists: tenantExists, bootstrapCredentialIsKnownDefault: bootstrapIsKnownDefault });
       if (!bootstrapCheck.ok) {
-        if (bootstrapIsKnownDefault) await auditLog(pool, { tenantKey: TENANT_KEY, actor: 'system', action: 'unsafe_production_credential_detected', target: 'bootstrap_admin', meta: {} });
+        await auditLog(pool, { tenantKey: TENANT_KEY, actor: 'system', action: bootstrapIsKnownDefault ? 'unsafe_production_credential_detected' : 'unsafe_production_credential_rejected', target: 'bootstrap_admin', meta: {} });
         failStartup(bootstrapCheck.problems);
       }
     }
@@ -1417,8 +1420,15 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
       const actorName = caller ? caller.name : (req.session.sub || 'Administrator');
       const decisionResult = applyChainDecision(record, decision, actorName, caller && caller.eid, gate.chain, gate.currentLayer, 'status');
       let sideEffects = null;
+      let canSeePayrollAdjustments = false;
       if (decisionResult.final && decision === 'approved') {
         sideEffects = finalizeLeaveApproval(state, record, actorName);
+        // Payroll-adjustment DETAIL (amount, daily-rate-derived figures) is only for a caller who
+        // already has payroll visibility -- an employee-role manager approving with only
+        // leave_approve must never receive that just because their approval happened to trigger a
+        // late-payroll credit. Computed here (inside the transaction, where `state`/`caller` are
+        // authoritative) rather than trusting anything about the caller from outside it.
+        canSeePayrollAdjustments = isAdminCaller(req.session, caller) || hasPermission(state, req.session, 'payroll');
         // TEST-ONLY fault injection, proving finalizeLeaveApproval's in-memory mutations (balance/
         // attendance/payroll, already applied to `state` above) roll back together with the
         // decision itself if anything downstream in this same transaction fails -- mutateAppState's
@@ -1430,7 +1440,7 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
           throw new Error('Injected test failure after finalization side effects (rollback proof) -- not a real error.');
         }
       }
-      outcome = { record, decisionResult, sideEffects };
+      outcome = { record, decisionResult, sideEffects, canSeePayrollAdjustments };
       return { changed: true };
     }, req.session.sub, tenantKey);
     if (outcome && outcome.error) {
@@ -1439,24 +1449,43 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
       return res.status(outcome.error).json({ error: outcome.message });
     }
     await auditLog(pool, { tenantKey, actor: req.session.sub, action: decision === 'approved' ? 'leave_approved' : 'leave_rejected', target: String(id), meta: { final: outcome.decisionResult.final } });
-    let employeeSafe, attendanceRecords, payrollAdjustments;
+    // The response used to hand back the ENTIRE finalized employee record (everything but the
+    // password hash) plus the full new payroll adjustments, so an approver's UI could refresh what
+    // just changed -- but an employee-role manager holding only leave_approve has no business
+    // receiving that subordinate's salary, government IDs, bank details, or payroll-adjustment
+    // amount just because they approved a leave request. employeePatch is the one thing
+    // finalization actually changes on the employee record that the approving UI needs back
+    // (projectLeaveDecisionEmployeeForSession, server/leave-service.js -- id + leaveBalances only,
+    // for every caller, admin included); payroll adjustment DETAIL is included only for a caller
+    // who already has payroll visibility, everyone else gets just a safe created/count indicator.
+    let employeePatch, attendanceRecords, payrollAdjustmentCreated = false, payrollAdjustmentCount = 0, payrollAdjustments;
     if (outcome.sideEffects) {
       const fx = outcome.sideEffects;
       await auditLog(pool, {
         tenantKey, actor: req.session.sub, action: 'leave_finalization_side_effects', target: String(id),
-        meta: { balanceDeducted: fx.balanceDeducted, attendanceRecordsTouched: fx.attendanceRecords.length, payrollAdjustmentsCreated: fx.payrollAdjustments.length }
+        meta: {
+          balanceDeducted: fx.balanceDeducted, attendanceRecordsTouched: fx.attendanceRecords.length,
+          payrollAdjustmentsCreated: fx.payrollAdjustments.length, duplicateAdjustmentsSkipped: fx.duplicateAdjustmentsSkipped,
+          balanceRecalculated: fx.balanceRecalculated
+        }
       });
-      // The frontend used to apply these same effects (leave balance, attendance, payroll
-      // adjustments) locally, right after this same decision -- now that the server owns them,
-      // it hands back the authoritative results here so the UI can still reflect them immediately
-      // instead of only after a reload. employee is never returned with its password hash.
-      if (fx.employee) { const { pass, ...employeeRest } = fx.employee; employeeSafe = employeeRest; }
+      if (fx.balanceRecalculated && outcome.record.balanceRecalculation) {
+        await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_balance_recalculated_at_approval', target: String(id), meta: outcome.record.balanceRecalculation });
+      }
+      if (fx.duplicateAdjustmentsSkipped > 0) {
+        await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'duplicate_leave_payroll_adjustment_skipped', target: String(id), meta: { count: fx.duplicateAdjustmentsSkipped } });
+      }
+      employeePatch = projectLeaveDecisionEmployeeForSession(fx.employee);
       attendanceRecords = fx.attendanceRecords;
-      payrollAdjustments = fx.payrollAdjustments;
+      payrollAdjustmentCount = fx.payrollAdjustments.length;
+      payrollAdjustmentCreated = payrollAdjustmentCount > 0;
+      if (payrollAdjustmentCreated && outcome.canSeePayrollAdjustments) {
+        payrollAdjustments = fx.payrollAdjustments;
+      }
     }
     res.json({
       ok: true, record: outcome.record, message: outcome.decisionResult.message, final: outcome.decisionResult.final, version: result.version,
-      employee: employeeSafe, attendanceRecords, payrollAdjustments
+      employeePatch, attendanceRecords, payrollAdjustmentCreated, payrollAdjustmentCount, payrollAdjustments
     });
   } catch (error) {
     res.status(500).json({ error: 'Unable to record the decision.', detail: error.message });
