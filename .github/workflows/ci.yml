@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # A plain `postgres:16` Docker service container doesn't support SSL, but server.js
+      # correctly requires it for any NODE_ENV=production connection (matching Railway's managed
+      # Postgres) -- including the test suite's own production-boot scenarios, which deliberately
+      # run against this same database. Installing PostgreSQL natively instead gives an
+      # SSL-enabled server out of the box (Ubuntu's postgresql package auto-configures the
+      # ssl-cert package's self-signed certificate and turns ssl=on), matching a real local dev
+      # setup rather than fighting the service-container image to add SSL support it doesn't ship.
+      - name: Install and start PostgreSQL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+          sudo service postgresql start
+          sudo -u postgres psql -c "CREATE ROLE auratest WITH LOGIN SUPERUSER PASSWORD 'auratest';"
+          sudo -u postgres psql -c "CREATE DATABASE auratest OWNER auratest;"
+          pg_isready -h localhost -p 5432
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Security suite (RLS-safe migration, credential checks, leave privacy/finalization)
+        run: npm run test:security
+        env:
+          TEST_DATABASE_URL: postgres://auratest:auratest@localhost:5432/auratest
+          API_SESSION_SECRET: ci-session-secret-not-for-production-use-only-in-ci
+
+      - name: Timekeeping engine
+        run: npm run test:timekeeping
+
+      - name: Payroll engine
+        run: npm run test:payroll
+
+      - name: BIR 1601C
+        run: npm run test:bir
+
+      - name: Payroll adjustments
+        run: npm run test:adjustments
+
+      - name: Payroll preview
+        run: npm run test:payroll-preview
+
+      - name: BIR annualization
+        run: npm run test:bir-annualization
+
+      - name: BIR tax version
+        run: npm run test:bir-version
+
+      - name: BIR 2316 PDF
+        run: npm run test:bir-2316
+
+      - name: BIR 1601C PDF
+        run: npm run test:bir-1601c-pdf
+
+      - name: BIR 1604C
+        run: npm run test:bir-1604c
+
+      - name: BIR alphalist
+        run: npm run test:bir-alphalist
