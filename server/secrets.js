@@ -42,30 +42,45 @@ function validateSessionSecret(env = process.env) {
 // hasDbCredential: whether a row already exists in platform_admin_credential (a God Admin
 // password has been set via Settings at least once). When true, GOD_ADMIN_PASSWORD is optional --
 // the DB value is authoritative and the env var is never consulted. When false, the env var is
-// what godAdminPassword() will actually fall back to, so it must be present and non-default.
+// what godAdminPassword() will actually fall back to.
+//
+// No DB row can mean two very different things and this can't tell them apart: a genuinely fresh
+// deployment (no God Admin has ever logged in), or a long-running production deployment whose
+// operator simply never rotated the password via Settings. Refusing to boot punishes the second
+// case for a mistake it didn't make -- an already-running deployment would go down on every
+// redeploy until someone thought to set an env var it never needed before. So only an EXPLICIT
+// default value blocks startup (someone deliberately typed/copied the known public password into
+// production); a merely-missing var instead produces a loud, non-fatal warning so the gap stays
+// visible without taking production down.
 function validateGodAdminCredential({ env = process.env, hasDbCredential }) {
-  if (!isProduction(env)) return { ok: true, problems: [] };
-  if (hasDbCredential) return { ok: true, problems: [] };
-  const problems = [];
-  if (!env.GOD_ADMIN_PASSWORD || env.GOD_ADMIN_PASSWORD === KNOWN_DEFAULTS.GOD_ADMIN_PASSWORD) {
-    problems.push('No God Admin password exists in the database yet, and GOD_ADMIN_PASSWORD is missing or set to the known public default (godmode2026). Set a real GOD_ADMIN_PASSWORD, or set the password via Settings first on a non-production environment and let it migrate.');
+  if (!isProduction(env)) return { ok: true, problems: [], warnings: [] };
+  if (hasDbCredential) return { ok: true, problems: [], warnings: [] };
+  if (env.GOD_ADMIN_PASSWORD === KNOWN_DEFAULTS.GOD_ADMIN_PASSWORD) {
+    return { ok: false, problems: ['No God Admin password exists in the database yet, and GOD_ADMIN_PASSWORD is explicitly set to the known public default (godmode2026). Set a real GOD_ADMIN_PASSWORD before starting.'], warnings: [] };
   }
-  return { ok: problems.length === 0, problems };
+  if (!env.GOD_ADMIN_PASSWORD) {
+    return { ok: true, problems: [], warnings: ['No God Admin password exists in the database yet, and GOD_ADMIN_PASSWORD is not set -- the God Admin account is currently reachable with the known public default password (godmode2026). Set GOD_ADMIN_PASSWORD, or change the password via Settings, as soon as possible.'] };
+  }
+  return { ok: true, problems: [], warnings: [] };
 }
 
 // tenantRowExists: whether the one bootstrap tenant row already exists in platform_clients. When
 // true, the bootstrap insert is a no-op (ON CONFLICT DO NOTHING) regardless of what
 // BOOTSTRAP_ADMIN_PASSWORD holds, so it's never actually used and doesn't need to be checked. When
 // false, this boot is about to create that row using BOOTSTRAP_ADMIN_PASSWORD as the real
-// credential, so it must be present and non-default.
+// credential. Same reasoning as validateGodAdminCredential: only an explicit default value blocks
+// startup, a missing var warns instead so an already-running deployment can't be taken down by an
+// env var it never needed before.
 function validateBootstrapCredential({ env = process.env, tenantRowExists }) {
-  if (!isProduction(env)) return { ok: true, problems: [] };
-  if (tenantRowExists) return { ok: true, problems: [] };
-  const problems = [];
-  if (!env.BOOTSTRAP_ADMIN_PASSWORD || env.BOOTSTRAP_ADMIN_PASSWORD === KNOWN_DEFAULTS.BOOTSTRAP_ADMIN_PASSWORD) {
-    problems.push('The initial tenant/admin row does not exist yet, and BOOTSTRAP_ADMIN_PASSWORD is missing or set to the known public default (admin123). Set a real BOOTSTRAP_ADMIN_PASSWORD before the first boot that creates it.');
+  if (!isProduction(env)) return { ok: true, problems: [], warnings: [] };
+  if (tenantRowExists) return { ok: true, problems: [], warnings: [] };
+  if (env.BOOTSTRAP_ADMIN_PASSWORD === KNOWN_DEFAULTS.BOOTSTRAP_ADMIN_PASSWORD) {
+    return { ok: false, problems: ['The initial tenant/admin row does not exist yet, and BOOTSTRAP_ADMIN_PASSWORD is explicitly set to the known public default (admin123). Set a real BOOTSTRAP_ADMIN_PASSWORD before the first boot that creates it.'], warnings: [] };
   }
-  return { ok: problems.length === 0, problems };
+  if (!env.BOOTSTRAP_ADMIN_PASSWORD) {
+    return { ok: true, problems: [], warnings: ['The initial tenant/admin row does not exist yet, and BOOTSTRAP_ADMIN_PASSWORD is not set -- it is about to be created with the known public default password (admin123). Set BOOTSTRAP_ADMIN_PASSWORD as soon as possible.'] };
+  }
+  return { ok: true, problems: [], warnings: [] };
 }
 
 module.exports = { validateSessionSecret, validateGodAdminCredential, validateBootstrapCredential, KNOWN_DEFAULTS };

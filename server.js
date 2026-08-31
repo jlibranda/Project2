@@ -297,9 +297,11 @@ async function initializeDatabase() {
     const godRow = await pool.query('SELECT 1 FROM platform_admin_credential WHERE id = 1');
     const godCheck = validateGodAdminCredential({ hasDbCredential: godRow.rowCount > 0 });
     if (!godCheck.ok) failStartup(godCheck.problems);
+    godCheck.warnings.forEach(w => console.warn('[SECURITY WARNING]', w));
     const tenantRow = await pool.query('SELECT 1 FROM platform_clients WHERE tenant_key = $1', [TENANT_KEY]);
     const bootstrapCheck = validateBootstrapCredential({ tenantRowExists: tenantRow.rowCount > 0 });
     if (!bootstrapCheck.ok) failStartup(bootstrapCheck.problems);
+    bootstrapCheck.warnings.forEach(w => console.warn('[SECURITY WARNING]', w));
   }
   // Migrate the one existing real tenant into the directory, exactly once. Purely additive —
   // its tenant_key and app_state row are untouched, so this can never affect the live login

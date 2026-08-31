@@ -525,19 +525,52 @@ async function testDbAwareProductionSecrets() {
     assert(exitCode !== null && exitCode !== 0, '25. production + missing API_SESSION_SECRET fails');
   }
 
-  // 26/27: a completely fresh tenant_key (never bootstrapped before) + production + no
-  // GOD_ADMIN_PASSWORD/BOOTSTRAP_ADMIN_PASSWORD -- must refuse to start.
+  // 26/27: a completely fresh tenant_key (never bootstrapped before) + production + GOD_ADMIN_
+  // PASSWORD/BOOTSTRAP_ADMIN_PASSWORD explicitly set to the known public defaults -- must refuse
+  // to start. An EXPLICIT default is the case that can only mean someone deliberately typed or
+  // copy-pasted the known password into a production config, so this stays a hard failure.
   {
     const freshTenantKey = 'test-fresh-prod-' + Date.now();
     const env = {
       ...process.env, NODE_ENV: 'production', PORT: String(Number(PORT) + 3),
-      DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET, APP_TENANT_KEY: freshTenantKey
+      DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET, APP_TENANT_KEY: freshTenantKey,
+      GOD_ADMIN_PASSWORD: 'godmode2026', BOOTSTRAP_ADMIN_PASSWORD: 'admin123'
     };
-    delete env.GOD_ADMIN_PASSWORD; delete env.BOOTSTRAP_ADMIN_PASSWORD;
     const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env, stdio: ['ignore', 'ignore', 'ignore'] });
     const exitCode = await new Promise(resolve => { const t = setTimeout(() => resolve(null), 4000); child.on('exit', c => { clearTimeout(t); resolve(c); }); });
     if (exitCode === null) { try { child.kill(); } catch {} }
-    assert(exitCode !== null && exitCode !== 0, '26/27. production + a never-before-seen tenant + missing God Admin/bootstrap passwords refuses the unsafe fallback');
+    assert(exitCode !== null && exitCode !== 0, '26/27. production + a never-before-seen tenant + explicit default God Admin/bootstrap passwords refuses the unsafe fallback');
+  }
+
+  // 26b/27b: the same never-before-seen tenant, but GOD_ADMIN_PASSWORD/BOOTSTRAP_ADMIN_PASSWORD
+  // simply left UNSET rather than set to the known default. This must NOT take an already-running
+  // production deployment down on redeploy just because it never had these vars -- it boots, but
+  // logs a loud, non-fatal warning so the gap stays visible.
+  {
+    const freshTenantKey2 = 'test-fresh-prod-unset-' + Date.now();
+    const port26b = Number(PORT) + 5;
+    const env = {
+      ...process.env, NODE_ENV: 'production', PORT: String(port26b),
+      DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET, APP_TENANT_KEY: freshTenantKey2,
+      // admin_email is UNIQUE across all of platform_clients, and the shared test DB's own
+      // legacy tenant (created by main()'s first boot) already owns the default admin@ph.com --
+      // this test needs its own address so its bootstrap INSERT doesn't collide with that row.
+      BOOTSTRAP_ADMIN_EMAIL: 'admin-fresh-' + Date.now() + '@ph.com'
+    };
+    delete env.GOD_ADMIN_PASSWORD; delete env.BOOTSTRAP_ADMIN_PASSWORD;
+    const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', d => { stderr += d.toString(); });
+    let ready = false;
+    for (let i = 0; i < 40 && !ready; i++) {
+      try { const res = await fetch(`http://localhost:${port26b}/api/health`); if (res.ok) ready = true; } catch {}
+      if (!ready) await new Promise(r => setTimeout(r, 250));
+    }
+    assert(ready, '26b/27b. production + a never-before-seen tenant + UNSET God Admin/bootstrap passwords still boots (does not brick an existing deployment)');
+    assert(/SECURITY WARNING/.test(stderr) && /GOD_ADMIN_PASSWORD/.test(stderr), '26c. a loud warning is logged for the unset God Admin password');
+    assert(/SECURITY WARNING/.test(stderr) && /BOOTSTRAP_ADMIN_PASSWORD/.test(stderr), '27c. a loud warning is logged for the unset bootstrap password');
+    try { child.kill(); } catch {}
+    await new Promise(r => setTimeout(r, 200));
   }
 
   // 28: an already-initialized deployment (the shared test DB's own bootstrap tenant, already
