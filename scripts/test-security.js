@@ -683,6 +683,24 @@ async function testDbAwareProductionSecrets() {
     assert(!ready && exitCode !== null && exitCode !== 0, 'PC3. production + DB God credential hashed from godmode2026 fails');
   }
   {
+    // PC3b: the recovery path -- an unsafe STORED credential with no way to fix it through the
+    // (unreachable, because the server won't boot) Settings UI must be rotatable via env var
+    // instead of leaving the operator needing raw database access. When a safe GOD_ADMIN_PASSWORD
+    // IS supplied alongside the unsafe stored hash, the server rotates the stored credential to
+    // match it and boots successfully -- proven here by confirming the DB row actually changed to
+    // a hash of the new value, not just that the server came up.
+    await resetGodRow();
+    const hashOfDefault = await bcrypt.hash('godmode2026', 10);
+    await pg.query('INSERT INTO platform_admin_credential (id, password, updated_by) VALUES (1, $1, $2)', [hashOfDefault, 'seed']);
+    const newSafePassword = 'recovered-god-admin-password-' + Date.now();
+    const port = Number(PORT) + 17;
+    const { ready } = await bootAttempt({ ...godEnv({ GOD_ADMIN_PASSWORD: newSafePassword }), PORT: String(port) }, port, 8000);
+    assert(ready, 'PC3b. an unsafe stored God Admin credential is auto-rotated (not just blocked) when a safe GOD_ADMIN_PASSWORD is supplied, and the server boots');
+    const rotatedRow = await pg.query('SELECT password FROM platform_admin_credential WHERE id = 1');
+    assertEqual(rotatedRow.rows[0].password === hashOfDefault, false, 'PC3c. the stored hash actually changed (no longer the old unsafe one)');
+    assert((await bcrypt.compare(newSafePassword, rotatedRow.rows[0].password)), 'PC3d. the stored hash now verifies against the new safe password supplied via env var');
+  }
+  {
     await resetGodRow();
     const hashOfSafe = await bcrypt.hash('a-real-god-admin-password-' + Date.now(), 10);
     await pg.query('INSERT INTO platform_admin_credential (id, password, updated_by) VALUES (1, $1, $2)', [hashOfSafe, 'seed']);
@@ -737,6 +755,30 @@ async function testDbAwareProductionSecrets() {
     };
     const { ready, exitCode } = await bootAttempt(env, port, 3000);
     assert(!ready && exitCode !== null && exitCode !== 0, 'PC7. an existing bootstrap admin hash matching admin123 is detected as unsafe');
+  }
+
+  // PC7b: same recovery path as PC3b, for the bootstrap admin credential -- a safe
+  // BOOTSTRAP_ADMIN_PASSWORD supplied alongside an unsafe stored admin_pass rotates it and boots,
+  // instead of leaving the operator stuck needing direct database access.
+  {
+    const unsafeTenantKey2 = 'test-unsafe-bootstrap-recover-' + Date.now();
+    const hashOfDefault = await bcrypt.hash('admin123', 10);
+    await pg.query(
+      `INSERT INTO platform_clients (tenant_key, name, admin_email, admin_pass) VALUES ($1, $2, $3, $4)`,
+      [unsafeTenantKey2, 'Unsafe Bootstrap Recover Co', 'unsafe-bootstrap-recover-' + Date.now() + '@ph.com', hashOfDefault]
+    );
+    const newSafePassword = 'recovered-bootstrap-password-' + Date.now();
+    const port = Number(PORT) + 18;
+    const env = {
+      ...process.env, NODE_ENV: 'production', DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET,
+      APP_TENANT_KEY: unsafeTenantKey2, GOD_ADMIN_PASSWORD: 'a-real-non-default-god-admin-password-xyz',
+      BOOTSTRAP_ADMIN_PASSWORD: newSafePassword, PORT: String(port)
+    };
+    const { ready } = await bootAttempt(env, port, 8000);
+    assert(ready, 'PC7b. an unsafe stored bootstrap admin credential is auto-rotated (not just blocked) when a safe BOOTSTRAP_ADMIN_PASSWORD is supplied, and the server boots');
+    const rotatedRow = await pg.query('SELECT admin_pass FROM platform_clients WHERE tenant_key = $1', [unsafeTenantKey2]);
+    assertEqual(rotatedRow.rows[0].admin_pass === hashOfDefault, false, 'PC7c. the stored hash actually changed (no longer the old unsafe one)');
+    assert((await bcrypt.compare(newSafePassword, rotatedRow.rows[0].admin_pass)), 'PC7d. the stored hash now verifies against the new safe password supplied via env var');
   }
 
   // 8: an already-initialized deployment (test-legacy-tenant, now holding a safe admin_pass hash

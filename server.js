@@ -301,18 +301,41 @@ async function initializeDatabase() {
     const godRow = await pool.query('SELECT password FROM platform_admin_credential WHERE id = 1');
     const godHasDb = godRow.rowCount > 0;
     const godIsKnownDefault = godHasDb && (await verifyPassword(KNOWN_DEFAULTS.GOD_ADMIN_PASSWORD, godRow.rows[0].password)).ok;
-    const godCheck = validateGodAdminCredential({ hasDbCredential: godHasDb, dbCredentialIsKnownDefault: godIsKnownDefault });
-    if (!godCheck.ok) {
-      if (godIsKnownDefault) await auditLog(pool, { tenantKey: null, actor: 'system', action: 'unsafe_production_credential_detected', target: 'god_admin', meta: {} });
-      failStartup(godCheck.problems);
+    // An unsafe STORED credential is a real deadlock if this just fails startup outright: the
+    // only normal way to change it is logging in as God Admin and using Settings, and a server
+    // that refuses to boot can never be logged into. So when the stored value is unsafe and a
+    // real, non-default GOD_ADMIN_PASSWORD is now available, rotate the stored credential to it
+    // automatically right here and continue booting, instead of leaving the operator stuck
+    // needing direct database access to recover. Only fires when the stored value is actually
+    // unsafe -- a safe existing credential is never overwritten just because an old env var
+    // happens to still be set.
+    if (godIsKnownDefault && process.env.GOD_ADMIN_PASSWORD && process.env.GOD_ADMIN_PASSWORD !== KNOWN_DEFAULTS.GOD_ADMIN_PASSWORD) {
+      await setGodAdminPassword(process.env.GOD_ADMIN_PASSWORD, 'system:unsafe-credential-auto-rotation');
+      console.warn('[SECURITY] The stored God Admin password was a hash of the known public default -- rotated automatically at boot to match GOD_ADMIN_PASSWORD. Safe to unset the env var afterward if you prefer managing it via Settings.');
+      await auditLog(pool, { tenantKey: null, actor: 'system', action: 'unsafe_production_credential_rotated', target: 'god_admin', meta: {} });
+    } else {
+      const godCheck = validateGodAdminCredential({ hasDbCredential: godHasDb, dbCredentialIsKnownDefault: godIsKnownDefault });
+      if (!godCheck.ok) {
+        if (godIsKnownDefault) await auditLog(pool, { tenantKey: null, actor: 'system', action: 'unsafe_production_credential_detected', target: 'god_admin', meta: {} });
+        failStartup(godCheck.problems);
+      }
     }
     const tenantRow = await pool.query('SELECT admin_pass FROM platform_clients WHERE tenant_key = $1', [TENANT_KEY]);
     const tenantExists = tenantRow.rowCount > 0;
     const bootstrapIsKnownDefault = tenantExists && (await verifyPassword(KNOWN_DEFAULTS.BOOTSTRAP_ADMIN_PASSWORD, tenantRow.rows[0].admin_pass)).ok;
-    const bootstrapCheck = validateBootstrapCredential({ tenantRowExists: tenantExists, bootstrapCredentialIsKnownDefault: bootstrapIsKnownDefault });
-    if (!bootstrapCheck.ok) {
-      if (bootstrapIsKnownDefault) await auditLog(pool, { tenantKey: TENANT_KEY, actor: 'system', action: 'unsafe_production_credential_detected', target: 'bootstrap_admin', meta: {} });
-      failStartup(bootstrapCheck.problems);
+    // Same auto-rotation escape hatch as above, for the same reason: once the tenant row already
+    // exists, there is no UI path to fix an unsafe stored admin_pass without the server booting
+    // first.
+    if (bootstrapIsKnownDefault && process.env.BOOTSTRAP_ADMIN_PASSWORD && process.env.BOOTSTRAP_ADMIN_PASSWORD !== KNOWN_DEFAULTS.BOOTSTRAP_ADMIN_PASSWORD) {
+      await pool.query('UPDATE platform_clients SET admin_pass = $1 WHERE tenant_key = $2', [await hashPassword(process.env.BOOTSTRAP_ADMIN_PASSWORD), TENANT_KEY]);
+      console.warn('[SECURITY] The stored bootstrap admin password was a hash of the known public default -- rotated automatically at boot to match BOOTSTRAP_ADMIN_PASSWORD. Safe to unset the env var afterward if you prefer managing it via Settings.');
+      await auditLog(pool, { tenantKey: TENANT_KEY, actor: 'system', action: 'unsafe_production_credential_rotated', target: 'bootstrap_admin', meta: {} });
+    } else {
+      const bootstrapCheck = validateBootstrapCredential({ tenantRowExists: tenantExists, bootstrapCredentialIsKnownDefault: bootstrapIsKnownDefault });
+      if (!bootstrapCheck.ok) {
+        if (bootstrapIsKnownDefault) await auditLog(pool, { tenantKey: TENANT_KEY, actor: 'system', action: 'unsafe_production_credential_detected', target: 'bootstrap_admin', meta: {} });
+        failStartup(bootstrapCheck.problems);
+      }
     }
   }
   // Migrate the one existing real tenant into the directory, exactly once. Purely additive —

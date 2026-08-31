@@ -58,7 +58,7 @@ function validateGodAdminCredential({ env = process.env, hasDbCredential, dbCred
   if (!isProduction(env)) return { ok: true, problems: [] };
   if (hasDbCredential) {
     if (dbCredentialIsKnownDefault) {
-      return { ok: false, problems: ['The God Admin password stored in the database is the known public default (godmode2026), just bcrypt-hashed -- a hash of a known password is not a secret. Change it via Settings to a real password before starting.'] };
+      return { ok: false, problems: ['The God Admin password stored in the database is the known public default (godmode2026), just bcrypt-hashed -- a hash of a known password is not a secret. A server that refuses to boot can never be logged into to change it via Settings, so set a real, non-default GOD_ADMIN_PASSWORD and restart -- the stored credential is rotated to match it automatically at boot (see server.js\'s DB-aware credential check), no direct database access needed.'] };
     }
     return { ok: true, problems: [] };
   }
@@ -79,7 +79,7 @@ function validateBootstrapCredential({ env = process.env, tenantRowExists, boots
   if (!isProduction(env)) return { ok: true, problems: [] };
   if (tenantRowExists) {
     if (bootstrapCredentialIsKnownDefault) {
-      return { ok: false, problems: ['The bootstrap admin password stored in the database is the known public default (admin123), just bcrypt-hashed -- a hash of a known password is not a secret. Rotate it (change the company admin password) before starting.'] };
+      return { ok: false, problems: ['The bootstrap admin password stored in the database is the known public default (admin123), just bcrypt-hashed -- a hash of a known password is not a secret. A server that refuses to boot can never be logged into to change it via Settings, so set a real, non-default BOOTSTRAP_ADMIN_PASSWORD and restart -- the stored credential is rotated to match it automatically at boot (see server.js\'s DB-aware credential check), no direct database access needed.'] };
     }
     return { ok: true, problems: [] };
   }
