@@ -671,7 +671,7 @@
     var rows = canonicalRecords(records).filter(function (record) {
       return record.eid === employee.id && record.date >= from && record.date <= to && record.approvalStatus !== 'rejected';
     });
-    var summary = { records: rows, presentDays: 0, lateMinutes: 0, undertimeMinutes: 0, absentDays: 0, otHours: 0, ndHours: 0, restDayHolidayHours: 0, restDayHolidayHoursByCode: {} };
+    var summary = { records: rows, presentDays: 0, lateMinutes: 0, undertimeMinutes: 0, absentDays: 0, unpaidLeaveDays: 0, otHours: 0, ndHours: 0, restDayHolidayHours: 0, restDayHolidayHoursByCode: {} };
     rows.forEach(function (record) {
       if (record.status === 'present' || record.status === 'late') summary.presentDays += 1;
       if (record.status === 'absent') summary.absentDays += 1;
@@ -706,7 +706,20 @@
         var overlay = attendanceAgainstSegment(record, halfDayLeaveSegment, schedule);
         summary.lateMinutes += overlay.lateMinutes;
         summary.undertimeMinutes += overlay.undertimeMinutes;
-      } else {
+      }
+      // Unpaid-leave portion of an approved half-day leave (paidLeaveFraction < leaveFraction, see
+      // server/leave-service.js's finalization) is only ever counted here when absentWorkFraction
+      // is explicitly zero -- i.e. the OTHER (work) half was validly worked, so the normal
+      // attendance-deduction path already treats this date as fully present with zero absence
+      // deduction. When the work half was NOT worked (absentWorkFraction > 0), the existing
+      // whole-record status:'absent' + full-day absence deduction, corrected by the leave
+      // finalization's own credit-back adjustment for any paid portion, already nets to the
+      // correct amount for ANY paid/unpaid split -- adding a further unpaidLeaveDays contribution
+      // for that same date here would double-deduct the unpaid portion on top of the absence.
+      if (isApprovedHalfDayLeaveRecord(record) && Number(record.absentWorkFraction || 0) === 0) {
+        summary.unpaidLeaveDays += Number(record.unpaidLeaveFraction || 0);
+      }
+      if (!halfDayLeaveSegment) {
         var actualIn = minutes(record.tin);
         var actualOut = minutes(record.tout);
         var shiftIn = schedule && minutes(schedule.start);

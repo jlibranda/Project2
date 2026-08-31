@@ -11,6 +11,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { Client } = require('pg');
 const bcrypt = require('bcrypt');
+const TimekeepingCore = require('../public/timekeeping-core.js');
+const PayrollRuleEngine = require('../public/payroll-rule-engine.js');
 
 const DATABASE_URL = process.env.TEST_DATABASE_URL || 'postgres://auratest:auratest@localhost:5432/auratest';
 const PORT = process.env.TEST_PORT || 3901;
@@ -392,11 +394,21 @@ async function main() {
     const daveAttTampered = JSON.parse(JSON.stringify(daveState));
     const dAtt = daveAttTampered.attendance.find(a => a.eid === 7);
     dAtt.approvalStatus = 'approved'; dAtt.otHours = 999; dAtt.late = 0;
+    // Sixth-pass (paid/unpaid half-day) fields -- an employee must not be able to forge their own
+    // half-day leave into looking fully paid (paidLeaveFraction:0, unpaidLeaveFraction:0 while
+    // still carrying leaveFraction:0.5) or inject a nonsensical negative unpaid fraction, exactly
+    // the same way they already cannot forge leaveFraction/leaveDayType/approvalStatus itself.
+    dAtt.leaveFraction = 0.5; dAtt.leaveDayType = 'half_am';
+    dAtt.paidLeaveFraction = 0; dAtt.unpaidLeaveFraction = 0; dAtt.absentWorkFraction = -99;
     r = await req('/api/state', { method: 'PUT', headers: { Authorization: 'Bearer ' + daveToken }, body: JSON.stringify({ version: Number(verBefore.rows[0].version), state: daveAttTampered }) });
     persisted2 = (await pg.query("SELECT state FROM app_state WHERE tenant_key='test-tenant-a'")).rows[0].state;
     let persisted2Att2 = persisted2.attendance.find(a => a.id === 3);
     assertEqual(persisted2Att2.approvalStatus, 'pending', '6. employee cannot change pending attendance to approved via /api/state');
     assertEqual(persisted2Att2.otHours, undefined, '7. employee cannot forge OT/payroll-relevant protected values on an attendance record');
+    assertEqual(persisted2Att2.leaveFraction, undefined, '7b. employee cannot forge leaveFraction onto an attendance record via /api/state');
+    assertEqual(persisted2Att2.paidLeaveFraction, undefined, '7c. employee cannot forge paidLeaveFraction onto an attendance record via /api/state');
+    assertEqual(persisted2Att2.unpaidLeaveFraction, undefined, '7d. employee cannot forge unpaidLeaveFraction (including a nonsensical negative value) onto an attendance record via /api/state');
+    assertEqual(persisted2Att2.absentWorkFraction, undefined, '7e. employee cannot forge absentWorkFraction onto an attendance record via /api/state');
 
     // 8/9/10: employee CAN still create legitimate own leave/attendance-adjustment requests, and
     // the server assigns safe initial values regardless of what the client sent.
@@ -1026,7 +1038,23 @@ async function testLeaveIntegrityAndFinalization() {
         scheduleAdjustments: [
           { id: 100, status: 'approved', from: '2026-12-14', to: '2026-12-14', days: [{ date: '2026-12-14', isRestDay: true }] },
           { id: 101, status: 'approved', from: '2026-12-19', to: '2026-12-19', days: [{ date: '2026-12-19', isRestDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' }] }
-        ] }
+        ] },
+      // Follow-up pass (paid/unpaid half-day) fixtures -- shift 1, dailyRate = 22000/22 = ₱1,000.
+      // Issue 24: balance stays 0.25 throughout filing and approval -- a straightforward partial
+      // paid/unpaid split with no balance change to revalidate.
+      { id: 17, email: 'partialbalhalf@lv.test', pass: await passHash('partialbalhalflvpass1'), role: 'employee', accessLevelId: 2, name: 'Partial Bal Half LV', eid: 'E-LVPARTIALBAL', active: true,
+        shiftId: 1, salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 0.25, adjustments: [] } } },
+      // Issue 25: balance starts at 0.5 (enough to fully cover the half-day request as filed), but
+      // is drained to 0 (via direct SQL, mirroring the existing CB-* concurrent-balance pattern)
+      // before approval -- final approval must revalidate to paidDays:0/unpaidDays:0.5, not the
+      // stale filing-time paidDays:0.5.
+      { id: 18, email: 'zerobalhalf@lv.test', pass: await passHash('zerobalhalflvpass1'), role: 'employee', accessLevelId: 2, name: 'Zero Bal Half LV', eid: 'E-LVZEROBAL', active: true,
+        shiftId: 1, salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 0.5, adjustments: [] } } },
+      // Issue 26: plenty of balance -- dedicated purely to the stale status:'absent' normalization
+      // test (a pre-existing attendance record marked 'absent' despite carrying genuinely valid
+      // PM punches, predating the half-day leave filed for the same date).
+      { id: 19, email: 'statusnorm@lv.test', pass: await passHash('statusnormlvpass1'), role: 'employee', accessLevelId: 2, name: 'Status Norm LV', eid: 'E-LVSTATUSNORM', active: true,
+        shiftId: 1, salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } } }
     ],
     attendance: [], leaves: [], loans: [], payrolls: [],
     payPeriods: [
@@ -1110,6 +1138,9 @@ async function testLeaveIntegrityAndFinalization() {
     const dateCheckToken = await login('datecheck@lv.test', 'datechecklvpass1');
     const personalSchedToken = await login('personalsched@lv.test', 'personalschedlvpass1');
     const schedAdjHalfToken = await login('schedadjhalf@lv.test', 'schedadjhalflvpass1');
+    const partialBalHalfToken = await login('partialbalhalf@lv.test', 'partialbalhalflvpass1');
+    const zeroBalHalfToken = await login('zerobalhalf@lv.test', 'zerobalhalflvpass1');
+    const statusNormToken = await login('statusnorm@lv.test', 'statusnormlvpass1');
 
     // ── Leave Integrity (server-side calculation/validation) ──────────────────────────────────
     let r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-05', endDate: '2026-09-05', reason: 'test', dayType: 'whole', days: -10, paidDays: -10, unpaidDays: -10 }) }, empToken);
@@ -1356,6 +1387,25 @@ async function testLeaveIntegrityAndFinalization() {
       ur = LeaveService.creditLateApprovalDay(unitState, unitEmployee, leaveA, '2026-09-06', 'LEAVE_PAY', 'Test', 'Tester');
       assert(ur.created === true, '32. a different effective date can create its own adjustment');
       assertEqual(unitState.payrollAdjustments.length, 3, '32b. three distinct adjustments now exist (A/05, B/05, A/06)');
+
+      // ── Issues 16/17/18/19: debitClosedPeriodUnpaidLeave tested directly, per-unit -- the
+      // deduction-side mirror of creditLateApprovalDay above, for a half-day date whose other half
+      // WAS validly worked but carries a genuine unpaidLeaveFraction, once its pay period has
+      // already closed.
+      const leaveC = { id: 503 };
+      let dr = LeaveService.debitClosedPeriodUnpaidLeave(unitState, unitEmployee, leaveC, '2026-09-07', 'Tester', 0.5);
+      assert(dr.created === true, '32c. a closed-period unpaid-leave date creates a deduction adjustment');
+      assertEqual(dr.adjustment.amount, -500, '32d. the deduction is exactly -₱500 (0.5 day × ₱1,000 daily rate), a NEGATIVE amount');
+      assertEqual(dr.adjustment.payItemCode, 'UNPAID_LEAVE', '32e. the adjustment carries its own distinct payItemCode, never LEAVE_PAY');
+      dr = LeaveService.debitClosedPeriodUnpaidLeave(unitState, unitEmployee, leaveC, '2026-09-07', 'Tester', 0.5);
+      assert(dr.created === false && dr.duplicate === true, '32f. a retried debit for the same leave/date does not create a second deduction (idempotent)');
+      assertEqual(unitState.payrollAdjustments.filter(a => a.payItemCode === 'UNPAID_LEAVE').length, 1, '32g. still only one UNPAID_LEAVE adjustment exists after the duplicate attempt');
+      // An open-period date must produce no adjustment at all here -- the live payroll run
+      // already deducts it from attendance.unpaidLeaveDays directly.
+      const openPeriodUnitState = { payPeriods: [{ id: 2, groupId: 1, from: '2026-10-01', to: '2026-10-15', attendanceFrom: '2026-10-01', attendanceTo: '2026-10-15', status: 'open' }], payrollAdjustments: [] };
+      dr = LeaveService.debitClosedPeriodUnpaidLeave(openPeriodUnitState, unitEmployee, leaveC, '2026-10-05', 'Tester', 0.5);
+      assert(dr.created === false && dr.duplicate === false, '32h. an open-period date creates no adjustment at all (the live payroll run already handles it)');
+      assertEqual(openPeriodUnitState.payrollAdjustments.length, 0, '32i. no adjustment was added for the open period');
     }
 
     // ── dayType tests ───────────────────────────────────────────────────────────────────────
@@ -1579,11 +1629,12 @@ async function testLeaveIntegrityAndFinalization() {
     assertEqual(r.body.attendanceUpdated, true, '71. attendanceUpdated flag is still true');
     assert(Array.isArray(r.body.attendanceDates) && r.body.attendanceDates.includes('2026-09-08'), '72. attendanceDates still tells the approver which date(s) were touched');
     assert(Array.isArray(r.body.attendancePatches) && r.body.attendancePatches.length === 1, '73. attendancePatches carries the safe per-record projection');
-    // This is a whole-day leave, so leaveFraction/leaveDayType are undefined and JSON.stringify
-    // drops them entirely over the wire -- the allowed-fields check still holds (every key present
-    // is one of the safe six), just with the half-day-only ones naturally absent here.
-    const allowedPatchKeys = new Set(['id', 'eid', 'date', 'status', 'leaveFraction', 'leaveDayType']);
-    assert(Object.keys(r.body.attendancePatches[0]).every(k => allowedPatchKeys.has(k)), '74. the safe patch only ever contains keys from {id,eid,date,status,leaveFraction,leaveDayType} -- no more');
+    // This is a whole-day leave, so leaveFraction/leaveDayType/paidLeaveFraction/
+    // unpaidLeaveFraction/absentWorkFraction are all undefined and JSON.stringify drops them
+    // entirely over the wire -- the allowed-fields check still holds (every key present is one of
+    // the safe nine), just with the half-day-only ones naturally absent here.
+    const allowedPatchKeys = new Set(['id', 'eid', 'date', 'status', 'leaveFraction', 'leaveDayType', 'paidLeaveFraction', 'unpaidLeaveFraction', 'absentWorkFraction']);
+    assert(Object.keys(r.body.attendancePatches[0]).every(k => allowedPatchKeys.has(k)), '74. the safe patch only ever contains keys from the allowed set -- no more');
     const privRaw = JSON.stringify(r.body);
     assert(!privRaw.includes('"tin"') && !privRaw.includes('"tout"') && !privRaw.includes('"punches"') && !/"ot":/.test(privRaw) && !/"nd":/.test(privRaw) && !privRaw.includes('undertimeMinutes') && !privRaw.includes('"edits"'),
       '75. the raw response body never contains tin/tout/punches/ot/nd/undertimeMinutes/edits');
@@ -1620,6 +1671,17 @@ async function testLeaveIntegrityAndFinalization() {
     assertEqual(r.status, 200, "79b-setup2. mgr approves the half-day request");
     assertEqual(r.body.attendancePatches[0].leaveFraction, 0.5, '79b. the safe patch DOES include leaveFraction for a half-day record');
     assertEqual(r.body.attendancePatches[0].leaveDayType, 'half_am', '79c. and leaveDayType, without ever including tin/tout/punches');
+    // Issue 28: paidLeaveFraction/unpaidLeaveFraction/absentWorkFraction are leave-workflow
+    // metadata (how much of the leave itself is paid vs. unpaid), safe for the same leave_approve-
+    // only audience as leaveFraction/leaveDayType already were -- but the response must still never
+    // carry an actual PESO amount, salary, or daily rate.
+    assertEqual(r.body.attendancePatches[0].paidLeaveFraction, 0.5, '79d. the safe patch includes paidLeaveFraction (privsubj is fully paid, no PM work -- 0.5 paid)');
+    assertEqual(r.body.attendancePatches[0].unpaidLeaveFraction, 0, '79e. and unpaidLeaveFraction (0, since this leave is fully paid)');
+    assertEqual(r.body.attendancePatches[0].absentWorkFraction, 0.5, '79f. and absentWorkFraction (0.5 -- the PM work half, not the leave half, is what is absent)');
+    const privHalfPatchKeys = new Set(['id', 'eid', 'date', 'status', 'leaveFraction', 'leaveDayType', 'paidLeaveFraction', 'unpaidLeaveFraction', 'absentWorkFraction']);
+    assert(Object.keys(r.body.attendancePatches[0]).every(k => privHalfPatchKeys.has(k)), '79g. the half-day safe patch still only ever contains keys from the allowed set');
+    const privHalfRaw = JSON.stringify(r.body);
+    assert(!/"salaryPM"|"dailyRate"|"rate":\s*\d/.test(privHalfRaw) && !privHalfRaw.includes('payrollAdjustments'), '79h. the raw response body never contains salary, daily rate, or payroll-adjustment amounts');
 
     // ── Issue 22: leave date allocation is frozen at filing, immune to a later schedule change ──
     r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-04', endDate: '2026-09-07', reason: 'schedule snapshot test', dayType: 'whole' }) }, schedSnapToken);
@@ -1659,6 +1721,113 @@ async function testLeaveIntegrityAndFinalization() {
     // A genuinely valid leap-year date is still accepted.
     r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2028-02-29', endDate: '2028-02-29', reason: 'valid leap date', dayType: 'whole', acknowledgeShortfall: true }) }, dateCheckToken);
     assertEqual(r.status, 200, '88. a genuinely valid leap-year date (2028-02-29) is accepted');
+
+    // ── Issue 24: real approval-flow integration -- partial paid/unpaid half-day, no balance
+    // change between filing and approval, end to end through the actual /api/leaves and
+    // /api/leaves/:id/decision endpoints, with the resulting payroll figure computed the same way
+    // the real payroll preview does (TimekeepingCore.periodSummary() -> PayrollRuleEngine.calculate()).
+    {
+      const row = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
+      const st = row.rows[0].state;
+      st.attendance.push({ id: 950, eid: 17, date: '2026-12-21', tin: '13:00', tout: '18:00', status: 'present', ot: 0, nd: 0, notes: '', punches: [], active: true });
+      await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
+    }
+    // 2026-12-21 is a Monday, a genuine scheduled workday.
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-21', reason: 'partial balance half am', dayType: 'half_am' }) }, partialBalHalfToken);
+    assertEqual(r.status, 409, '89-setup. filing 0.5 against a 0.25 balance needs shortfall acknowledgment');
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-21', reason: 'partial balance half am', dayType: 'half_am', acknowledgeShortfall: true }) }, partialBalHalfToken);
+    assertEqual(r.status, 200, '89. partial-balance half_am filing is accepted with acknowledgeShortfall');
+    assertEqual(r.body.record.paidDays, 0.25, '89b. filed paidDays is 0.25 (the full 0.25 balance)');
+    assertEqual(r.body.record.unpaidDays, 0.25, '89c. filed unpaidDays is the remaining 0.25');
+    const partialBalLeaveId = r.body.record.id;
+    r = await call('/api/leaves/' + partialBalLeaveId + '/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, '90. admin approves the partial-balance half_am request');
+    let pbRow = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    const pbLeave = pbRow.leaves.find(l => l.id === partialBalLeaveId);
+    assertEqual(pbLeave.paidDays, 0.25, '91. final paidDays remains 0.25 (balance never changed)');
+    assertEqual(pbLeave.unpaidDays, 0.25, '92. final unpaidDays remains 0.25');
+    let pbAtt = pbRow.attendance.find(a => a.eid === 17 && a.date === '2026-12-21');
+    assertEqual(pbAtt.leaveFraction, 0.5, '93. attendance leaveFraction is 0.5');
+    assertEqual(pbAtt.paidLeaveFraction, 0.25, '94. attendance paidLeaveFraction is 0.25, from the FINAL approval split');
+    assertEqual(pbAtt.unpaidLeaveFraction, 0.25, '95. attendance unpaidLeaveFraction is 0.25');
+    assertEqual(pbAtt.absentWorkFraction, 0, '96. absentWorkFraction is 0 -- the PM half was genuinely worked');
+    assertEqual(pbAtt.tin, '13:00', '97. actual Time In is untouched');
+    assertEqual(pbAtt.tout, '18:00', '98. actual Time Out is untouched');
+    const pbEmp = pbRow.users.find(u => u.id === 17);
+    const pbSummary = TimekeepingCore.periodSummary(pbRow.attendance, pbEmp, '2026-12-21', '2026-12-21', pbRow.company.shifts, [], 'mon');
+    assertEqual(pbSummary.unpaidLeaveDays, 0.25, '99. periodSummary reports unpaidLeaveDays 0.25');
+    assertEqual(pbSummary.lateMinutes, 0, '100. periodSummary reports zero late minutes');
+    assertEqual(pbSummary.undertimeMinutes, 0, '101. periodSummary reports zero undertime minutes');
+    assertEqual(pbSummary.absentDays, 0, '102. periodSummary reports zero absent days');
+    const pbPayroll = PayrollRuleEngine.calculate({
+      employee: pbEmp, group: { code: 'MNTH', freq: 'monthly', taxMethod: 'monthly', statutoryTiming: 'every-cutoff' },
+      period: { from: '2026-12-01', to: '2026-12-31', cutoff1: true, cutoff2: true }, rules: [], baseBasic: 22000, defaultDivisor: 22,
+      attendance: pbSummary, adjustments: [], loans: [], statutory: () => ({ sssEE: 0, sssER: 0, phEE: 0, phER: 0, piEE: 0, piER: 0 }), tax: () => 0
+    });
+    assertEqual(pbPayroll.attendanceDeduction, 250, '103. payroll preview produces exactly ₱250 unpaid-leave deduction on a ₱1,000 daily rate');
+    assert(!pbPayroll.lines.some(l => l.code === 'ABSENT'), '104. no full absence deduction');
+    assert(!pbPayroll.lines.some(l => l.code === 'LATE' || l.code === 'UNDERTIME'), '105. no late/undertime deduction');
+
+    // ── Issue 25: zero-balance-at-approval integration -- balance drops to 0 between filing and
+    // approval; the leave half must convert entirely to unpaid, and payroll must deduct the full
+    // 0.5-day unpaid-leave amount, NOT zero.
+    {
+      const row = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
+      const st = row.rows[0].state;
+      st.attendance.push({ id: 951, eid: 18, date: '2026-12-22', tin: '13:00', tout: '18:00', status: 'present', ot: 0, nd: 0, notes: '', punches: [], active: true });
+      await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
+    }
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-22', reason: 'zero balance half am', dayType: 'half_am' }) }, zeroBalHalfToken);
+    assertEqual(r.status, 200, '106. zero-balance-employee half_am filing is accepted while balance still covers it (0.5 available)');
+    assertEqual(r.body.record.paidDays, 0.5, '106b. filed paidDays is 0.5 (full balance covers it at filing time)');
+    const zeroBalLeaveId = r.body.record.id;
+    // Drain the balance to 0 between filing and approval (mirrors the existing CB-* pattern).
+    let drainRow = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    drainRow.users.find(u => u.id === 18).leaveBalances['1'].balance = 0;
+    await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [drainRow, tenantKey]);
+    r = await call('/api/leaves/' + zeroBalLeaveId + '/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, '107. admin approves the now-zero-balance half_am request');
+    let zbRow = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    const zbLeave = zbRow.leaves.find(l => l.id === zeroBalLeaveId);
+    assertEqual(zbLeave.paidDays, 0, '108. final paidDays is revalidated to 0 (balance dropped to 0 before approval)');
+    assertEqual(zbLeave.unpaidDays, 0.5, '109. final unpaidDays is revalidated to the full 0.5');
+    let zbAtt = zbRow.attendance.find(a => a.eid === 18 && a.date === '2026-12-22');
+    assertEqual(zbAtt.paidLeaveFraction, 0, '110. attendance paidLeaveFraction is 0, not the stale filing-time 0.5');
+    assertEqual(zbAtt.unpaidLeaveFraction, 0.5, '111. attendance unpaidLeaveFraction is the full 0.5');
+    assertEqual(zbAtt.absentWorkFraction, 0, '112. absentWorkFraction is 0 -- the PM half was genuinely worked');
+    const zbEmp = zbRow.users.find(u => u.id === 18);
+    const zbSummary = TimekeepingCore.periodSummary(zbRow.attendance, zbEmp, '2026-12-22', '2026-12-22', zbRow.company.shifts, [], 'mon');
+    assertEqual(zbSummary.unpaidLeaveDays, 0.5, '113. periodSummary reports unpaidLeaveDays 0.5');
+    const zbPayroll = PayrollRuleEngine.calculate({
+      employee: zbEmp, group: { code: 'MNTH', freq: 'monthly', taxMethod: 'monthly', statutoryTiming: 'every-cutoff' },
+      period: { from: '2026-12-01', to: '2026-12-31', cutoff1: true, cutoff2: true }, rules: [], baseBasic: 22000, defaultDivisor: 22,
+      attendance: zbSummary, adjustments: [], loans: [], statutory: () => ({ sssEE: 0, sssER: 0, phEE: 0, phER: 0, piEE: 0, piER: 0 }), tax: () => 0
+    });
+    assertEqual(zbPayroll.attendanceDeduction, 500, '114. payroll deducts the full ₱500 unpaid-leave amount, NOT zero');
+
+    // ── Issue 26: attendance-status normalization -- a pre-existing record already marked
+    // 'absent' (e.g. from an earlier missed-punch sweep) despite carrying genuinely valid PM
+    // punches, predating a half-day leave later filed and approved for the same date. The final
+    // record must no longer act as a full-day absence.
+    {
+      const row = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
+      const st = row.rows[0].state;
+      st.attendance.push({ id: 952, eid: 19, date: '2026-12-23', tin: '13:00', tout: '18:00', status: 'absent', ot: 0, nd: 0, notes: 'Missed AM punch sweep', punches: [], active: true });
+      await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
+    }
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-23', reason: 'status normalization', dayType: 'half_am' }) }, statusNormToken);
+    assertEqual(r.status, 200, '115. half_am filing over a stale-absent record with valid PM punches is accepted');
+    const statusNormLeaveId = r.body.record.id;
+    r = await call('/api/leaves/' + statusNormLeaveId + '/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, '116. admin approves the status-normalization request');
+    let snRow = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    let snAtt = snRow.attendance.find(a => a.eid === 19 && a.date === '2026-12-23');
+    assertEqual(snAtt.status, 'present', "117. the stale 'absent' status is normalized to 'present' now that the PM half is confirmed validly worked");
+    assertEqual(snAtt.absentWorkFraction, 0, '118. absentWorkFraction is 0');
+    assert(Array.isArray(snAtt.edits) && snAtt.edits.some(e => e.changes && e.changes.status), '119. the status change itself is captured in the record\'s own audit/edit trail');
+    const snEmp = snRow.users.find(u => u.id === 19);
+    const snSummary = TimekeepingCore.periodSummary(snRow.attendance, snEmp, '2026-12-23', '2026-12-23', snRow.company.shifts, [], 'mon');
+    assertEqual(snSummary.absentDays, 0, '120. periodSummary no longer counts this date as a full-day absence');
 
   } finally {
     try { child.kill(); } catch {}

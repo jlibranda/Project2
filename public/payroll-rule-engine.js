@@ -293,6 +293,19 @@
       absentLine.formula=absentFormula;
       addLine(lines,absentLine);
     }
+    // Unpaid-leave portion of an approved half-day leave whose other half was validly worked --
+    // TimekeepingCore.periodSummary() only ever populates attendance.unpaidLeaveDays for that exact
+    // case (see its own comment), so this can never double up with the ABSENT line above: a date
+    // contributes to ABSENT (full-day absence, corrected separately by the leave-approval credit-
+    // back adjustment for any paid portion) OR to unpaidLeaveDays here, never both. Reuses the same
+    // daily rate and ABSENCE_DEDUCTION rule/multiplier as unpaid absence (same underlying "unpaid
+    // day" concept) but keeps its own distinct line/code so payroll traceability can tell a genuine
+    // attendance absence apart from an approved-but-unpaid leave portion.
+    if (attendance.unpaidLeaveDays) {
+      var unpaidLeaveDays = number(attendance.unpaidLeaveDays);
+      var unpaidLeaveAmount = money(daily*unpaidLeaveDays*absentRule.value);
+      addLine(lines,Object.assign({code:'UNPAID_LEAVE',name:'Unpaid Leave',type:'deduction',quantity:unpaidLeaveDays,rate:daily,multiplier:absentRule.value,amount:unpaidLeaveAmount,formula:'Daily rate × unpaid-leave days × '+absentRule.value},lineFromRule(absentRule.rule,'ABSENCE_DEDUCTION','Labor standards / company attendance policy')));
+    }
     var lateRounding = ruleValue(rules,'LATE_ROUNDING_MINUTES',date,context,1).value;
     var lateMinutes = lateRounding>1?Math.ceil(number(attendance.lateMinutes)/lateRounding)*lateRounding:number(attendance.lateMinutes);
     // exemptLateDeduction/exemptUndertimeDeduction are a per-employee payroll exception,

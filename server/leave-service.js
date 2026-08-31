@@ -108,16 +108,21 @@ function buildLeaveDayAllocation(state, employee, req) {
 // Walks a FROZEN leaveAllocation footprint in date order, consuming `paidTotal` days -- returns a
 // parallel list where each entry also carries `paidFraction`: how much of THAT date's own fraction
 // is actually paid leave (never more than the date's fraction, never more than what's left of
-// paidTotal). The remainder on any entry (fraction - paidFraction) is unpaid/absence territory,
-// handled by existing attendance/payroll rules, never manufactured into a second paid portion here.
-// This is what makes a 1.5-day paid balance correctly split into a full day + a half day of credit
-// (dailyRate*1 + dailyRate*0.5) instead of the old integer-counted "2 full days" bug.
+// paidTotal). `unpaidFraction` (fraction - paidFraction) is the explicit complement -- the portion
+// of that same date's leave that is NOT paid. Together, paidFraction + unpaidFraction === fraction
+// exactly (within this file's 3-decimal precision convention), so a date's leave is always fully
+// accounted for as paid or unpaid, never left ambiguous. What happens to the unpaid portion (a
+// straight payroll deduction, or netted against an uncovered/absent work half) is decided by the
+// caller, never manufactured into a second paid portion here. This is what makes a 1.5-day paid
+// balance correctly split into a full day + a half day of credit (dailyRate*1 + dailyRate*0.5)
+// instead of the old integer-counted "2 full days" bug.
 function allocatePaidFraction(allocation, paidTotal) {
   let remaining = Math.max(0, Number(paidTotal) || 0);
   return (allocation || []).map(entry => {
     const paidFraction = +Math.max(0, Math.min(entry.fraction, remaining)).toFixed(3);
     remaining = +(remaining - paidFraction).toFixed(3);
-    return Object.assign({}, entry, { paidFraction });
+    const unpaidFraction = +Math.max(0, entry.fraction - paidFraction).toFixed(3);
+    return Object.assign({}, entry, { paidFraction, unpaidFraction });
   });
 }
 
@@ -301,6 +306,51 @@ function creditLateApprovalDay(state, employee, leaveRecord, date, payItemCode, 
   return { created: true, duplicate: false, adjustment };
 }
 
+// Issues 16-19: the deduction-side mirror of creditLateApprovalDay, for a half-day date whose
+// OTHER half WAS validly worked (a fully payable date from the attendance side) but carries a
+// genuine unpaidLeaveFraction, when that date's pay period has ALREADY CLOSED. An open period
+// needs no adjustment at all here -- TimekeepingCore.periodSummary()'s own unpaidLeaveDays
+// aggregate (fed straight into the payroll engine's UNPAID_LEAVE line) already deducts the correct
+// amount live, from the attendance record itself, the next time that period's payroll is computed.
+// Only a CLOSED period -- one whose payroll was already computed and paid before this unpaid
+// portion was known -- needs a correction injected as its own payroll adjustment. Idempotent on
+// the same (sourceType, sourceLeaveId, sourceDate, payItemCode) identity as every other
+// leave-sourced adjustment, so a retried finalization (or a duplicate call) never creates a second
+// deduction for the same date; a legacyMismatch flag (mirroring creditLateApprovalDay's own) is
+// still returned for a pre-existing adjustment whose amount doesn't match what this fraction would
+// produce, rather than silently trusting or duplicating it.
+function debitClosedPeriodUnpaidLeave(state, employee, leaveRecord, date, actorName, unpaidFraction) {
+  const fraction = Number.isFinite(Number(unpaidFraction)) ? Number(unpaidFraction) : 0;
+  if (!(fraction > 0 && fraction <= 1)) return { created: false, duplicate: false, adjustment: null };
+  if (!employee || !payrollAlreadyClosedFor(state, employee, date)) return { created: false, duplicate: false, adjustment: null };
+  state.payrollAdjustments = Array.isArray(state.payrollAdjustments) ? state.payrollAdjustments : [];
+  const payItemCode = 'UNPAID_LEAVE';
+  const existing = state.payrollAdjustments.find(a => a && a.sourceType === 'leave' && a.sourceLeaveId === leaveRecord.id && a.sourceDate === date && a.payItemCode === payItemCode);
+  const dailyRate = employeeDailyRate(state, employee);
+  if (existing) {
+    const expectedAmount = -(+(dailyRate * fraction).toFixed(2));
+    const legacyMismatch = Number.isFinite(Number(existing.amount)) && Math.abs(Number(existing.amount) - expectedAmount) > 0.005;
+    return { created: false, duplicate: true, adjustment: existing, legacyMismatch };
+  }
+  if (!dailyRate) return { created: false, duplicate: false, adjustment: null };
+  // Negative amount is what PayrollRuleEngine.calculate() itself uses to recognize a payroll
+  // adjustment as a deduction rather than an earning (see its own `isDeduction = amount < 0`) --
+  // no separate engine change needed to make this net out correctly.
+  const amount = -(+(dailyRate * fraction).toFixed(2));
+  const nextId = state.payrollAdjustments.reduce((max, r) => Math.max(max, Number(r && r.id) || 0), 0) + 1;
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const fractionLabel = fraction < 1 ? ` (${fraction} day)` : '';
+  const adjustment = {
+    id: nextId, empId: employee.id, adjType: 'Unpaid Leave', payItemCode, category: 'deductions', taxable: false, direction: 'deduction',
+    amount,
+    reason: `Retroactive Unpaid Leave${fractionLabel} for ${date} — approved after the original pay period already closed; deducted automatically from the next payroll run.`,
+    effectiveDate: date, payPeriodId: null, payPeriodLabel: null, addedBy: actorName, status: 'ready', processStatus: 'ready', createdAt: todayStr,
+    sourceType: 'leave', sourceLeaveId: leaveRecord.id, sourceDate: date, sourceFraction: fraction
+  };
+  state.payrollAdjustments.push(adjustment);
+  return { created: true, duplicate: false, adjustment };
+}
+
 // AM/PM work-segment derivation and other-half validity are now owned entirely by
 // TimekeepingCore.splitScheduleIntoHalves/attendanceAgainstSegment (public/timekeeping-core.js) --
 // the exact same functions periodSummary() uses to compute payroll-facing late/undertime for these
@@ -324,28 +374,38 @@ function otherHalfSegmentForDayType(schedule, dayType) {
 // attendance approval cycle on top), sourced and reviewed by the server, never the employee's
 // original filing payload.
 //
-// `allocation` is the leave's FROZEN date/fraction footprint (leaveRecord.leaveAllocation, or a
-// freshly-derived one for a legacy record -- see finalizeLeaveApproval) rather than a live
-// recomputation, so a schedule change between filing and approval can never add or drop a date.
+// `allocation` is the leave's FROZEN date/fraction footprint, already passed through
+// allocatePaidFraction() by finalizeLeaveApproval so each entry also carries the FINAL
+// (post-balance-revalidation) paidFraction/unpaidFraction split -- never a live recomputation, so
+// a schedule change between filing and approval can never add or drop a date, and a balance change
+// between filing and approval can never leave a stale paid/unpaid split on the attendance record.
 //
 // A whole-day entry (fraction:1) keeps the exact prior behavior: the date is marked wholesale
 // 'leave' unless a real punch log already exists, in which case it's flagged rather than erased.
 //
 // A half-day entry (fraction:0.5, dayType set) is handled differently -- issues 4/5/6/7's whole
 // point: it must never simply wipe the date to 'leave' the way a whole day does, because half of
-// it may be genuinely worked.
+// it may be genuinely worked. The date's composition is modeled as two independent halves that
+// must reconcile to at most 1.0 payable day:
+//   - LEAVE half: paidLeaveFraction (paid, no loss) + unpaidLeaveFraction (unpaid, a loss) = 0.5.
+//   - WORK half: either genuinely worked (no loss) or absentWorkFraction = 0.5 (a loss, handled by
+//     the existing, unmodified absence-deduction formula).
 //   - If the OTHER half was validly worked (hasValidOtherHalfWork), the existing computed
-//     attendance (tin/tout/status from real punches, e.g. 'present'/'late') is left completely
-//     alone -- only leaveFraction/leaveDayType metadata is added. Since the record's status is
-//     never 'absent', the existing (unmodified) absence-deduction formula already treats this as a
-//     fully payable day -- exactly the "0.5 worked + 0.5 leave = 1.0 payable day" rule, achieved
-//     without touching payroll math at all.
+//     attendance (tin/tout from real punches) is left completely alone; status is normalized away
+//     from a stale 'absent' (e.g. left over from a missed-punch sweep predating this approval) to
+//     'present' if needed, so a confirmed-worked half never survives as a full-day absence.
+//     absentWorkFraction is 0; any unpaidLeaveFraction on this date is a real payroll loss, applied
+//     by TimekeepingCore.periodSummary()/the payroll engine's UNPAID_LEAVE line -- never a full-day
+//     absence deduction for a date where half was genuinely worked.
 //   - If the other half was NOT validly worked, any genuine existing tin/tout is still preserved
 //     (never blanked out just because it didn't clear the "valid other half" bar), but the record's
-//     status becomes 'absent' -- deliberately reusing the existing, unmodified absence-deduction
-//     formula so the uncovered half correctly loses pay through the SAME mechanism a normal absence
-//     already uses, rather than inventing a new half-pay code path. leaveFraction/leaveDayType
-//     metadata still records that 0.5 day was legitimate, audited leave.
+//     status becomes 'absent' (absentWorkFraction: 0.5) -- deliberately reusing the existing,
+//     unmodified absence-deduction formula so the uncovered half correctly loses pay through the
+//     SAME mechanism a normal absence already uses. Whatever fraction of the leave half IS paid is
+//     credited back separately by finalizeLeaveApproval's own adjustment logic; the single full-day
+//     absence deduction here already nets to the correct total for ANY paid/unpaid split, so
+//     periodSummary deliberately does not also add a separate unpaidLeaveDays contribution for this
+//     date (see periodSummary's own comment).
 // Returns the array of attendance records touched (created or updated), each a live reference
 // into state.attendance, so the caller can hand them back to the frontend.
 function markAttendanceForApprovedLeave(state, leaveRecord, employee, actorName, allocation) {
@@ -386,16 +446,29 @@ function markAttendanceForApprovedLeave(state, leaveRecord, employee, actorName,
     // payroll can never drift out of sync with each other.
     const otherHalfWorked = !!(segment && TimekeepingCore.attendanceAgainstSegment(existing, segment, schedule).valid);
     const halfLabel = HALF_DAY_LABELS[entry.dayType] || 'Half Day';
+    // Server-authoritative paid/unpaid split for THIS date, from the FINAL allocation
+    // finalizeLeaveApproval computed against the CURRENT balance -- never the raw filing-time
+    // fraction (issue 9: a balance that shrank between filing and approval must flow through here,
+    // not the stale split the employee originally saw).
+    const paidLeaveFraction = Number(entry.paidFraction) || 0;
+    const unpaidLeaveFraction = Number(entry.unpaidFraction) || 0;
 
     if (otherHalfWorked) {
-      // Preserve the real punches/status entirely -- just annotate. Never 'absent', so the
-      // existing absence-deduction formula already leaves this as a fully payable day.
+      // Preserve the real punches entirely -- just annotate. absentWorkFraction is 0: the only
+      // possible payroll loss on this date is unpaidLeaveFraction itself (if any), never a full-day
+      // absence deduction.
       const flag = `Approved ${leaveRecord.type} — ${halfLabel} (other half worked — full payable day).`;
-      touched.push(TimekeepingCore.upsert(state.attendance, employee.id, date, {
+      const patch = {
         notes: (existing && existing.notes ? existing.notes + ' · ' : '') + flag,
         leaveFraction: 0.5, leaveDayType: entry.dayType,
+        paidLeaveFraction, unpaidLeaveFraction, absentWorkFraction: 0,
         source: existing ? existing.source : 'leave-approval', approvalStatus: 'approved', reviewedBy: actorName, reviewedAt: now
-      }, () => nextId++, actorName));
+      };
+      // A stale 'absent' status (e.g. from a missed-punch sweep that ran before this leave was
+      // approved) must not survive now that the other half is confirmed validly worked -- the
+      // change itself is audited through upsert()'s own edit trail like any other status edit.
+      if (existing && existing.status === 'absent') patch.status = 'present';
+      touched.push(TimekeepingCore.upsert(state.attendance, employee.id, date, patch, () => nextId++, actorName));
       touched[touched.length - 1].otherHalfWorked = true;
       return;
     }
@@ -403,10 +476,16 @@ function markAttendanceForApprovedLeave(state, leaveRecord, employee, actorName,
     // Other half not (validly) worked -- preserve whatever tin/tout may genuinely already exist
     // (never blank them just because they didn't clear the bar), but mark the day 'absent' so the
     // uncovered half correctly loses pay via the existing, unmodified absence-deduction formula.
+    // absentWorkFraction: entry.fraction records that ONLY the work half is responsible for this
+    // absence (the leave half's own paid/unpaid split is separate) -- periodSummary deliberately
+    // does not also add unpaidLeaveFraction to unpaidLeaveDays for this date, since the single
+    // full-day absence deduction already nets to the correct total once finalizeLeaveApproval's
+    // credit-back adjustment (for whatever fraction of the leave half IS paid) is applied.
     const patch = {
       status: 'absent',
       notes: (existing && existing.notes ? existing.notes + ' · ' : '') + `Approved ${leaveRecord.type} — ${halfLabel} (other half not worked).`,
       leaveFraction: 0.5, leaveDayType: entry.dayType,
+      paidLeaveFraction, unpaidLeaveFraction, absentWorkFraction: entry.fraction,
       source: existing ? existing.source : 'leave-approval', approvalStatus: 'approved', reviewedBy: actorName, reviewedAt: now
     };
     if (!existing) { patch.tin = ''; patch.tout = ''; }
@@ -514,17 +593,21 @@ function finalizeLeaveApproval(state, leaveRecord, actorName) {
     balanceDeducted = deductDays;
   }
 
+  // Fractional payroll split (issues 1/2/8/9/10/19/20): walk the frozen footprint, consuming the
+  // revalidated paid total in order -- a date only ever gets paidFraction*dailyRate credited, never
+  // a flat full day regardless of how small that fraction is. Computed BEFORE
+  // markAttendanceForApprovedLeave (issue 9) so the attendance record's own paidLeaveFraction/
+  // unpaidLeaveFraction metadata always reflects this FINAL, balance-revalidated split -- never the
+  // raw filing-time one.
+  const paidAllocation = allocatePaidFraction(allocation, deductDays);
+
   // Attendance still reflects every date in the (frozen) footprint -- all of it, paid or unpaid --
   // the employee is still on approved leave for the full requested span. Half-day dates get the
   // AM/PM-aware treatment (preserve real work, full payable day when earned); whole-day dates keep
   // the exact prior behavior.
-  const attendanceRecords = markAttendanceForApprovedLeave(state, leaveRecord, employee, actorName, allocation);
+  const attendanceRecords = markAttendanceForApprovedLeave(state, leaveRecord, employee, actorName, paidAllocation);
   const attendanceByDate = new Map(attendanceRecords.map(r => [r.date, r]));
 
-  // Fractional payroll crediting (issues 1/2/8/9/10/19/20): walk the frozen footprint, consuming
-  // the revalidated paid total in order -- a date only ever gets credited dailyRate*itsOwnFraction,
-  // never a flat full day regardless of how small that fraction is.
-  const paidAllocation = allocatePaidFraction(allocation, deductDays);
   const payrollAdjustments = [];
   let duplicateAdjustmentsSkipped = 0;
   let legacyAdjustmentMismatches = 0;
@@ -546,6 +629,35 @@ function finalizeLeaveApproval(state, leaveRecord, actorName) {
         duplicateAdjustmentsSkipped++;
         if (result.legacyMismatch) legacyAdjustmentMismatches++;
       }
+    }
+  }
+
+  // Issues 16/17/18/19: retroactive UNPAID_LEAVE deduction. Unlike the paid-credit loop above,
+  // this is never gated on t.paid -- an inherently unpaid leave TYPE and a paid type reduced to
+  // partly/fully unpaid by balance revalidation both land here identically, since both simply mean
+  // "this date's leave half has an unpaidFraction > 0". Only ever runs for a half-day date whose
+  // OTHER half WAS validly worked (att.otherHalfWorked === true): that date's attendance is a fully
+  // payable present day with no absence deduction of its own, so TimekeepingCore.periodSummary()'s
+  // own unpaidLeaveDays aggregate is what deducts it correctly the next time an OPEN period's
+  // payroll is computed live from the attendance record -- no adjustment needed there at all. A
+  // date whose other half was NOT worked already has its unpaid portion fully covered by the
+  // single full-day absence deduction (see markAttendanceForApprovedLeave's own comment), for any
+  // paid/unpaid split, whether the period is open or closed -- so it's deliberately excluded here
+  // too. The only gap either of those leaves is a date whose other half WAS worked but whose pay
+  // period had ALREADY CLOSED before this unpaid portion was known -- debitClosedPeriodUnpaidLeave
+  // itself gates on exactly that (closed period only; a no-op otherwise) and is idempotent on the
+  // same (sourceType, sourceLeaveId, sourceDate, payItemCode) identity as every other leave-sourced
+  // adjustment, so a retried finalization never creates a second deduction for the same date.
+  for (const entry of paidAllocation) {
+    if (!(entry.unpaidFraction > 0)) continue;
+    const att = attendanceByDate.get(entry.date);
+    if (!(entry.dayType && att && att.otherHalfWorked === true)) continue;
+    const result = debitClosedPeriodUnpaidLeave(state, employee, leaveRecord, entry.date, actorName, entry.unpaidFraction);
+    if (result.created) {
+      payrollAdjustments.push(result.adjustment);
+    } else if (result.duplicate) {
+      duplicateAdjustmentsSkipped++;
+      if (result.legacyMismatch) legacyAdjustmentMismatches++;
     }
   }
 
@@ -572,17 +684,26 @@ function projectLeaveDecisionEmployeeForSession(employee) {
 
 // The safe, minimal projection of an attendance record touched by leave finalization -- everything
 // a leave-only approver (no att_edit, no payroll) is entitled to know: which record, whose, what
-// date, its resulting status, and the half-day metadata if any. Deliberately excludes tin/tout/
-// punches/ot/nd/undertimeMinutes/edits/notes -- an approver's leave_approve permission has nothing
-// to do with visibility into a subordinate's raw time logs or edit history.
+// date, its resulting status, and the half-day metadata (including the paid/unpaid split and
+// absentWorkFraction) if any. paidLeaveFraction/unpaidLeaveFraction/absentWorkFraction are
+// leave-workflow metadata (how much of the leave itself is paid vs. unpaid), not payroll amounts --
+// safe for the same audience as leaveFraction/leaveDayType already were. Deliberately still
+// excludes tin/tout/punches/ot/nd/undertimeMinutes/edits/notes and any actual payroll-adjustment
+// PESO amount -- an approver's leave_approve permission has nothing to do with visibility into a
+// subordinate's raw time logs, edit history, or compensation figures.
 function projectAttendancePatchForSession(record) {
-  return { id: record.id, eid: record.eid, date: record.date, status: record.status, leaveFraction: record.leaveFraction, leaveDayType: record.leaveDayType };
+  return {
+    id: record.id, eid: record.eid, date: record.date, status: record.status,
+    leaveFraction: record.leaveFraction, leaveDayType: record.leaveDayType,
+    paidLeaveFraction: record.paidLeaveFraction, unpaidLeaveFraction: record.unpaidLeaveFraction,
+    absentWorkFraction: record.absentWorkFraction
+  };
 }
 
 module.exports = {
   isValidIsoDate,
   countLeaveWorkingDays, leaveBalanceFor, leaveDateRange, eligibleLeaveDates, calculateLeaveRequest,
   buildLeaveDayAllocation, allocatePaidFraction,
-  employeeDailyRate, payrollAlreadyClosedFor, creditLateApprovalDay, markAttendanceForApprovedLeave,
+  employeeDailyRate, payrollAlreadyClosedFor, creditLateApprovalDay, debitClosedPeriodUnpaidLeave, markAttendanceForApprovedLeave,
   finalizeLeaveApproval, projectLeaveDecisionEmployeeForSession, projectAttendancePatchForSession
 };
