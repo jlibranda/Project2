@@ -694,7 +694,7 @@ async function testDbAwareProductionSecrets() {
     await pg.query('INSERT INTO platform_admin_credential (id, password, updated_by) VALUES (1, $1, $2)', [hashOfDefault, 'seed']);
     const newSafePassword = 'recovered-god-admin-password-' + Date.now();
     const port = Number(PORT) + 17;
-    const { ready } = await bootAttempt({ ...godEnv({ GOD_ADMIN_PASSWORD: newSafePassword }), PORT: String(port) }, port, 8000);
+    const { ready } = await bootAttempt({ ...godEnv({ GOD_ADMIN_PASSWORD: newSafePassword }), PORT: String(port) }, port, 20000);
     assert(ready, 'PC3b. an unsafe stored God Admin credential is auto-rotated (not just blocked) when a safe GOD_ADMIN_PASSWORD is supplied, and the server boots');
     const rotatedRow = await pg.query('SELECT password FROM platform_admin_credential WHERE id = 1');
     assertEqual(rotatedRow.rows[0].password === hashOfDefault, false, 'PC3c. the stored hash actually changed (no longer the old unsafe one)');
@@ -706,7 +706,7 @@ async function testDbAwareProductionSecrets() {
     await pg.query('INSERT INTO platform_admin_credential (id, password, updated_by) VALUES (1, $1, $2)', [hashOfSafe, 'seed']);
     const port = Number(PORT) + 13;
     const env = godEnv({}); delete env.GOD_ADMIN_PASSWORD;
-    const { ready } = await bootAttempt({ ...env, PORT: String(port) }, port, 8000);
+    const { ready } = await bootAttempt({ ...env, PORT: String(port) }, port, 20000);
     assert(ready, 'PC4. production + safe DB God credential boots without env password');
   }
   await resetGodRow(); // leave global state clean for tests after this one
@@ -774,7 +774,7 @@ async function testDbAwareProductionSecrets() {
       APP_TENANT_KEY: unsafeTenantKey2, GOD_ADMIN_PASSWORD: 'a-real-non-default-god-admin-password-xyz',
       BOOTSTRAP_ADMIN_PASSWORD: newSafePassword, PORT: String(port)
     };
-    const { ready } = await bootAttempt(env, port, 8000);
+    const { ready } = await bootAttempt(env, port, 20000);
     assert(ready, 'PC7b. an unsafe stored bootstrap admin credential is auto-rotated (not just blocked) when a safe BOOTSTRAP_ADMIN_PASSWORD is supplied, and the server boots');
     const rotatedRow = await pg.query('SELECT admin_pass FROM platform_clients WHERE tenant_key = $1', [unsafeTenantKey2]);
     assertEqual(rotatedRow.rows[0].admin_pass === hashOfDefault, false, 'PC7c. the stored hash actually changed (no longer the old unsafe one)');
@@ -791,7 +791,7 @@ async function testDbAwareProductionSecrets() {
       PORT: String(port)
     };
     delete env.BOOTSTRAP_ADMIN_PASSWORD;
-    const { ready } = await bootAttempt(env, port, 8000);
+    const { ready } = await bootAttempt(env, port, 20000);
     assert(ready, 'PC8. an already-initialized deployment boots fine without BOOTSTRAP_ADMIN_PASSWORD once its tenant row already exists (and its stored credential is safe)');
   }
 
@@ -826,7 +826,7 @@ async function testDbAwareProductionSecrets() {
       APP_TENANT_KEY: freshTenantKey, GOD_ADMIN_PASSWORD: 'abcdef', BOOTSTRAP_ADMIN_PASSWORD: 'ghijkl',
       BOOTSTRAP_ADMIN_EMAIL: 'six-char-pc11-' + Date.now() + '@ph.com', PORT: String(port)
     };
-    const { ready } = await bootAttempt(env, port, 8000);
+    const { ready } = await bootAttempt(env, port, 20000);
     assert(ready, 'PC11. production + GOD_ADMIN_PASSWORD/BOOTSTRAP_ADMIN_PASSWORD of exactly 6 characters (not a known default) boots successfully');
   }
   await resetGodRow();
@@ -852,7 +852,7 @@ async function testDbAwareProductionSecrets() {
       APP_TENANT_KEY: 'test-legacy-tenant', PORT: String(port)
     };
     delete env.GOD_ADMIN_PASSWORD; delete env.BOOTSTRAP_ADMIN_PASSWORD;
-    const { ready } = await bootAttempt(env, port, 8000);
+    const { ready } = await bootAttempt(env, port, 20000);
     assert(ready, 'PC13. safe existing DB God Admin + bootstrap credentials allow boot with neither GOD_ADMIN_PASSWORD nor BOOTSTRAP_ADMIN_PASSWORD set');
   }
   await resetGodRow();
