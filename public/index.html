@@ -2529,7 +2529,7 @@ async function zkPollDeviceUsers(){
   }catch(e){return;}
   const active=document.activeElement;
   const isEditing=active&&(active.tagName==='INPUT'||active.tagName==='TEXTAREA'||active.tagName==='SELECT');
-  if(!isEditing)render();
+  if(!isEditing)renderPreservingBackgroundScroll();
 }
 function zkSaveConnectionOverride(){
   const address=(document.getElementById('zk-conn-address').value||'').trim();
@@ -2579,7 +2579,7 @@ async function zkPullAttendance(){
     // following poll, or the user's own next action) instead of being lost.
     const active=document.activeElement;
     const isEditing=active&&(active.tagName==='INPUT'||active.tagName==='TEXTAREA'||active.tagName==='SELECT');
-    if(!isEditing)render();
+    if(!isEditing)renderPreservingBackgroundScroll();
   }catch(e){alert('Could not fetch pending punches: '+e.message);}
 }
 function zkBuildPreview(){
@@ -4883,6 +4883,25 @@ function renderPreservingAclScroll(){
   requestAnimationFrame(()=>{
     const newBox=document.getElementById('acl-perms-scroll');
     if(newBox&&top)newBox.scrollTop=top;
+  });
+}
+// Same problem as renderPreservingAclScroll(), but for background timers that can fire while
+// ANY page is open, not just their own -- ZK's 20s realtime poll (zkPullAttendance/
+// zkPollDeviceUsers) keeps running after the admin navigates away from the ZKTeco page (it's
+// only ever stopped by unchecking the realtime toggle there, never on navigation), so its
+// render() was silently snapping whatever page the admin was reading back to the top every 20
+// seconds -- most noticeably the Access & Permissions page's long scrollable checkbox list.
+// Preserves both the whole-page scroll position and, if present, that specific panel's own
+// internal scroll.
+function renderPreservingBackgroundScroll(){
+  const winY=window.scrollY;
+  const box=document.getElementById('acl-perms-scroll');
+  const boxTop=box?box.scrollTop:0;
+  render();
+  requestAnimationFrame(()=>{
+    if(winY)window.scrollTo(0,winY);
+    const newBox=document.getElementById('acl-perms-scroll');
+    if(newBox&&boxTop)newBox.scrollTop=boxTop;
   });
 }
 function renderPreservingModalScroll(){
