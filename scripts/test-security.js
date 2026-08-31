@@ -986,6 +986,10 @@ async function testLeaveIntegrityAndFinalization() {
       // pattern lets any of mgr/attmgr/payrollmgr/admin act on it independently, isolating each
       // sub-scenario's approver.
       { id: 10, email: 'privsubj@lv.test', pass: await passHash('privsubjlvpass1'), role: 'employee', accessLevelId: 2, name: 'Priv Subj LV', eid: 'E-LVPRIV', active: true,
+        // Assigned to shift 1 (Mon-Fri 9-6) so a half-day request for this employee has a
+        // resolvable schedule to split (issue 17/30) -- the privacy-scoping test below needs the
+        // half-day filing itself to succeed, only the RESPONSE's field-scoping is under test here.
+        shiftId: 1,
         salaryPM: 22000, rate: 1000, payGroupId: 1,
         sss: '11-2233445-6', ph: '22-334455667-8', pi: '2233-4455-6677', tin: '223-344-556-000',
         bank: 'Metrobank', bankAccount: '9988776655', leaveBalances: { 1: { balance: 10, adjustments: [] } } },
@@ -998,7 +1002,31 @@ async function testLeaveIntegrityAndFinalization() {
         shiftId: 2, salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } } },
       // Issue 23 (impossible calendar dates) -- no shift, isolated from every other balance/date test.
       { id: 14, email: 'datecheck@lv.test', pass: await passHash('datechecklvpass1'), role: 'employee', accessLevelId: 2, name: 'Date Check LV', eid: 'E-LVDATECHECK', active: true,
-        salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } } }
+        salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } } },
+      // Sixth-pass issue 28: NO shiftId at all -- Saturday/Sunday rest days come entirely from
+      // this employee's own personalSchedule, proving half-day rest-day validation
+      // (TimekeepingCore.isRestDay) is never gated behind employee.shiftId being present.
+      { id: 15, email: 'personalsched@lv.test', pass: await passHash('personalschedlvpass1'), role: 'employee', accessLevelId: 2, name: 'Personal Sched LV', eid: 'E-LVPERSONAL', active: true,
+        personalSchedule: {
+          mon: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          tue: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          wed: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          thu: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          fri: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+          sat: { restDay: true, start: '', end: '', breakStart: '', breakEnd: '' },
+          sun: { restDay: true, start: '', end: '', breakStart: '', breakEnd: '' }
+        },
+        salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } } },
+      // Sixth-pass issue 29: assigned to shift 1 (Mon-Fri workdays, Sat/Sun rest), with two
+      // approved schedule adjustments that each flip one date's normal designation -- 2026-12-14
+      // (a normal Monday workday) becomes a rest day, and 2026-12-19 (a normal Saturday rest day)
+      // becomes a work day.
+      { id: 16, email: 'schedadjhalf@lv.test', pass: await passHash('schedadjhalflvpass1'), role: 'employee', accessLevelId: 2, name: 'Sched Adj Half LV', eid: 'E-LVSCHEDADJHALF', active: true,
+        shiftId: 1, salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } },
+        scheduleAdjustments: [
+          { id: 100, status: 'approved', from: '2026-12-14', to: '2026-12-14', days: [{ date: '2026-12-14', isRestDay: true }] },
+          { id: 101, status: 'approved', from: '2026-12-19', to: '2026-12-19', days: [{ date: '2026-12-19', isRestDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' }] }
+        ] }
     ],
     attendance: [], leaves: [], loans: [], payrolls: [],
     payPeriods: [
@@ -1080,6 +1108,8 @@ async function testLeaveIntegrityAndFinalization() {
     const payrollMgrToken = await login('payrollmgr@lv.test', 'payrollmgrlvpass1');
     const schedSnapToken = await login('schedsnap@lv.test', 'schedsnaplvpass1');
     const dateCheckToken = await login('datecheck@lv.test', 'datechecklvpass1');
+    const personalSchedToken = await login('personalsched@lv.test', 'personalschedlvpass1');
+    const schedAdjHalfToken = await login('schedadjhalf@lv.test', 'schedadjhalflvpass1');
 
     // ── Leave Integrity (server-side calculation/validation) ──────────────────────────────────
     let r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-05', endDate: '2026-09-05', reason: 'test', dayType: 'whole', days: -10, paidDays: -10, unpaidDays: -10 }) }, empToken);
@@ -1331,16 +1361,52 @@ async function testLeaveIntegrityAndFinalization() {
     // ── dayType tests ───────────────────────────────────────────────────────────────────────
     r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-07', endDate: '2026-12-07', reason: 'whole day test', dayType: 'whole' }) }, empToken);
     assertEqual(r.status, 200, '33. dayType: whole works');
-    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-08', reason: 'half am test', dayType: 'half_am' }) }, empToken);
+    // Half-day requires a resolvable AM/PM schedule to split (issue 17/30) -- empToken (emp@lv.test)
+    // deliberately has no shiftId (see its fixture comment above), so the half_am/half_pm "accepted"
+    // tests below use shiftEmpToken (shiftemp@lv.test, shift 1, Mon-Fri 9-6) instead; a dedicated
+    // no-schedule rejection test for empToken follows right after.
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-08', reason: 'half am test', dayType: 'half_am' }) }, shiftEmpToken);
     assertEqual(r.status, 200, '34-setup. dayType: half_am is accepted');
     assertEqual(r.body.record.days, 0.5, '34. dayType: half_am creates a 0.5 day request');
-    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-09', reason: 'half pm test', dayType: 'half_pm' }) }, empToken);
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-09', reason: 'half pm test', dayType: 'half_pm' }) }, shiftEmpToken);
     assertEqual(r.status, 200, '35-setup. dayType: half_pm is accepted');
     assertEqual(r.body.record.days, 0.5, '35. dayType: half_pm creates a 0.5 day request');
     r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-10', endDate: '2026-12-10', reason: 'invalid daytype test', dayType: 'xyz' }) }, empToken);
     assertEqual(r.status, 400, '36. invalid dayType: xyz returns 400');
     const afterInvalidDayType = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
     assert(!afterInvalidDayType.leaves.some(l => l.reason === 'invalid daytype test'), '37. invalid dayType does not create a leave record');
+
+    // ── Issue 17/30: half-day leave requires a resolvable work schedule ───────────────────────
+    // empToken (emp@lv.test) has no shiftId, no personalSchedule, and no schedule adjustment for
+    // this date -- there is nothing to split into AM/PM halves, so this must be rejected outright
+    // rather than silently assuming a split (never gated behind employee.shiftId being *present*
+    // either -- this is the "absent entirely" case, distinct from the rest-day case above).
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-11', reason: 'half am, no schedule at all', dayType: 'half_am' }) }, empToken);
+    assertEqual(r.status, 400, '37b. half-day leave for an employee with no resolvable schedule is rejected with 400');
+    assert(/work schedule/i.test(r.body.error || ''), '37c. the rejection message explains a work schedule is required');
+    const afterNoScheduleHalfDay = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
+    assert(!afterNoScheduleHalfDay.leaves.some(l => l.reason === 'half am, no schedule at all'), '37d. no leave record was created for the rejected no-schedule half-day request');
+
+    // ── Issue 28: half-day rest-day validation must work from a personalSchedule alone, with no
+    // employee.shiftId at all -- proves the rest-day check is never gated behind shiftId being
+    // present. 2026-12-12 is a Saturday, a real configured rest day on personalsched's own
+    // personalSchedule (no assigned shift whatsoever).
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-12', reason: 'half am on personal-schedule rest day', dayType: 'half_am' }) }, personalSchedToken);
+    assertEqual(r.status, 400, '37e. half_am leave on a personalSchedule-only rest day is rejected with 400');
+    assert(/rest day/i.test(r.body.error || ''), '37f. the rejection message explains it is a rest day, not a missing-schedule error');
+    // A normal (non-rest) weekday on the same personalSchedule-only employee is accepted --
+    // proves the earlier rejection was genuinely about the rest day, not about shiftId's absence.
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-14', reason: 'half am on personal-schedule work day', dayType: 'half_am' }) }, personalSchedToken);
+    assertEqual(r.status, 200, '37g. half_am leave on a personalSchedule-only WORK day is accepted');
+
+    // ── Issue 29: an approved schedule adjustment overrides the normal designation in BOTH
+    // directions -- turning a normal workday into a rest day, and a normal rest day into a work
+    // day -- and half-day filing must respect whichever direction currently applies.
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-14', reason: 'half pm, adjustment makes normal Monday a rest day', dayType: 'half_pm' }) }, schedAdjHalfToken);
+    assertEqual(r.status, 400, '37h. half_pm leave is rejected on a normally-working Monday that an approved schedule adjustment turned into a rest day');
+    assert(/rest day/i.test(r.body.error || ''), '37i. the rejection message explains it is a rest day');
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-12-19', reason: 'half am, adjustment makes normal Saturday a work day', dayType: 'half_am' }) }, schedAdjHalfToken);
+    assertEqual(r.status, 200, '37j. half_am leave is accepted on a normally-rest Saturday that an approved schedule adjustment turned into a work day');
 
     // ── Issue 16: half-day leave cannot be filed on a scheduled rest day ──────────────────────
     // 2026-09-12/13 are a Saturday/Sunday, real rest days under shift 1 (halfworked's shift).
@@ -1544,8 +1610,9 @@ async function testLeaveIntegrityAndFinalization() {
     // Half-day leave for the same privacy-scoped subject, filed and auto-assigned an id by the
     // real endpoint (safe now that every manually-seeded 77xx id above already exists, so the
     // server's own next-id counter can never collide with one of them) -- leaveFraction/
-    // leaveDayType ARE present this time (privsubj has no shift, so the "other half" can never be
-    // validated, but the metadata itself is still populated), still never with tin/tout/punches.
+    // leaveDayType ARE present this time (privsubj has shift 1 but no PM punches on file, so the
+    // "other half" is correctly evaluated as not worked, but the metadata itself is still
+    // populated), still never with tin/tout/punches.
     r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-16', reason: 'half day privacy check', dayType: 'half_am' }) }, privSubjToken);
     assertEqual(r.status, 200, "79b-setup. privsubj files a half_am request");
     const privHalfLeaveId = r.body.record.id;

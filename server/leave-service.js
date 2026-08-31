@@ -48,7 +48,12 @@ function eligibleLeaveDates(state, employee, startStr, endStr) {
   let guard = 0;
   while (cursor <= last && guard < 3660) { // ~10 years, matches the spirit of leaveDateRange's own 366-day cap
     const ds = cursor.toISOString().slice(0, 10);
-    const isRest = (employee && employee.shiftId) ? TimekeepingCore.isRestDay(employee, ds, shifts) : false;
+    // TimekeepingCore.isRestDay already correctly handles an employee with no assigned shift at
+    // all (falls through to `false` -- not a designated rest day) as well as a personal-schedule-
+    // or schedule-adjustment-only employee -- gating this behind employee.shiftId used to skip the
+    // whole check for exactly that personal-schedule-only case, wrongly counting their configured
+    // rest days as eligible leave days.
+    const isRest = TimekeepingCore.isRestDay(employee, ds, shifts);
     if (!isRest) dates.push(ds);
     cursor.setUTCDate(cursor.getUTCDate() + 1);
     guard++;
@@ -161,11 +166,21 @@ function calculateLeaveRequest(state, employee, input, acknowledgeShortfall) {
 
   // Half-day leave can only be filed on a date the employee is actually scheduled to work -- reuses
   // the exact same rest-day check eligibleLeaveDates() already relies on (schedule adjustments and
-  // personal schedules included, via TimekeepingCore.isRestDay), no second schedule engine.
+  // personal schedules included, via TimekeepingCore.isRestDay), no second schedule engine. Not
+  // gated behind employee.shiftId: a personal-schedule-only employee (no assigned shift at all)
+  // must still have their configured rest days honored, not silently skipped.
   if (dayType !== 'whole') {
     const shifts = (state.company && state.company.shifts) || [];
-    if (employee && employee.shiftId && TimekeepingCore.isRestDay(employee, startDate, shifts)) {
+    if (TimekeepingCore.isRestDay(employee, startDate, shifts)) {
       return { ok: false, error: 'Half-day leave cannot be filed on a scheduled rest day.' };
+    }
+    // A half-day split requires an actual AM/PM schedule to split -- an employee with no
+    // assigned shift, no personal schedule, and no approved schedule adjustment for this date has
+    // nothing for the system to divide into halves (and no way to determine what the "other half"
+    // is expected to be), so this is rejected outright rather than silently assuming a split.
+    // Whole-day leave has no such requirement and is unaffected.
+    if (!TimekeepingCore.scheduleForDate(employee, startDate, shifts)) {
+      return { ok: false, error: 'Half-day leave requires a work schedule for the selected date.' };
     }
   }
 
@@ -286,48 +301,19 @@ function creditLateApprovalDay(state, employee, leaveRecord, date, payItemCode, 
   return { created: true, duplicate: false, adjustment };
 }
 
-// Derives the AM/PM working segments for a given date's schedule -- start/breakStart is the AM
-// segment, breakEnd/end is the PM segment (falling back to start/end when no break is configured,
-// so a shift with no break still has two well-defined, if adjoining, halves). Returns null when
-// there's no schedule to derive from (rest day, no shift/personal schedule at all).
-function halfDaySegments(schedule) {
-  if (!schedule || !schedule.start || !schedule.end) return null;
-  const amEnd = schedule.breakStart || schedule.end;
-  const pmStart = schedule.breakEnd || schedule.start;
-  return {
-    am: { start: schedule.start, end: amEnd },
-    pm: { start: pmStart, end: schedule.end }
-  };
-}
-function otherHalfSegment(schedule, dayType) {
-  const segs = halfDaySegments(schedule);
-  if (!segs) return null;
+// AM/PM work-segment derivation and other-half validity are now owned entirely by
+// TimekeepingCore.splitScheduleIntoHalves/attendanceAgainstSegment (public/timekeeping-core.js) --
+// the exact same functions periodSummary() uses to compute payroll-facing late/undertime for these
+// dates -- rather than a second, independently-maintained copy here. Two copies of this logic used
+// to exist (this file's own halfDaySegments/otherHalfSegment/hasValidOtherHalfWork, plus
+// periodSummary's blind full-shift recompute) and could disagree about which half-day dates count
+// as validly worked; a single shared implementation makes that impossible.
+function otherHalfSegmentForDayType(schedule, dayType) {
+  const halves = TimekeepingCore.splitScheduleIntoHalves(schedule);
+  if (!halves) return null;
   // half_am leave -> the employee is on leave for the morning, so the OTHER (worked) half is PM;
   // half_pm leave -> the other half is AM.
-  return dayType === 'half_am' ? segs.pm : dayType === 'half_pm' ? segs.am : null;
-}
-function timeStrToMinutes(value) {
-  if (!value) return null;
-  const parts = String(value).split(':');
-  if (parts.length < 2) return null;
-  const h = Number(parts[0]), m = Number(parts[1]);
-  return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null;
-}
-// Whether an existing attendance record's actual Time In/Out reasonably corresponds to the
-// expected OTHER HALF's segment -- both punches present, forming a genuine positive interval, that
-// overlaps the segment window (started at or before the segment ends, ended at or after the
-// segment begins). Reuses the schedule's own configured graceMinutes on the "arrived a bit late"
-// side, the same leniency ordinary tardiness math already applies, rather than inventing a new
-// threshold. Deliberately NOT based on "does any punch exist somewhere on the date" -- a punch
-// during the LEAVE half wouldn't make the OTHER half validly worked.
-function hasValidOtherHalfWork(record, segment, graceMinutes) {
-  if (!record || !record.tin || !record.tout || !segment) return false;
-  const tin = timeStrToMinutes(record.tin), tout = timeStrToMinutes(record.tout);
-  const segStart = timeStrToMinutes(segment.start), segEnd = timeStrToMinutes(segment.end);
-  if (tin == null || tout == null || segStart == null || segEnd == null) return false;
-  if (tout <= tin) return false; // must be a genuine positive worked interval
-  const grace = Number(graceMinutes) || 0;
-  return tin <= segEnd && tout >= (segStart - grace);
+  return dayType === 'half_am' ? halves.pm : dayType === 'half_pm' ? halves.am : null;
 }
 
 // Exact port of markAttendanceForApprovedLeave(l, emp) in public/index.html, operating on
@@ -392,8 +378,13 @@ function markAttendanceForApprovedLeave(state, leaveRecord, employee, actorName,
 
     // Half-day date.
     const schedule = TimekeepingCore.scheduleForDate(employee, date, shifts);
-    const segment = otherHalfSegment(schedule, entry.dayType);
-    const otherHalfWorked = hasValidOtherHalfWork(existing, segment, schedule && schedule.graceMinutes);
+    const segment = otherHalfSegmentForDayType(schedule, entry.dayType);
+    // Uses the exact same "belongs to this segment" test periodSummary() uses for its own
+    // late/undertime overlay (issues 5/6: a punch pair that only brushes the segment boundary by
+    // a minute from a totally different, leave-covered time of day must not qualify) -- so
+    // whether the other half "counts as worked" here and how much late/undertime it produces in
+    // payroll can never drift out of sync with each other.
+    const otherHalfWorked = !!(segment && TimekeepingCore.attendanceAgainstSegment(existing, segment, schedule).valid);
     const halfLabel = HALF_DAY_LABELS[entry.dayType] || 'Half Day';
 
     if (otherHalfWorked) {

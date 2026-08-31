@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict');
 const engine = require('../public/payroll-rule-engine.js');
+const timekeeping = require('../public/timekeeping-core.js');
 
 const employee = {id:10,eid:'EMP-010',name:'Payroll Test',type:'regular',rate:1000,salaryPM:22000,hoursPerDay:8,tin:'123',sss:'123',ph:'123',pi:'123',bank:'Test Bank',bankAccount:'123',city:'Manila'};
 const group = {code:'SEMI',freq:'semi-monthly',taxMethod:'semi-monthly',statutoryTiming:'every-2nd'};
@@ -120,5 +121,75 @@ assert.equal(lateExempt.attendanceDeduction,noExemptions.attendanceDeduction-noE
 const bothExemptEmployee = {...employee,exemptLateDeduction:true,exemptUndertimeDeduction:true};
 const bothExempt = engine.calculate({employee:bothExemptEmployee,group,period,rules,baseBasic:11000,defaultDivisor:22,attendance:exemptAttendance,adjustments:[],loans:[],statutory:()=>({sssEE:0,sssER:0,phEE:0,phER:0,piEE:0,piER:0}),tax:()=>0});
 assert.equal(bothExempt.attendanceDeduction,0,'both toggles on, with no absences, must leave zero attendance deduction');
+
+// ── Sixth-pass issue 19: TRUE end-to-end -- TimekeepingCore.periodSummary() feeding directly
+// into PayrollRuleEngine.calculate() -- for a Half AM paid leave day with perfect PM attendance.
+// Daily rate ₱1,000 (salaryPM 22000 ÷ divisor 22). Shift 09:00-18:00, break 12:00-13:00.
+// This is the exact real-world call path (public/index.html's attendancePeriodSummary() wrapper
+// feeds this same periodSummary() output straight into the payroll engine's `attendance` input)
+// -- proves the fix flows through to an actual payroll run, not just the timekeeping layer alone.
+const halfDayEmployee = {
+  id: 60, eid: 'EMP-060', name: 'Half Day Payroll Test', type: 'regular', shiftId: 40,
+  salaryPM: 22000, dailyDivisor: 22, hoursPerDay: 8, tin: '123', sss: '123', ph: '123', pi: '123',
+  bank: 'Test Bank', bankAccount: '123', city: 'Manila'
+};
+const halfDayShiftDayForPayroll = { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' };
+const halfDayShiftsForPayroll = [{
+  id: 40, graceMinutes: 0,
+  schedule: { mon: halfDayShiftDayForPayroll, tue: halfDayShiftDayForPayroll, wed: halfDayShiftDayForPayroll, thu: halfDayShiftDayForPayroll, fri: halfDayShiftDayForPayroll, sat: halfDayShiftDayForPayroll, sun: halfDayShiftDayForPayroll }
+}];
+const monthlyGroup = { code: 'MNTH', freq: 'monthly', taxMethod: 'monthly', statutoryTiming: 'every-cutoff' };
+const monthlyPeriod = { from: '2026-08-01', to: '2026-08-31', cutoff1: true, cutoff2: true };
+const noStatutory = () => ({ sssEE: 0, sssER: 0, phEE: 0, phER: 0, piEE: 0, piER: 0 });
+
+// 2026-08-03 is a Monday -- a genuine scheduled workday, not a rest day.
+const perfectHalfAmRecord = {
+  id: 700, eid: 60, date: '2026-08-03', tin: '13:00', tout: '18:00', status: 'present',
+  approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_am',
+  lateMinutes: 240, undertimeMinutes: 0, ot: 0, nd: 0, restDayHolidayHours: 0 // stale full-shift-based stored figure, must be ignored
+};
+const perfectHalfAmSummary = timekeeping.periodSummary([perfectHalfAmRecord], halfDayEmployee, '2026-08-03', '2026-08-03', halfDayShiftsForPayroll);
+assert.equal(perfectHalfAmSummary.lateMinutes, 0, 'issue 19 setup: periodSummary reports zero late minutes for perfect Half AM PM attendance');
+assert.equal(perfectHalfAmSummary.undertimeMinutes, 0);
+const perfectHalfAmPayroll = engine.calculate({
+  employee: halfDayEmployee, group: monthlyGroup, period: monthlyPeriod, rules: [], baseBasic: 22000, defaultDivisor: 22,
+  attendance: perfectHalfAmSummary, adjustments: [], loans: [], statutory: noStatutory, tax: () => 0
+});
+assert.equal(perfectHalfAmPayroll.attendanceDeduction, 0, 'issue 19/7: perfect Half AM + valid PM attendance produces ZERO attendance deduction end-to-end (no absence, no late, no undertime)');
+assert.ok(!perfectHalfAmPayroll.lines.some(l => l.code === 'LATE' || l.code === 'UNDERTIME' || l.code === 'ABSENT'), 'issue 19: no LATE/UNDERTIME/ABSENT deduction line exists at all for a fully payable half-day-leave day');
+
+// Half PM mirror (issue 21): AM attendance 09:00-12:00, leave covers PM.
+const perfectHalfPmRecord = {
+  id: 701, eid: 60, date: '2026-08-04', tin: '09:00', tout: '12:00', status: 'present',
+  approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_pm',
+  lateMinutes: 0, undertimeMinutes: 360, ot: 0, nd: 0, restDayHolidayHours: 0 // stale full-shift-based stored figure, must be ignored
+};
+const perfectHalfPmSummary = timekeeping.periodSummary([perfectHalfPmRecord], halfDayEmployee, '2026-08-04', '2026-08-04', halfDayShiftsForPayroll);
+const perfectHalfPmPayroll = engine.calculate({
+  employee: halfDayEmployee, group: monthlyGroup, period: monthlyPeriod, rules: [], baseBasic: 22000, defaultDivisor: 22,
+  attendance: perfectHalfPmSummary, adjustments: [], loans: [], statutory: noStatutory, tax: () => 0
+});
+assert.equal(perfectHalfPmPayroll.attendanceDeduction, 0, 'issue 21: perfect Half PM + valid AM attendance also produces ZERO attendance deduction end-to-end');
+
+// Issue 22 end-to-end: Half AM leave, PM Time In 13:30 (30 min late) -- payroll deducts exactly
+// 30 minutes' worth of pay at the minute rate, never a ~4.5h figure against the 09:00 shift start.
+const lateHalfAmRecord = { ...perfectHalfAmRecord, id: 702, tin: '13:30', lateMinutes: 270 };
+const lateHalfAmSummary = timekeeping.periodSummary([lateHalfAmRecord], halfDayEmployee, '2026-08-03', '2026-08-03', halfDayShiftsForPayroll);
+const lateHalfAmPayroll = engine.calculate({
+  employee: halfDayEmployee, group: monthlyGroup, period: monthlyPeriod, rules: [], baseBasic: 22000, defaultDivisor: 22,
+  attendance: lateHalfAmSummary, adjustments: [], loans: [], statutory: noStatutory, tax: () => 0
+});
+// daily=1000, hourly=125, minute=125/60 -> 30 * (125/60) = 62.5
+assert.equal(lateHalfAmPayroll.attendanceDeduction, 62.5, 'issue 22: payroll deducts exactly 30 minutes of late pay (₱62.50), never a full-morning-absence figure');
+assert.ok(!lateHalfAmPayroll.lines.some(l => l.code === 'ABSENT'), 'issue 22: no absence line, only a Late Deduction line, for a half-day-leave date with a late (but valid) worked half');
+
+// Issue 23 end-to-end: Half AM leave, PM Time Out 17:00 (60 min undertime).
+const undertimeHalfAmRecord = { ...perfectHalfAmRecord, id: 703, tout: '17:00', lateMinutes: 0, undertimeMinutes: 60 };
+const undertimeHalfAmSummary = timekeeping.periodSummary([undertimeHalfAmRecord], halfDayEmployee, '2026-08-03', '2026-08-03', halfDayShiftsForPayroll);
+const undertimeHalfAmPayroll = engine.calculate({
+  employee: halfDayEmployee, group: monthlyGroup, period: monthlyPeriod, rules: [], baseBasic: 22000, defaultDivisor: 22,
+  attendance: undertimeHalfAmSummary, adjustments: [], loans: [], statutory: noStatutory, tax: () => 0
+});
+assert.equal(undertimeHalfAmPayroll.attendanceDeduction, 125, 'issue 23: payroll deducts exactly 60 minutes of undertime pay (₱125.00)');
 
 console.log('Payroll rule engine tests passed.');
