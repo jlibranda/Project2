@@ -7478,11 +7478,30 @@ function creditLateApprovalHours(empId,date,kind,payItemCode,label){
   queueSync('Payroll_Adjustments');
   return true;
 }
-function actLeave(id,ok){
+// Approval itself is backend-authoritative (POST /api/leaves/:id/decision) -- the server decides
+// whether this caller may act on this specific record (chain layer, self-approval block,
+// permission floor) and returns the authoritative updated record, which replaces the local copy
+// before anything else runs. Never assume a local mutation is valid before the server confirms
+// it. The bookkeeping below (leave balance deduction, mirroring the approved days into
+// Attendance, late-approval payroll crediting) still runs locally exactly as before, off the
+// server-confirmed result -- unchanged for an admin-role approver (still a full-state write);
+// for an employee-role account approving via an elevated permission like leave_approve, the core
+// approval decision above is guaranteed to persist, but these secondary writes touch another
+// employee's own records and go through the employee write overlay, which currently protects
+// exactly that -- see server/state-serialization.js's own notes. Flagged as a known follow-up
+// rather than worked around here.
+async function actLeave(id,ok){
   const l=LEAVES.find(x=>x.id===id);
   if(!l)return;
-  const result=applyLeaveDecision(l,ok?'approved':'rejected');
-  if(!result.ok){toast(result.message,'warning');return;}
+  let result;
+  try{
+    const res=await window.apiRequest('/leaves/'+id+'/decision',{method:'POST',body:JSON.stringify({decision:ok?'approved':'rejected'})});
+    Object.assign(l,res.record);if(window.syncStateVersion)window.syncStateVersion(res.version);
+    result={ok:true,message:res.message,decision:ok?'approved':'rejected',final:res.final};
+  }catch(error){
+    toast(error.message||'Unable to record the decision.','warning');
+    return;
+  }
   const decidedEmp=USERS.find(u=>u.id===l.eid);
   if(result.final){
     notifyLeaveDecision(decidedEmp,l.type,l.s,l.e,result.decision);

@@ -114,6 +114,15 @@
   }
 
   window.apiRequest=request;
+  // Attendance/leave decision endpoints (server.js's POST /api/attendance/:id/decision etc.)
+  // mutate app_state through their own transaction, outside the normal snapshot()/PUT /api/state
+  // autosave path -- the version they bump it to is returned in their response, but this
+  // module's own stateVersion tracker has no way to know that happened unless told. Without this,
+  // the very next regular autosave after a successful decision call would submit the now-stale
+  // stateVersion and get rejected with 409, surfacing a confusing "reload before editing further"
+  // toast for something that isn't actually a conflict. Call this with the version such an
+  // endpoint's response returns right after a successful call.
+  window.syncStateVersion=function(v){if(typeof v==='number'&&v>stateVersion)stateVersion=v;};
 
   window.connectDatabaseAfterLogin=async function(email,password){
     var result=await request('/auth/login',{method:'POST',body:JSON.stringify({email:email,password:password})});
