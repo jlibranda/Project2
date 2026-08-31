@@ -3,6 +3,11 @@ const express = require('express');
 const path = require('path');
 const { Pool } = require('pg');
 const TimekeepingCore = require('./public/timekeeping-core.js');
+const { hashPassword, verifyPassword, looksLikeHash } = require('./server/passwords.js');
+const { createAuthorization, hasPermission } = require('./server/authorization.js');
+const { buildScopedStateForEmployee, applyEmployeeStateOverlay } = require('./server/state-serialization.js');
+const { ensureAuditTable, auditLog } = require('./server/audit.js');
+const { validateProductionSecurityConfiguration } = require('./server/secrets.js');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,6 +16,15 @@ const SESSION_SECRET = process.env.API_SESSION_SECRET || 'local-development-only
 const pool = process.env.DATABASE_URL
   ? new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined })
   : null;
+
+{
+  const check = validateProductionSecurityConfiguration();
+  if (!check.ok) {
+    console.error('Refusing to start: insecure production configuration detected.');
+    check.problems.forEach(p => console.error('  - ' + p));
+    process.exit(1);
+  }
+}
 const allowedOrigins = new Set(
   (
     process.env.APP_ALLOWED_ORIGINS ||
@@ -263,8 +277,41 @@ async function initializeDatabase() {
     `INSERT INTO platform_clients (tenant_key, name, industry, plan, status, color, initials, admin_email, admin_pass, modules)
      VALUES ($1, 'SproutRipple PH', 'HR Technology', 'Internal', 'active', '#4f46e5', 'S', $2, $3, '[]')
      ON CONFLICT (tenant_key) DO NOTHING`,
-    [TENANT_KEY, process.env.BOOTSTRAP_ADMIN_EMAIL || 'admin@ph.com', process.env.BOOTSTRAP_ADMIN_PASSWORD || 'admin123']
+    [TENANT_KEY, process.env.BOOTSTRAP_ADMIN_EMAIL || 'admin@ph.com', await hashPassword(process.env.BOOTSTRAP_ADMIN_PASSWORD || 'admin123')]
   );
+  await ensureAuditTable(pool);
+  await grandfatherZkCommandPermission();
+}
+// zkcommand (device reboot/clear-log/resync) used to be bundled into zksetup (view/register/
+// configure) -- see server/authorization.js's canCommandZkDevices comment. Splitting them is the
+// correct security posture (destructive device commands deserve a narrower grant than just
+// seeing device status), but every tenant's access levels are already persisted with whatever
+// zksetup alone used to imply, and nothing about that JSONB re-derives itself from the current
+// ACCESS_PRESETS definitions in index.html on load. Without this, every existing tenant that
+// already granted zksetup to some role would silently lose ZK command capability the moment this
+// shipped -- a real regression, not just a stricter default. Run once at every boot (idempotent:
+// a level that already has zkcommand set, true or false, is left alone) so it only ever grants
+// zkcommand where zksetup was already true and zkcommand was never explicitly configured either
+// way.
+async function grandfatherZkCommandPermission() {
+  if (!pool) return;
+  const rows = await pool.query('SELECT tenant_key, state FROM app_state');
+  for (const row of rows.rows) {
+    const levels = row.state?.accessLevels;
+    if (!Array.isArray(levels)) continue;
+    let changed = false;
+    levels.forEach(level => {
+      if (level?.perms?.zksetup === true && level.perms.zkcommand === undefined) {
+        level.perms.zkcommand = true;
+        changed = true;
+      }
+    });
+    if (changed) {
+      await withTenantScope(row.tenant_key, client => client.query(
+        'UPDATE app_state SET state = $1 WHERE tenant_key = $2', [row.state, row.tenant_key]
+      ));
+    }
+  }
 }
 // The currently effective God Admin password -- the DB-stored override if one has ever been
 // set via Settings, otherwise the GOD_ADMIN_PASSWORD env var (or its hardcoded default). This is
@@ -277,6 +324,24 @@ async function godAdminPassword() {
     if (row.rowCount) return row.rows[0].password;
   }
   return process.env.GOD_ADMIN_PASSWORD || 'godmode2026';
+}
+async function setGodAdminPassword(newPassword, updatedBy) {
+  const hash = await hashPassword(newPassword);
+  await pool.query(
+    `INSERT INTO platform_admin_credential (id, password, updated_by) VALUES (1, $1, $2)
+     ON CONFLICT (id) DO UPDATE SET password = $1, updated_at = NOW(), updated_by = $2`,
+    [hash, updatedBy]
+  );
+}
+// Hash-aware check against the currently effective God Admin password, with lazy migration: if
+// the stored value is still legacy plaintext (an env-var default that's never been changed via
+// Settings, or an old DB row from before this migration) and the supplied password matches it,
+// persist a hash over it before returning so this only ever happens once per account.
+async function verifyGodAdminPassword(password) {
+  const stored = await godAdminPassword();
+  const { ok, needsMigration } = await verifyPassword(password, stored);
+  if (ok && needsMigration && pool) await setGodAdminPassword(password, 'system:migration');
+  return ok;
 }
 // Defense-in-depth below application-layer tenant checks: app_state, app_state_audit, and
 // zk_devices all carry a Postgres Row-Level Security policy (see initializeDatabase) that
@@ -473,6 +538,8 @@ function zkCommitPunches(state, punchesByEmpDate, outOfBufferReasons) {
   return committed;
 }
 
+const authz = createAuthorization({ readState, tenantKeyOf: req => req.session.tenantKey || TENANT_KEY });
+
 app.get('/api/health', async (_req, res) => {
   try {
     if (pool) await pool.query('SELECT 1');
@@ -481,60 +548,106 @@ app.get('/api/health', async (_req, res) => {
     res.status(503).json({ ok: false, database: 'unavailable', error: error.message });
   }
 });
+// Persists a freshly-verified legacy-plaintext password as a bcrypt hash for one specific
+// employee, the moment (and only the moment) it's been proven correct by a successful login --
+// see server/passwords.js's own comment for why this has to be lazy rather than a batch job.
+async function migrateUserPasswordHash(tenantKey, userId, plaintext) {
+  if (!pool) return;
+  const hash = await hashPassword(plaintext);
+  await mutateAppState(state => {
+    const u = (state.users || []).find(x => x.id === userId);
+    if (!u || u.pass === hash) return { changed: false };
+    u.pass = hash;
+    return { changed: true };
+  }, 'system:migration', tenantKey);
+}
 app.post('/api/auth/login', async (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const password = String(req.body.password || '');
+  const loginFail = async reason => {
+    await auditLog(pool, { tenantKey: null, actor: email || 'unknown', action: 'login_failed', target: email, meta: { reason } });
+    return res.status(401).json({ error: 'Invalid email or password.' });
+  };
   try {
-    const email = String(req.body.email || '').trim().toLowerCase();
-    const password = String(req.body.password || '');
-
     // Platform God Admin — platform-wide, not scoped to any one tenant. Still returns the
     // legacy tenant's state exactly as before: the frontend's Platform Admin console reads
     // its client list from state.platformClients until Step 3 moves it onto
     // GET /api/platform/clients instead, so this can't change yet without losing visibility
     // into anything already saved there (archived demo clients, etc.).
-    const platformAdmin = email === 'god@sproutripple.com' && password === (await godAdminPassword());
-    if (platformAdmin) {
+    if (email === 'god@sproutripple.com') {
+      const ok = await verifyGodAdminPassword(password);
+      if (!ok) return loginFail('god-admin-bad-password');
       const record = await readState(TENANT_KEY);
       const token = sign({ sub: email, role: 'platform', tenantKey: TENANT_KEY, exp: Date.now() + 8 * 60 * 60 * 1000 });
-      return res.json({ token, state: record?.state || null, version: Number(record?.version || 0), persistence: Boolean(pool) });
+      await auditLog(pool, { tenantKey: null, actor: email, action: 'login_succeeded', target: email, meta: { role: 'platform' } });
+      return res.json({ token, state: stripPasswordHashes(record?.state || null), version: Number(record?.version || 0), persistence: Boolean(pool) });
     }
 
     // 1. The one original real tenant — checked first, on the exact same fixed tenant_key,
     //    so this deployment's actual working login can never change under this rewrite.
     const legacyRecord = await readState(TENANT_KEY);
     const legacyUsers = legacyRecord?.state?.users || [];
-    let matchedUser = legacyUsers.find(u => String(u.email || '').toLowerCase() === email && u.pass === password && u.active !== false);
+    let matchedUser = null;
+    const legacyCandidate = legacyUsers.find(u => String(u.email || '').toLowerCase() === email && u.active !== false);
+    if (legacyCandidate) {
+      const { ok, needsMigration } = await verifyPassword(password, legacyCandidate.pass);
+      if (ok) {
+        matchedUser = legacyCandidate;
+        if (needsMigration) await migrateUserPasswordHash(TENANT_KEY, legacyCandidate.id, password);
+      }
+    }
     const bootstrapAdmin = !legacyRecord && email === (process.env.BOOTSTRAP_ADMIN_EMAIL || 'admin@ph.com').toLowerCase()
       && password === (process.env.BOOTSTRAP_ADMIN_PASSWORD || 'admin123');
     let tenantKey = (matchedUser || bootstrapAdmin) ? TENANT_KEY : null;
     let record = tenantKey ? legacyRecord : null;
 
     // 2. A real client's own company-admin account (platform_clients.admin_email/admin_pass).
+    //    admin_email is UNIQUE, so this is always at most one row -- password matching has to
+    //    happen in application code now that admin_pass may be a hash, not a SQL '=' filter.
     if (!tenantKey && pool) {
-      const clientRow = await pool.query('SELECT tenant_key FROM platform_clients WHERE admin_email = $1 AND admin_pass = $2', [email, password]);
-      if (clientRow.rowCount) tenantKey = clientRow.rows[0].tenant_key;
+      const clientRow = await pool.query('SELECT id, tenant_key, admin_pass FROM platform_clients WHERE admin_email = $1', [email]);
+      if (clientRow.rowCount) {
+        const c = clientRow.rows[0];
+        const { ok, needsMigration } = await verifyPassword(password, c.admin_pass);
+        if (ok) {
+          tenantKey = c.tenant_key;
+          if (needsMigration) await pool.query('UPDATE platform_clients SET admin_pass = $1 WHERE id = $2', [await hashPassword(password), c.id]);
+        }
+      }
     }
 
     // 3. A regular employee of some other real client — search every tenant's own users array
     //    directly via JSONB instead of keeping a separate index in sync. This is the one place
     //    in the app that legitimately needs to see every tenant's app_state at once (we don't
     //    know which tenant these credentials belong to until this query resolves it) -- see
-    //    withLoginLookupScope's own comment for why that's safe under RLS.
+    //    withLoginLookupScope's own comment for why that's safe under RLS. Password matching can
+    //    no longer be pushed into the SQL WHERE clause (hashes can't be compared with '='), and
+    //    an email isn't guaranteed globally unique across different tenants' own users[], so this
+    //    fetches every candidate and verifies each in turn rather than trusting a single LIMIT 1.
     if (!tenantKey && pool) {
-      const empRow = await withLoginLookupScope(client => client.query(
+      const empRows = await withLoginLookupScope(client => client.query(
         `SELECT tenant_key, state, version, u AS matched_user FROM app_state, jsonb_array_elements(state->'users') AS u
-         WHERE u->>'email' = $1 AND u->>'pass' = $2 AND COALESCE((u->>'active')::boolean, true) = true
-         LIMIT 1`,
-        [email, password]
+         WHERE u->>'email' = $1 AND COALESCE((u->>'active')::boolean, true) = true`,
+        [email]
       ));
-      if (empRow.rowCount) { tenantKey = empRow.rows[0].tenant_key; record = empRow.rows[0]; matchedUser = empRow.rows[0].matched_user; }
+      for (const row of empRows.rows) {
+        const { ok, needsMigration } = await verifyPassword(password, row.matched_user.pass);
+        if (!ok) continue;
+        tenantKey = row.tenant_key; record = row; matchedUser = row.matched_user;
+        if (needsMigration) await migrateUserPasswordHash(tenantKey, matchedUser.id, password);
+        break;
+      }
     }
 
-    if (!tenantKey) return res.status(401).json({ error: 'Invalid email or password.' });
+    if (!tenantKey) return loginFail('no-match');
     if (!record) record = await readState(tenantKey);
 
     const role = (matchedUser && matchedUser.role) || 'admin';
     const token = sign({ sub: email, role, tenantKey, exp: Date.now() + 8 * 60 * 60 * 1000 });
-    res.json({ token, state: record?.state || null, version: Number(record?.version || 0), persistence: Boolean(pool) });
+    await auditLog(pool, { tenantKey, actor: email, action: 'login_succeeded', target: email, meta: { role } });
+    const fullState = record?.state || null;
+    const state = (role === 'employee' && fullState) ? buildScopedStateForEmployee(fullState, { sub: email, role, tenantKey }) : stripPasswordHashes(fullState);
+    res.json({ token, state, version: Number(record?.version || 0), persistence: Boolean(pool) });
   } catch (error) {
     res.status(500).json({ error: 'Unable to sign in to the data service.', detail: error.message });
   }
@@ -717,16 +830,18 @@ app.post('/api/auth/forgot-password/reset', async (req, res) => {
   if (!match) return res.status(401).json({ error: 'Incorrect code.' });
   passwordResetOtps.delete(email);
   try {
+    const newHash = await hashPassword(newPassword);
     if (entry.accountType === 'client-admin') {
-      await pool.query('UPDATE platform_clients SET admin_pass = $1 WHERE id = $2', [newPassword, entry.clientId]);
+      await pool.query('UPDATE platform_clients SET admin_pass = $1 WHERE id = $2', [newHash, entry.clientId]);
     } else {
       await mutateAppState(state => {
         const u = (state.users || []).find(x => x.id === entry.userId);
         if (!u) return { changed: false };
-        u.pass = newPassword;
+        u.pass = newHash;
         return { changed: true };
       }, email, entry.tenantKey);
     }
+    await auditLog(pool, { tenantKey: entry.tenantKey, actor: email, action: 'password_reset', target: email, meta: { via: 'forgot-password' } });
     composeEmail(entry.tenantKey, 'password-changed', { employeeName: entry.name || 'there', changedBy: 'you (via Forgot Password)' })
       .then(({ subject, html }) => sendAppEmail(email, subject, html)).catch(() => {});
     res.json({ ok: true });
@@ -751,21 +866,26 @@ app.post('/api/auth/change-password', requireAuth, async (req, res) => {
     const users = record?.state?.users || [];
     const match = users.find(u => String(u.email || '').toLowerCase() === String(sub || '').toLowerCase());
     if (match) {
-      if (match.pass !== currentPassword) return res.status(401).json({ error: 'Current password is incorrect.' });
+      const { ok } = await verifyPassword(currentPassword, match.pass);
+      if (!ok) return res.status(401).json({ error: 'Current password is incorrect.' });
+      const newHash = await hashPassword(newPassword);
       await mutateAppState(state => {
         const u = (state.users || []).find(x => x.id === match.id);
         if (!u) return { changed: false };
-        u.pass = newPassword;
+        u.pass = newHash;
         return { changed: true };
       }, sub, tenantKey);
+      await auditLog(pool, { tenantKey, actor: sub, action: 'password_change', target: sub, meta: { via: 'self-service' } });
       composeEmail(tenantKey, 'password-changed', { employeeName: match.firstName || match.name || 'there', changedBy: 'you' })
         .then(({ subject, html }) => sendAppEmail(sub, subject, html)).catch(() => {});
       return res.json({ ok: true });
     }
     const clientRow = await pool.query('SELECT id, admin_pass FROM platform_clients WHERE tenant_key = $1', [tenantKey]);
     if (!clientRow.rowCount) return res.status(404).json({ error: 'Account not found.' });
-    if (clientRow.rows[0].admin_pass !== currentPassword) return res.status(401).json({ error: 'Current password is incorrect.' });
-    await pool.query('UPDATE platform_clients SET admin_pass = $1 WHERE id = $2', [newPassword, clientRow.rows[0].id]);
+    const { ok } = await verifyPassword(currentPassword, clientRow.rows[0].admin_pass);
+    if (!ok) return res.status(401).json({ error: 'Current password is incorrect.' });
+    await pool.query('UPDATE platform_clients SET admin_pass = $1 WHERE id = $2', [await hashPassword(newPassword), clientRow.rows[0].id]);
+    await auditLog(pool, { tenantKey, actor: sub, action: 'password_change', target: sub, meta: { via: 'self-service-admin' } });
     composeEmail(tenantKey, 'password-changed', { employeeName: 'there', changedBy: 'you' })
       .then(({ subject, html }) => sendAppEmail(sub, subject, html)).catch(() => {});
     res.json({ ok: true });
@@ -884,32 +1004,92 @@ app.post('/api/bundy/punch', requireBundyAuth, async (req, res) => {
   }
 });
 
+// Password hashes must never reach any client, admin included -- there is no legitimate reason
+// for the frontend to ever hold one, and the whole point of "God Admin can't view a password
+// either" (see the Access & Permissions UI change) only holds if the value genuinely never
+// leaves this process. Shallow-clones state.users with `pass` deleted from every entry; never
+// mutates the object passed in, since the same in-memory record can be reused elsewhere in a
+// request (e.g. reconcileUserPasswords below reads the pre-strip version back out of Postgres).
+function stripPasswordHashes(state) {
+  if (!state || !Array.isArray(state.users)) return state;
+  return { ...state, users: state.users.map(u => { if (!u || !('pass' in u)) return u; const { pass, ...rest } = u; return rest; }) };
+}
+// Reconciles state.users[].pass against what's already persisted, mutating in place, so an
+// admin-role save is safe to accept even though the frontend never receives a real password or
+// hash to send back (see stripPasswordHashes above -- there is nothing else for it to echo).
+//   - No `pass` field on the incoming record (the normal case for every existing employee, since
+//     the client was never given one to hold onto): keep whatever's already persisted for that
+//     user id, if anything.
+//   - A non-empty string that isn't already a hash: a real new plaintext value was set by some
+//     client-side flow that doesn't have its own server endpoint yet (Add Employee, Bulk Upload,
+//     the Access & Permissions "Reset Password" action) -- hash it before it's ever written.
+//   - Already a bcrypt hash: left as-is (shouldn't normally happen from a client that's never
+//     given one, but safe either way).
+async function reconcileUserPasswords(state, previousUsers) {
+  const users = Array.isArray(state?.users) ? state.users : [];
+  const byId = new Map((previousUsers || []).map(u => [u.id, u]));
+  for (const u of users) {
+    if (!u) continue;
+    if (typeof u.pass !== 'string' || u.pass === '') {
+      const prev = byId.get(u.id);
+      if (prev && prev.pass) u.pass = prev.pass; else delete u.pass;
+    } else if (!looksLikeHash(u.pass)) {
+      u.pass = await hashPassword(u.pass);
+    }
+  }
+}
 app.get('/api/state', requireAuth, async (req, res) => {
   try {
-    const record = await readState(req.session.tenantKey || TENANT_KEY);
-    res.json({ state: record?.state || null, version: Number(record?.version || 0), updatedAt: record?.updated_at || null });
+    const tenantKey = req.session.tenantKey || TENANT_KEY;
+    const record = await readState(tenantKey);
+    const fullState = record?.state || null;
+    const state = (req.session.role === 'employee' && fullState)
+      ? buildScopedStateForEmployee(fullState, req.session)
+      : stripPasswordHashes(fullState);
+    res.json({ state, version: Number(record?.version || 0), updatedAt: record?.updated_at || null });
   } catch (error) {
     res.status(500).json({ error: 'Unable to load application data.', detail: error.message });
   }
 });
+// Regular employees can never replace the full tenant state (see server/state-serialization.js's
+// own comment for why) -- an admin/platform session's write is accepted as-is, exactly like
+// before, except every plaintext password it might carry gets hashed first. An employee session's
+// submitted state is never trusted directly: applyEmployeeStateOverlay reconstructs a safe state
+// from what's currently on record, overlaying only that employee's own records in a small set of
+// self-service arrays, and everything else -- including every other employee's data, company
+// config, and access levels -- is carried over untouched no matter what the payload contains.
 app.put('/api/state', requireAuth, async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
-  const state = req.body.state;
+  const submittedState = req.body.state;
   const expectedVersion = Number(req.body.version || 0);
   const tenantKey = req.session.tenantKey || TENANT_KEY;
-  if (!state || typeof state !== 'object') return res.status(400).json({ error: 'A valid application state is required.' });
+  if (!submittedState || typeof submittedState !== 'object') return res.status(400).json({ error: 'A valid application state is required.' });
   try {
+    let stateToPersist = submittedState;
+    const current = await readState(tenantKey);
+    if (req.session.role === 'employee') {
+      const overlaid = applyEmployeeStateOverlay(current?.state || {}, submittedState, req.session);
+      if (!overlaid) return res.status(403).json({ error: 'Your account could not be matched to an employee record.' });
+      stateToPersist = overlaid;
+    } else {
+      await reconcileUserPasswords(stateToPersist, current?.state?.users);
+    }
     const { result, version } = await withTenantScope(tenantKey, async client => {
       const r = expectedVersion === 0
-        ? await client.query('INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3) ON CONFLICT DO NOTHING RETURNING version, updated_at', [tenantKey, state, req.session.sub])
-        : await client.query('UPDATE app_state SET state = $1, version = version + 1, updated_at = NOW(), updated_by = $2 WHERE tenant_key = $3 AND version = $4 RETURNING version, updated_at', [state, req.session.sub, tenantKey, expectedVersion]);
+        ? await client.query('INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3) ON CONFLICT DO NOTHING RETURNING version, updated_at', [tenantKey, stateToPersist, req.session.sub])
+        : await client.query('UPDATE app_state SET state = $1, version = version + 1, updated_at = NOW(), updated_by = $2 WHERE tenant_key = $3 AND version = $4 RETURNING version, updated_at', [stateToPersist, req.session.sub, tenantKey, expectedVersion]);
       if (!r.rowCount) return { result: r, version: null };
       const v = Number(r.rows[0].version);
       await client.query('INSERT INTO app_state_audit (tenant_key, version, actor) VALUES ($1, $2, $3)', [tenantKey, v, req.session.sub]);
       return { result: r, version: v };
     });
     if (!result.rowCount) return res.status(409).json({ error: 'Newer changes are available. Reload before saving again.' });
-    res.json({ ok: true, version, updatedAt: result.rows[0].updated_at });
+    // The client's own in-memory state and this save's actual result diverge for an employee
+    // session (their local snapshot may still hold stale copies of fields the overlay discarded),
+    // so hand back what was ACTUALLY persisted, scoped exactly like GET /api/state, rather than
+    // just an ok/version ack -- the frontend re-hydrates from this on every successful save.
+    const responseState = req.session.role === 'employee' ? buildScopedStateForEmployee(stateToPersist, req.session) : undefined;
+    res.json({ ok: true, version, updatedAt: result.rows[0].updated_at, state: responseState });
   } catch (error) {
     res.status(500).json({ error: 'Unable to save application data.', detail: error.message });
   }
@@ -1306,9 +1486,16 @@ app.post('/api/notify', requireAuth, async (req, res) => {
       // Admin-reset-for-employee path (applyPasswordReset() in index.html) -- the only password
       // mutation that doesn't already go through server.js directly, so it's the only one that
       // needs this as a client-triggered /api/notify call rather than an inline send at the
-      // point of change (see change-password and forgot-password/reset for those).
+      // point of change (see change-password and forgot-password/reset for those). Without a
+      // permission check here, any authenticated employee could name any colleague's email and
+      // have this endpoint mail them a "your password was changed" notice they never asked for --
+      // low-damage on its own, but exactly the kind of thing this endpoint must never allow one
+      // employee to do to another. Only someone who could actually reset a password (the same
+      // permission the Reset button itself is gated on) may trigger this.
+      if (!(await callerHasPerm(tenantKey, req.session, 'emp_reset_password'))) return res.status(403).json({ error: 'Employee password reset access required.' });
       const employeeEmail = String(payload.employeeEmail || '').trim();
       if (!employeeEmail || !(await emailBelongsToTenant(tenantKey, employeeEmail))) return res.status(400).json({ error: 'Invalid recipient.' });
+      await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'password_reset', target: employeeEmail, meta: { via: 'admin-reset' } });
       const { subject, html } = await composeEmail(tenantKey, 'password-changed', {
         employeeName: payload.employeeName || 'there', changedBy: payload.changedBy || 'an administrator'
       });
@@ -1422,7 +1609,7 @@ app.post('/api/platform/clients', requirePlatformAdmin, async (req, res) => {
     const result = await pool.query(
       `INSERT INTO platform_clients (tenant_key, name, industry, plan, status, color, initials, contact, contact_email, admin_email, admin_pass, modules)
        VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8, $9, $10, $11) RETURNING *`,
-      [tenantKey, name, industry, plan, color, initials, contact, contactEmail, adminEmail, adminPass, JSON.stringify(modules)]
+      [tenantKey, name, industry, plan, color, initials, contact, contactEmail, adminEmail, await hashPassword(adminPass), JSON.stringify(modules)]
     );
     const client = result.rows[0];
     // Seed this tenant's own app_state row immediately — a client should never exist in the
@@ -1431,6 +1618,7 @@ app.post('/api/platform/clients', requirePlatformAdmin, async (req, res) => {
       'INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3) ON CONFLICT (tenant_key) DO NOTHING',
       [tenantKey, defaultTenantState(client), req.session.sub]
     ));
+    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'platform_client_created', target: tenantKey, meta: { name } });
     res.status(201).json({ client: toPlatformClientJson(client) });
   } catch (error) {
     if (error.code === '23505') return res.status(409).json({ error: 'A client with that admin email or tenant key already exists.' });
@@ -1456,7 +1644,8 @@ app.post('/api/platform/clients/:id/session', requirePlatformAdmin, async (req, 
       impersonatedBy: req.session.sub, exp: Date.now() + 8 * 60 * 60 * 1000
     });
     await pool.query('UPDATE platform_clients SET last_active_at = NOW() WHERE id = $1', [id]);
-    res.json({ token, state: record?.state || null, version: Number(record?.version || 0), persistence: Boolean(pool) });
+    await auditLog(pool, { tenantKey: client.tenant_key, actor: req.session.sub, action: 'impersonation_started', target: client.admin_email, meta: {} });
+    res.json({ token, state: stripPasswordHashes(record?.state || null), version: Number(record?.version || 0), persistence: Boolean(pool) });
   } catch (error) {
     res.status(500).json({ error: 'Unable to open this client.', detail: error.message });
   }
@@ -1473,13 +1662,10 @@ app.post('/api/platform/god-password', requirePlatformAdmin, async (req, res) =>
   const newPassword = String(req.body.newPassword || '');
   if (newPassword.length < 6) return res.status(400).json({ error: 'New password must be at least 6 characters.' });
   try {
-    const actual = await godAdminPassword();
-    if (currentPassword !== actual) return res.status(403).json({ error: 'Current password is incorrect.' });
-    await pool.query(
-      `INSERT INTO platform_admin_credential (id, password, updated_by) VALUES (1, $1, $2)
-       ON CONFLICT (id) DO UPDATE SET password = $1, updated_at = NOW(), updated_by = $2`,
-      [newPassword, req.session.sub]
-    );
+    const ok = await verifyGodAdminPassword(currentPassword);
+    if (!ok) return res.status(403).json({ error: 'Current password is incorrect.' });
+    await setGodAdminPassword(newPassword, req.session.sub);
+    await auditLog(pool, { tenantKey: null, actor: req.session.sub, action: 'password_change', target: 'god-admin', meta: {} });
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: 'Unable to update the password.', detail: error.message });
@@ -1725,7 +1911,7 @@ app.post('/iclock/devicecmd', express.text({ type: '*/*', limit: '256kb' }), asy
    userMapping is admin-edited and lives in app_state (round-trips with the normal save flow);
    everything else here is device-owned and lives in zk_devices so it's never at risk of being
    overwritten by a stale browser save. */
-app.get('/api/zk/status', requireAuth, async (req, res) => {
+app.get('/api/zk/status', requireAuth, authz.requirePermission('zksetup'), async (req, res) => {
   const tenantKey = req.session.tenantKey || TENANT_KEY;
   const [record, devices, registry] = await Promise.all([
     readState(tenantKey), zkAllDevices(tenantKey),
@@ -1748,7 +1934,7 @@ app.get('/api/zk/status', requireAuth, async (req, res) => {
 // silently reassigned -- that would mean either a typo or a device that's genuinely changed
 // hands, and either way it shouldn't happen without deliberate confirmation. Re-registering to
 // the SAME tenant (e.g. after a device replacement using the old serial) is a harmless no-op.
-app.post('/api/zk/register-device', requireAuth, async (req, res) => {
+app.post('/api/zk/register-device', requireAuth, authz.requirePermission('zksetup'), async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
   const serial = String(req.body.serial || '').trim();
   if (!serial) return res.status(400).json({ error: 'A device serial number is required.' });
@@ -1763,6 +1949,7 @@ app.post('/api/zk/register-device', requireAuth, async (req, res) => {
        ON CONFLICT (serial) DO UPDATE SET tenant_key = $2, registered_by = $3, registered_at = NOW()`,
       [serial, tenantKey, req.session.sub]
     );
+    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'zk_device_registered', target: serial, meta: {} });
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: 'Unable to register device.', detail: error.message });
@@ -1771,13 +1958,14 @@ app.post('/api/zk/register-device', requireAuth, async (req, res) => {
 // Releases a serial this tenant registered, e.g. after mis-typing it or decommissioning the
 // device. Scoped to the caller's own tenant_key so one tenant can never release -- and thereby
 // free up for reclaiming -- a serial that actually belongs to someone else.
-app.post('/api/zk/unregister-device', requireAuth, async (req, res) => {
+app.post('/api/zk/unregister-device', requireAuth, authz.requirePermission('zksetup'), async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
   const serial = String(req.body.serial || '').trim();
   const tenantKey = req.session.tenantKey || TENANT_KEY;
   try {
     const result = await pool.query('DELETE FROM zk_device_registry WHERE serial = $1 AND tenant_key = $2', [serial, tenantKey]);
     if (!result.rowCount) return res.status(404).json({ error: 'That serial is not registered to your company.' });
+    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'zk_device_unregistered', target: serial, meta: {} });
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ error: 'Unable to unregister device.', detail: error.message });
@@ -1792,12 +1980,18 @@ const ZK_COMMANDS = {
   resyncusers: { content: 'DATA QUERY USERINFO', label: 'Resync user list' },
   clearlog: { content: 'CLEAR LOG', label: 'Clear attendance log' }
 };
-app.post('/api/zk/command', requireAuth, async (req, res) => {
+// Command execution is deliberately gated on a narrower permission (zkcommand) than
+// view/register/configure (zksetup) -- reboot and clear-log are destructive on the physical
+// device, a meaningfully bigger blast radius than seeing status or claiming a serial for the
+// tenant. zkcommand defaults to off for everyone except Super Admin; a tenant that wants a
+// broader group of staff to be able to send device commands grants it explicitly.
+app.post('/api/zk/command', requireAuth, authz.requirePermission('zkcommand'), async (req, res) => {
   const serial = String(req.body.serial || '');
   const def = ZK_COMMANDS[String(req.body.action || '')];
   if (!serial || !def) return res.status(400).json({ error: 'A valid device and command are required.' });
   try {
     let queuedId;
+    const tenantKey = req.session.tenantKey || TENANT_KEY;
     await zkMutateDevice(serial, current => {
       const commands = current.commands || [];
       queuedId = commands.reduce((max, c) => Math.max(max, Number(c.id) || 0), 0) + 1;
@@ -1808,17 +2002,18 @@ app.post('/api/zk/command', requireAuth, async (req, res) => {
       });
       current.commands = commands;
       return current;
-    }, req.session.tenantKey || TENANT_KEY);
+    }, tenantKey);
+    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'zk_command', target: serial, meta: { command: req.body.action } });
     res.json({ ok: true, id: queuedId });
   } catch (error) {
     res.status(500).json({ error: 'Unable to queue command.', detail: error.message });
   }
 });
-app.get('/api/zk/pending', requireAuth, async (req, res) => {
+app.get('/api/zk/pending', requireAuth, authz.requirePermission('zksetup'), async (req, res) => {
   const devices = await zkAllDevices(req.session.tenantKey || TENANT_KEY);
   res.json({ records: devices.flatMap(d => (d.pending || []).map(r => ({ ...r, serial: d.serial }))) });
 });
-app.post('/api/zk/ack', requireAuth, async (req, res) => {
+app.post('/api/zk/ack', requireAuth, authz.requirePermission('zksetup'), async (req, res) => {
   const consumedBySerial = new Map();
   (req.body.consumed || []).forEach(r => {
     const serial = r.serial || 'unknown';

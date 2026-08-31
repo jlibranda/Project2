@@ -695,6 +695,7 @@ const PERM_DEFS=[
   {grp:'Time & Attendance',   k:'webbundysettings',   l:'Web Bundy Settings',               desc:'Configure Web Bundy public access and selfie requirement',                            sub:false},
   {grp:'Time & Attendance',   k:'approvalsetup',      l:'Approval Layers',                  desc:'Configure multi-level approval workflows per employee',                                sub:false},
   {grp:'Time & Attendance',   k:'zksetup',            l:'ZKTeco Biometrics',                desc:'Connect and configure biometric attendance devices',                                   sub:false},
+  {grp:'Time & Attendance',   k:'zkcommand',          l:'ZKTeco Device Commands',            desc:'Send commands to a biometric device — restart, resync, or clear its attendance log',   sub:true},
 
   /* ── PAYROLL ──────────────────────────────────────────────── */
   {grp:'Payroll',             k:'payroll',            l:'View & Process Payroll',           desc:'Access the payroll module and process computation',                                    sub:false},
@@ -787,7 +788,7 @@ const ACCESS_PRESETS={
   'IT Admin':{
     dashboard:true,myprofile:true,self_view_personal:true,self_view_employment:true,self_view_govt:true,self_view_banking:true,self_view_compensation:true,self_view_allowances:true,self_view_emergency:true,self_view_movements:true,self_view_attendance:true,
     webbundy:true,leave:true,leave_apply:true,myslips:true,
-    accesssetup:true,access_manage:true,gsheets:true,zksetup:true,assistant:true,resolution:true,teamview:true,
+    accesssetup:true,access_manage:true,gsheets:true,zksetup:true,zkcommand:true,assistant:true,resolution:true,teamview:true,
   },
   'Auditor':{
     dashboard:true,
@@ -806,7 +807,7 @@ let ACCESS_LEVELS=[
   {id:1,name:'Super Admin',color:'purple',desc:'Full access to all modules and settings',
    perms:Object.fromEntries(PERM_DEFS.map(p=>[p.k,true]))},
   {id:2,name:'HR Admin',color:'blue',desc:'HR and people management, no payroll computation',
-   perms:{...ACCESS_PRESETS['HR Staff'],accesssetup:true,access_manage:true,fieldconfig:true,approvalsetup:true,zksetup:true,gsheets:true,company:false}},
+   perms:{...ACCESS_PRESETS['HR Staff'],accesssetup:true,access_manage:true,fieldconfig:true,approvalsetup:true,zksetup:true,zkcommand:true,gsheets:true,company:false}},
   {id:3,name:'Payroll Admin',color:'green',desc:'Full payroll and government remittances access',
    perms:{...ACCESS_PRESETS['Payroll Specialist']}},
   {id:4,name:'Manager',color:'amber',desc:'Team oversight, leave approval, and performance',
@@ -3124,8 +3125,12 @@ async function doLogin(){
     return;
   }
 
-  /* ── Regular USERS login (demo company id=1) ── */
-  const u=USERS.find(u=>u.email===e&&u.pass===p);
+  /* ── Regular USERS login (demo company id=1) ──
+     Matches by email alone -- the backend already verified the password in
+     connectDatabaseAfterLogin() above (a wrong one throws there and returns before this line is
+     ever reached), and password hashes are never sent to the browser at all anymore, so there is
+     no local u.pass to compare p against regardless. */
+  const u=USERS.find(u=>u.email===e);
   if(u&&u.active===false){
     errEl.textContent='Your account has been disabled. Please contact HR.';
     errEl.style.display='block';return;
@@ -14483,7 +14488,7 @@ function renderCredRows(filter){
       </div></td>
       <td style="color:var(--txt3)">${esc(u.email||'—')}</td>
       <td><span class="badge" style="background:${c}22;color:${c};font-size:10px">${al.name}</span></td>
-      <td>${isPlatformAdmin?`<code style="font-size:11px;background:var(--surface2);padding:2px 7px;border-radius:4px;border:1px solid var(--border)">${esc(u.pass||'—')}</code>`:`<span style="font-size:11px;color:var(--txt3)" title="Only visible to God Admin">•••••••• 🔒</span>`}</td>
+      <td><span style="font-size:11px;color:var(--txt3)" title="Passwords are stored as a one-way hash and can never be viewed by anyone, including God Admin. Use Reset to issue a new one.">•••••••• 🔒</span></td>
       <td><div style="display:flex;gap:4px;flex-wrap:wrap">
         ${(isPlatformAdmin||canAccess('access_manage'))?`<button class="btn btn-sm" style="font-size:11px" onclick="openAccessEdit(${u.id})">🛡 Level</button>`:''}
         ${(isPlatformAdmin||canAccess('emp_reset_password'))?`<button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'resetPassword',emp:USERS.find(x=>x.id===${u.id}),newPass:''};render()">🔑 Reset</button>`:''}
