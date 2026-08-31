@@ -88,7 +88,11 @@ async function seed(pg) {
       // role==='employee' but elevated: can approve leave/attendance for people below them in the
       // immediateHeadEid hierarchy -- exactly the "manager who isn't role:admin" case the second
       // security pass is about.
-      { id: 6, name: 'Manager', perms: { leave_approve: true, att_edit: true, self_view_attendance: true, leave: true } }
+      { id: 6, name: 'Manager', perms: { leave_approve: true, att_edit: true, self_view_attendance: true, leave: true, reports: true } },
+      // A second, unrelated 'reports'-permission holder with no other elevated grant and no
+      // relation to carol/dave -- isolates the "shared with every reports-permission holder, but
+      // edit/delete stays creator-or-admin-only" behavior from the approval-chain fixture above.
+      { id: 8, name: 'Report Viewer', perms: { reports: true } }
     ],
     // defaultLayers:2 so dave's chain below resolves two layers deep (carol, then admin) --
     // doesn't affect alice/bob/carol themselves since none of them have an immediateHeadEid
@@ -103,7 +107,8 @@ async function seed(pg) {
       // Approval-chain fixture: dave reports to carol, who reports to admin. Both carol and dave
       // are role:'employee' -- carol's authority comes entirely from accessLevelId 6 (Manager).
       { id: 6, email: 'carol@a.test', pass: await passHash('carolpass1'), role: 'employee', accessLevelId: 6, name: 'Carol Manager', eid: 'E-CAROL', immediateHeadEid: 'E-ADMIN', active: true },
-      { id: 7, email: 'dave@a.test', pass: await passHash('davepass1'), role: 'employee', accessLevelId: 2, name: 'Dave Report', eid: 'E-DAVE', immediateHeadEid: 'E-CAROL', active: true }
+      { id: 7, email: 'dave@a.test', pass: await passHash('davepass1'), role: 'employee', accessLevelId: 2, name: 'Dave Report', eid: 'E-DAVE', immediateHeadEid: 'E-CAROL', active: true },
+      { id: 8, email: 'erin@a.test', pass: await passHash('erinpass1'), role: 'employee', accessLevelId: 8, name: 'Erin Viewer', eid: 'E-ERIN', active: true }
     ],
     attendance: [
       { id: 1, eid: 2, date: '2026-08-01', status: 'present' },
@@ -479,6 +484,73 @@ async function main() {
     // admin action on it (idempotent-ish), confirms the endpoint itself works for a non-self record.
     assertEqual(r.status, 200, '19. an authorized admin can force-approve someone else\'s record');
     assert(/\(forced\)/.test(r.body.record.reviewedBy), '19b. reviewedBy is suffixed to show it was forced');
+
+    // ── Saved Reports: persisted, attributed, permission-gated, shared ──────────────────────
+    let erinToken;
+    r = await req('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'erin@a.test', password: 'erinpass1' }) });
+    erinToken = r.body.token;
+
+    // Dave (Basic Employee, no 'reports' permission) can't even create one.
+    r = await req('/api/reports', { method: 'POST', headers: { Authorization: 'Bearer ' + daveToken }, body: JSON.stringify({ name: 'Dave attempt', type: 'employees', columns: ['name'], filters: {} }) });
+    assertEqual(r.status, 403, 'R1. an account without the reports permission cannot create a saved report');
+
+    // Carol (Manager, holds 'reports') creates one -- server records who and when.
+    r = await req('/api/reports', { method: 'POST', headers: { Authorization: 'Bearer ' + carolAToken }, body: JSON.stringify({ name: 'Headcount by Dept', type: 'employees', columns: ['name', 'dept'], filters: { dept: '' } }) });
+    assertEqual(r.status, 200, 'R2. a user with the reports permission can save a report');
+    const reportId = r.body.report.id;
+    assertEqual(r.body.report.createdBy, 'Carol Manager', 'R3. the report records who saved it (name)');
+    assertEqual(r.body.report.createdByEid, 'E-CAROL', 'R3b. the report records who saved it (eid)');
+    assert(!!r.body.report.createdAt, 'R3c. the report records when it was saved');
+
+    // Dave still can't see it at all -- GET /api/state omits savedReports entirely without the permission.
+    r = await req('/api/state', { headers: { Authorization: 'Bearer ' + daveToken } });
+    assertEqual((r.body.state.savedReports || []).length, 0, 'R4. an account without the reports permission sees no saved reports, even ones that exist');
+
+    // Admin (full access) and Erin (a totally unrelated 'reports' holder) both see it -- proves
+    // this is shared with every authorized user, not private to its creator.
+    r = await req('/api/state', { headers: { Authorization: 'Bearer ' + adminToken } });
+    assert((r.body.state.savedReports || []).some(x => x.id === reportId), 'R5. an admin sees a report saved by someone else');
+    r = await req('/api/state', { headers: { Authorization: 'Bearer ' + erinToken } });
+    assert((r.body.state.savedReports || []).some(x => x.id === reportId), 'R6. a different, unrelated reports-permission holder also sees it (shared, not private)');
+
+    // Erin holds 'reports' but didn't create this one and isn't admin -- can view/load it (R6
+    // above) but cannot edit or delete it.
+    r = await req('/api/reports/' + reportId, { method: 'PUT', headers: { Authorization: 'Bearer ' + erinToken }, body: JSON.stringify({ name: 'Hijacked', type: 'employees', columns: ['name'], filters: {} }) });
+    assertEqual(r.status, 403, 'R7. a reports-permission holder who did not create it cannot edit someone else\'s report');
+    r = await req('/api/reports/' + reportId, { method: 'DELETE', headers: { Authorization: 'Bearer ' + erinToken } });
+    assertEqual(r.status, 403, 'R8. a reports-permission holder who did not create it cannot delete someone else\'s report');
+
+    // The creator herself can edit it.
+    r = await req('/api/reports/' + reportId, { method: 'PUT', headers: { Authorization: 'Bearer ' + carolAToken }, body: JSON.stringify({ name: 'Headcount by Dept (v2)', type: 'employees', columns: ['name', 'dept', 'pos'], filters: { dept: '' } }) });
+    assertEqual(r.status, 200, 'R9. the creator can edit her own saved report');
+    assertEqual(r.body.report.name, 'Headcount by Dept (v2)', 'R9b. the edit actually took effect');
+    assertEqual(r.body.report.updatedBy, 'Carol Manager', 'R9c. an edit records who last updated it');
+
+    // An admin (not the creator) can also edit or delete any report -- administrative override.
+    r = await req('/api/reports/' + reportId, { method: 'PUT', headers: { Authorization: 'Bearer ' + adminToken }, body: JSON.stringify({ name: 'Headcount by Dept (admin-renamed)', type: 'employees', columns: ['name'], filters: {} }) });
+    assertEqual(r.status, 200, 'R10. an admin can edit a report they did not create');
+
+    // Validation: an empty name and an unrecognized type are both rejected.
+    r = await req('/api/reports', { method: 'POST', headers: { Authorization: 'Bearer ' + carolAToken }, body: JSON.stringify({ name: '', type: 'employees', columns: [], filters: {} }) });
+    assertEqual(r.status, 400, 'R11. an empty report name is rejected');
+    r = await req('/api/reports', { method: 'POST', headers: { Authorization: 'Bearer ' + carolAToken }, body: JSON.stringify({ name: 'Bad type', type: 'not-a-real-type', columns: [], filters: {} }) });
+    assertEqual(r.status, 400, 'R12. an unrecognized report type is rejected');
+
+    // A forged savedReports array smuggled into a non-admin's full PUT /api/state must never take
+    // effect -- the employee-write overlay doesn't touch this array at all (server/state-serialization.js).
+    let stateRow = await pg.query("SELECT version FROM app_state WHERE tenant_key='test-tenant-a'");
+    r = await req('/api/state', {
+      method: 'PUT', headers: { Authorization: 'Bearer ' + daveToken },
+      body: JSON.stringify({ version: Number(stateRow.rows[0].version), state: { savedReports: [{ id: 999, name: 'Forged by Dave', type: 'employees', columns: [], filters: {}, createdBy: 'Dave Report' }] } })
+    });
+    const afterForgeAttempt = await pg.query("SELECT state->'savedReports' AS sr FROM app_state WHERE tenant_key='test-tenant-a'");
+    assert(!afterForgeAttempt.rows[0].sr.some(x => x.id === 999), 'R13. a forged savedReports entry smuggled into an employee\'s PUT /api/state never persists');
+
+    // The creator deletes her own report; it disappears for everyone afterward.
+    r = await req('/api/reports/' + reportId, { method: 'DELETE', headers: { Authorization: 'Bearer ' + carolAToken } });
+    assertEqual(r.status, 200, 'R14. the creator can delete her own saved report');
+    r = await req('/api/state', { headers: { Authorization: 'Bearer ' + adminToken } });
+    assert(!(r.body.state.savedReports || []).some(x => x.id === reportId), 'R15. a deleted report is gone for everyone, not just the deleter');
 
   } finally {
     server.kill();

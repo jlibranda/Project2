@@ -30,6 +30,7 @@
       overtimeRates:OT_RATES,payrollGroups:PAYROLL_GROUPS,payPeriods:PAY_PERIODS,
       payrollAdjustments:PAYROLL_ADJ,finalPayList:FINAL_PAY_LIST,payrollAudit:PAYROLL_AUDIT,securityAudit:SECURITY_AUDIT,
       governmentRates:GOVT_RATES,birTaxVersions:BIR_TAX_VERSIONS,platformClients:PLATFORM_CLIENTS,
+      savedReports:SAVED_REPORTS,
       enterprise:window.collectEnterpriseState?window.collectEnterpriseState():null,
       payrollGovernance:window.collectPayrollGovernanceState?window.collectPayrollGovernanceState():null,
       zk:{userMapping:(typeof ZK!=='undefined'&&ZK.userMapping)||{},realtimeEnabled:(typeof ZK!=='undefined'&&!!ZK.realtimeEnabled),connectionOverride:(typeof ZK!=='undefined'&&ZK.connectionOverride)||{address:'',port:'',https:false},punchBuffer:(typeof ZK!=='undefined'&&ZK.punchBuffer)||{beforeMinutes:120,afterMinutes:480}}
@@ -69,6 +70,7 @@
     replaceArray(OT_RATES,saved.overtimeRates);replaceArray(PAYROLL_GROUPS,saved.payrollGroups);replaceArray(PAY_PERIODS,saved.payPeriods);
     replaceArray(PAYROLL_ADJ,saved.payrollAdjustments);replaceArray(FINAL_PAY_LIST,saved.finalPayList);replaceArray(PAYROLL_AUDIT,saved.payrollAudit);replaceArray(SECURITY_AUDIT,saved.securityAudit);
     if(saved.governmentRates)GOVT_RATES=saved.governmentRates;replaceArray(BIR_TAX_VERSIONS,saved.birTaxVersions);replaceArray(PLATFORM_CLIENTS,saved.platformClients);
+    replaceArray(SAVED_REPORTS,saved.savedReports);
     // One-time migration: 'teamview' was added to the module catalog after some clients'
     // module lists were already persisted, so replaceArray above just restored those clients
     // to their old, teamview-less snapshot. Backfill it in so existing tenants aren't stuck
