@@ -1359,25 +1359,32 @@ const THEMES={
 // button work without prematurely persisting an unsaved theme choice.
 function applyTheme(key,hex){
   const t=key==='custom'?{accent:hex||COMPANY.accentHex,dark:shadeColor(hex||COMPANY.accentHex,-15),bg:hexToAlpha(hex||COMPANY.accentHex,0.12)}:THEMES[key]||THEMES.indigo;
+  const dark=!!COMPANY.darkMode;
+  // The 8 named themes' t.bg is a solid, pre-picked pale hex (e.g. indigo's #eef2ff) meant for
+  // a light page -- used as-is it also gets set inline in dark mode (below), where it outranks
+  // every [data-dark] stylesheet rule (a non-!important inline style always wins over a
+  // non-!important selector, regardless of source order), so callout panels, filter bars and
+  // table cells painted with var(--accent-bg) stayed a light lavender box floating in an
+  // otherwise dark UI. 'custom' never had this problem: it's an alpha-transparent overlay
+  // (hexToAlpha), so the browser composites it against whatever surface is actually behind it
+  // at paint time and it comes out dark for free. Give the named themes the same treatment in
+  // dark mode only -- alpha-blend the accent color instead of using the fixed pale hex -- so
+  // panels/badges pick up the current dark surface automatically; light mode keeps the original
+  // hand-picked pale hex unchanged.
+  const namedBg=dark?hexToAlpha(t.accent,0.12):t.bg;
   const r=document.documentElement.style;
   r.setProperty('--accent',t.accent);
   r.setProperty('--accent2',t.dark);
-  r.setProperty('--accent-bg',t.bg);
+  r.setProperty('--accent-bg',key==='custom'?t.bg:namedBg);
   r.setProperty('--accent-ink',readableTextColor(t.accent));
-  // --accent-bg is always a pale tint for the 8 named themes (by design, regardless of light/
-  // dark app mode), so t.dark (a themed dark shade, e.g. indigo's own #3730a3) reliably reads
-  // fine against it. 'custom' is a 12%-alpha overlay (hexToAlpha above) rather than one resolved
-  // hex, and that 12% mostly shows the surface underneath -- over a light surface a pale custom
-  // pick still reads pale, but over dark mode's own dark surface even a pale pick composites to
-  // something closer to dark navy than the original color. shadeColor(hex,-15) (the old t.dark
-  // for 'custom') ignores that entirely and just darkens the raw hex further, so a custom green
-  // in dark mode produced dark-green text on a background that's *also* dark green -- barely
-  // legible. Approximate the actual on-screen blend instead for both of these, which share the
-  // same "text drawn on --accent-bg" job -- --accent-txt (existing badges, notices, this table
-  // hover style's) and --accent-bg-ink (the newer table-hover-specific one) are the same value
-  // here for exactly that reason.
-  const bgInk=readableTextColor(key==='custom'?blendOverSurface(hex||COMPANY.accentHex,0.12,!!COMPANY.darkMode):t.bg);
-  r.setProperty('--accent-txt',key==='custom'?bgInk:t.dark);
+  // --accent-bg-ink / --accent-txt: text color drawn on top of --accent-bg. In light mode, t.dark
+  // (a themed dark shade, e.g. indigo's own #3730a3) reliably reads fine against the pale t.bg.
+  // In dark mode (named themes) or for 'custom' at any time, --accent-bg is an alpha overlay
+  // rather than one resolved hex, so approximate the actual on-screen blend (blendOverSurface)
+  // instead of reading the raw hex, or a pale pick would wrongly get dark ink on a background
+  // that's actually dark (or vice versa).
+  const bgInk=readableTextColor(key==='custom'?blendOverSurface(hex||COMPANY.accentHex,0.12,dark):(dark?blendOverSurface(t.accent,0.12,dark):t.bg));
+  r.setProperty('--accent-txt',(key==='custom'||dark)?bgInk:t.dark);
   r.setProperty('--accent-bg-ink',bgInk);
 }
 function blendOverSurface(hex,alpha,darkMode){
