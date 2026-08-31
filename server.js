@@ -6,9 +6,10 @@ const TimekeepingCore = require('./public/timekeeping-core.js');
 const { hashPassword, verifyPassword, looksLikeHash } = require('./server/passwords.js');
 const { createAuthorization, hasPermission, resolveCaller, isAdminCaller } = require('./server/authorization.js');
 const { canActOnRecord, applyChainDecision, applyForceApprove } = require('./server/approval-chain.js');
+const { calculateLeaveRequest, finalizeLeaveApproval } = require('./server/leave-service.js');
 const { buildScopedStateForEmployee, applyEmployeeStateOverlay } = require('./server/state-serialization.js');
 const { ensureAuditTable, auditLog } = require('./server/audit.js');
-const { validateSessionSecret, validateGodAdminCredential, validateBootstrapCredential } = require('./server/secrets.js');
+const { validateSessionSecret, validateGodAdminCredential, validateBootstrapCredential, KNOWN_DEFAULTS } = require('./server/secrets.js');
 const { createRateLimiter } = require('./server/rate-limit.js');
 
 const app = express();
@@ -288,20 +289,31 @@ async function initializeDatabase() {
       USING (tenant_key = current_setting('app.tenant_key', true))
       WITH CHECK (tenant_key = current_setting('app.tenant_key', true));
   `);
+  // Created before the credential checks below (not after, as it originally was) so that an
+  // unsafe-credential audit event from a check that's about to failStartup() has somewhere to land.
+  await ensureAuditTable(pool);
   // DB-aware production credential checks -- see server/secrets.js for why these can't run
   // synchronously at process start like validateSessionSecret does. Run after the tables above
   // exist (so the SELECTs are valid) but before the bootstrap insert below, which is exactly the
   // moment that decides whether BOOTSTRAP_ADMIN_PASSWORD is actually about to become a real
   // credential or not.
   if (process.env.NODE_ENV === 'production') {
-    const godRow = await pool.query('SELECT 1 FROM platform_admin_credential WHERE id = 1');
-    const godCheck = validateGodAdminCredential({ hasDbCredential: godRow.rowCount > 0 });
-    if (!godCheck.ok) failStartup(godCheck.problems);
-    godCheck.warnings.forEach(w => console.warn('[SECURITY WARNING]', w));
-    const tenantRow = await pool.query('SELECT 1 FROM platform_clients WHERE tenant_key = $1', [TENANT_KEY]);
-    const bootstrapCheck = validateBootstrapCredential({ tenantRowExists: tenantRow.rowCount > 0 });
-    if (!bootstrapCheck.ok) failStartup(bootstrapCheck.problems);
-    bootstrapCheck.warnings.forEach(w => console.warn('[SECURITY WARNING]', w));
+    const godRow = await pool.query('SELECT password FROM platform_admin_credential WHERE id = 1');
+    const godHasDb = godRow.rowCount > 0;
+    const godIsKnownDefault = godHasDb && (await verifyPassword(KNOWN_DEFAULTS.GOD_ADMIN_PASSWORD, godRow.rows[0].password)).ok;
+    const godCheck = validateGodAdminCredential({ hasDbCredential: godHasDb, dbCredentialIsKnownDefault: godIsKnownDefault });
+    if (!godCheck.ok) {
+      if (godIsKnownDefault) await auditLog(pool, { tenantKey: null, actor: 'system', action: 'unsafe_production_credential_detected', target: 'god_admin', meta: {} });
+      failStartup(godCheck.problems);
+    }
+    const tenantRow = await pool.query('SELECT admin_pass FROM platform_clients WHERE tenant_key = $1', [TENANT_KEY]);
+    const tenantExists = tenantRow.rowCount > 0;
+    const bootstrapIsKnownDefault = tenantExists && (await verifyPassword(KNOWN_DEFAULTS.BOOTSTRAP_ADMIN_PASSWORD, tenantRow.rows[0].admin_pass)).ok;
+    const bootstrapCheck = validateBootstrapCredential({ tenantRowExists: tenantExists, bootstrapCredentialIsKnownDefault: bootstrapIsKnownDefault });
+    if (!bootstrapCheck.ok) {
+      if (bootstrapIsKnownDefault) await auditLog(pool, { tenantKey: TENANT_KEY, actor: 'system', action: 'unsafe_production_credential_detected', target: 'bootstrap_admin', meta: {} });
+      failStartup(bootstrapCheck.problems);
+    }
   }
   // Migrate the one existing real tenant into the directory, exactly once. Purely additive —
   // its tenant_key and app_state row are untouched, so this can never affect the live login
@@ -312,9 +324,25 @@ async function initializeDatabase() {
      ON CONFLICT (tenant_key) DO NOTHING`,
     [TENANT_KEY, process.env.BOOTSTRAP_ADMIN_EMAIL || 'admin@ph.com', await hashPassword(process.env.BOOTSTRAP_ADMIN_PASSWORD || 'admin123')]
   );
-  await ensureAuditTable(pool);
   await bulkMigrateLegacyPasswords();
   await grandfatherZkCommandPermission();
+}
+// app_state has ENABLE + FORCE ROW LEVEL SECURITY (see initializeDatabase) -- a plain, unscoped
+// `SELECT * FROM app_state` only ever appears to return every tenant's rows because the local dev
+// role happens to be a Postgres superuser (superusers bypass RLS entirely, FORCE included; only a
+// non-superuser table owner is actually affected by FORCE). A real production role without
+// BYPASSRLS would get zero rows back from that query and no error -- silently migrating nothing,
+// tenant isolation intact but the migration itself dead on arrival. platform_clients is the one
+// table deliberately left outside RLS (by-design cross-tenant directory access), so it's the only
+// safe source for "every tenant_key that exists" -- this enumerates from there, then does one
+// withTenantScope(tenantKey, ...) per tenant so each app_state read/write actually carries the
+// app.tenant_key setting its RLS policy requires, instead of relying on a bypass that only exists
+// in this local dev database.
+async function allTenantKeys() {
+  const rows = await pool.query('SELECT tenant_key FROM platform_clients');
+  const keys = new Set(rows.rows.map(r => r.tenant_key));
+  keys.add(TENANT_KEY); // always included even on a boot where the bootstrap insert hasn't run yet
+  return [...keys];
 }
 // One-time bulk migration of every remaining legacy-plaintext password to a bcrypt hash, run once
 // at every boot (idempotent -- looksLikeHash skips anything already migrated, so this is a cheap
@@ -331,25 +359,28 @@ async function bulkMigrateLegacyPasswords() {
   if (!pool) return;
   let usersMigrated = 0, clientAdminsMigrated = 0, godAdminMigrated = 0;
 
-  const stateRows = await pool.query('SELECT tenant_key, state FROM app_state');
-  for (const row of stateRows.rows) {
-    const users = row.state?.users;
-    if (!Array.isArray(users)) continue;
-    let changed = false;
-    for (const u of users) {
-      if (u && typeof u.pass === 'string' && u.pass && !looksLikeHash(u.pass)) {
-        u.pass = await hashPassword(u.pass);
-        changed = true;
-        usersMigrated++;
+  const tenantKeys = await allTenantKeys();
+  for (const tenantKey of tenantKeys) {
+    await withTenantScope(tenantKey, async client => {
+      const row = (await client.query('SELECT state FROM app_state WHERE tenant_key = $1', [tenantKey])).rows[0];
+      const users = row?.state?.users;
+      if (!Array.isArray(users)) return;
+      let changed = false;
+      for (const u of users) {
+        if (u && typeof u.pass === 'string' && u.pass && !looksLikeHash(u.pass)) {
+          u.pass = await hashPassword(u.pass);
+          changed = true;
+          usersMigrated++;
+        }
       }
-    }
-    if (changed) {
-      await withTenantScope(row.tenant_key, client => client.query(
-        'UPDATE app_state SET state = $1 WHERE tenant_key = $2', [row.state, row.tenant_key]
-      ));
-    }
+      if (changed) {
+        await client.query('UPDATE app_state SET state = $1 WHERE tenant_key = $2', [row.state, tenantKey]);
+      }
+    });
   }
 
+  // platform_clients and platform_admin_credential are both deliberately outside RLS (see
+  // initializeDatabase) -- a plain pool.query is already safe for these, no per-tenant scoping needed.
   const clientRows = await pool.query('SELECT id, admin_pass FROM platform_clients');
   for (const c of clientRows.rows) {
     if (c.admin_pass && !looksLikeHash(c.admin_pass)) {
@@ -382,22 +413,26 @@ async function bulkMigrateLegacyPasswords() {
 // way.
 async function grandfatherZkCommandPermission() {
   if (!pool) return;
-  const rows = await pool.query('SELECT tenant_key, state FROM app_state');
-  for (const row of rows.rows) {
-    const levels = row.state?.accessLevels;
-    if (!Array.isArray(levels)) continue;
-    let changed = false;
-    levels.forEach(level => {
-      if (level?.perms?.zksetup === true && level.perms.zkcommand === undefined) {
-        level.perms.zkcommand = true;
-        changed = true;
+  // Same RLS-under-real-enforcement concern as bulkMigrateLegacyPasswords above (see
+  // allTenantKeys' own comment) -- enumerate tenants via platform_clients, then read/write each
+  // tenant's app_state row inside its own withTenantScope instead of one unscoped global SELECT.
+  const tenantKeys = await allTenantKeys();
+  for (const tenantKey of tenantKeys) {
+    await withTenantScope(tenantKey, async client => {
+      const row = (await client.query('SELECT state FROM app_state WHERE tenant_key = $1', [tenantKey])).rows[0];
+      const levels = row?.state?.accessLevels;
+      if (!Array.isArray(levels)) return;
+      let changed = false;
+      levels.forEach(level => {
+        if (level?.perms?.zksetup === true && level.perms.zkcommand === undefined) {
+          level.perms.zkcommand = true;
+          changed = true;
+        }
+      });
+      if (changed) {
+        await client.query('UPDATE app_state SET state = $1 WHERE tenant_key = $2', [row.state, tenantKey]);
       }
     });
-    if (changed) {
-      await withTenantScope(row.tenant_key, client => client.query(
-        'UPDATE app_state SET state = $1 WHERE tenant_key = $2', [row.state, row.tenant_key]
-      ));
-    }
   }
 }
 // The currently effective God Admin password -- the DB-stored override if one has ever been
@@ -1232,8 +1267,11 @@ app.post('/api/attendance/:id/decision', requireAuth, async (req, res) => {
     const result = await mutateAppState(state => {
       const record = loadTargetRecord(state, 'attendance', id);
       if (!record) { outcome = { error: 404, message: 'Attendance record not found.' }; return { changed: false }; }
-      const gate = canActOnRecord(state, req.session, record, 'att_edit', hasPermission);
-      if (!gate.allowed) { outcome = { error: 403, message: gate.reason, selfApproval: /own request/.test(gate.reason) }; return { changed: false }; }
+      const gate = canActOnRecord(state, req.session, record, 'att_edit', hasPermission, 'approvalStatus');
+      if (!gate.allowed) {
+        if (gate.conflict) { outcome = { error: 409, message: gate.reason, conflict: true }; return { changed: false }; }
+        outcome = { error: 403, message: gate.reason, selfApproval: /own request/.test(gate.reason) }; return { changed: false };
+      }
       const caller = resolveCaller(state, req.session);
       const actorName = caller ? caller.name : (req.session.sub || 'Administrator');
       const decisionResult = applyChainDecision(record, decision, actorName, caller && caller.eid, gate.chain, gate.currentLayer, 'approvalStatus');
@@ -1242,6 +1280,7 @@ app.post('/api/attendance/:id/decision', requireAuth, async (req, res) => {
     }, req.session.sub, tenantKey);
     if (outcome && outcome.error) {
       if (outcome.selfApproval) await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'self_approval_blocked', target: String(id), meta: { recordType: 'attendance' } });
+      if (outcome.conflict) await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'invalid_state_transition_blocked', target: String(id), meta: { recordType: 'attendance' } });
       return res.status(outcome.error).json({ error: outcome.message });
     }
     await auditLog(pool, { tenantKey, actor: req.session.sub, action: decision === 'approved' ? 'attendance_approved' : 'attendance_rejected', target: String(id), meta: { final: outcome.decisionResult.final } });
@@ -1252,7 +1291,10 @@ app.post('/api/attendance/:id/decision', requireAuth, async (req, res) => {
 });
 // Force-approve: admin-only, skips the remaining chain layers without evaluating them at all --
 // port of forceApproveAttendance (public/compliance.js). Leave has no equivalent in the existing
-// product (no forceApproveLeave anywhere client-side), so none is added here either.
+// product (no forceApproveLeave anywhere client-side), so none is added here either. Restricted to
+// pending records only, same as the normal decision endpoint above -- an already-decided record
+// needs an explicit reopen/override workflow to touch again, not a second silent overwrite of its
+// approval history through the same button.
 app.post('/api/attendance/:id/force-approve', requireAuth, async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
   const id = Number(req.params.id);
@@ -1263,6 +1305,7 @@ app.post('/api/attendance/:id/force-approve', requireAuth, async (req, res) => {
     const result = await mutateAppState(state => {
       const record = loadTargetRecord(state, 'attendance', id);
       if (!record) { outcome = { error: 404, message: 'Attendance record not found.' }; return { changed: false }; }
+      if (record.approvalStatus !== 'pending') { outcome = { error: 409, message: 'This record is no longer pending approval.', conflict: true }; return { changed: false }; }
       const caller = resolveCaller(state, req.session);
       if (!isAdminCaller(req.session, caller)) { outcome = { error: 403, message: 'Force-approve requires administrator access.' }; return { changed: false }; }
       if (caller && record.eid === caller.id) { outcome = { error: 403, message: 'You cannot force-approve your own record.', selfApproval: true }; return { changed: false }; }
@@ -1273,6 +1316,7 @@ app.post('/api/attendance/:id/force-approve', requireAuth, async (req, res) => {
     }, req.session.sub, tenantKey);
     if (outcome && outcome.error) {
       if (outcome.selfApproval) await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'self_approval_blocked', target: String(id), meta: { recordType: 'attendance', forced: true } });
+      if (outcome.conflict) await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'invalid_state_transition_blocked', target: String(id), meta: { recordType: 'attendance', forced: true } });
       return res.status(outcome.error).json({ error: outcome.message });
     }
     await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'attendance_force_approved', target: String(id), meta: {} });
@@ -1281,6 +1325,55 @@ app.post('/api/attendance/:id/force-approve', requireAuth, async (req, res) => {
     res.status(500).json({ error: 'Unable to force-approve.', detail: error.message });
   }
 });
+// Leave filing -- the canonical, backend-authoritative replacement for submitLeave() (public/
+// index.html) pushing a client-computed record straight into local state. days/paidDays/
+// unpaidDays/halfDayLabel are never trusted from the client; calculateLeaveRequest (server/
+// leave-service.js) derives them the same way submitLeave() always did, from the employee's own
+// current leave balance and working-day calendar. acknowledgeShortfall round-trips the client's
+// confirm() dialog for an over-balance request (see calculateLeaveRequest's own comment) -- a
+// first call without it may come back 409 with needsAcknowledgment + the computed numbers instead
+// of filing, so the frontend can show that confirmation before resubmitting.
+app.post('/api/leaves', requireAuth, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const tenantKey = req.session.tenantKey || TENANT_KEY;
+  const acknowledgeShortfall = req.body.acknowledgeShortfall === true;
+  try {
+    let outcome = null;
+    const result = await mutateAppState(state => {
+      const caller = resolveCaller(state, req.session);
+      if (!caller) { outcome = { error: 403, message: 'Your account could not be matched to an employee record.' }; return { changed: false }; }
+      if (!isAdminCaller(req.session, caller) && !hasPermission(state, req.session, 'leave_apply')) {
+        outcome = { error: 403, message: 'You do not have permission to file leave requests.' }; return { changed: false };
+      }
+      const calc = calculateLeaveRequest(state, caller, req.body, acknowledgeShortfall);
+      if (!calc.ok) {
+        outcome = { error: calc.needsAcknowledgment ? 409 : 400, message: calc.error, needsAcknowledgment: calc.needsAcknowledgment, computed: calc.computed };
+        return { changed: false };
+      }
+      state.leaves = Array.isArray(state.leaves) ? state.leaves : [];
+      const nextId = state.leaves.reduce((max, r) => Math.max(max, Number(r && r.id) || 0), 0) + 1;
+      const record = { id: nextId, eid: caller.id, ...calc.record, status: 'pending', filed: new Date().toISOString().slice(0, 10), approvalLayer: 1 };
+      state.leaves.push(record);
+      outcome = { record };
+      return { changed: true };
+    }, req.session.sub, tenantKey);
+    if (outcome && outcome.error) {
+      return res.status(outcome.error).json({ error: outcome.message, needsAcknowledgment: outcome.needsAcknowledgment, computed: outcome.computed });
+    }
+    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_filed', target: String(outcome.record.id), meta: { type: outcome.record.type, days: outcome.record.days } });
+    res.json({ ok: true, record: outcome.record, version: result.version });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to file leave request.', detail: error.message });
+  }
+});
+// Leave approval decision -- backend-authoritative for BOTH the decision itself and, when it
+// finalizes as approved, the complete business side-effect transaction (leave balance deduction,
+// approved-leave attendance generation, late-approval payroll crediting) that used to run
+// separately in the browser after the fact (actLeave(), public/index.html). finalizeLeaveApproval
+// (server/leave-service.js) runs INSIDE this same mutateAppState mutator -- if it throws for any
+// reason, the whole transaction (decision included) rolls back rather than leaving the leave
+// marked approved with incomplete downstream state. Only ever reached for a currently-pending
+// record (canActOnRecord's statusField check above), so this can only ever run once per leave.
 app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
   const id = Number(req.params.id);
@@ -1292,20 +1385,56 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
     const result = await mutateAppState(state => {
       const record = loadTargetRecord(state, 'leaves', id);
       if (!record) { outcome = { error: 404, message: 'Leave request not found.' }; return { changed: false }; }
-      const gate = canActOnRecord(state, req.session, record, 'leave_approve', hasPermission);
-      if (!gate.allowed) { outcome = { error: 403, message: gate.reason, selfApproval: /own request/.test(gate.reason) }; return { changed: false }; }
+      const gate = canActOnRecord(state, req.session, record, 'leave_approve', hasPermission, 'status');
+      if (!gate.allowed) {
+        if (gate.conflict) { outcome = { error: 409, message: gate.reason, conflict: true }; return { changed: false }; }
+        outcome = { error: 403, message: gate.reason, selfApproval: /own request/.test(gate.reason) }; return { changed: false };
+      }
       const caller = resolveCaller(state, req.session);
       const actorName = caller ? caller.name : (req.session.sub || 'Administrator');
       const decisionResult = applyChainDecision(record, decision, actorName, caller && caller.eid, gate.chain, gate.currentLayer, 'status');
-      outcome = { record, decisionResult };
+      let sideEffects = null;
+      if (decisionResult.final && decision === 'approved') {
+        sideEffects = finalizeLeaveApproval(state, record, actorName);
+        // TEST-ONLY fault injection, proving finalizeLeaveApproval's in-memory mutations (balance/
+        // attendance/payroll, already applied to `state` above) roll back together with the
+        // decision itself if anything downstream in this same transaction fails -- mutateAppState's
+        // own BEGIN/COMMIT/ROLLBACK is what actually does the rolling back; this only exercises it
+        // with a genuine thrown error instead of asserting the property by reading the code. Gated
+        // behind an env var no real deployment sets and this test harness sets explicitly, so it's
+        // inert everywhere else -- never reachable outside a test run that opts in on purpose.
+        if (process.env.TEST_ALLOW_LEAVE_FINALIZATION_FAULT_INJECTION === 'true' && req.body.__testForceFinalizationFailure === true) {
+          throw new Error('Injected test failure after finalization side effects (rollback proof) -- not a real error.');
+        }
+      }
+      outcome = { record, decisionResult, sideEffects };
       return { changed: true };
     }, req.session.sub, tenantKey);
     if (outcome && outcome.error) {
       if (outcome.selfApproval) await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'self_approval_blocked', target: String(id), meta: { recordType: 'leave' } });
+      if (outcome.conflict) await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'invalid_state_transition_blocked', target: String(id), meta: { recordType: 'leave' } });
       return res.status(outcome.error).json({ error: outcome.message });
     }
     await auditLog(pool, { tenantKey, actor: req.session.sub, action: decision === 'approved' ? 'leave_approved' : 'leave_rejected', target: String(id), meta: { final: outcome.decisionResult.final } });
-    res.json({ ok: true, record: outcome.record, message: outcome.decisionResult.message, final: outcome.decisionResult.final, version: result.version });
+    let employeeSafe, attendanceRecords, payrollAdjustments;
+    if (outcome.sideEffects) {
+      const fx = outcome.sideEffects;
+      await auditLog(pool, {
+        tenantKey, actor: req.session.sub, action: 'leave_finalization_side_effects', target: String(id),
+        meta: { balanceDeducted: fx.balanceDeducted, attendanceRecordsTouched: fx.attendanceRecords.length, payrollAdjustmentsCreated: fx.payrollAdjustments.length }
+      });
+      // The frontend used to apply these same effects (leave balance, attendance, payroll
+      // adjustments) locally, right after this same decision -- now that the server owns them,
+      // it hands back the authoritative results here so the UI can still reflect them immediately
+      // instead of only after a reload. employee is never returned with its password hash.
+      if (fx.employee) { const { pass, ...employeeRest } = fx.employee; employeeSafe = employeeRest; }
+      attendanceRecords = fx.attendanceRecords;
+      payrollAdjustments = fx.payrollAdjustments;
+    }
+    res.json({
+      ok: true, record: outcome.record, message: outcome.decisionResult.message, final: outcome.decisionResult.final, version: result.version,
+      employee: employeeSafe, attendanceRecords, payrollAdjustments
+    });
   } catch (error) {
     res.status(500).json({ error: 'Unable to record the decision.', detail: error.message });
   }

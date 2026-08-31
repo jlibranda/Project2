@@ -1,6 +1,6 @@
 // Refuse to boot with known-public defaults in production. A local/demo deployment
 // (NODE_ENV !== 'production') can still run with zero configuration -- that's the whole point of
-// the fallback values existing -- but a production deployment silently inheriting
+// the fallback values existing -- but a production deployment authenticating with
 // 'local-development-only-change-me' as its session-signing secret, or 'admin123'/'godmode2026'
 // as real credentials, is exactly the kind of thing that's invisible until it's exploited.
 //
@@ -9,14 +9,21 @@
 //     no DB dependency and every token-signing operation needs it to already be safe.
 //   - the God Admin and bootstrap-admin checks run once the database is reachable (see
 //     initializeDatabase() in server.js), because whether a fallback would ever actually be used
-//     depends on whether a real credential already exists: an already-initialized production
-//     deployment that changed its God Admin password via Settings (persisted to
-//     platform_admin_credential) or already has its one real tenant row in platform_clients no
-//     longer needs the corresponding env var at all, and must not be forced to keep it set just
-//     to boot. What must NEVER happen is the reverse: no DB credential yet, and the env var
-//     missing or left at the known default -- that's the exact loophole this closes, since the
-//     original check only caught an env var EXPLICITLY set to the default string, not one simply
-//     left unset (which silently falls back to the same default at the point of use).
+//     depends on whether a real credential already exists.
+//
+// NO production request path may authenticate with a known public default because an env var was
+// omitted -- that governs both directions this check has to cover:
+//   1. No DB credential yet: the env var is what the effective credential will actually become the
+//      moment this boots (see godAdminPassword()/the bootstrap INSERT) -- it must be present and
+//      not equal to the known default. A merely-missing var is JUST AS UNSAFE as one explicitly
+//      set to the default (both end up authenticating with the public password), so both are
+//      hard failures here -- there is no "warn and continue" tier for production.
+//   2. A DB credential already exists: normally that's sufficient on its own (a real credential
+//      was set via Settings/bootstrap and the env var is never consulted again) -- EXCEPT that
+//      credential might itself be a bcrypt hash of the known default (someone bootstrapped with
+//      it once, or Settings was used to "change" it back to the same public value). A bcrypt hash
+//      of 'admin123' is still 'admin123' -- server.js verifies the stored hash against the known
+//      default with verifyPassword() and passes the result in here as dbCredentialIsKnownDefault.
 const KNOWN_DEFAULTS = {
   API_SESSION_SECRET: 'local-development-only-change-me',
   GOD_ADMIN_PASSWORD: 'godmode2026',
@@ -40,47 +47,46 @@ function validateSessionSecret(env = process.env) {
 }
 
 // hasDbCredential: whether a row already exists in platform_admin_credential (a God Admin
-// password has been set via Settings at least once). When true, GOD_ADMIN_PASSWORD is optional --
-// the DB value is authoritative and the env var is never consulted. When false, the env var is
-// what godAdminPassword() will actually fall back to.
-//
-// No DB row can mean two very different things and this can't tell them apart: a genuinely fresh
-// deployment (no God Admin has ever logged in), or a long-running production deployment whose
-// operator simply never rotated the password via Settings. Refusing to boot punishes the second
-// case for a mistake it didn't make -- an already-running deployment would go down on every
-// redeploy until someone thought to set an env var it never needed before. So only an EXPLICIT
-// default value blocks startup (someone deliberately typed/copied the known public password into
-// production); a merely-missing var instead produces a loud, non-fatal warning so the gap stays
-// visible without taking production down.
-function validateGodAdminCredential({ env = process.env, hasDbCredential }) {
-  if (!isProduction(env)) return { ok: true, problems: [], warnings: [] };
-  if (hasDbCredential) return { ok: true, problems: [], warnings: [] };
-  if (env.GOD_ADMIN_PASSWORD === KNOWN_DEFAULTS.GOD_ADMIN_PASSWORD) {
-    return { ok: false, problems: ['No God Admin password exists in the database yet, and GOD_ADMIN_PASSWORD is explicitly set to the known public default (godmode2026). Set a real GOD_ADMIN_PASSWORD before starting.'], warnings: [] };
+// password has been set via Settings/bootstrap at least once). dbCredentialIsKnownDefault: only
+// meaningful when hasDbCredential is true -- whether that stored bcrypt hash verifies against the
+// known public default password (server.js computes this with verifyPassword(), never a plain
+// looksLikeHash() check, since a hash of the default is still the default). When hasDbCredential
+// is false, GOD_ADMIN_PASSWORD is what godAdminPassword() will actually fall back to the moment
+// this boots, so it must be present and not the known default -- no exceptions, missing is exactly
+// as unsafe as explicit.
+function validateGodAdminCredential({ env = process.env, hasDbCredential, dbCredentialIsKnownDefault }) {
+  if (!isProduction(env)) return { ok: true, problems: [] };
+  if (hasDbCredential) {
+    if (dbCredentialIsKnownDefault) {
+      return { ok: false, problems: ['The God Admin password stored in the database is the known public default (godmode2026), just bcrypt-hashed -- a hash of a known password is not a secret. Change it via Settings to a real password before starting.'] };
+    }
+    return { ok: true, problems: [] };
   }
-  if (!env.GOD_ADMIN_PASSWORD) {
-    return { ok: true, problems: [], warnings: ['No God Admin password exists in the database yet, and GOD_ADMIN_PASSWORD is not set -- the God Admin account is currently reachable with the known public default password (godmode2026). Set GOD_ADMIN_PASSWORD, or change the password via Settings, as soon as possible.'] };
+  if (!env.GOD_ADMIN_PASSWORD || env.GOD_ADMIN_PASSWORD === KNOWN_DEFAULTS.GOD_ADMIN_PASSWORD) {
+    return { ok: false, problems: ['No God Admin password exists in the database yet, and GOD_ADMIN_PASSWORD is missing or set to the known public default (godmode2026). Set a real GOD_ADMIN_PASSWORD before starting -- production must never authenticate with the public default because this env var was left unset.'] };
   }
-  return { ok: true, problems: [], warnings: [] };
+  return { ok: true, problems: [] };
 }
 
-// tenantRowExists: whether the one bootstrap tenant row already exists in platform_clients. When
-// true, the bootstrap insert is a no-op (ON CONFLICT DO NOTHING) regardless of what
-// BOOTSTRAP_ADMIN_PASSWORD holds, so it's never actually used and doesn't need to be checked. When
-// false, this boot is about to create that row using BOOTSTRAP_ADMIN_PASSWORD as the real
-// credential. Same reasoning as validateGodAdminCredential: only an explicit default value blocks
-// startup, a missing var warns instead so an already-running deployment can't be taken down by an
-// env var it never needed before.
-function validateBootstrapCredential({ env = process.env, tenantRowExists }) {
-  if (!isProduction(env)) return { ok: true, problems: [], warnings: [] };
-  if (tenantRowExists) return { ok: true, problems: [], warnings: [] };
-  if (env.BOOTSTRAP_ADMIN_PASSWORD === KNOWN_DEFAULTS.BOOTSTRAP_ADMIN_PASSWORD) {
-    return { ok: false, problems: ['The initial tenant/admin row does not exist yet, and BOOTSTRAP_ADMIN_PASSWORD is explicitly set to the known public default (admin123). Set a real BOOTSTRAP_ADMIN_PASSWORD before the first boot that creates it.'], warnings: [] };
+// tenantRowExists: whether the one bootstrap tenant row already exists in platform_clients.
+// bootstrapCredentialIsKnownDefault: only meaningful when tenantRowExists is true -- whether that
+// row's platform_clients.admin_pass verifies against the known public default (admin123), same
+// verifyPassword()-based check as the God Admin credential above, for the same reason: a bcrypt
+// hash of 'admin123' is still 'admin123'. When tenantRowExists is false, this boot is about to
+// CREATE that row using BOOTSTRAP_ADMIN_PASSWORD as the real credential, so it must be present and
+// not the known default -- missing is exactly as unsafe as explicit, no "warn and continue" tier.
+function validateBootstrapCredential({ env = process.env, tenantRowExists, bootstrapCredentialIsKnownDefault }) {
+  if (!isProduction(env)) return { ok: true, problems: [] };
+  if (tenantRowExists) {
+    if (bootstrapCredentialIsKnownDefault) {
+      return { ok: false, problems: ['The bootstrap admin password stored in the database is the known public default (admin123), just bcrypt-hashed -- a hash of a known password is not a secret. Rotate it (change the company admin password) before starting.'] };
+    }
+    return { ok: true, problems: [] };
   }
-  if (!env.BOOTSTRAP_ADMIN_PASSWORD) {
-    return { ok: true, problems: [], warnings: ['The initial tenant/admin row does not exist yet, and BOOTSTRAP_ADMIN_PASSWORD is not set -- it is about to be created with the known public default password (admin123). Set BOOTSTRAP_ADMIN_PASSWORD as soon as possible.'] };
+  if (!env.BOOTSTRAP_ADMIN_PASSWORD || env.BOOTSTRAP_ADMIN_PASSWORD === KNOWN_DEFAULTS.BOOTSTRAP_ADMIN_PASSWORD) {
+    return { ok: false, problems: ['The initial tenant/admin row does not exist yet, and BOOTSTRAP_ADMIN_PASSWORD is missing or set to the known public default (admin123). Set a real BOOTSTRAP_ADMIN_PASSWORD before the first boot that creates it -- production must never create that row with the public default because this env var was left unset.'] };
   }
-  return { ok: true, problems: [], warnings: [] };
+  return { ok: true, problems: [] };
 }
 
 module.exports = { validateSessionSecret, validateGodAdminCredential, validateBootstrapCredential, KNOWN_DEFAULTS };

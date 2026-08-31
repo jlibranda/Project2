@@ -98,7 +98,20 @@ function getApprovalChainForUserId(state, targetUserId, maxLayersOverride) {
 //      permission is what authorizes the action instead, matching the product's existing
 //      documented fallback ("any authorized user can act directly") without literally meaning
 //      *any* authenticated session.
-function canActOnRecord(state, session, record, basePermKey, hasPermissionFn) {
+// statusField (optional, 6th arg): when given, the record must currently be 'pending' on that
+// field or this refuses the action with a distinct `conflict: true` flag instead of the usual
+// `allowed: false` -- callers map that to HTTP 409 rather than 403, since the problem isn't who's
+// asking, it's that there's nothing left to decide. Neither applyAttendanceDecision nor
+// applyLeaveDecision (their original client-side counterparts) ever checked this at all, so a
+// second decision on an already-approved/rejected/cancelled record would just silently re-apply --
+// re-flip status, append a duplicate approvalHistory entry, and (for leave, once finalization
+// moved server-side) re-run balance/attendance/payroll side effects a second time. Checked before
+// every other rule here so "is this record even still actionable" is answered uniformly regardless
+// of who's asking, rather than leaking through a self-approval or permission check first.
+function canActOnRecord(state, session, record, basePermKey, hasPermissionFn, statusField) {
+  if (statusField && record[statusField] !== 'pending') {
+    return { allowed: false, reason: 'This record is no longer pending approval.', conflict: true };
+  }
   const caller = resolveCaller(state, session);
   const isAdmin = isAdminCaller(session, caller);
   if (caller && record.eid === caller.id) {

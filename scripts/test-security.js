@@ -78,7 +78,7 @@ async function seed(pg) {
     schemaVersion: 1,
     accessLevels: [
       { id: 1, name: 'Super Admin', perms: {} },
-      { id: 2, name: 'Basic Employee', perms: { self_view_attendance: true, leave: true, loans_apply: true } },
+      { id: 2, name: 'Basic Employee', perms: { self_view_attendance: true, leave: true, leave_apply: true, loans_apply: true } },
       { id: 3, name: 'Attendance Approver', perms: { att_edit: true } },
       // zkcommand explicitly false (not merely absent) -- the grandfather migration only backfills
       // zkcommand where it was never configured at all, so this level represents a tenant that has
@@ -114,7 +114,12 @@ async function seed(pg) {
       { id: 1, eid: 2, date: '2026-08-01', status: 'present' },
       { id: 2, eid: 3, date: '2026-08-01', status: 'late' },
       { id: 3, eid: 7, date: '2026-08-03', status: 'late', approvalStatus: 'pending', approvalLayer: 1 },
-      { id: 4, eid: 1, date: '2026-08-03', status: 'late', approvalStatus: 'pending', approvalLayer: 1 }
+      { id: 4, eid: 1, date: '2026-08-03', status: 'late', approvalStatus: 'pending', approvalLayer: 1 },
+      // Dedicated, never-decided-on-by-any-other-test fixture for the force-approve test (Issue 4
+      // now restricts force-approve to pending records only) -- eid 5 (zkcmd) isn't touched by any
+      // other attendance assertion, so this record's approvalStatus is guaranteed still 'pending'
+      // whenever that test runs, regardless of test ordering elsewhere in this file.
+      { id: 5, eid: 5, date: '2026-08-04', status: 'late', approvalStatus: 'pending', approvalLayer: 1 }
     ],
     leaves: [
       { id: 1, eid: 2, type: 'VL', status: 'pending' },
@@ -123,7 +128,7 @@ async function seed(pg) {
     ],
     loans: [],
     payrolls: [{ id: 1, from: '2026-08-01', to: '2026-08-15', status: 'released', items: [{ eid: 2, net: 45000 }, { eid: 3, net: 40000 }] }],
-    company: { name: 'Tenant A Co' },
+    company: { name: 'Tenant A Co', leaveTypes: [{ id: 1, name: 'VL', paid: true, active: true }, { id: 2, name: 'SL', paid: true, active: true }, { id: 3, name: 'Unpaid Leave', paid: false, active: true }] },
     org: [], lookups: {}, changeRequests: [], onboarding: [], candidates: [], performance: [],
     securityAudit: [{ id: 1, note: 'should never reach an employee session' }],
     platformClients: [{ id: 1, name: 'Should never leak', adminEmail: 'leak@example.com' }]
@@ -231,7 +236,7 @@ async function main() {
     r = await req('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'bob@a.test', password: 'bobPlaintext1' }) });
     const bobToken = r.body.token;
     r = await req('/api/state', { headers: { Authorization: 'Bearer ' + bobToken } });
-    assertEqual(r.body.state.attendance.length, 4, '3m. an employee-role account with att_edit sees ALL attendance, not just their own');
+    assertEqual(r.body.state.attendance.length, 5, '3m. an employee-role account with att_edit sees ALL attendance, not just their own');
 
     // ── admin still gets the full, unscoped state ──────────────────────────────────────────
     r = await req('/api/state', { headers: { Authorization: 'Bearer ' + adminToken } });
@@ -246,7 +251,7 @@ async function main() {
     maliciousState.users.find(u => u.email === 'bob@a.test').salaryPM = 999999999;
     maliciousState.accessLevels.find(a => a.id === 2).perms.access_manage = true; // trying to self-grant a permission
     maliciousState.attendance.push({ id: 999, eid: 3, date: '2099-01-01', status: 'present' }); // someone else's record
-    maliciousState.leaves.push({ id: 999, eid: 2, type: 'SL', status: 'pending' }); // her own -- SHOULD be accepted
+    maliciousState.leaves.push({ id: 999, eid: 2, type: 'SL', s: '2026-10-05', e: '2026-10-05', reason: 'Not feeling well', status: 'pending' }); // her own -- SHOULD be accepted
     let verRow = await pg.query("SELECT version FROM app_state WHERE tenant_key='test-tenant-a'");
     r = await req('/api/state', { method: 'PUT', headers: { Authorization: 'Bearer ' + aliceToken }, body: JSON.stringify({ version: Number(verRow.rows[0].version), state: maliciousState }) });
     assertEqual(r.status, 200, '5a. employee PUT is accepted (200), but silently constrained server-side');
@@ -478,12 +483,30 @@ async function main() {
     r = await req('/api/leaves/3/decision', { method: 'POST', headers: { Authorization: 'Bearer ' + adminToken }, body: JSON.stringify({ decision: 'approved' }) });
     assertEqual(r.status, 403, '17b. admin cannot approve their own leave via the normal decision endpoint either');
 
-    // 19: authorized admin CAN force-approve someone else's record.
-    r = await req('/api/attendance/3/force-approve', { method: 'POST', headers: { Authorization: 'Bearer ' + adminToken }, body: JSON.stringify({}) });
-    // record 3 is already 'approved' from the chain test above -- force-approve is still a valid
-    // admin action on it (idempotent-ish), confirms the endpoint itself works for a non-self record.
+    // 19: authorized admin CAN force-approve someone else's still-pending record (id 5, eid 5 --
+    // untouched by any earlier test, guaranteed still 'pending').
+    r = await req('/api/attendance/5/force-approve', { method: 'POST', headers: { Authorization: 'Bearer ' + adminToken }, body: JSON.stringify({}) });
     assertEqual(r.status, 200, '19. an authorized admin can force-approve someone else\'s record');
     assert(/\(forced\)/.test(r.body.record.reviewedBy), '19b. reviewedBy is suffixed to show it was forced');
+
+    // AS1: force-approving that SAME record again (now already 'approved') is refused with 409 --
+    // Issue 4 restricts force-approve to pending records only, an explicit override workflow would
+    // be needed to touch an already-decided record again, not a second silent overwrite through
+    // the same endpoint.
+    r = await req('/api/attendance/5/force-approve', { method: 'POST', headers: { Authorization: 'Bearer ' + adminToken }, body: JSON.stringify({}) });
+    assertEqual(r.status, 409, 'AS1. force-approving an already-finalized attendance record is refused with 409, not silently re-applied');
+
+    // AS2/AS3: the normal decision endpoint likewise refuses to re-decide an already-finalized
+    // record -- record 3 (attendance) and leave id 2 were both finalized as 'approved' earlier in
+    // this test run.
+    r = await req('/api/attendance/3/decision', { method: 'POST', headers: { Authorization: 'Bearer ' + adminToken }, body: JSON.stringify({ decision: 'approved' }) });
+    assertEqual(r.status, 409, 'AS2. an already-approved attendance record cannot be approved again through the normal decision endpoint');
+    r = await req('/api/attendance/3/decision', { method: 'POST', headers: { Authorization: 'Bearer ' + adminToken }, body: JSON.stringify({ decision: 'rejected' }) });
+    assertEqual(r.status, 409, 'AS3. an already-approved attendance record cannot be rejected through the normal decision endpoint either');
+    r = await req('/api/leaves/2/decision', { method: 'POST', headers: { Authorization: 'Bearer ' + adminToken }, body: JSON.stringify({ decision: 'approved' }) });
+    assertEqual(r.status, 409, 'AS4. an already-approved leave cannot be approved again through the normal decision endpoint');
+    r = await req('/api/leaves/2/decision', { method: 'POST', headers: { Authorization: 'Bearer ' + adminToken }, body: JSON.stringify({ decision: 'rejected' }) });
+    assertEqual(r.status, 409, 'AS5. an already-approved leave cannot be rejected through the normal decision endpoint either');
 
     // ── Saved Reports: persisted, attributed, permission-gated, shared ──────────────────────
     let erinToken;
@@ -580,94 +603,157 @@ async function testProductionSecretFailFast() {
   assert(exitCode !== null && exitCode !== 0, '18. server refuses to start in production with no API_SESSION_SECRET configured');
 }
 
-// ── 25/26/27/28: DB-aware production credential checks ──────────────────────────────────────
+// ── 1-8 (third security pass): DB-aware production credential checks, now including bcrypt-hash-
+// of-known-default detection ─────────────────────────────────────────────────────────────────
 // Reuses whatever the shared test DB looks like after main() has already run: main()'s own first
 // schema-creating boot already created the bootstrap tenant row for APP_TENANT_KEY=
 // 'test-legacy-tenant' in platform_clients, which is exactly the "already initialized" state
-// test #28 needs. #26/#27 use a brand-new, never-before-seen tenant_key instead, so there's
-// nothing in the DB yet to exempt the bootstrap check.
+// test #8 needs (after this function overwrites its admin_pass with a safe hash -- see below).
+// #5/#6/#7 use brand-new, never-before-seen tenant_keys instead, so there's nothing in the DB yet
+// to exempt the bootstrap check.
+// Boots server.js as a child with the given env and reports whether it exits (bad) or reaches
+// /api/health (good) within a short deadline. Used throughout this function since production
+// startup failures are the thing under test.
+async function bootAttempt(env, port, timeoutMs) {
+  const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let stderr = '';
+  child.stderr.on('data', d => { stderr += d.toString(); });
+  let ready = false, exitCode = null;
+  child.on('exit', c => { exitCode = c; });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && !ready && exitCode === null) {
+    try { const res = await fetch(`http://localhost:${port}/api/health`); if (res.ok) ready = true; } catch {}
+    if (!ready) await new Promise(r => setTimeout(r, 200));
+  }
+  if (!ready) { try { child.kill(); } catch {} await new Promise(r => setTimeout(r, 150)); }
+  else { try { child.kill(); } catch {} await new Promise(r => setTimeout(r, 150)); }
+  return { ready, exitCode, stderr };
+}
+
 async function testDbAwareProductionSecrets() {
+  const pg = new Client({ connectionString: DATABASE_URL });
+  await pg.connect();
+
   // 25 (repeat, cheap to reconfirm here too): still fails with no API_SESSION_SECRET at all.
   {
     const env = { ...process.env, NODE_ENV: 'production', PORT: String(Number(PORT) + 2) };
     delete env.API_SESSION_SECRET; delete env.DATABASE_URL;
-    const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env, stdio: ['ignore', 'ignore', 'ignore'] });
-    const exitCode = await new Promise(resolve => { const t = setTimeout(() => resolve(null), 3000); child.on('exit', c => { clearTimeout(t); resolve(c); }); });
-    if (exitCode === null) { try { child.kill(); } catch {} }
-    assert(exitCode !== null && exitCode !== 0, '25. production + missing API_SESSION_SECRET fails');
+    const { ready, exitCode } = await bootAttempt(env, Number(PORT) + 2, 3000);
+    assert(!ready && exitCode !== null && exitCode !== 0, '25. production + missing API_SESSION_SECRET fails');
   }
 
-  // 26/27: a completely fresh tenant_key (never bootstrapped before) + production + GOD_ADMIN_
-  // PASSWORD/BOOTSTRAP_ADMIN_PASSWORD explicitly set to the known public defaults -- must refuse
-  // to start. An EXPLICIT default is the case that can only mean someone deliberately typed or
-  // copy-pasted the known password into a production config, so this stays a hard failure.
+  // The shared test DB's legacy tenant (test-legacy-tenant) was bootstrapped by main()'s own
+  // first, non-production boot with NO BOOTSTRAP_ADMIN_PASSWORD set -- so its platform_clients
+  // .admin_pass is itself a bcrypt hash of the known default (admin123), by construction of this
+  // test harness, not a real deployment's mistake. Overwrite it with a safe value up front so every
+  // sub-test below that reuses this tenant to isolate the God Admin check (by relying on the
+  // bootstrap check auto-passing) isn't accidentally ALSO failing on an unrelated unsafe bootstrap
+  // credential this harness itself created.
+  const safeBootstrapHash = await bcrypt.hash('a-real-non-default-bootstrap-password-' + Date.now(), 10);
+  await pg.query('UPDATE platform_clients SET admin_pass = $1 WHERE tenant_key = $2', [safeBootstrapHash, 'test-legacy-tenant']);
+
+  // 1/2/3/4: God Admin credential checks. platform_admin_credential is a single global row (id=1),
+  // reset before each scenario. 'test-legacy-tenant' is reused throughout so the (now-safe)
+  // bootstrap check never interferes -- these four scenarios isolate the God Admin check alone.
+  const resetGodRow = async () => { await pg.query('DELETE FROM platform_admin_credential WHERE id = 1'); };
+  const godEnv = extra => ({
+    ...process.env, NODE_ENV: 'production', DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET,
+    APP_TENANT_KEY: 'test-legacy-tenant', ...extra
+  });
+  {
+    await resetGodRow();
+    const env = godEnv({}); delete env.GOD_ADMIN_PASSWORD;
+    const port = Number(PORT) + 10;
+    const { ready, exitCode } = await bootAttempt({ ...env, PORT: String(port) }, port, 3000);
+    assert(!ready && exitCode !== null && exitCode !== 0, 'PC1. production + no DB God credential + missing GOD_ADMIN_PASSWORD fails startup');
+  }
+  {
+    await resetGodRow();
+    const port = Number(PORT) + 11;
+    const { ready, exitCode } = await bootAttempt({ ...godEnv({ GOD_ADMIN_PASSWORD: 'godmode2026' }), PORT: String(port) }, port, 3000);
+    assert(!ready && exitCode !== null && exitCode !== 0, 'PC2. production + GOD_ADMIN_PASSWORD=godmode2026 fails');
+  }
+  {
+    await resetGodRow();
+    const hashOfDefault = await bcrypt.hash('godmode2026', 10);
+    await pg.query('INSERT INTO platform_admin_credential (id, password, updated_by) VALUES (1, $1, $2)', [hashOfDefault, 'seed']);
+    const port = Number(PORT) + 12;
+    const env = godEnv({}); delete env.GOD_ADMIN_PASSWORD;
+    const { ready, exitCode } = await bootAttempt({ ...env, PORT: String(port) }, port, 3000);
+    assert(!ready && exitCode !== null && exitCode !== 0, 'PC3. production + DB God credential hashed from godmode2026 fails');
+  }
+  {
+    await resetGodRow();
+    const hashOfSafe = await bcrypt.hash('a-real-god-admin-password-' + Date.now(), 10);
+    await pg.query('INSERT INTO platform_admin_credential (id, password, updated_by) VALUES (1, $1, $2)', [hashOfSafe, 'seed']);
+    const port = Number(PORT) + 13;
+    const env = godEnv({}); delete env.GOD_ADMIN_PASSWORD;
+    const { ready } = await bootAttempt({ ...env, PORT: String(port) }, port, 8000);
+    assert(ready, 'PC4. production + safe DB God credential boots without env password');
+  }
+  await resetGodRow(); // leave global state clean for tests after this one
+
+  // 5/6: fresh, never-before-seen tenant + missing/default BOOTSTRAP_ADMIN_PASSWORD. A safe
+  // GOD_ADMIN_PASSWORD is supplied throughout so only the bootstrap check can be the cause of failure.
   {
     const freshTenantKey = 'test-fresh-prod-' + Date.now();
+    const port = Number(PORT) + 14;
     const env = {
-      ...process.env, NODE_ENV: 'production', PORT: String(Number(PORT) + 3),
-      DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET, APP_TENANT_KEY: freshTenantKey,
-      GOD_ADMIN_PASSWORD: 'godmode2026', BOOTSTRAP_ADMIN_PASSWORD: 'admin123'
-    };
-    const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env, stdio: ['ignore', 'ignore', 'ignore'] });
-    const exitCode = await new Promise(resolve => { const t = setTimeout(() => resolve(null), 4000); child.on('exit', c => { clearTimeout(t); resolve(c); }); });
-    if (exitCode === null) { try { child.kill(); } catch {} }
-    assert(exitCode !== null && exitCode !== 0, '26/27. production + a never-before-seen tenant + explicit default God Admin/bootstrap passwords refuses the unsafe fallback');
-  }
-
-  // 26b/27b: the same never-before-seen tenant, but GOD_ADMIN_PASSWORD/BOOTSTRAP_ADMIN_PASSWORD
-  // simply left UNSET rather than set to the known default. This must NOT take an already-running
-  // production deployment down on redeploy just because it never had these vars -- it boots, but
-  // logs a loud, non-fatal warning so the gap stays visible.
-  {
-    const freshTenantKey2 = 'test-fresh-prod-unset-' + Date.now();
-    const port26b = Number(PORT) + 5;
-    const env = {
-      ...process.env, NODE_ENV: 'production', PORT: String(port26b),
-      DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET, APP_TENANT_KEY: freshTenantKey2,
-      // admin_email is UNIQUE across all of platform_clients, and the shared test DB's own
-      // legacy tenant (created by main()'s first boot) already owns the default admin@ph.com --
-      // this test needs its own address so its bootstrap INSERT doesn't collide with that row.
-      BOOTSTRAP_ADMIN_EMAIL: 'admin-fresh-' + Date.now() + '@ph.com'
-    };
-    delete env.GOD_ADMIN_PASSWORD; delete env.BOOTSTRAP_ADMIN_PASSWORD;
-    const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stderr = '';
-    child.stderr.on('data', d => { stderr += d.toString(); });
-    let ready = false;
-    for (let i = 0; i < 40 && !ready; i++) {
-      try { const res = await fetch(`http://localhost:${port26b}/api/health`); if (res.ok) ready = true; } catch {}
-      if (!ready) await new Promise(r => setTimeout(r, 250));
-    }
-    assert(ready, '26b/27b. production + a never-before-seen tenant + UNSET God Admin/bootstrap passwords still boots (does not brick an existing deployment)');
-    assert(/SECURITY WARNING/.test(stderr) && /GOD_ADMIN_PASSWORD/.test(stderr), '26c. a loud warning is logged for the unset God Admin password');
-    assert(/SECURITY WARNING/.test(stderr) && /BOOTSTRAP_ADMIN_PASSWORD/.test(stderr), '27c. a loud warning is logged for the unset bootstrap password');
-    try { child.kill(); } catch {}
-    await new Promise(r => setTimeout(r, 200));
-  }
-
-  // 28: an already-initialized deployment (the shared test DB's own bootstrap tenant, already
-  // created by main()'s first boot) does NOT need BOOTSTRAP_ADMIN_PASSWORD anymore. A real
-  // GOD_ADMIN_PASSWORD is still supplied here since no platform_admin_credential row has been
-  // written in this test run -- that's a deliberately separate check (validateGodAdminCredential)
-  // and setting it explicitly keeps this test isolated to the bootstrap-credential behavior.
-  {
-    const port28 = Number(PORT) + 4;
-    const env = {
-      ...process.env, NODE_ENV: 'production', PORT: String(port28),
-      DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET, APP_TENANT_KEY: 'test-legacy-tenant',
-      GOD_ADMIN_PASSWORD: 'a-real-non-default-god-admin-password-123'
+      ...process.env, NODE_ENV: 'production', DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET,
+      APP_TENANT_KEY: freshTenantKey, GOD_ADMIN_PASSWORD: 'a-real-non-default-god-admin-password-xyz',
+      PORT: String(port)
     };
     delete env.BOOTSTRAP_ADMIN_PASSWORD;
-    const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env, stdio: ['ignore', 'ignore', 'ignore'] });
-    let ready = false;
-    for (let i = 0; i < 40 && !ready; i++) {
-      try { const res = await fetch(`http://localhost:${port28}/api/health`); if (res.ok) ready = true; } catch {}
-      if (!ready) await new Promise(r => setTimeout(r, 250));
-    }
-    assert(ready, '28. an already-initialized deployment boots fine without BOOTSTRAP_ADMIN_PASSWORD once its tenant row already exists');
-    try { child.kill(); } catch {}
-    await new Promise(r => setTimeout(r, 200));
+    const { ready, exitCode } = await bootAttempt(env, port, 4000);
+    assert(!ready && exitCode !== null && exitCode !== 0, 'PC5. fresh production tenant + missing BOOTSTRAP_ADMIN_PASSWORD fails startup');
   }
+  {
+    const freshTenantKey = 'test-fresh-prod-' + Date.now() + '-b';
+    const port = Number(PORT) + 15;
+    const env = {
+      ...process.env, NODE_ENV: 'production', DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET,
+      APP_TENANT_KEY: freshTenantKey, GOD_ADMIN_PASSWORD: 'a-real-non-default-god-admin-password-xyz',
+      BOOTSTRAP_ADMIN_PASSWORD: 'admin123', PORT: String(port)
+    };
+    const { ready, exitCode } = await bootAttempt(env, port, 4000);
+    assert(!ready && exitCode !== null && exitCode !== 0, 'PC6. fresh production tenant + BOOTSTRAP_ADMIN_PASSWORD=admin123 fails');
+  }
+
+  // 7: an existing tenant whose platform_clients.admin_pass is itself a bcrypt hash of admin123
+  // must be detected as unsafe even though the row already exists (tenantRowExists alone used to
+  // be sufficient to skip this check entirely).
+  {
+    const unsafeTenantKey = 'test-unsafe-bootstrap-' + Date.now();
+    const hashOfDefault = await bcrypt.hash('admin123', 10);
+    await pg.query(
+      `INSERT INTO platform_clients (tenant_key, name, admin_email, admin_pass) VALUES ($1, $2, $3, $4)`,
+      [unsafeTenantKey, 'Unsafe Bootstrap Co', 'unsafe-bootstrap-' + Date.now() + '@ph.com', hashOfDefault]
+    );
+    const port = Number(PORT) + 16;
+    const env = {
+      ...process.env, NODE_ENV: 'production', DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET,
+      APP_TENANT_KEY: unsafeTenantKey, GOD_ADMIN_PASSWORD: 'a-real-non-default-god-admin-password-xyz',
+      PORT: String(port)
+    };
+    const { ready, exitCode } = await bootAttempt(env, port, 3000);
+    assert(!ready && exitCode !== null && exitCode !== 0, 'PC7. an existing bootstrap admin hash matching admin123 is detected as unsafe');
+  }
+
+  // 8: an already-initialized deployment (test-legacy-tenant, now holding a safe admin_pass hash
+  // per the fix-up at the top of this function) boots fine without BOOTSTRAP_ADMIN_PASSWORD.
+  {
+    const port = Number(PORT) + 4;
+    const env = {
+      ...process.env, NODE_ENV: 'production', DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET,
+      APP_TENANT_KEY: 'test-legacy-tenant', GOD_ADMIN_PASSWORD: 'a-real-non-default-god-admin-password-123',
+      PORT: String(port)
+    };
+    delete env.BOOTSTRAP_ADMIN_PASSWORD;
+    const { ready } = await bootAttempt(env, port, 8000);
+    assert(ready, 'PC8. an already-initialized deployment boots fine without BOOTSTRAP_ADMIN_PASSWORD once its tenant row already exists (and its stored credential is safe)');
+  }
+
+  await pg.end();
 }
 
 // ── 29/30/31/32: bulk legacy-password migration on boot ─────────────────────────────────────
@@ -725,6 +811,332 @@ async function testBulkPasswordMigration() {
   try { child.kill(); } catch {}
   await new Promise(r => setTimeout(r, 200));
   await pg.end();
+}
+
+// ── LV/TX: server-side leave calculation/validation, and transactional finalization side effects ──
+// A dedicated tenant/seed rather than reusing tenant A's -- this needs a leave type with an actual
+// balance, a pay group + a CLOSED pay period (for the late-approval payroll-credit path), and an
+// empty approval chain (no immediateHeadEid) so admin's floor 'leave_approve' permission is what
+// authorizes the decision, keeping each scenario isolated and easy to reason about.
+async function testLeaveIntegrityAndFinalization() {
+  const pg = new Client({ connectionString: DATABASE_URL });
+  await pg.connect();
+  const tenantKey = 'test-leave-finalize-tenant';
+  const passHash = p => bcrypt.hash(p, 10);
+  const state = {
+    schemaVersion: 1,
+    accessLevels: [
+      { id: 1, name: 'Super Admin', perms: {} },
+      { id: 2, name: 'Employee', perms: { leave: true, leave_apply: true } },
+      { id: 3, name: 'Manager', perms: { leave: true, leave_apply: true, leave_approve: true } }
+    ],
+    approvalConfig: { maxLayers: 4, defaultLayers: 1, perEmployee: {} },
+    users: [
+      { id: 1, email: 'admin@lv.test', pass: await passHash('adminlvpass1'), role: 'admin', accessLevelId: 1, name: 'Admin LV', eid: 'E-LVADMIN', active: true },
+      // No immediateHeadEid -- chain resolves empty, so admin's floor permission (or leave_approve)
+      // is what authorizes acting on empEmp's leaves, isolating the tests from chain-resolution
+      // behavior already covered elsewhere.
+      { id: 2, email: 'emp@lv.test', pass: await passHash('emplvpass1'), role: 'employee', accessLevelId: 2, name: 'Emp LV', eid: 'E-LVEMP', active: true,
+        salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } } },
+      { id: 3, email: 'mgr@lv.test', pass: await passHash('mgrlvpass1'), role: 'employee', accessLevelId: 3, name: 'Mgr LV', eid: 'E-LVMGR', active: true },
+      // Reports to mgr -- used for the "manager approval produces the same side effects as admin"
+      // test (29), so a non-admin approver actually has to be the one whose actorName lands on
+      // reviewedBy/the balance-adjustment record.
+      { id: 4, email: 'rep@lv.test', pass: await passHash('replvpass1'), role: 'employee', accessLevelId: 2, name: 'Rep LV', eid: 'E-LVREP', immediateHeadEid: 'E-LVMGR', active: true,
+        salaryPM: 22000, payGroupId: 1, leaveBalances: { 1: { balance: 10, adjustments: [] } } }
+    ],
+    attendance: [], leaves: [], loans: [], payrolls: [],
+    payPeriods: [
+      // Covers the closed-period leave date (2026-09-05) -- payrollAlreadyClosedFor() should find
+      // this and trigger a late-approval credit.
+      { id: 1, groupId: 1, from: '2026-09-01', to: '2026-09-15', attendanceFrom: '2026-09-01', attendanceTo: '2026-09-15', status: 'closed' },
+      // Covers the open-period leave date (2026-10-05) -- no credit should be created for this one.
+      { id: 2, groupId: 1, from: '2026-10-01', to: '2026-10-15', attendanceFrom: '2026-10-01', attendanceTo: '2026-10-15', status: 'open' }
+    ],
+    company: { name: 'Leave Finalize Co', dailyDivisor: 22, leaveTypes: [{ id: 1, name: 'VL', paid: true, active: true }, { id: 2, name: 'Unpaid Leave', paid: false, active: true }] },
+    org: [], lookups: {}, changeRequests: [], onboarding: [], candidates: [], performance: []
+  };
+  await pg.query('DELETE FROM app_state WHERE tenant_key = $1', [tenantKey]);
+  await pg.query('INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3)', [tenantKey, state, 'seed']);
+  await pg.query('DELETE FROM platform_clients WHERE tenant_key = $1', [tenantKey]);
+  await pg.query('INSERT INTO platform_clients (tenant_key, name, admin_email, admin_pass) VALUES ($1, $2, $3, $4)', [tenantKey, 'Leave Finalize Co', 'lvcompadmin@test.local', await passHash('x')]);
+
+  const lvPort = Number(PORT) + 21;
+  const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
+    env: { ...process.env, DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET, PORT: String(lvPort), APP_TENANT_KEY: tenantKey, TEST_ALLOW_LEAVE_FINALIZATION_FAULT_INJECTION: 'true' },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  const base = `http://localhost:${lvPort}`;
+  let ready = false;
+  for (let i = 0; i < 60 && !ready; i++) {
+    try { const res = await fetch(base + '/api/health'); if (res.ok) ready = true; } catch {}
+    if (!ready) await new Promise(r => setTimeout(r, 250));
+  }
+  const call = async (path, opts, token) => {
+    const res = await fetch(base + path, { ...opts, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(opts && opts.headers) } });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  };
+  const login = async (email, password) => (await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) })).body.token;
+
+  try {
+    const adminToken = await login('admin@lv.test', 'adminlvpass1');
+    const empToken = await login('emp@lv.test', 'emplvpass1');
+    const mgrToken = await login('mgr@lv.test', 'mgrlvpass1');
+    const repToken = await login('rep@lv.test', 'replvpass1');
+
+    // ── Leave Integrity (server-side calculation/validation) ──────────────────────────────────
+    let r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-05', endDate: '2026-09-05', reason: 'test', dayType: 'whole', days: -10, paidDays: -10, unpaidDays: -10 }) }, empToken);
+    assertEqual(r.status, 200, 'LV9-setup. a request with forged negative day counts is still accepted (the forged numbers themselves are simply ignored)');
+    assertEqual(r.body.record.days, 1, 'LV9. employee cannot supply days=-10 -- the server-derived value (1 working day) is used instead');
+    assertEqual(r.body.record.paidDays, 1, 'LV10. employee cannot supply paidDays=999 (or any other value) -- server derives it from the actual balance');
+    assertEqual(r.body.record.unpaidDays, 0, 'LV11. employee cannot supply unpaidDays=-500 -- server derives it (0, well within balance)');
+    assertEqual(r.body.record.status, 'pending', 'LV13. backend creates the request as pending regardless of client payload');
+    assertEqual(r.body.record.approvalLayer, 1, 'LV13b. backend assigns approvalLayer 1 regardless of client payload');
+    assert(r.body.record.reviewedBy === undefined && r.body.record.approvalHistory === undefined, 'LV14. backend ignores any client-supplied reviewer/approval-history fields on filing');
+    const forgedLeaveId = r.body.record.id;
+
+    // LV12: a normal, well-formed request derives the correct day count from real calendar math
+    // (this employee has no shiftId, so every calendar day counts -- 5 calendar days from a Mon to
+    // a Fri inclusive).
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-11-02', endDate: '2026-11-06', reason: 'vacation', dayType: 'whole' }) }, empToken);
+    assertEqual(r.status, 200, 'LV12-setup. a well-formed multi-day request is accepted');
+    assertEqual(r.body.record.days, 5, 'LV12. backend derives the correct working-day count from the date range');
+    const multiDayLeaveId = r.body.record.id;
+
+    // Extra input validation beyond the enumerated list -- invalid type, backwards date range,
+    // missing reason are all rejected outright (400), never silently coerced into something valid.
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'Not A Real Type', startDate: '2026-09-05', endDate: '2026-09-05', reason: 'x', dayType: 'whole' }) }, empToken);
+    assertEqual(r.status, 400, 'LV-extra1. an unrecognized leave type is rejected');
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-10', endDate: '2026-09-05', reason: 'x', dayType: 'whole' }) }, empToken);
+    assertEqual(r.status, 400, 'LV-extra2. end date before start date is rejected');
+    r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-05', endDate: '2026-09-05', reason: '', dayType: 'whole' }) }, empToken);
+    assertEqual(r.status, 400, 'LV-extra3. a missing reason is rejected');
+
+    // Clean up the exploratory filings above so they don't interfere with the finalization
+    // scenarios below (which need a clean, known leave balance to check exact arithmetic against).
+    let cur = await pg.query("SELECT state, version FROM app_state WHERE tenant_key = $1", [tenantKey]);
+    let cleanState = cur.rows[0].state;
+    cleanState.leaves = cleanState.leaves.filter(l => l.id !== forgedLeaveId && l.id !== multiDayLeaveId);
+    await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [cleanState, tenantKey]);
+
+    // ── Transactional Leave Side Effects ───────────────────────────────────────────────────────
+    // File the real scenario leave directly via SQL (server-side calc already proven above) --
+    // 1 paid day, 2026-09-05, inside the CLOSED pay period.
+    const seedLeave = async (id, eid, s, e, days) => {
+      const row = await pg.query("SELECT state, version FROM app_state WHERE tenant_key = $1", [tenantKey]);
+      const st = row.rows[0].state;
+      st.leaves.push({ id, eid, type: 'VL', s, e, reason: 'scenario', status: 'pending', filed: s, days, paidDays: days, unpaidDays: 0, dayType: 'whole', approvalLayer: 1 });
+      await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
+    };
+    await seedLeave(100, 2, '2026-09-05', '2026-09-05', 1); // emp's leave, closed period
+
+    r = await call('/api/leaves/100/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, 'TX-setup. admin approves the scenario leave');
+    assertEqual(r.body.final, true, 'TX-setup2. single-layer chain finalizes immediately');
+
+    let after = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
+    let empAfter = after.rows[0].state.users.find(u => u.id === 2);
+    assertEqual(empAfter.leaveBalances['1'].balance, 9, '23. final leave approval updates the leave balance (10 -> 9, 1 paid day deducted)');
+    assert(empAfter.leaveBalances['1'].adjustments.length === 1, '23b. exactly one balance adjustment record was created, not applied twice');
+
+    const attForDate = after.rows[0].state.attendance.find(a => a.eid === 2 && a.date === '2026-09-05');
+    assert(!!attForDate && attForDate.status === 'leave' && attForDate.approvalStatus === 'approved' && attForDate.source === 'leave-approval', '24. final leave approval creates the correct attendance record for the approved date');
+
+    const adjForDate = after.rows[0].state.payrollAdjustments.find(a => a.empId === 2 && a.effectiveDate === '2026-09-05');
+    assert(!!adjForDate && adjForDate.amount === 1000 && adjForDate.payItemCode === 'LEAVE_PAY', '25. final leave approval creates the expected late payroll adjustment for a date whose pay period already closed (₱22000/22 = ₱1000)');
+
+    assert(r.body.employee && r.body.employee.leaveBalances && r.body.employee.pass === undefined, '26. the decision response hands back the authoritative employee/attendance/payroll results together (and never a password hash)');
+    assert(Array.isArray(r.body.attendanceRecords) && r.body.attendanceRecords.length === 1, '26b. the same response includes the attendance record it created');
+    assert(Array.isArray(r.body.payrollAdjustments) && r.body.payrollAdjustments.length === 1, '26c. the same response includes the payroll adjustment it created');
+
+    // 27/28: an injected failure during finalization rolls back the ENTIRE transaction -- the
+    // decision itself included. Uses a second, otherwise-identical leave so the already-approved
+    // scenario above is untouched.
+    await seedLeave(101, 2, '2026-09-06', '2026-09-06', 1);
+    const beforeFault = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
+    const empBalanceBeforeFault = beforeFault.rows[0].state.users.find(u => u.id === 2).leaveBalances['1'].balance;
+    r = await call('/api/leaves/101/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved', __testForceFinalizationFailure: true }) }, adminToken);
+    assertEqual(r.status, 500, '27. an artificial failure during side-effect processing surfaces as an error, not a silent partial success');
+    const afterFault = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
+    const leaveAfterFault = afterFault.rows[0].state.leaves.find(l => l.id === 101);
+    assertEqual(leaveAfterFault.status, 'pending', '28. a failed finalization leaves the leave request in its original (pending) status -- the decision itself rolled back too');
+    assertEqual(afterFault.rows[0].state.users.find(u => u.id === 2).leaveBalances['1'].balance, empBalanceBeforeFault, '27b. the leave balance is completely unaffected by the rolled-back transaction (no partial deduction survived)');
+    assert(!afterFault.rows[0].state.attendance.some(a => a.eid === 2 && a.date === '2026-09-06'), '27c. no attendance record survives from the rolled-back transaction either');
+
+    // A genuinely retried approval of the SAME leave (without the fault flag) still works normally
+    // afterward -- the rollback didn't corrupt the record for a real retry.
+    r = await call('/api/leaves/101/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, '28b. after a rolled-back attempt, the same leave can still be approved normally on retry');
+
+    // 29: an employee-role MANAGER's approval produces the exact same complete side effects as
+    // admin's did above -- mgr approves rep's leave (rep reports to mgr, single-layer chain).
+    await seedLeave(102, 4, '2026-09-07', '2026-09-07', 1);
+    r = await call('/api/leaves/102/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, mgrToken);
+    assertEqual(r.status, 200, '29-setup. the designated (non-admin) manager can approve');
+    assertEqual(r.body.final, true, '29-setup2. finalizes immediately (single layer)');
+    after = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
+    const repAfter = after.rows[0].state.users.find(u => u.id === 4);
+    assertEqual(repAfter.leaveBalances['1'].balance, 9, '29. an employee-role manager\'s approval deducts the leave balance exactly like admin\'s does');
+    const repAtt = after.rows[0].state.attendance.find(a => a.eid === 4 && a.date === '2026-09-07');
+    assert(!!repAtt && repAtt.status === 'leave' && repAtt.approvalStatus === 'approved', '29b. and creates the attendance record exactly like admin\'s approval does');
+    const repAdj = after.rows[0].state.payrollAdjustments.find(a => a.empId === 4 && a.effectiveDate === '2026-09-07');
+    assert(!!repAdj && repAdj.amount === 1000, '29c. and creates the late-approval payroll adjustment exactly like admin\'s approval does');
+    assert(repAtt.reviewedBy === 'Mgr LV', '29d. the attendance record correctly attributes the manager as reviewer, not admin');
+
+    // No adjustment for an OPEN period: a leave whose date falls in the still-open October period
+    // gets balance + attendance effects, but no payroll adjustment (the normal run will pick it up).
+    await seedLeave(103, 2, '2026-10-05', '2026-10-05', 1);
+    r = await call('/api/leaves/103/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
+    assertEqual(r.status, 200, 'TX-open-setup. approval on an open-period date succeeds');
+    assertEqual((r.body.payrollAdjustments || []).length, 0, 'TX-open. no late-approval payroll adjustment is created for a date whose pay period is still open');
+
+  } finally {
+    try { child.kill(); } catch {}
+    await new Promise(r => setTimeout(r, 200));
+    await pg.end();
+  }
+}
+
+// ── 30/31/32/33: bulk migration under REAL (non-bypassing) Row Level Security ───────────────
+// Everything above this point connects as `auratest`, which is a Postgres superuser -- and
+// superusers bypass RLS entirely, FORCE ROW LEVEL SECURITY included. That means every migration
+// test so far proves the MIGRATION LOGIC is correct, but proves NOTHING about whether it survives
+// real RLS enforcement in production, where the app's DB role should not be a superuser. This test
+// creates its own throwaway role (NOSUPERUSER, NOBYPASSRLS) and its own database owned by that
+// role, boots server.js against it, and proves the fix in server.js's allTenantKeys()/
+// withTenantScope-per-tenant actually works when RLS can't be silently bypassed -- not just that
+// it LOOKS like it works under a role that was never actually being checked.
+async function testRlsSafeMigration() {
+  const maintenanceUrl = DATABASE_URL.replace(/\/[^/]+$/, '/postgres');
+  const admin = new Client({ connectionString: maintenanceUrl });
+  await admin.connect();
+  const rlsDbName = 'auratest_rls_test';
+  const rlsRole = 'auratest_rls_role';
+  const rlsPassword = 'rlsTestRolePass1';
+  await admin.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${rlsDbName}' AND pid <> pg_backend_pid()`).catch(() => {});
+  await admin.query(`DROP DATABASE IF EXISTS ${rlsDbName}`);
+  await admin.query(`DROP ROLE IF EXISTS ${rlsRole}`);
+  await admin.query(`CREATE ROLE ${rlsRole} LOGIN PASSWORD '${rlsPassword}' NOSUPERUSER NOBYPASSRLS`);
+  await admin.query(`CREATE DATABASE ${rlsDbName} OWNER ${rlsRole}`);
+  await admin.end();
+
+  const rlsUrl = `postgres://${rlsRole}:${rlsPassword}@localhost:5432/${rlsDbName}`;
+  const rlsPort = Number(PORT) + 20;
+
+  try {
+    // Confirm the role is genuinely not RLS-exempt before trusting anything the rest of this test
+    // concludes from it -- if this ever came back true, the whole test would be worthless.
+    const roleCheck = await admin2Query(maintenanceUrl, `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = '${rlsRole}'`);
+    assert(roleCheck.rows[0].rolsuper === false && roleCheck.rows[0].rolbypassrls === false, 'RLS0. the RLS test role is genuinely non-superuser and non-BYPASSRLS');
+
+    // First boot: schema creation only (tables + FORCE RLS policies get created, OWNED BY rlsRole
+    // this time -- the important difference from every other test in this file).
+    let child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
+      env: { ...process.env, DATABASE_URL: rlsUrl, API_SESSION_SECRET: SESSION_SECRET, PORT: String(rlsPort), APP_TENANT_KEY: 'rls-legacy' },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let ready = false;
+    for (let i = 0; i < 60 && !ready; i++) {
+      try { const res = await fetch(`http://localhost:${rlsPort}/api/health`); if (res.ok) ready = true; } catch {}
+      if (!ready) await new Promise(r => setTimeout(r, 250));
+    }
+    assert(ready, 'RLS-boot1. server boots successfully against a DB owned by a non-superuser, RLS-enforced role');
+    try { child.kill(); } catch {}
+    await new Promise(r => setTimeout(r, 300));
+
+    // Seed two tenants directly, AS the RLS-enforced role, exactly the way the app itself would
+    // have to: platform_clients has no RLS (by design), so a plain insert works; app_state DOES,
+    // so each insert must run inside its own tenant-scoped transaction or the RLS policy's WITH
+    // CHECK clause rejects it outright.
+    const rls = new Client({ connectionString: rlsUrl });
+    await rls.connect();
+    await rls.query(
+      `INSERT INTO platform_clients (tenant_key, name, admin_email, admin_pass) VALUES ($1, $2, $3, $4), ($5, $6, $7, $8)`,
+      ['rls-tenant-a', 'RLS Tenant A', 'rls-a-admin@test.local', 'placeholderhash',
+       'rls-tenant-b', 'RLS Tenant B', 'rls-b-admin@test.local', 'placeholderhash']
+    );
+    const existingHash = await bcrypt.hash('alreadyHashedRls1', 10);
+    async function seedTenantState(tenantKey, plaintextEmail, plaintextPass) {
+      await rls.query('BEGIN');
+      await rls.query("SELECT set_config('app.tenant_key', $1, true)", [tenantKey]);
+      await rls.query(
+        'INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3)',
+        [tenantKey, {
+          schemaVersion: 1, accessLevels: [{ id: 1, name: 'Super Admin', perms: {} }],
+          users: [
+            { id: 1, email: plaintextEmail, pass: plaintextPass, role: 'admin', accessLevelId: 1, active: true },
+            { id: 2, email: 'already-' + tenantKey + '@test.local', pass: existingHash, role: 'employee', accessLevelId: 1, active: true }
+          ],
+          attendance: [], leaves: [], loans: [], payrolls: [], company: {}, org: [], lookups: {}
+        }, 'seed']
+      );
+      await rls.query('COMMIT');
+    }
+    await seedTenantState('rls-tenant-a', 'plain-a@test.local', 'plaintextRlsPassA1');
+    await seedTenantState('rls-tenant-b', 'plain-b@test.local', 'plaintextRlsPassB1');
+
+    // Prove tenant scoping is actually enforced for this role BEFORE trusting the migration result
+    // below -- scoped to tenant A, a query for tenant B's row must come back empty. If this ever
+    // returned tenant B's row, RLS wouldn't be doing anything and the rest of this test would be
+    // meaningless.
+    await rls.query('BEGIN');
+    await rls.query("SELECT set_config('app.tenant_key', 'rls-tenant-a', true)");
+    const crossTenantAttempt = await rls.query('SELECT 1 FROM app_state WHERE tenant_key = $1', ['rls-tenant-b']);
+    await rls.query('ROLLBACK');
+    assertEqual(crossTenantAttempt.rowCount, 0, 'RLS32. tenant A cannot directly query tenant B\'s row under tenant scope (RLS genuinely active for this role)');
+    await rls.end();
+
+    // Second boot: the real thing under test. bulkMigrateLegacyPasswords() (and
+    // grandfatherZkCommandPermission()) run again on this normal boot -- if allTenantKeys() +
+    // per-tenant withTenantScope don't work under real RLS, both plaintext passwords below stay
+    // plaintext with no error (RLS fails closed, not loud), which is exactly the silent-failure
+    // mode this whole test exists to catch.
+    child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
+      env: { ...process.env, DATABASE_URL: rlsUrl, API_SESSION_SECRET: SESSION_SECRET, PORT: String(rlsPort), APP_TENANT_KEY: 'rls-legacy' },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    ready = false;
+    for (let i = 0; i < 60 && !ready; i++) {
+      try { const res = await fetch(`http://localhost:${rlsPort}/api/health`); if (res.ok) ready = true; } catch {}
+      if (!ready) await new Promise(r => setTimeout(r, 250));
+    }
+    assert(ready, 'RLS-boot2. second boot (migration boot) succeeds');
+    await new Promise(r => setTimeout(r, 700)); // let bulkMigrateLegacyPasswords finish
+
+    const verify = new Client({ connectionString: rlsUrl });
+    await verify.connect();
+    async function readStateScoped(tenantKey) {
+      await verify.query('BEGIN');
+      await verify.query("SELECT set_config('app.tenant_key', $1, true)", [tenantKey]);
+      const row = (await verify.query('SELECT state FROM app_state WHERE tenant_key = $1', [tenantKey])).rows[0];
+      await verify.query('COMMIT');
+      return row.state;
+    }
+    const stateA = await readStateScoped('rls-tenant-a');
+    const stateB = await readStateScoped('rls-tenant-b');
+    assert(/^\$2[aby]\$/.test(stateA.users.find(u => u.id === 1).pass), 'RLS30. tenant A\'s plaintext user is migrated under real FORCE RLS enforcement');
+    assert(/^\$2[aby]\$/.test(stateB.users.find(u => u.id === 1).pass), 'RLS31. tenant B\'s plaintext user is migrated under real FORCE RLS enforcement (a second, different tenant)');
+    assertEqual(stateA.users.find(u => u.id === 2).pass, existingHash, 'RLS33. an already-hashed password is unchanged by RLS-safe migration');
+    assertEqual(stateB.users.find(u => u.id === 2).pass, existingHash, 'RLS33b. same, for tenant B');
+    await verify.end();
+
+    try { child.kill(); } catch {}
+    await new Promise(r => setTimeout(r, 300));
+  } finally {
+    const cleanup = new Client({ connectionString: maintenanceUrl });
+    await cleanup.connect();
+    await cleanup.query(`SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${rlsDbName}' AND pid <> pg_backend_pid()`).catch(() => {});
+    await cleanup.query(`DROP DATABASE IF EXISTS ${rlsDbName}`).catch(() => {});
+    await cleanup.query(`DROP ROLE IF EXISTS ${rlsRole}`).catch(() => {});
+    await cleanup.end();
+  }
+}
+async function admin2Query(url, sql) {
+  const c = new Client({ connectionString: url });
+  await c.connect();
+  const res = await c.query(sql);
+  await c.end();
+  return res;
 }
 
 // ── 33/34/35/36: login rate limiting ─────────────────────────────────────────────────────────
@@ -786,6 +1198,8 @@ main()
   .then(testProductionSecretFailFast)
   .then(testDbAwareProductionSecrets)
   .then(testBulkPasswordMigration)
+  .then(testLeaveIntegrityAndFinalization)
+  .then(testRlsSafeMigration)
   .then(testLoginRateLimit)
   .then(() => {
     console.log(`\n${failures === 0 ? 'All' : failures} security test${failures === 1 ? '' : 's'}${failures ? ' FAILED' : ' passed'}.`);
