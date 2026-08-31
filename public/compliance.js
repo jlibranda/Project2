@@ -233,6 +233,45 @@
     render();
   };
 
+  // "My Records" date-range filter -- same Pay Period-or-custom-range pattern Attendance Report
+  // uses (attReportFilter/renderAttReportFilterUI below), scoped down to just this one employee's
+  // own records: no employee search (there's nothing to search, it's always just `user`) and no
+  // Excel export, since this is a quick self-service view, not a report deliverable.
+  function myAttFilter() {
+    if (!window._myAttFilter) window._myAttFilter = { periodId: 'custom', from: '', to: '' };
+    return window._myAttFilter;
+  }
+  window.setMyAttFilter = function (key, value) { myAttFilter()[key] = value; render(); };
+  window.clearMyAttFilter = function () { window._myAttFilter = { periodId: 'custom', from: '', to: '' }; render(); };
+  function myAttRange() {
+    var f = myAttFilter();
+    if (f.periodId && f.periodId !== 'custom') {
+      var period = PAY_PERIODS.find(function (p) { return String(p.id) === String(f.periodId); });
+      if (period) return { from: period.attendanceFrom || period.from, to: period.attendanceTo || period.to, label: period.label };
+    }
+    return { from: f.from, to: f.to, label: null };
+  }
+  function renderMyAttFilterUI() {
+    var f = myAttFilter();
+    var periods = PAY_PERIODS.slice().sort(function (a,b) { return (b.from||'').localeCompare(a.from||''); });
+    var usingCustom = !f.periodId || f.periodId === 'custom';
+    var range = myAttRange();
+    var active = (f.periodId && f.periodId !== 'custom') || f.from || f.to;
+    return '<div class="form-row" style="gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">'+
+      '<div class="field" style="margin-bottom:0;min-width:170px"><label style="font-size:11px">Pay Period</label><select class="finput" style="font-size:12px" onchange="setMyAttFilter(\'periodId\',this.value)">'+
+        '<option value="custom" '+(usingCustom?'selected':'')+'>Custom date range…</option>'+
+        periods.map(function (p) { return '<option value="'+p.id+'" '+(String(f.periodId)===String(p.id)?'selected':'')+'>'+esc(p.label)+'</option>'; }).join('')+
+      '</select></div>'+
+      (usingCustom ?
+        '<div class="field" style="margin-bottom:0"><label style="font-size:11px">From</label><input type="date" class="finput" style="font-size:12px" value="'+(f.from||'')+'" onchange="setMyAttFilter(\'from\',this.value)"/></div>'+
+        '<div class="field" style="margin-bottom:0"><label style="font-size:11px">To</label><input type="date" class="finput" style="font-size:12px" value="'+(f.to||'')+'" onchange="setMyAttFilter(\'to\',this.value)"/></div>'
+        : '')+
+      (active?'<button class="btn btn-sm" onclick="clearMyAttFilter()">✕ Clear</button>':'')+
+    '</div>'+
+    (range.from && range.to ?
+      '<div style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:12px;color:var(--txt3);margin-bottom:10px">Showing: <strong style="color:var(--txt)">'+range.from+' to '+range.to+'</strong>'+(range.label?' ('+esc(range.label)+')':'')+'</div>'
+      : '');
+  }
   window.pgAttendance = pgAttendance = function () {
     var isA = isAdminUser(user) || isPlatformAdmin || canAccess('att_edit');
     var tabs = isA ? ['Pending Approval','My Records','Time Logs','File Attendance','Attendance Report'] : ['My Records','File Attendance'];
@@ -266,14 +305,24 @@
         }).join('') : '<tr><td colspan="10" class="empty-state">No pending attendance records.</td></tr>')+
         '</tbody></table></div>';
     } else if ((!isA && tab === 0) || (isA && tab === 1)) {
-      var mine = attendanceRecords().filter(function (a) { return a.eid === user.id; }).slice().reverse();
-      body = '<div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Time In</th><th>Time Out</th><th>Work status</th><th>Approval</th><th>OT</th><th>ND</th><th>Notes</th><th></th></tr></thead><tbody>'+
+      var myRange = myAttRange();
+      var mine = attendanceRecords().filter(function (a) { return a.eid === user.id; });
+      if (myRange.from) mine = mine.filter(function (a) { return a.date >= myRange.from; });
+      if (myRange.to) mine = mine.filter(function (a) { return a.date <= myRange.to; });
+      mine = mine.slice().reverse();
+      var myLateCount = mine.filter(function (a) { return a.status === 'late'; }).length;
+      var myAbsentCount = mine.filter(function (a) { return a.status === 'absent'; }).length;
+      var myOtTotal = mine.reduce(function (s,a) { return s + (parseFloat(a.ot) || 0); }, 0);
+      var myFiltered = !!(myRange.from || myRange.to);
+      body = renderMyAttFilterUI()+
+        '<div style="font-size:11px;color:var(--txt3);margin-bottom:8px">'+mine.length+' record'+(mine.length===1?'':'s')+(myFiltered?' in range':'')+(myLateCount?' · '+myLateCount+' late':'')+(myAbsentCount?' · '+myAbsentCount+' absent':'')+(myOtTotal?' · '+myOtTotal+'h OT':'')+'</div>'+
+        '<div style="overflow-x:auto"><table><thead><tr><th>Date</th><th>Time In</th><th>Time Out</th><th>Work status</th><th>Approval</th><th>OT</th><th>ND</th><th>Notes</th><th></th></tr></thead><tbody>'+
         (mine.length ? mine.map(function (a) {
           return '<tr><td class="mono">'+a.date+'</td><td class="mono">'+(a.tin || '—')+'</td><td class="mono">'+(a.tout || '—')+'</td>'+
             '<td><span class="badge b-'+a.status+'">'+esc(a.status)+'</span></td><td>'+approvalBadge(a.approvalStatus)+'</td>'+
             '<td>'+(a.ot || '—')+'</td><td>'+(a.nd || '—')+'</td><td style="color:var(--txt3)">'+esc(a.notes || '—')+'</td>'+
             '<td style="white-space:nowrap">'+((a.edits && a.edits.length) ? '<button class="btn btn-sm" onclick="openAttHistory('+a.eid+',\''+a.date+'\')" title="View edit history">🕘 '+a.edits.length+'</button>' : '')+'</td></tr>';
-        }).join('') : '<tr><td colspan="9" class="empty-state">No attendance records.</td></tr>')+'</tbody></table></div>';
+        }).join('') : '<tr><td colspan="9" class="empty-state">'+(myFiltered?'No records in this range.':'No attendance records.')+'</td></tr>')+'</tbody></table></div>';
     } else if (isA && tab === 2) {
       body = renderTimeLogsTab();
     } else if (isA && tab === 4) {
