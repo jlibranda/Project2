@@ -651,7 +651,7 @@
   // (me.attendanceHistory / me.payslipHistory in buildAssistantContext, server.js).
   function attendanceExplainAnswer(target,viewingSelf){
     if(!viewingSelf)return null;
-    if(!canAccess('self_view_attendance'))return L('You don\'t currently have permission to view your own attendance detail here. Ask your HR administrator to grant "My Attendance & Payslip Detail" access.','Wala ka pang permiso na makita ang detalye ng sarili mong attendance dito. Hilingin sa iyong HR administrator na buksan ang "My Attendance & Payslip Detail" access.');
+    if(!canAccess('self_view_attendance'))return L('You don\'t currently have permission to ask about your own attendance detail here. Ask your HR administrator to grant "AI Assistant: My Attendance & Payslip Detail" access.','Wala ka pang permiso na itanong ang detalye ng sarili mong attendance dito. Hilingin sa iyong HR administrator na buksan ang "AI Assistant: My Attendance & Payslip Detail" access.');
     var mine=PAYROLLS.map(function(r){return {r:r,item:r.items&&r.items.find(function(i){return i.eid===target.id;})};}).filter(function(x){return x.item;});
     if(!mine.length)return L('You have no payroll cutoff on record yet.','Wala ka pang naitalang payroll cutoff.');
     var last=mine[mine.length-1];
