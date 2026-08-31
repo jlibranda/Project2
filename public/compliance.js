@@ -199,38 +199,57 @@
   }
   window.applyLeaveDecision = applyLeaveDecision;
 
-  window.actAttendance = function (id, decision) {
+  // Approval is backend-authoritative (POST /api/attendance/:id/decision) -- the server decides
+  // whether this caller may act on this specific record and returns the authoritative updated
+  // record, which replaces the local copy. Never assume a local mutation is valid before the
+  // server confirms it.
+  window.actAttendance = async function (id, decision) {
     var row = ATT.find(function (a) { return a.id === id; });
     if (!row) return;
-    var result = applyAttendanceDecision(row, decision);
-    if (!result.ok) { toast(result.message, 'warning'); return; }
-    queueSync('Attendance');
-    toast(result.message, result.decision === 'approved' ? 'success' : 'warning');
-    render();
+    try {
+      var res = await window.apiRequest('/attendance/' + id + '/decision', { method: 'POST', body: JSON.stringify({ decision: decision }) });
+      Object.assign(row, res.record);if(window.syncStateVersion)window.syncStateVersion(res.version);
+      toast(res.message, decision === 'approved' ? 'success' : 'warning');
+      render();
+    } catch (error) {
+      toast(error.message || 'Unable to record the decision.', 'warning');
+    }
   };
 
-  window.approveAllAttendance = function () {
+  window.approveAllAttendance = async function () {
     var pending = attendanceRecords().filter(function (a) { return a.approvalStatus === 'pending'; });
-    var acted = 0;
-    pending.forEach(function (a) { if (applyAttendanceDecision(a, 'approved').ok) acted++; });
-    if (acted) queueSync('Attendance');
-    toast(acted ? acted+' attendance record(s) approved.' : 'No pending attendance you can approve.', acted ? 'success' : 'info');
+    var acted = 0, blocked = 0;
+    for (var i = 0; i < pending.length; i++) {
+      var a = pending[i];
+      try {
+        var res = await window.apiRequest('/attendance/' + a.id + '/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) });
+        Object.assign(a, res.record);if(window.syncStateVersion)window.syncStateVersion(res.version);
+        acted++;
+      } catch (error) {
+        blocked++; // not this caller's to approve (wrong layer, own record, etc.) -- skip it, same as the old silent no-op
+      }
+    }
+    toast(acted ? acted + ' attendance record(s) approved.' + (blocked ? ' (' + blocked + ' skipped.)' : '') : 'No pending attendance you can approve.', acted ? 'success' : 'info');
     render();
   };
 
   // Admin-only escape hatch: skip any remaining approval layers (e.g. an approver is
-  // unavailable) rather than leaving payroll blocked on a stuck chain.
-  window.forceApproveAttendance = function (id) {
+  // unavailable) rather than leaving payroll blocked on a stuck chain. Server-enforced
+  // (POST /api/attendance/:id/force-approve) -- admin-only and self-approval blocked there too,
+  // the client-side isAdminUser check here is only for hiding the button, not the real gate.
+  window.forceApproveAttendance = async function (id) {
     if (!(user && (isAdminUser(user) || isPlatformAdmin))) return;
     var row = ATT.find(function (a) { return a.id === id; });
     if (!row) return;
     if (!confirm('Force-approve this record, skipping any remaining approval layers?')) return;
-    var actor = user.name;
-    row.approvalStatus = 'approved'; row.reviewedBy = actor+' (forced)'; row.reviewedAt = new Date().toISOString();
-    row.approvalHistory = (row.approvalHistory || []).concat([{ layer: row.approvalLayer || 1, decision: 'force-approved', by: actor, byEid: (user && user.eid) || null, at: new Date().toISOString() }]);
-    queueSync('Attendance');
-    toast('Force-approved.', 'success');
-    render();
+    try {
+      var res = await window.apiRequest('/attendance/' + id + '/force-approve', { method: 'POST', body: JSON.stringify({}) });
+      Object.assign(row, res.record);if(window.syncStateVersion)window.syncStateVersion(res.version);
+      toast('Force-approved.', 'success');
+      render();
+    } catch (error) {
+      toast(error.message || 'Unable to force-approve.', 'warning');
+    }
   };
 
   // "My Records" date-range filter -- same Pay Period-or-custom-range pattern Attendance Report

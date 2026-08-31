@@ -158,11 +158,25 @@ function buildScopedStateForEmployee(state, session) {
 // record, and overlay only the caller's own records in a small set of self-service arrays. Every
 // other array/object -- including every OTHER employee's users[] entry, company config, access
 // levels, payroll data -- is copied from the current record untouched, no matter what the
-// submitted payload contains. Because GET /api/state already only ever gave this session its own
-// attendance/leave/loan/case records to begin with (buildScopedStateForEmployee above), what the
-// client's own full-state autosave submits back for those arrays is, in the overwhelming majority
-// of cases, already exactly "my own records" -- this just makes that a hard guarantee instead of
-// an assumption.
+// submitted payload contains.
+//
+// First pass (commit #305) stopped there: an employee could still set arbitrary VALUES on a
+// record that genuinely was their own, including authoritative fields like approval status,
+// reviewer identity, or approval-chain position -- an employee could flip their own pending leave
+// straight to 'approved' by editing their local copy before the debounced autosave fired. Each
+// sanitizeEmployee*Record function below closes that: it explicitly allowlists only the fields a
+// real employee-facing form actually lets someone set, ported from the exact client-side filing
+// code (submitLeave/CHANGE_REQUESTS.push/markStep in public/index.html) rather than guessed at.
+// For a genuinely NEW record it returns a fresh object with server-assigned safe defaults
+// (status:'pending', no approval metadata at all); for an EXISTING record it starts from what's
+// already persisted and copies over only the one or two fields that record type's real UI lets an
+// employee change post-filing (e.g. cancelling a still-pending leave request). Returning null
+// rejects the record entirely (used where no legitimate employee-authored create/edit path exists
+// today at all) rather than silently keeping something that shouldn't be there.
+//
+// Approval itself (moving a record OFF pending) no longer goes through this overlay at all --
+// see POST /api/leaves/:id/decision and POST /api/attendance/:id/decision in server.js, which are
+// now the only way any of those fields change.
 //
 // Not overlaid in this pass (stays byte-identical to the current record for an employee session):
 // - users[] -- self-profile-edit is not migrated yet (see the caller's own comment/report); doing
@@ -171,12 +185,97 @@ function buildScopedStateForEmployee(state, session) {
 // - payroll*/company/org/lookups/accessLevels/enterprise.resolutionCases (other people's)/etc. --
 //   none of these are things a plain self-service action legitimately creates or edits.
 // - bundyLogs -- written through the dedicated /api/bundy/punch endpoint already.
-function overlayOwnRecords(previousArr, incomingArr, meId, idKey) {
+
+// Leave: submitLeave() is the only employee-authored creation path; cancelLeaveRequest() is the
+// only employee-authored edit of an existing record (pending -> cancelled, nothing else).
+function sanitizeEmployeeLeaveRecord(existing, incoming, isNew, meId, todayStr) {
+  if (isNew) {
+    if (!incoming || typeof incoming !== 'object') return null;
+    return {
+      id: incoming.id, eid: meId,
+      type: incoming.type, s: incoming.s, e: incoming.e, reason: incoming.reason,
+      days: incoming.days, paidDays: incoming.paidDays, unpaidDays: incoming.unpaidDays,
+      dayType: incoming.dayType, halfDayLabel: incoming.halfDayLabel,
+      status: 'pending', filed: todayStr, approvalLayer: 1
+      // No approvalHistory/reviewedBy/reviewedAt -- those don't exist until a decision is made.
+    };
+  }
+  const next = { ...existing };
+  if (existing.status === 'pending' && incoming && incoming.status === 'cancelled') next.status = 'cancelled';
+  return next;
+}
+
+// Attendance: no employee-authored creation or edit path exists anywhere in the client -- ATT
+// records come from ZK devices, Web Bundy, admin filing, leave approval, or attendance-policy
+// derivation only. Every employee-owned attendance record is therefore fully protected; nothing
+// in an employee's submitted payload can change it. Corrections go through the Resolution Center
+// (a change request/case, reviewed by an admin), not a direct attendance edit.
+function sanitizeEmployeeAttendanceRecord(existing, incoming, isNew) {
+  if (isNew) return null;
+  return { ...existing };
+}
+
+// Loans: no employee-authored creation path exists yet either -- LOANS.push only happens from an
+// admin-only "Add Loan" modal today. loans_apply/loans_approve permissions exist in PERM_DEFS but
+// nothing wires them to a client action currently, so this stays fully protected until a real
+// self-service loan-application flow ships (at which point this function is where to add it).
+function sanitizeEmployeeLoanRecord(existing, incoming, isNew) {
+  if (isNew) return null;
+  return { ...existing };
+}
+
+// Change requests (profile-change proposals, distinct from Resolution Center cases): `changes`
+// is the only employee-authored field at creation; status/reviewedBy/reviewedOn/rejectReason are
+// admin-only, set when an admin reviews it through their own unrestricted state write.
+function sanitizeEmployeeChangeRequest(existing, incoming, isNew, meId, todayStr) {
+  if (isNew) {
+    if (!incoming || typeof incoming !== 'object') return null;
+    return { id: incoming.id, eid: meId, changes: incoming.changes, status: 'pending', submitted: todayStr, reviewedBy: '', reviewedOn: '', rejectReason: '' };
+  }
+  return { ...existing };
+}
+
+// Onboarding: records are admin-created only; the sole employee-facing mutation is marking one of
+// their own checklist steps done (markStep()) -- nothing else on the record is employee-editable,
+// and a step already marked done can't be un-marked by the employee either (only true is honored).
+function sanitizeEmployeeOnboardingRecord(existing, incoming, isNew) {
+  if (isNew) return null;
+  if (!incoming || !Array.isArray(existing.steps) || !Array.isArray(incoming.steps)) return { ...existing };
+  const steps = existing.steps.map((s, i) => (incoming.steps[i] && incoming.steps[i].done === true) ? { ...s, done: true } : s);
+  return { ...existing, steps };
+}
+
+// Applies `sanitize` to each of the caller's own incoming records (matched by id against their
+// own existing records to decide isNew), keeps every other employee's records from `previousArr`
+// completely untouched, and preserves any of the caller's own existing records that the incoming
+// payload simply didn't include (a stale/partial local snapshot should never look like a delete).
+// Guards against a client-assigned id on a "new" record colliding with a different employee's
+// existing record by reassigning it a fresh id rather than leaving that ambiguous.
+function overlaySanitizedOwnRecords(previousArr, incomingArr, meId, idKey, sanitize, todayStr) {
   const previous = Array.isArray(previousArr) ? previousArr : [];
   const incoming = Array.isArray(incomingArr) ? incomingArr : [];
-  const ownIncoming = incoming.filter(r => r && r[idKey] === meId);
   const othersPrevious = previous.filter(r => !(r && r[idKey] === meId));
-  return [...othersPrevious, ...ownIncoming];
+  const previousOwnById = new Map(previous.filter(r => r && r[idKey] === meId).map(r => [r.id, r]));
+  const incomingOwn = incoming.filter(r => r && r[idKey] === meId);
+
+  const seenIds = new Set();
+  const othersIds = new Set(othersPrevious.map(r => r && r.id));
+  let nextId = [...previous, ...incoming].reduce((max, r) => Math.max(max, Number(r && r.id) || 0), 0) + 1;
+
+  const sanitizedOwn = [];
+  incomingOwn.forEach(r => {
+    const existing = previousOwnById.get(r.id);
+    const result = sanitize(existing, r, !existing, meId, todayStr);
+    if (!result || result.id == null || seenIds.has(result.id)) return;
+    if (othersIds.has(result.id)) result.id = nextId++;
+    seenIds.add(result.id);
+    sanitizedOwn.push(result);
+  });
+  // Any of the employee's own existing records the incoming payload didn't mention at all are
+  // preserved as-is rather than silently dropped.
+  previousOwnById.forEach((existing, id) => { if (!seenIds.has(id)) sanitizedOwn.push(existing); });
+
+  return [...othersPrevious, ...sanitizedOwn];
 }
 
 // Returns the safe state to persist, or null if the caller can't be resolved to an employee
@@ -186,15 +285,20 @@ function applyEmployeeStateOverlay(previousState, incomingState, session) {
   const me = users.find(u => String(u.email || '').toLowerCase() === String(session.sub || '').toLowerCase());
   if (!me) return null;
   const meId = me.id;
+  const todayStr = new Date().toISOString().slice(0, 10);
   const next = JSON.parse(JSON.stringify(previousState || {}));
-  next.attendance = overlayOwnRecords(previousState.attendance, incomingState?.attendance, meId, 'eid');
-  next.leaves = overlayOwnRecords(previousState.leaves, incomingState?.leaves, meId, 'eid');
+  next.leaves = overlaySanitizedOwnRecords(previousState.leaves, incomingState?.leaves, meId, 'eid', sanitizeEmployeeLeaveRecord, todayStr);
+  next.attendance = overlaySanitizedOwnRecords(previousState.attendance, incomingState?.attendance, meId, 'eid', sanitizeEmployeeAttendanceRecord, todayStr);
+  next.changeRequests = overlaySanitizedOwnRecords(previousState.changeRequests, incomingState?.changeRequests, meId, 'eid', sanitizeEmployeeChangeRequest, todayStr);
+  next.onboarding = overlaySanitizedOwnRecords(previousState.onboarding, incomingState?.onboarding, meId, 'eid', sanitizeEmployeeOnboardingRecord, todayStr);
   if (hasPermission(previousState, session, 'loans_apply')) {
-    next.loans = overlayOwnRecords(previousState.loans, incomingState?.loans, meId, 'eid');
+    next.loans = overlaySanitizedOwnRecords(previousState.loans, incomingState?.loans, meId, 'eid', sanitizeEmployeeLoanRecord, todayStr);
   }
-  next.changeRequests = overlayOwnRecords(previousState.changeRequests, incomingState?.changeRequests, meId, 'eid');
-  next.onboarding = overlayOwnRecords(previousState.onboarding, incomingState?.onboarding, meId, 'eid');
   return next;
 }
 
-module.exports = { buildScopedStateForEmployee, applyEmployeeStateOverlay };
+module.exports = {
+  buildScopedStateForEmployee, applyEmployeeStateOverlay,
+  sanitizeEmployeeLeaveRecord, sanitizeEmployeeAttendanceRecord, sanitizeEmployeeLoanRecord,
+  sanitizeEmployeeChangeRequest, sanitizeEmployeeOnboardingRecord
+};
