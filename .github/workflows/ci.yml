@@ -8,20 +8,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: auratest
-          POSTGRES_PASSWORD: auratest
-          POSTGRES_DB: auratest
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -29,6 +15,22 @@ jobs:
         with:
           node-version: 20
           cache: npm
+
+      # A plain `postgres:16` Docker service container doesn't support SSL, but server.js
+      # correctly requires it for any NODE_ENV=production connection (matching Railway's managed
+      # Postgres) -- including the test suite's own production-boot scenarios, which deliberately
+      # run against this same database. Installing PostgreSQL natively instead gives an
+      # SSL-enabled server out of the box (Ubuntu's postgresql package auto-configures the
+      # ssl-cert package's self-signed certificate and turns ssl=on), matching a real local dev
+      # setup rather than fighting the service-container image to add SSL support it doesn't ship.
+      - name: Install and start PostgreSQL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+          sudo service postgresql start
+          sudo -u postgres psql -c "CREATE ROLE auratest WITH LOGIN SUPERUSER PASSWORD 'auratest';"
+          sudo -u postgres psql -c "CREATE DATABASE auratest OWNER auratest;"
+          pg_isready -h localhost -p 5432
 
       - name: Install dependencies
         run: npm ci
