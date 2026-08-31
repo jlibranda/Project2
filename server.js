@@ -1311,6 +1311,121 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
   }
 });
 
+/* ── Saved Reports (Report Builder) ──
+   Previously a plain in-memory browser array (public/index.html's old `savedReports`) that never
+   reached the backend at all -- "Save Report" showed a success alert but the list reset to empty
+   on every reload/logout/new device. These endpoints make a saved report a real, tenant-scoped
+   record: who created it and when is recorded, and it's shared with every other user who holds
+   the same 'reports' permission that already gates the Report Builder itself -- not just the
+   creator, and never anyone without that permission (see buildScopedStateForEmployee in
+   state-serialization.js, which omits this array entirely from a non-'reports' session's state,
+   the same way it already does for `candidates`/`platformClients`/etc.). Deliberately dedicated
+   endpoints rather than folding this into PUT /api/state's employee overlay: a non-admin manager
+   who holds 'reports' but not full admin write access needs a way to persist a report that
+   PUT /api/state's overlay (self-owned-records-only) was never built to allow -- the same reasoning
+   that put attendance/leave decisions on their own endpoints in the previous pass. Only the
+   'employees'/'payroll'/'timekeeping' report types the Report Builder UI actually offers are
+   accepted; column/filter contents are opaque UI config (which columns to show, not the
+   underlying employee data itself -- the data those columns pull from is still scoped by each
+   session's own normal permissions when the report is actually rendered), so they're only
+   size-bounded here, not enumerated against the client's column list. */
+const REPORT_TYPES = new Set(['employees', 'payroll', 'timekeeping']);
+function validateReportPayload(body) {
+  const name = String(body.name || '').trim();
+  if (!name) return { error: 'A report name is required.' };
+  if (name.length > 120) return { error: 'Report name is too long (120 characters max).' };
+  const type = String(body.type || '');
+  if (!REPORT_TYPES.has(type)) return { error: 'Invalid report type.' };
+  const columns = Array.isArray(body.columns) ? body.columns.filter(c => typeof c === 'string') : [];
+  if (columns.length > 200) return { error: 'Too many columns.' };
+  const filters = (body.filters && typeof body.filters === 'object' && !Array.isArray(body.filters)) ? body.filters : {};
+  if (JSON.stringify(filters).length > 5000) return { error: 'Filter data is too large.' };
+  return { name, type, columns, filters };
+}
+app.post('/api/reports', requireAuth, authz.requirePermission('reports'), async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const parsed = validateReportPayload(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const tenantKey = req.session.tenantKey || TENANT_KEY;
+  try {
+    let created = null;
+    const result = await mutateAppState(state => {
+      state.savedReports = Array.isArray(state.savedReports) ? state.savedReports : [];
+      const caller = resolveCaller(state, req.session);
+      const nextId = state.savedReports.reduce((max, r) => Math.max(max, Number(r.id) || 0), 0) + 1;
+      const now = new Date().toISOString();
+      created = {
+        id: nextId, name: parsed.name, type: parsed.type, columns: parsed.columns, filters: parsed.filters,
+        createdBy: caller ? caller.name : (req.session.sub || 'Administrator'),
+        createdByEid: caller ? caller.eid : null,
+        createdByUserId: caller ? caller.id : null,
+        createdAt: now, updatedBy: null, updatedByEid: null, updatedByUserId: null, updatedAt: null
+      };
+      state.savedReports.push(created);
+      return { changed: true };
+    }, req.session.sub, tenantKey);
+    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'report_saved', target: String(created.id), meta: { name: created.name, type: created.type } });
+    res.json({ ok: true, report: created, version: result.version });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to save report.', detail: error.message });
+  }
+});
+app.put('/api/reports/:id', requireAuth, authz.requirePermission('reports'), async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'A valid report id is required.' });
+  const parsed = validateReportPayload(req.body);
+  if (parsed.error) return res.status(400).json({ error: parsed.error });
+  const tenantKey = req.session.tenantKey || TENANT_KEY;
+  try {
+    let outcome = null;
+    const result = await mutateAppState(state => {
+      const report = loadTargetRecord(state, 'savedReports', id);
+      if (!report) { outcome = { error: 404, message: 'Saved report not found.' }; return { changed: false }; }
+      const caller = resolveCaller(state, req.session);
+      const isOwner = !!(caller && report.createdByUserId === caller.id);
+      if (!isOwner && !isAdminCaller(req.session, caller)) { outcome = { error: 403, message: 'Only the report\'s creator or an administrator can edit it.' }; return { changed: false }; }
+      report.name = parsed.name; report.type = parsed.type; report.columns = parsed.columns; report.filters = parsed.filters;
+      report.updatedBy = caller ? caller.name : (req.session.sub || 'Administrator');
+      report.updatedByEid = caller ? caller.eid : null;
+      report.updatedByUserId = caller ? caller.id : null;
+      report.updatedAt = new Date().toISOString();
+      outcome = { report };
+      return { changed: true };
+    }, req.session.sub, tenantKey);
+    if (outcome && outcome.error) return res.status(outcome.error).json({ error: outcome.message });
+    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'report_updated', target: String(id), meta: { name: outcome.report.name } });
+    res.json({ ok: true, report: outcome.report, version: result.version });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to update report.', detail: error.message });
+  }
+});
+app.delete('/api/reports/:id', requireAuth, authz.requirePermission('reports'), async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'A valid report id is required.' });
+  const tenantKey = req.session.tenantKey || TENANT_KEY;
+  try {
+    let outcome = null;
+    const result = await mutateAppState(state => {
+      state.savedReports = Array.isArray(state.savedReports) ? state.savedReports : [];
+      const report = state.savedReports.find(r => r.id === id);
+      if (!report) { outcome = { error: 404, message: 'Saved report not found.' }; return { changed: false }; }
+      const caller = resolveCaller(state, req.session);
+      const isOwner = !!(caller && report.createdByUserId === caller.id);
+      if (!isOwner && !isAdminCaller(req.session, caller)) { outcome = { error: 403, message: 'Only the report\'s creator or an administrator can delete it.' }; return { changed: false }; }
+      state.savedReports = state.savedReports.filter(r => r.id !== id);
+      outcome = { name: report.name };
+      return { changed: true };
+    }, req.session.sub, tenantKey);
+    if (outcome && outcome.error) return res.status(outcome.error).json({ error: outcome.message });
+    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'report_deleted', target: String(id), meta: { name: outcome.name } });
+    res.json({ ok: true, version: result.version });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to delete report.', detail: error.message });
+  }
+});
+
 /* ── AI-powered chat assistant (opt-in, Company Settings toggle) ──
    The client-side chat widget's own deterministic assistantAnswer() (enterprise.js) is the
    default and needs no server support at all -- this endpoint only backs the optional

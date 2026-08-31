@@ -111,6 +111,12 @@ function buildScopedStateForEmployee(state, session) {
     bundyLogs: canSeeAllBundy ? (state.bundyLogs || []) : ownOnly(state.bundyLogs, 'eid'),
     candidates: canSeeRecruitment ? (state.candidates || []) : [],
     onboarding: ownOnly(state.onboarding, 'eid'),
+    // Report Builder's saved report configs (name/type/column list/filters -- never the
+    // underlying employee data itself, which is scoped separately wherever it's actually
+    // rendered). Shared with every user who holds the same 'reports' permission that already
+    // gates the Report Builder page, not just the one who created it; entirely absent for a
+    // session that doesn't hold it, same treatment as `candidates` above.
+    savedReports: has('reports') ? (state.savedReports || []) : [],
 
     // Payroll: my own payslip line items only, never another employee's, unless the caller holds
     // the same broad 'payroll' permission that already gates the Payroll module admin-side.

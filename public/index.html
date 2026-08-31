@@ -10285,7 +10285,15 @@ let reportConfig={
   columns:['activeStatus','eid','name','pos','type','bandLevel','bu','dept','team','salaryPM','status'],
   filters:{bu:'',dept:'',team:'',bandLevel:'',entityName:'',empType:'',status:'',dateFrom:'',dateTo:''},
 };
-let savedReports=[];
+// Persisted server-side (POST/PUT/DELETE /api/reports) -- see saveReport()/loadReport()/
+// deleteReport() below. Hydrated from GET /api/state's savedReports on load/restore
+// (persistence.js), and round-tripped through every admin full-state autosave (persistence.js's
+// snapshot()) the same way securityAudit/platformClients already are, so an admin's routine save
+// elsewhere in the app never wipes it. A non-admin session can never influence this array through
+// PUT /api/state at all (server/state-serialization.js's employee overlay never touches it) --
+// only the dedicated endpoints, which the backend gates on the 'reports' permission and (for
+// edit/delete) ownership or admin.
+let SAVED_REPORTS=[];
 
 /* ── Column definitions per report type ── */
 const REPORT_COLS={
@@ -10482,20 +10490,49 @@ function exportReport(){
   a.click();URL.revokeObjectURL(url);
 }
 
-function saveReport(){
+async function saveReport(){
   const name=document.getElementById('rpt-name')?.value?.trim()||reportConfig.name;
   if(!name){alert('Please give this report a name.');return;}
   reportConfig.name=name;
-  const exists=savedReports.findIndex(r=>r.name===name);
-  const copy=JSON.parse(JSON.stringify(reportConfig));
-  if(exists>=0)savedReports[exists]=copy;
-  else savedReports.push(copy);
-  alert(`Report "${name}" saved!`);
+  const body=JSON.stringify({name,type:reportConfig.type,columns:reportConfig.columns,filters:reportConfig.filters});
+  const existing=SAVED_REPORTS.find(r=>r.name===name);
+  try{
+    let res;
+    if(existing){
+      res=await window.apiRequest('/reports/'+existing.id,{method:'PUT',body});
+      const idx=SAVED_REPORTS.findIndex(r=>r.id===existing.id);
+      if(idx>=0)SAVED_REPORTS[idx]=res.report;
+    }else{
+      res=await window.apiRequest('/reports',{method:'POST',body});
+      SAVED_REPORTS.push(res.report);
+    }
+    if(window.syncStateVersion)window.syncStateVersion(res.version);
+    toast(`Report "${name}" saved.`,'success');
+  }catch(error){
+    toast(error.message||'Unable to save report.','warning');
+    return;
+  }
   render();
 }
 
-function loadReport(idx){
-  reportConfig=JSON.parse(JSON.stringify(savedReports[idx]));
+function loadReport(id){
+  const r=SAVED_REPORTS.find(x=>x.id===id);
+  if(!r)return;
+  reportConfig=JSON.parse(JSON.stringify({type:r.type,name:r.name,columns:r.columns,filters:r.filters}));
+  render();
+}
+
+async function deleteReport(id){
+  if(!confirm('Delete this saved report? This cannot be undone.'))return;
+  try{
+    const res=await window.apiRequest('/reports/'+id,{method:'DELETE'});
+    if(window.syncStateVersion)window.syncStateVersion(res.version);
+    const idx=SAVED_REPORTS.findIndex(r=>r.id===id);
+    if(idx>=0)SAVED_REPORTS.splice(idx,1);
+  }catch(error){
+    toast(error.message||'Unable to delete report.','warning');
+    return;
+  }
   render();
 }
 
@@ -10544,16 +10581,20 @@ function pgReports(){
           <label>Report Name</label>
           <input id="rpt-name" class="finput" value="${esc(rc.name)}" oninput="reportConfig.name=this.value" style="font-size:13px"/>
         </div>
-        ${savedReports.length?`<div style="font-size:12px;font-weight:700;color:var(--txt3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">Saved Reports</div>
+        ${SAVED_REPORTS.length?`<div style="font-size:12px;font-weight:700;color:var(--txt3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.4px">Saved Reports <span style="font-weight:400;text-transform:none;letter-spacing:normal">· shared with everyone who can access Reports</span></div>
         <div style="display:grid;gap:4px">
-          ${savedReports.map((r,i)=>`<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg)">
+          ${SAVED_REPORTS.map(r=>{
+            const canManage=isAdminUser(user)||r.createdByUserId===(user&&user.id);
+            const savedNote=r.updatedAt?`Updated by ${esc(r.updatedBy||'—')} · ${new Date(r.updatedAt).toLocaleDateString()}`:`Saved by ${esc(r.createdBy||'—')} · ${new Date(r.createdAt).toLocaleDateString()}`;
+            return`<div style="display:flex;align-items:center;gap:6px;padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg)">
             <div style="flex:1;min-width:0">
               <div style="font-size:12px;font-weight:600">${esc(r.name)}</div>
               <div style="font-size:10px;color:var(--txt3)">${typeLabels[r.type]} · ${(r.columns||[]).length} cols</div>
+              <div style="font-size:10px;color:var(--txt3)">${savedNote}</div>
             </div>
-            <button class="btn btn-sm" style="font-size:10px;padding:3px 7px" onclick="loadReport(${i})">Load</button>
-            <button class="btn btn-sm btn-danger" style="font-size:10px;padding:3px 6px" onclick="savedReports.splice(${i},1);render()">✕</button>
-          </div>`).join('')}
+            <button class="btn btn-sm" style="font-size:10px;padding:3px 7px" onclick="loadReport(${r.id})">Load</button>
+            ${canManage?`<button class="btn btn-sm btn-danger" style="font-size:10px;padding:3px 6px" onclick="deleteReport(${r.id})">✕</button>`:''}
+          </div>`;}).join('')}
         </div>`:
         `<div style="font-size:12px;color:var(--txt3)">No saved reports yet — configure and click Save.</div>`}
       </div>
