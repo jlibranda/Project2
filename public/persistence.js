@@ -111,7 +111,7 @@
     if(token)headers.Authorization='Bearer '+token;
     var response=await fetch(apiRoot+path,Object.assign({},options||{},{headers:headers}));
     var result=await response.json().catch(function(){return {};});
-    if(!response.ok){var error=new Error(result.error||'The data service returned an error.');error.status=response.status;throw error;}
+    if(!response.ok){var error=new Error(result.error||'The data service returned an error.');error.status=response.status;error.body=result;throw error;}
     return result;
   }
 

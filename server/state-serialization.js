@@ -19,6 +19,7 @@
 // Resolution Center's shared queue, etc.), so a manager/HR-staff account who isn't role==='admin'
 // keeps working exactly as it does today instead of silently losing access.
 const { hasPermission } = require('./authorization');
+const { calculateLeaveRequest } = require('./leave-service');
 
 const SELF_ONLY_USER_FIELDS_EXCLUDED = new Set(['pass']);
 
@@ -192,16 +193,29 @@ function buildScopedStateForEmployee(state, session) {
 //   none of these are things a plain self-service action legitimately creates or edits.
 // - bundyLogs -- written through the dedicated /api/bundy/punch endpoint already.
 
-// Leave: submitLeave() is the only employee-authored creation path; cancelLeaveRequest() is the
-// only employee-authored edit of an existing record (pending -> cancelled, nothing else).
-function sanitizeEmployeeLeaveRecord(existing, incoming, isNew, meId, todayStr) {
+// Leave: POST /api/leaves (server.js) is now the canonical, interactive filing path -- this
+// remains as a defense-in-depth fallback for the legacy PUT /api/state overlay path, so a new
+// leave record submitted THIS way is never trusted for its calculated fields either. Never trusts
+// incoming.days/paidDays/unpaidDays/halfDayLabel -- calculateLeaveRequest (server/leave-service.js)
+// re-derives them the same way the dedicated endpoint does, from type/s/e/dayType plus the
+// employee's own current balance. A request that would need the over-balance confirmation prompt
+// (see calculateLeaveRequest's own comment) is auto-accepted here rather than blocked, since this
+// path has no way to show that prompt and round-trip the answer -- getting the NUMBERS right
+// (never client-controlled) is what this path exists to guarantee, not replicating that UX.
+// Anything that fails validation outright (invalid type/dates/no reason/zero days) is dropped
+// rather than persisted, same as every other "not a legitimate request" case elsewhere here.
+// cancelLeaveRequest() remains the only employee-authored edit of an existing record (pending ->
+// cancelled, nothing else).
+function sanitizeEmployeeLeaveRecord(existing, incoming, isNew, meId, todayStr, previousState) {
   if (isNew) {
-    if (!incoming || typeof incoming !== 'object') return null;
+    if (!incoming || typeof incoming !== 'object' || !previousState) return null;
+    const employee = (previousState.users || []).find(u => u.id === meId);
+    if (!employee) return null;
+    const calc = calculateLeaveRequest(previousState, employee, incoming, true);
+    if (!calc.ok) return null;
     return {
       id: incoming.id, eid: meId,
-      type: incoming.type, s: incoming.s, e: incoming.e, reason: incoming.reason,
-      days: incoming.days, paidDays: incoming.paidDays, unpaidDays: incoming.unpaidDays,
-      dayType: incoming.dayType, halfDayLabel: incoming.halfDayLabel,
+      ...calc.record,
       status: 'pending', filed: todayStr, approvalLayer: 1
       // No approvalHistory/reviewedBy/reviewedAt -- those don't exist until a decision is made.
     };
@@ -257,7 +271,7 @@ function sanitizeEmployeeOnboardingRecord(existing, incoming, isNew) {
 // payload simply didn't include (a stale/partial local snapshot should never look like a delete).
 // Guards against a client-assigned id on a "new" record colliding with a different employee's
 // existing record by reassigning it a fresh id rather than leaving that ambiguous.
-function overlaySanitizedOwnRecords(previousArr, incomingArr, meId, idKey, sanitize, todayStr) {
+function overlaySanitizedOwnRecords(previousArr, incomingArr, meId, idKey, sanitize, todayStr, previousState) {
   const previous = Array.isArray(previousArr) ? previousArr : [];
   const incoming = Array.isArray(incomingArr) ? incomingArr : [];
   const othersPrevious = previous.filter(r => !(r && r[idKey] === meId));
@@ -271,7 +285,7 @@ function overlaySanitizedOwnRecords(previousArr, incomingArr, meId, idKey, sanit
   const sanitizedOwn = [];
   incomingOwn.forEach(r => {
     const existing = previousOwnById.get(r.id);
-    const result = sanitize(existing, r, !existing, meId, todayStr);
+    const result = sanitize(existing, r, !existing, meId, todayStr, previousState);
     if (!result || result.id == null || seenIds.has(result.id)) return;
     if (othersIds.has(result.id)) result.id = nextId++;
     seenIds.add(result.id);
@@ -293,7 +307,7 @@ function applyEmployeeStateOverlay(previousState, incomingState, session) {
   const meId = me.id;
   const todayStr = new Date().toISOString().slice(0, 10);
   const next = JSON.parse(JSON.stringify(previousState || {}));
-  next.leaves = overlaySanitizedOwnRecords(previousState.leaves, incomingState?.leaves, meId, 'eid', sanitizeEmployeeLeaveRecord, todayStr);
+  next.leaves = overlaySanitizedOwnRecords(previousState.leaves, incomingState?.leaves, meId, 'eid', sanitizeEmployeeLeaveRecord, todayStr, previousState);
   next.attendance = overlaySanitizedOwnRecords(previousState.attendance, incomingState?.attendance, meId, 'eid', sanitizeEmployeeAttendanceRecord, todayStr);
   next.changeRequests = overlaySanitizedOwnRecords(previousState.changeRequests, incomingState?.changeRequests, meId, 'eid', sanitizeEmployeeChangeRequest, todayStr);
   next.onboarding = overlaySanitizedOwnRecords(previousState.onboarding, incomingState?.onboarding, meId, 'eid', sanitizeEmployeeOnboardingRecord, todayStr);

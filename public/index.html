@@ -7478,64 +7478,49 @@ function creditLateApprovalHours(empId,date,kind,payItemCode,label){
   queueSync('Payroll_Adjustments');
   return true;
 }
-// Approval itself is backend-authoritative (POST /api/leaves/:id/decision) -- the server decides
-// whether this caller may act on this specific record (chain layer, self-approval block,
-// permission floor) and returns the authoritative updated record, which replaces the local copy
-// before anything else runs. Never assume a local mutation is valid before the server confirms
-// it. The bookkeeping below (leave balance deduction, mirroring the approved days into
-// Attendance, late-approval payroll crediting) still runs locally exactly as before, off the
-// server-confirmed result -- unchanged for an admin-role approver (still a full-state write);
-// for an employee-role account approving via an elevated permission like leave_approve, the core
-// approval decision above is guaranteed to persist, but these secondary writes touch another
-// employee's own records and go through the employee write overlay, which currently protects
-// exactly that -- see server/state-serialization.js's own notes. Flagged as a known follow-up
-// rather than worked around here.
+// Approval AND its finalization side effects are both backend-authoritative now
+// (POST /api/leaves/:id/decision, server/leave-service.js's finalizeLeaveApproval) -- the server
+// decides whether this caller may act (chain layer, self-approval block, permission floor,
+// current-state check), applies the decision, and -- if it just became final and approved --
+// deducts the leave balance, mirrors the approved days into Attendance, and creates any
+// late-approval payroll adjustment, all inside the SAME transaction as the decision itself. This
+// function no longer computes any of that locally: it only ever hydrates local state from the
+// server's authoritative response (record/employee/attendanceRecords/payrollAdjustments) so the
+// UI reflects what actually got persisted, never what this tab assumed would happen. That also
+// closes the previous gap where an employee-role approver's OWN secondary writes (balance/
+// attendance) would silently be discarded by the employee write overlay even though the core
+// decision persisted -- there's no secondary write from the frontend to discard anymore.
 async function actLeave(id,ok){
   const l=LEAVES.find(x=>x.id===id);
   if(!l)return;
-  let result;
+  let res;
   try{
-    const res=await window.apiRequest('/leaves/'+id+'/decision',{method:'POST',body:JSON.stringify({decision:ok?'approved':'rejected'})});
-    Object.assign(l,res.record);if(window.syncStateVersion)window.syncStateVersion(res.version);
-    result={ok:true,message:res.message,decision:ok?'approved':'rejected',final:res.final};
+    res=await window.apiRequest('/leaves/'+id+'/decision',{method:'POST',body:JSON.stringify({decision:ok?'approved':'rejected'})});
   }catch(error){
     toast(error.message||'Unable to record the decision.','warning');
     return;
   }
+  Object.assign(l,res.record);
+  if(window.syncStateVersion)window.syncStateVersion(res.version);
   const decidedEmp=USERS.find(u=>u.id===l.eid);
-  if(result.final){
-    notifyLeaveDecision(decidedEmp,l.type,l.s,l.e,result.decision);
+  if(res.employee&&decidedEmp)Object.assign(decidedEmp,res.employee);
+  if(Array.isArray(res.attendanceRecords))res.attendanceRecords.forEach(rec=>{
+    const idx=ATT.findIndex(a=>a.id===rec.id);
+    if(idx>=0)ATT[idx]=rec;else ATT.push(rec);
+  });
+  if(Array.isArray(res.payrollAdjustments))res.payrollAdjustments.forEach(adj=>{
+    if(!PAYROLL_ADJ.some(a=>a.id===adj.id))PAYROLL_ADJ.push(adj);
+  });
+  if(res.final){
+    notifyLeaveDecision(decidedEmp,l.type,l.s,l.e,ok?'approved':'rejected');
   }else{
     // Not final -- approved at this layer but routed to the next one, same as a fresh filing
     // except addressed to whoever is now the current approver.
     const nextApprover=decidedEmp?getApprovalChain(decidedEmp.eid).find(c=>c.layer===l.approvalLayer)?.approver:null;
     notifyLeaveApprover(nextApprover,l.type,l.s,l.e,l.days);
   }
-  if(result.final&&result.decision==='approved'){
-    const emp=decidedEmp,t=(COMPANY.leaveTypes||[]).find(x=>x.name===l.type);
-    const deductDays=l.paidDays!==undefined?l.paidDays:l.days; /* older records predate the paid/unpaid split — deduct the full amount as before */
-    if(emp&&t&&deductDays>0){
-      if(!emp.leaveBalances)emp.leaveBalances={};
-      const bucket=emp.leaveBalances[t.id]||{balance:0,adjustments:[]};
-      bucket.adjustments=bucket.adjustments||[];
-      bucket.adjustments.unshift({id:Date.now(),date:today(),from:bucket.balance,to:+(bucket.balance-deductDays).toFixed(3),reason:'Leave approved: '+l.s+(l.e!==l.s?' – '+l.e:'')+(l.unpaidDays?' ('+l.unpaidDays+' filed as unpaid)':''),by:user.name});
-      bucket.balance=+(bucket.balance-deductDays).toFixed(3);
-      emp.leaveBalances[t.id]=bucket;
-    }
-    if(emp)markAttendanceForApprovedLeave(l,emp);
-    // Paid leave approved after its own pay period already closed still owes the employee that
-    // day's pay -- credit up to `deductDays` (the paid portion only; unpaidDays get nothing, same
-    // as an ordinary LWOP day) for whichever of the leave's dates already had a closed period.
-    if(emp&&t&&t.paid&&deductDays>0){
-      let credited=0;
-      for(const date of leaveDateRange(l.s,l.e)){
-        if(credited>=deductDays)break;
-        if(creditLateApprovalDay(emp.id,date,'LEAVE_PAY','Approved Leave ('+l.type+')'))credited++;
-      }
-    }
-  }
   queueSync('Leave_Requests');
-  toast(result.message,result.decision==='approved'?'success':'warning');
+  toast(res.message,ok?'success':'warning');
   render();
 }
 // Every calendar date from s to e, inclusive — capped so a bad date range can't loop forever.
@@ -7601,31 +7586,35 @@ function notifyEmployeeOffboarded(emp,offboardedBy){
     recipientEmails:recipients,employeeName:emp.name,eid:emp.eid,offboardedBy:offboardedBy||'System'
   }})}).catch(()=>{});
 }
-function submitLeave(){
+// Leave filing is backend-authoritative: days/paidDays/unpaidDays/halfDayLabel are computed
+// server-side (POST /api/leaves, server/leave-service.js) from type/startDate/endDate/dayType and
+// the employee's own current balance, never trusted from this form -- this only gathers the raw
+// inputs and shows the same over-balance confirmation the server asks for (a 409 response with
+// needsAcknowledgment:true), rather than computing/deciding any of that itself.
+async function submitLeave(){
   const type=document.getElementById('lt').value,dayType=document.getElementById('ldaytype').value,s=document.getElementById('ls').value,e=document.getElementById('le2').value,reason=document.getElementById('lr').value.trim();
-  updateLeaveComputation(); /* ensure window._leaveDays reflects the current form state before reading it */
-  const days=window._leaveDays||0;
+  updateLeaveComputation(); /* ensure window._leaveDays reflects the current form state before reading it -- a cheap client-side pre-check only, the server re-derives/validates all of this itself */
   if(!reason){alert('Please provide a reason.');return;}
-  if(days<=0){alert(dayType==='whole'?'The selected date range has no working days (all rest days). Adjust the dates or file this as a different request.':'Number of days must be greater than 0.');return;}
-  const halfLabel=dayType==='half_am'?'Half Day — First Half':dayType==='half_pm'?'Half Day — Second Half':'';
-  const t=(COMPANY.leaveTypes||[]).find(x=>x.name===type);
-  let paidDays=days,unpaidDays=0;
-  if(t){
-    const bal=leaveBalanceFor(user,t.id);
-    if(t.paid){
-      paidDays=Math.max(0,Math.min(days,bal.balance));
-      unpaidDays=+(days-paidDays).toFixed(3);
-      if(unpaidDays>0&&!confirm('You have '+bal.balance+' day(s) of '+t.name+' available. This request for '+days+' day(s) will be filed as '+paidDays+' paid + '+unpaidDays+' UNPAID (exceeds your balance). Continue?'))return;
-    }else{
-      paidDays=0;unpaidDays=days;
-      if(days>bal.balance&&!confirm('You only have '+bal.balance+' day(s) of '+t.name+' available, but requested '+days+'. File anyway? HR will need to review the shortfall.'))return;
+  if((window._leaveDays||0)<=0){alert(dayType==='whole'?'The selected date range has no working days (all rest days). Adjust the dates or file this as a different request.':'Number of days must be greater than 0.');return;}
+  await fileLeaveRequest({type,startDate:s,endDate:e,reason,dayType},false);
+}
+async function fileLeaveRequest(input,acknowledgeShortfall){
+  let res;
+  try{
+    res=await window.apiRequest('/leaves',{method:'POST',body:JSON.stringify(Object.assign({},input,{acknowledgeShortfall:!!acknowledgeShortfall}))});
+  }catch(error){
+    if(error.status===409&&error.body&&error.body.needsAcknowledgment){
+      if(confirm(error.message))return fileLeaveRequest(input,true);
+      return;
     }
+    alert(error.message||'Unable to submit leave request.');
+    return;
   }
-  LEAVES.push({id:nLeave++,eid:user.id,type,s,e,reason,status:'pending',filed:today(),days,paidDays,unpaidDays,dayType,halfDayLabel:halfLabel,approvalLayer:1});
-  queueSync('Leave_Requests');
-  notifyLeaveApprover(getApprovalChain(user.eid).find(c=>c.layer===1)?.approver,type,s,e,days);
+  LEAVES.push(res.record);
+  if(window.syncStateVersion)window.syncStateVersion(res.version);
+  notifyLeaveApprover(getApprovalChain(user.eid).find(c=>c.layer===1)?.approver,res.record.type,res.record.s,res.record.e,res.record.days);
   window._leaveDraft=null; /* clear the draft so the next visit to File Leave starts fresh */
-  alert('Leave request submitted!'+(unpaidDays>0?' ('+unpaidDays+' day(s) will be unpaid.)':''));
+  alert('Leave request submitted!'+(res.record.unpaidDays>0?' ('+res.record.unpaidDays+' day(s) will be unpaid.)':''));
   goTab(isAdminUser(user)?1:0);
 }
 
