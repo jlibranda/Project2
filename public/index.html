@@ -14477,7 +14477,7 @@ function renderCredRows(filter){
       </div></td>
       <td style="color:var(--txt3)">${esc(u.email||'—')}</td>
       <td><span class="badge" style="background:${c}22;color:${c};font-size:10px">${al.name}</span></td>
-      <td><code style="font-size:11px;background:var(--surface2);padding:2px 7px;border-radius:4px;border:1px solid var(--border)">${esc(u.pass||'—')}</code></td>
+      <td>${isPlatformAdmin?`<code style="font-size:11px;background:var(--surface2);padding:2px 7px;border-radius:4px;border:1px solid var(--border)">${esc(u.pass||'—')}</code>`:`<span style="font-size:11px;color:var(--txt3)" title="Only visible to God Admin">•••••••• 🔒</span>`}</td>
       <td><div style="display:flex;gap:4px;flex-wrap:wrap">
         ${(isPlatformAdmin||canAccess('access_manage'))?`<button class="btn btn-sm" style="font-size:11px" onclick="openAccessEdit(${u.id})">🛡 Level</button>`:''}
         ${(isPlatformAdmin||canAccess('emp_reset_password'))?`<button class="btn btn-sm" style="font-size:11px" onclick="modal={type:'resetPassword',emp:USERS.find(x=>x.id===${u.id}),newPass:''};render()">🔑 Reset</button>`:''}
