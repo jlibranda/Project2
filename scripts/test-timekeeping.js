@@ -160,4 +160,117 @@ assert.equal(twoWeekFlex.otHours, 4, 'aggregate total is unaffected by the added
 const normalFlexWeekResult = core.flexWeekSummary(records, employee, '2026-08-01', '2026-08-01', shifts, 'mon');
 assert.deepEqual(normalFlexWeekResult.weeks, [], 'non-flexWeek employees get an empty weeks array, not undefined');
 
+// ── Sixth-pass: half-day-leave-aware effective work segment + late/undertime overlay ─────────
+// (issues 1-14, 18, 20-27). Shift 09:00-18:00, break 12:00-13:00, no grace.
+const halfDaySchedule = { start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00', graceMinutes: 0 };
+const halfDayHalves = core.splitScheduleIntoHalves(halfDaySchedule);
+assert.deepEqual(halfDayHalves, { am: { start: '09:00', end: '12:00' }, pm: { start: '13:00', end: '18:00' } }, 'issue 3/4: an explicit break IS the AM/PM split point');
+
+// Issue 4: no explicit break configured -- split at the true midpoint of the shift's duration,
+// not a guessed fixed boundary.
+const noBreakSchedule = { start: '08:00', end: '16:00', breakStart: '', breakEnd: '', graceMinutes: 0 };
+assert.deepEqual(core.splitScheduleIntoHalves(noBreakSchedule), { am: { start: '08:00', end: '12:00' }, pm: { start: '12:00', end: '16:00' } }, 'issue 4: no-break schedule splits at the exact midpoint of shift duration');
+
+// Issue 18: overnight shift (22:00-06:00, no break) -- must not treat 06:00 < 22:00 as negative,
+// and must split at the true midpoint across midnight.
+const overnightSchedule = { start: '22:00', end: '06:00', breakStart: '', breakEnd: '', graceMinutes: 0 };
+assert.deepEqual(core.splitScheduleIntoHalves(overnightSchedule), { am: { start: '22:00', end: '02:00' }, pm: { start: '02:00', end: '06:00' } }, 'issue 18: overnight shift splits correctly across midnight');
+
+// Issue 2: the anti-forgery gate -- only a genuinely approved half-day-leave record (all three
+// fields present and correct) qualifies; any forged/partial combination must not.
+assert.equal(core.isApprovedHalfDayLeaveRecord({ approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_am' }), true);
+assert.equal(core.isApprovedHalfDayLeaveRecord({ approvalStatus: 'pending', leaveFraction: 0.5, leaveDayType: 'half_am' }), false, 'issue 2: not-yet-approved leave metadata must not activate the overlay');
+assert.equal(core.isApprovedHalfDayLeaveRecord({ approvalStatus: 'approved', leaveFraction: 1, leaveDayType: 'half_am' }), false, 'issue 2: leaveFraction must be exactly 0.5');
+assert.equal(core.isApprovedHalfDayLeaveRecord({ approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'whole' }), false, 'issue 2: leaveDayType must be half_am/half_pm');
+assert.equal(core.isApprovedHalfDayLeaveRecord(null), false);
+
+const halfAmEmployee = { id: 90, shiftId: 30 };
+// Per-day schedule shape (matches real production shift records) -- normalizeShift's translation
+// of the older flat {start,end} shape deliberately drops breakStart/breakEnd, which would falsely
+// force every one of these tests down the midpoint-fallback path instead of the break-aware one.
+const halfDayShiftDay = { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' };
+const halfDayShifts = [{
+  id: 30, graceMinutes: 0,
+  schedule: { mon: halfDayShiftDay, tue: halfDayShiftDay, wed: halfDayShiftDay, thu: halfDayShiftDay, fri: halfDayShiftDay, sat: halfDayShiftDay, sun: halfDayShiftDay }
+}];
+const approvedHalfAm = { approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_am' };
+const approvedHalfPm = { approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_pm' };
+
+// Issue 1/3: Half AM leave -> the expected work segment is the PM half (the leave-covered AM
+// half is never the "other half" an employee is expected to work).
+assert.deepEqual(core.workSegmentForApprovedHalfDayLeave(halfAmEmployee, '2026-08-03', halfDayShifts, approvedHalfAm), { start: '13:00', end: '18:00', segment: 'pm' });
+// Half PM leave -> the expected work segment is the AM half.
+assert.deepEqual(core.workSegmentForApprovedHalfDayLeave(halfAmEmployee, '2026-08-03', halfDayShifts, approvedHalfPm), { start: '09:00', end: '12:00', segment: 'am' });
+// Not an approved half-day-leave record at all -> no segment.
+assert.equal(core.workSegmentForApprovedHalfDayLeave(halfAmEmployee, '2026-08-03', halfDayShifts, { approvalStatus: 'pending', leaveFraction: 0.5, leaveDayType: 'half_am' }), null);
+
+// Issue 20: Half AM leave, perfect PM attendance (13:00-18:00) -- zero late, zero undertime.
+const pmSegment = core.workSegmentForApprovedHalfDayLeave(halfAmEmployee, '2026-08-03', halfDayShifts, approvedHalfAm);
+assert.deepEqual(core.attendanceAgainstSegment({ tin: '13:00', tout: '18:00' }, pmSegment, halfDaySchedule), { valid: true, lateMinutes: 0, undertimeMinutes: 0 }, 'issue 20: perfect PM attendance against Half AM leave produces zero late/undertime');
+
+// Issue 8/22: Half AM leave, PM Time In 13:30 (30 min late), Time Out 18:00 -- late=30, NEVER a
+// ~4.5h figure measured against the original 09:00 shift start.
+assert.deepEqual(core.attendanceAgainstSegment({ tin: '13:30', tout: '18:00' }, pmSegment, halfDaySchedule), { valid: true, lateMinutes: 30, undertimeMinutes: 0 }, 'issue 8/22: late is measured against the PM segment start, not the full shift start');
+
+// Issue 9/23: Half AM leave, PM Time In 13:00, Time Out 17:00 (left 1h early) -- undertime=60.
+assert.deepEqual(core.attendanceAgainstSegment({ tin: '13:00', tout: '17:00' }, pmSegment, halfDaySchedule), { valid: true, lateMinutes: 0, undertimeMinutes: 60 }, 'issue 9/23: undertime is measured against the PM segment end');
+
+// Issue 10/24: Half PM leave, AM Time In 09:30 (30 min late), Time Out 12:00 -- late=30, NOT ~6h.
+const amSegment = core.workSegmentForApprovedHalfDayLeave(halfAmEmployee, '2026-08-03', halfDayShifts, approvedHalfPm);
+assert.deepEqual(core.attendanceAgainstSegment({ tin: '09:30', tout: '12:00' }, amSegment, halfDaySchedule), { valid: true, lateMinutes: 30, undertimeMinutes: 0 }, 'issue 10/24: late on the AM segment is correctly measured, PM leave stays paid');
+
+// Issue 11/25: Half PM leave, AM Time In 09:00, Time Out 11:00 (left 1h early) -- undertime=60.
+assert.deepEqual(core.attendanceAgainstSegment({ tin: '09:00', tout: '11:00' }, amSegment, halfDaySchedule), { valid: true, lateMinutes: 0, undertimeMinutes: 60 }, 'issue 11/25: undertime on the AM segment is correctly measured');
+
+// Issue 5/6/26: Half AM leave, actual punches 09:00-13:01 (the leave-covered AM window, barely
+// edging one minute into the PM segment) -- must NOT qualify as valid PM-half work merely
+// because the intervals technically overlap by a minute.
+assert.deepEqual(core.attendanceAgainstSegment({ tin: '09:00', tout: '13:01' }, pmSegment, halfDaySchedule), { valid: false, lateMinutes: 0, undertimeMinutes: 0 }, 'issue 5/6/26: a one-minute overlap from the leave-covered side does not qualify as valid other-half work');
+
+// Issue 6/27: Half AM leave, partial PM work 14:00-17:00 -- genuinely belongs to the PM segment
+// (not a boundary-grazing overlap), so it's valid AND correctly produces both late and undertime,
+// never an automatic "not worked" absence.
+assert.deepEqual(core.attendanceAgainstSegment({ tin: '14:00', tout: '17:00' }, pmSegment, halfDaySchedule), { valid: true, lateMinutes: 60, undertimeMinutes: 60 }, 'issue 6/27: partial worked-half attendance is evaluated against the correct segment, producing both late and undertime');
+
+// No attendance at all for the other half -- invalid, no late/undertime overlay contribution
+// (issue 12's "uncovered other half follows existing absence rules" is enforced elsewhere, by
+// leave-service.js marking the record status:'absent'; this function only reports validity).
+assert.deepEqual(core.attendanceAgainstSegment({ tin: '', tout: '' }, pmSegment, halfDaySchedule), { valid: false, lateMinutes: 0, undertimeMinutes: 0 });
+
+// Issue 1/2/7: periodSummary() end-to-end -- an approved Half AM leave record with perfect PM
+// attendance must contribute ZERO late/undertime to the period summary, bypassing the stale
+// full-shift-based stored lateMinutes a punch-ingestion-time computation might have left behind
+// (the exact bug this pass fixes: computeFromPunches, run before the leave was ever approved,
+// would have measured 13:00 against the full 09:00 shift start and stored a ~4h "late" figure).
+const halfAmRecordPerfect = {
+  id: 400, eid: 90, date: '2026-08-03', tin: '13:00', tout: '18:00', status: 'present',
+  approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_am',
+  lateMinutes: 240, undertimeMinutes: 0, ot: 0, nd: 0 // stale full-shift-based stored value
+};
+const halfAmSummaryPerfect = core.periodSummary([halfAmRecordPerfect], halfAmEmployee, '2026-08-03', '2026-08-03', halfDayShifts);
+assert.equal(halfAmSummaryPerfect.lateMinutes, 0, 'issue 7: periodSummary must not use the stale stored late figure for an approved half-day-leave record');
+assert.equal(halfAmSummaryPerfect.undertimeMinutes, 0);
+assert.equal(halfAmSummaryPerfect.absentDays, 0, 'issue 7: a present-status half-day-leave record with perfect other-half work is never counted absent');
+
+// Issue 8: same record, but PM Time In is 13:30 (late) -- periodSummary must report exactly 30
+// late minutes, never a stale/full-shift-based figure.
+const halfAmRecordLate = { ...halfAmRecordPerfect, tin: '13:30', lateMinutes: 270 };
+const halfAmSummaryLate = core.periodSummary([halfAmRecordLate], halfAmEmployee, '2026-08-03', '2026-08-03', halfDayShifts);
+assert.equal(halfAmSummaryLate.lateMinutes, 30, 'issue 8: periodSummary reports exactly 30 late minutes for a Half AM record late by 30 minutes on the worked half');
+assert.equal(halfAmSummaryLate.undertimeMinutes, 0);
+
+// Issue 9: same record, but PM Time Out is 17:00 (left early) -- periodSummary must report
+// exactly 60 undertime minutes.
+const halfAmRecordUndertime = { ...halfAmRecordPerfect, tout: '17:00', lateMinutes: 0, undertimeMinutes: 60 };
+const halfAmSummaryUndertime = core.periodSummary([halfAmRecordUndertime], halfAmEmployee, '2026-08-03', '2026-08-03', halfDayShifts);
+assert.equal(halfAmSummaryUndertime.lateMinutes, 0);
+assert.equal(halfAmSummaryUndertime.undertimeMinutes, 60, 'issue 9: periodSummary reports exactly 60 undertime minutes for a Half AM record short by 60 minutes on the worked half');
+
+// A record that is NOT approved half-day leave must be completely unaffected -- normal full-shift
+// late/undertime recompute still applies exactly as before this pass.
+const normalHalfDayShiftRecord = { id: 401, eid: 90, date: '2026-08-04', tin: '09:20', tout: '17:45', status: 'present', lateMinutes: 0, undertimeMinutes: 0, ot: 0 };
+const normalSummary = core.periodSummary([normalHalfDayShiftRecord], halfAmEmployee, '2026-08-04', '2026-08-04', halfDayShifts);
+assert.equal(normalSummary.lateMinutes, 20, 'a normal (non-half-day-leave) record is completely unaffected by this pass -- still late by 20 minutes against the full shift');
+assert.equal(normalSummary.undertimeMinutes, 15, 'a normal (non-half-day-leave) record is completely unaffected -- still undertime by 15 minutes against the full shift');
+
 console.log('Timekeeping core tests passed.');

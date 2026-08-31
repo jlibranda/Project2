@@ -265,6 +265,113 @@
     return Number.isFinite(hour) && Number.isFinite(minute) ? hour * 60 + minute : null;
   }
 
+  function timeStrFromMinutes(min) {
+    var m = ((Math.round(min) % 1440) + 1440) % 1440;
+    var hh = Math.floor(m / 60), mm = m % 60;
+    return (hh < 10 ? '0' : '') + hh + ':' + (mm < 10 ? '0' : '') + mm;
+  }
+
+  // Rebases a minutes-of-day value onto the "same instant, but never earlier than anchorMin"
+  // timeline -- e.g. an overnight shift's 02:00 end is really the anchor+26h instant, not some
+  // negative offset before the anchor. Used throughout the half-day-leave segment math below so
+  // overnight shifts never produce a negative or nonsensical interval.
+  function unwrapRel(min, anchorMin) {
+    return min < anchorMin ? min + 1440 : min;
+  }
+
+  // Splits a schedule's full work span into AM/PM halves for half-day-leave purposes. When the
+  // schedule has an explicit break, the break boundaries themselves are the natural AM/PM split
+  // (AM = start..breakStart, PM = breakEnd..end). When there's no configured break, there's no
+  // natural split point to borrow, so this divides the raw shift duration exactly at its midpoint
+  // instead of guessing a fixed noon-ish boundary that wouldn't even make sense for, say, an
+  // overnight 22:00-06:00 shift. Returns null when there's no schedule (rest day / not configured)
+  // to split at all.
+  function splitScheduleIntoHalves(schedule) {
+    if (!schedule || !schedule.start || !schedule.end) return null;
+    var startMin = timeToMinutes(schedule.start);
+    var endMinRaw = timeToMinutes(schedule.end);
+    if (startMin == null || endMinRaw == null) return null;
+    var endMin = unwrapRel(endMinRaw, startMin);
+    if (endMin <= startMin) return null;
+    var amEndMin, pmStartMin;
+    var breakStartMin = schedule.breakStart ? timeToMinutes(schedule.breakStart) : null;
+    var breakEndMin = schedule.breakEnd ? timeToMinutes(schedule.breakEnd) : null;
+    if (breakStartMin != null && breakEndMin != null) {
+      breakStartMin = unwrapRel(breakStartMin, startMin);
+      breakEndMin = unwrapRel(breakEndMin, breakStartMin);
+      amEndMin = breakStartMin;
+      pmStartMin = breakEndMin;
+    } else {
+      var midpointMin = startMin + (endMin - startMin) / 2;
+      amEndMin = midpointMin;
+      pmStartMin = midpointMin;
+    }
+    return {
+      am: { start: timeStrFromMinutes(startMin), end: timeStrFromMinutes(amEndMin) },
+      pm: { start: timeStrFromMinutes(pmStartMin), end: timeStrFromMinutes(endMin) }
+    };
+  }
+
+  // The strict anti-forgery gate for treating an attendance record as covered by approved
+  // half-day leave: every field checked here (approvalStatus/leaveFraction/leaveDayType) is
+  // server-authoritative, set only by finalizeLeaveApproval/markAttendanceForApprovedLeave
+  // (server/leave-service.js) -- an employee's own write to PUT /api/state can never set or forge
+  // any of them (sanitizeEmployeeAttendanceRecord discards every field of an incoming patch to an
+  // existing record outright, see server/state-serialization.js).
+  function isApprovedHalfDayLeaveRecord(record) {
+    return !!(record && record.approvalStatus === 'approved' && Number(record.leaveFraction) === 0.5 &&
+      (record.leaveDayType === 'half_am' || record.leaveDayType === 'half_pm'));
+  }
+
+  // The work segment an employee is actually expected to cover on a date with approved half-day
+  // leave -- Half AM leave covers the morning, so the PM half is what's left to work (and vice
+  // versa for Half PM). Returns null for anything that isn't a genuine approved half-day-leave
+  // record (the anti-forgery gate above), or when the date has no resolvable schedule to split.
+  function workSegmentForApprovedHalfDayLeave(employee, date, shifts, attendanceRecord) {
+    if (!isApprovedHalfDayLeaveRecord(attendanceRecord)) return null;
+    var schedule = scheduleForDate(employee, date, shifts);
+    var halves = splitScheduleIntoHalves(schedule);
+    if (!halves) return null;
+    var isHalfAm = attendanceRecord.leaveDayType === 'half_am';
+    var half = isHalfAm ? halves.pm : halves.am;
+    return { start: half.start, end: half.end, segment: isHalfAm ? 'pm' : 'am' };
+  }
+
+  // Whether a punch pair (record.tin/tout) genuinely belongs to the given expected work segment,
+  // and if so, the late/undertime minutes it produces measured against that segment's OWN
+  // boundaries (never the full shift). "Belongs to" requires the actual time-in to fall within the
+  // segment's own window (allowing the same grace period a normal shift start gets) -- a punch
+  // pair that merely brushes past the segment boundary by a minute from a totally different
+  // (leave-covered) time of day does not qualify. Genuine lateness or an early departure WITHIN
+  // the segment still counts as valid, with the corresponding late/undertime minutes returned --
+  // half-day leave pays for the leave-covered half, it does not exempt lateness/undertime on the
+  // half actually worked.
+  function attendanceAgainstSegment(record, segment, schedule) {
+    var empty = { valid: false, lateMinutes: 0, undertimeMinutes: 0 };
+    if (!record || !record.tin || !record.tout || !segment || !schedule) return empty;
+    var anchorMin = timeToMinutes(schedule.start);
+    var segStartMinRaw = timeToMinutes(segment.start);
+    var segEndMinRaw = timeToMinutes(segment.end);
+    if (anchorMin == null || segStartMinRaw == null || segEndMinRaw == null) return empty;
+    var segStartMin = unwrapRel(segStartMinRaw, anchorMin);
+    var segEndMin = unwrapRel(segEndMinRaw, segStartMin);
+    if (segEndMin <= segStartMin) return empty;
+    var tinMinRaw = timeToMinutes(record.tin);
+    var toutMinRaw = timeToMinutes(record.tout);
+    if (tinMinRaw == null || toutMinRaw == null) return empty;
+    var tinMin = unwrapRel(tinMinRaw, anchorMin);
+    var toutMin = unwrapRel(toutMinRaw, tinMin);
+    if (toutMin <= tinMin) return empty; // must be a genuine positive worked interval
+    var grace = Number(schedule.graceMinutes || 0);
+    var valid = tinMin >= (segStartMin - grace) && tinMin <= segEndMin;
+    if (!valid) return empty;
+    return {
+      valid: true,
+      lateMinutes: Math.max(0, tinMin - segStartMin - grace),
+      undertimeMinutes: Math.max(0, segEndMin - toutMin)
+    };
+  }
+
   // A native <input type="time"> always returns a clean 24-hour "HH:MM" value with no separate
   // AM/PM to lose -- so a shift saved with End="06:00" really did have its AM/PM segment left on
   // AM at the moment it was set, most often because it was meant to be 6:00 PM (18:00) for a
@@ -587,17 +694,31 @@
       // these schedule types instead.
       var skipScheduleRecompute = employee && (employee.scheduleType === 'exempted' || employee.scheduleType === 'flexDay' || employee.scheduleType === 'flexWeek');
       var schedule = scheduleForDate(employee, record.date, shifts);
-      var actualIn = minutes(record.tin);
-      var actualOut = minutes(record.tout);
-      var shiftIn = schedule && minutes(schedule.start);
-      var shiftOut = schedule && minutes(schedule.end);
-      var calculatedLate = !skipScheduleRecompute && actualIn != null && shiftIn != null ? Math.max(0, actualIn - shiftIn - Number(schedule.graceMinutes || 0)) : 0;
-      var calculatedUndertime = !skipScheduleRecompute && actualOut != null && shiftOut != null ? Math.max(0, shiftOut - actualOut) : 0;
-      // Max of stored vs. recomputed, same as undertime below -- a record can carry an explicit
-      // lateMinutes:0 that predates this engine and was simply never computed, which a plain
-      // "use it if it's not null" check can't distinguish from a real zero.
-      summary.lateMinutes += Math.max(Number(record.lateMinutes || 0), calculatedLate);
-      summary.undertimeMinutes += Math.max(Number(record.undertimeMinutes || 0), calculatedUndertime);
+      // Approved half-day leave (Half AM/Half PM) covers one half of the shift -- the attendance
+      // expectation for this date is ONLY the other, uncovered half, not the full shift. This is
+      // trusted EXCLUSIVELY (bypassing the Math.max(stored, recalculated) fallback below) rather
+      // than blended with the record's own stored lateMinutes/undertimeMinutes, because that
+      // stored value may have been computed by computeFromPunches at punch-ingestion time (e.g. a
+      // ZK import), BEFORE the leave was ever approved and against the FULL shift -- Math.max
+      // would keep picking that stale, too-large figure even after fixing the live recompute here.
+      var halfDayLeaveSegment = !skipScheduleRecompute ? workSegmentForApprovedHalfDayLeave(employee, record.date, shifts, record) : null;
+      if (halfDayLeaveSegment) {
+        var overlay = attendanceAgainstSegment(record, halfDayLeaveSegment, schedule);
+        summary.lateMinutes += overlay.lateMinutes;
+        summary.undertimeMinutes += overlay.undertimeMinutes;
+      } else {
+        var actualIn = minutes(record.tin);
+        var actualOut = minutes(record.tout);
+        var shiftIn = schedule && minutes(schedule.start);
+        var shiftOut = schedule && minutes(schedule.end);
+        var calculatedLate = !skipScheduleRecompute && actualIn != null && shiftIn != null ? Math.max(0, actualIn - shiftIn - Number(schedule.graceMinutes || 0)) : 0;
+        var calculatedUndertime = !skipScheduleRecompute && actualOut != null && shiftOut != null ? Math.max(0, shiftOut - actualOut) : 0;
+        // Max of stored vs. recomputed, same as undertime below -- a record can carry an explicit
+        // lateMinutes:0 that predates this engine and was simply never computed, which a plain
+        // "use it if it's not null" check can't distinguish from a real zero.
+        summary.lateMinutes += Math.max(Number(record.lateMinutes || 0), calculatedLate);
+        summary.undertimeMinutes += Math.max(Number(record.undertimeMinutes || 0), calculatedUndertime);
+      }
     });
     var weeklyFlex = flexWeekSummary(records, employee, from, to, shifts, startOfWeek || 'mon');
     summary.undertimeMinutes += weeklyFlex.undertimeMinutes;
@@ -628,6 +749,10 @@
     resolveShiftDay: resolveShiftDay,
     isRestDay: isRestDay,
     classifyHolidayPremium: classifyHolidayPremium,
+    splitScheduleIntoHalves: splitScheduleIntoHalves,
+    isApprovedHalfDayLeaveRecord: isApprovedHalfDayLeaveRecord,
+    workSegmentForApprovedHalfDayLeave: workSegmentForApprovedHalfDayLeave,
+    attendanceAgainstSegment: attendanceAgainstSegment,
     periodSummary: periodSummary,
     weekStartForDate: weekStartForDate,
     flexWeekRequiredMinutes: flexWeekRequiredMinutes,
