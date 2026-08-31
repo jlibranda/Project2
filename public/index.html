@@ -14346,12 +14346,10 @@ function pgAccessSetup(){
   const activePerms=editing?_aclDraft.perms:(sel?sel.perms:{});
   const grps=[...new Set(PERM_DEFS.map(p=>p.grp))];
   const permCount=al=>PERM_DEFS.filter(p=>al.perms[p.k]).length;
-  return`<div class="page-header">
-    <div><div class="page-title">Access &amp; Permissions</div>
-    <div class="page-sub">Define roles, grant granular permissions, and manage employee credentials.</div></div>
-    <button class="btn btn-primary" onclick="openNewLevel()">+ New Level</button>
-  </div>
-  <div style="display:grid;grid-template-columns:260px 1fr;gap:1rem;align-items:start">
+  const tabs=['Roles & Permissions','User Credentials'];
+  let body='';
+  if(tab===0){
+  body=`<div style="display:grid;grid-template-columns:260px 1fr;gap:1rem;align-items:start">
 
     <!-- LEFT: Level list -->
     <div style="display:grid;gap:8px">
@@ -14440,10 +14438,10 @@ function pgAccessSetup(){
       </div>
     </div>`:''
   }
-  </div>
-
-  <!-- User Credentials -->
-  <div class="card" style="margin-top:1.5rem">
+  </div>`;
+  }else{
+  body=`<!-- User Credentials -->
+  <div class="card">
     <div class="card-hd" style="margin-bottom:1rem">
       <div>
         <div class="card-title">🔑 User Credentials &amp; Access</div>
@@ -14463,6 +14461,14 @@ function pgAccessSetup(){
       </table>
     </div>
   </div>`;
+  }
+  return`<div class="page-header">
+    <div><div class="page-title">Access &amp; Permissions</div>
+    <div class="page-sub">Define roles, grant granular permissions, and manage employee credentials.</div></div>
+    <button class="btn btn-primary" onclick="openNewLevel()">+ New Level</button>
+  </div>
+  <div class="tabs">${tabs.map((t,i)=>`<div class="tab${tab===i?' active':''}" onclick="goTab(${i})">${t}</div>`).join('')}</div>
+  ${body}`;
 }
 
 function renderCredRows(filter){
