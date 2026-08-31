@@ -671,7 +671,7 @@ const PERM_DEFS=[
   {grp:'Self-Service',        k:'self_view_allowances',l:'My Recurring Allowances',         desc:'See own recurring allowances (transportation, rice subsidy, etc.)',                     sub:true},
   {grp:'Self-Service',        k:'self_view_emergency', l:'My Emergency Contacts',           desc:'See own emergency contact names, relationships, numbers, and addresses',                sub:true},
   {grp:'Self-Service',        k:'self_view_movements', l:'My Movement History',             desc:'See own position, transfer, and salary change history',                                sub:true},
-  {grp:'Self-Service',        k:'self_view_attendance',l:'My Attendance & Payslip Detail',   desc:'See own attendance records (late/absent/OT) and itemized payslip breakdown per cutoff, including via the AI assistant', sub:true},
+  {grp:'Self-Service',        k:'self_view_attendance',l:'AI Assistant: My Attendance & Payslip Detail', desc:"Lets the AI Assistant chat answer questions about your own attendance (late/absent/OT) and itemized payslip breakdown per cutoff, e.g. \"why was I late\" or \"was my OT paid\". This doesn't add a page — your attendance table itself is already visible under Attendance → My Records regardless of this permission.", sub:true},
   {grp:'Self-Service',        k:'onboarding',         l:'Onboarding Tasks',                desc:'Complete and view personal onboarding checklist',                                       sub:false},
   {grp:'Self-Service',        k:'profilechanges',     l:'Profile Change Requests',         desc:'Submit changes to own profile for HR approval',                                         sub:false},
   {grp:'Self-Service',        k:'profile_approve',    l:'Approve Profile Changes',         desc:'Review and approve or reject employee self-edit requests',                              sub:true},
@@ -18610,7 +18610,7 @@ render = function() {
 <script src="/payroll-adjustment-core.js?v=20260804-no-approval-bulk-delete"></script>
 <script src="/payroll-preview-core.js?v=20260804-full-register-filters"></script>
 <script src="/compliance.js?v=20260823-govt-report-actual-withheld"></script>
-<script src="/enterprise.js?v=20260830-attendance-explain"></script>
+<script src="/enterprise.js?v=20260830-perm-label-clarity"></script>
 <script src="/payroll-governance.js?v=20260830-payroll-notify"></script>
 <script src="/persistence.js?v=20260829-hydrate-applies-theme"></script>
 </body>
