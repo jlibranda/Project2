@@ -192,4 +192,82 @@ const undertimeHalfAmPayroll = engine.calculate({
 });
 assert.equal(undertimeHalfAmPayroll.attendanceDeduction, 125, 'issue 23: payroll deducts exactly 60 minutes of undertime pay (₱125.00)');
 
+// ── Follow-up pass: TRUE end-to-end paid/unpaid half-day leave -- TimekeepingCore.periodSummary()
+// feeding directly into PayrollRuleEngine.calculate() (issue 23, tests A-G). Daily rate ₱1,000
+// (salaryPM 22000 ÷ divisor 22), same halfDayEmployee/halfDayShiftsForPayroll/monthlyGroup/
+// monthlyPeriod fixtures as the perfect/late/undertime tests above.
+function unpaidLeavePayrollScenario(date, dayType, tin, tout, status, paidLeaveFraction, unpaidLeaveFraction, absentWorkFraction) {
+  const record = {
+    id: 800 + Math.round(Math.random() * 1000), eid: 60, date, tin, tout, status,
+    approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: dayType,
+    paidLeaveFraction, unpaidLeaveFraction, absentWorkFraction,
+    lateMinutes: 0, undertimeMinutes: 0, ot: 0, nd: 0, restDayHolidayHours: 0
+  };
+  const summary = timekeeping.periodSummary([record], halfDayEmployee, date, date, halfDayShiftsForPayroll);
+  const payroll = engine.calculate({
+    employee: halfDayEmployee, group: monthlyGroup, period: monthlyPeriod, rules: [], baseBasic: 22000, defaultDivisor: 22,
+    attendance: summary, adjustments: [], loans: [], statutory: noStatutory, tax: () => 0
+  });
+  return { summary, payroll };
+}
+
+// Test A -- fully paid Half AM + perfect PM (2026-08-03 is a Monday).
+let r = unpaidLeavePayrollScenario('2026-08-03', 'half_am', '13:00', '18:00', 'present', 0.5, 0, 0);
+assert.equal(r.summary.unpaidLeaveDays, 0, 'Test A: fully paid + perfect work -> unpaidLeaveDays 0');
+assert.equal(r.payroll.attendanceDeduction, 0, 'Test A: fully paid + perfect work -> attendanceDeduction ₱0');
+assert.ok(!r.payroll.lines.some(l => l.code === 'UNPAID_LEAVE'), 'Test A: no UNPAID_LEAVE line at all');
+
+// Test B -- fully unpaid Half AM + perfect PM.
+r = unpaidLeavePayrollScenario('2026-08-04', 'half_am', '13:00', '18:00', 'present', 0, 0.5, 0);
+assert.equal(r.summary.unpaidLeaveDays, 0.5, 'Test B: fully unpaid + perfect work -> unpaidLeaveDays 0.5');
+assert.equal(r.payroll.attendanceDeduction, 500, 'Test B: unpaid leave deduction = ₱500');
+assert.equal(r.payroll.lines.find(l => l.code === 'UNPAID_LEAVE').amount, 500, 'Test B: UNPAID_LEAVE line itself is exactly ₱500');
+assert.ok(!r.payroll.lines.some(l => l.code === 'ABSENT'), 'Test B: absence deduction = ₱0 (no ABSENT line -- the other half was genuinely worked)');
+
+// Test C -- 0.25 paid / 0.25 unpaid + perfect PM.
+r = unpaidLeavePayrollScenario('2026-08-05', 'half_am', '13:00', '18:00', 'present', 0.25, 0.25, 0);
+assert.equal(r.summary.unpaidLeaveDays, 0.25, 'Test C: 0.25 paid / 0.25 unpaid + perfect work -> unpaidLeaveDays 0.25');
+assert.equal(r.payroll.attendanceDeduction, 250, 'Test C: unpaid leave deduction = ₱250');
+assert.ok(!r.payroll.lines.some(l => l.code === 'ABSENT'), 'Test C: absence deduction = ₱0');
+
+// Test D -- fully paid Half AM + NO PM work. periodSummary alone cannot show the full picture here
+// (the paid credit-back is a separate payroll ADJUSTMENT created by leave-service.js at
+// finalization, not part of attendance.unpaidLeaveDays) -- so this proves the attendance-only half
+// of the equation: a full-day absence deduction of exactly ₱1,000, with unpaidLeaveDays
+// contributing nothing extra (never ₱1,500 total once the ₱500 leave-pay credit is later applied
+// on top, netting to the expected ₱500 total -- see scripts/test-security.js's real-approval-flow
+// coverage of the ₱500 net result end to end through the actual leave-decision endpoint).
+r = unpaidLeavePayrollScenario('2026-08-06', 'half_am', '', '', 'absent', 0.5, 0, 0.5);
+assert.equal(r.summary.unpaidLeaveDays, 0, 'Test D: fully paid + no work -> unpaidLeaveDays 0 (not double-counted against the full-day absence)');
+assert.equal(r.payroll.attendanceDeduction, 1000, 'Test D: attendance-only deduction is the full ₱1,000 absence (the ₱500 leave-pay credit-back is a separate adjustment, netting to ₱500 total)');
+assert.ok(!r.payroll.lines.some(l => l.code === 'UNPAID_LEAVE'), 'Test D: no UNPAID_LEAVE line (the paid leave half has no unpaid loss of its own)');
+
+// Test E -- fully unpaid Half AM + NO PM work. Expected total deduction ₱1,000 exactly (no
+// separate credit-back exists for an unpaid leave portion when the work half is already absent --
+// the single full-day absence deduction already covers the entire date).
+r = unpaidLeavePayrollScenario('2026-08-07', 'half_am', '', '', 'absent', 0, 0.5, 0.5);
+assert.equal(r.summary.unpaidLeaveDays, 0, 'Test E: fully unpaid + no work -> unpaidLeaveDays 0 (already covered by the full-day absence)');
+assert.equal(r.payroll.attendanceDeduction, 1000, 'Test E: total deduction is exactly ₱1,000, never ₱1,500');
+assert.ok(!r.payroll.lines.some(l => l.code === 'UNPAID_LEAVE'), 'Test E: no UNPAID_LEAVE line');
+
+// Test F -- partial leave + 30-minute PM late.
+r = unpaidLeavePayrollScenario('2026-08-10', 'half_am', '13:30', '18:00', 'present', 0.25, 0.25, 0);
+assert.equal(r.summary.lateMinutes, 30, 'Test F: 30 minutes late on the worked half');
+assert.equal(r.payroll.lines.find(l => l.code === 'UNPAID_LEAVE').amount, 250, 'Test F: ₱250 unpaid leave');
+assert.equal(r.payroll.lines.find(l => l.code === 'LATE').amount, 62.5, 'Test F: PLUS a 30-minute late deduction (₱62.50)');
+assert.equal(r.payroll.attendanceDeduction, 312.5, 'Test F: combined ₱250 + ₱62.50 = ₱312.50, no full absence deduction');
+
+// Test G -- partial leave + 60-minute PM undertime.
+r = unpaidLeavePayrollScenario('2026-08-11', 'half_am', '13:00', '17:00', 'present', 0.25, 0.25, 0);
+assert.equal(r.summary.undertimeMinutes, 60, 'Test G: 60 minutes undertime on the worked half');
+assert.equal(r.payroll.lines.find(l => l.code === 'UNPAID_LEAVE').amount, 250, 'Test G: ₱250 unpaid leave');
+assert.equal(r.payroll.lines.find(l => l.code === 'UNDERTIME').amount, 125, 'Test G: PLUS a 60-minute undertime deduction (₱125)');
+assert.equal(r.payroll.attendanceDeduction, 375, 'Test G: combined ₱250 + ₱125 = ₱375, no full absence deduction');
+
+// Half PM mirrors of Tests A/B (2026-08-12 is a Wednesday).
+r = unpaidLeavePayrollScenario('2026-08-12', 'half_pm', '09:00', '12:00', 'present', 0.5, 0, 0);
+assert.equal(r.payroll.attendanceDeduction, 0, 'Half PM mirror of Test A: fully paid + perfect AM work -> ₱0 attendance deduction');
+r = unpaidLeavePayrollScenario('2026-08-13', 'half_pm', '09:00', '12:00', 'present', 0, 0.5, 0);
+assert.equal(r.payroll.attendanceDeduction, 500, 'Half PM mirror of Test B: fully unpaid + perfect AM work -> ₱500 unpaid leave deduction');
+
 console.log('Payroll rule engine tests passed.');

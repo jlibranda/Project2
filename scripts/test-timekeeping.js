@@ -273,4 +273,70 @@ const normalSummary = core.periodSummary([normalHalfDayShiftRecord], halfAmEmplo
 assert.equal(normalSummary.lateMinutes, 20, 'a normal (non-half-day-leave) record is completely unaffected by this pass -- still late by 20 minutes against the full shift');
 assert.equal(normalSummary.undertimeMinutes, 15, 'a normal (non-half-day-leave) record is completely unaffected -- still undertime by 15 minutes against the full shift');
 
+// ── Follow-up pass: paid/unpaid half-day leave -- unpaidLeaveDays aggregation (issues 3/4/5/6/21).
+// Reuses halfAmEmployee/halfDayShifts/halfDaySchedule (shift 09:00-18:00, break 12:00-13:00) from
+// the half-day-leave section above.
+function unpaidLeaveScenario(date, dayType, tin, tout, status, paidLeaveFraction, unpaidLeaveFraction, absentWorkFraction) {
+  return core.periodSummary([{
+    id: 900, eid: 90, date, tin, tout, status,
+    approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: dayType,
+    paidLeaveFraction, unpaidLeaveFraction, absentWorkFraction,
+    lateMinutes: 0, undertimeMinutes: 0, ot: 0
+  }], halfAmEmployee, date, date, halfDayShifts);
+}
+
+// A. Fully paid Half AM + perfect PM work -- no loss anywhere.
+let s = unpaidLeaveScenario('2026-08-10', 'half_am', '13:00', '18:00', 'present', 0.5, 0, 0);
+assert.equal(s.unpaidLeaveDays, 0, 'A: fully paid + perfect work -> unpaidLeaveDays 0');
+assert.equal(s.absentDays, 0, 'A: fully paid + perfect work -> absentDays 0');
+assert.equal(s.lateMinutes, 0);
+assert.equal(s.undertimeMinutes, 0);
+
+// B. Fully unpaid Half AM + perfect PM work -- the leave half itself is the only loss.
+s = unpaidLeaveScenario('2026-08-11', 'half_am', '13:00', '18:00', 'present', 0, 0.5, 0);
+assert.equal(s.unpaidLeaveDays, 0.5, 'B: fully unpaid + perfect work -> unpaidLeaveDays 0.5');
+assert.equal(s.absentDays, 0, 'B: fully unpaid + perfect work -> absentDays stays 0 (never a full-day absence)');
+
+// C. 0.25 paid / 0.25 unpaid + perfect PM work.
+s = unpaidLeaveScenario('2026-08-12', 'half_am', '13:00', '18:00', 'present', 0.25, 0.25, 0);
+assert.equal(s.unpaidLeaveDays, 0.25, 'C: 0.25 paid / 0.25 unpaid + perfect work -> unpaidLeaveDays 0.25');
+assert.equal(s.absentDays, 0);
+
+// D. Fully paid Half AM + NO PM work -- the existing full-day absence + credit-back mechanism
+// (leave-service.js) already nets this to the right payroll total; periodSummary must NOT also
+// add a separate unpaidLeaveDays contribution here (double-deduction trap, issue 5).
+s = unpaidLeaveScenario('2026-08-13', 'half_am', '', '', 'absent', 0.5, 0, 0.5);
+assert.equal(s.unpaidLeaveDays, 0, 'D: fully paid + no work -> unpaidLeaveDays 0 (already covered by the full-day absence + credit-back)');
+assert.equal(s.absentDays, 1, 'D: fully paid + no work -> absentDays stays a flat 1 (unchanged existing semantics)');
+
+// E. Fully unpaid Half AM + NO PM work -- the full-day absence alone already deducts the entire
+// day; must NOT also add unpaidLeaveDays (would double it to 1.5 days lost).
+s = unpaidLeaveScenario('2026-08-14', 'half_am', '', '', 'absent', 0, 0.5, 0.5);
+assert.equal(s.unpaidLeaveDays, 0, 'E: fully unpaid + no work -> unpaidLeaveDays 0 (the full-day absence alone already accounts for it)');
+assert.equal(s.absentDays, 1, 'E: fully unpaid + no work -> absentDays stays a flat 1, never 1.5 days worth');
+
+// Mirror: Half PM, fully unpaid + perfect AM work.
+s = unpaidLeaveScenario('2026-08-17', 'half_pm', '09:00', '12:00', 'present', 0, 0.5, 0);
+assert.equal(s.unpaidLeaveDays, 0.5, 'Half PM mirror: fully unpaid + perfect work -> unpaidLeaveDays 0.5');
+assert.equal(s.absentDays, 0);
+
+// Partial paid/unpaid + late worked half (issue 14 at the timekeeping-summary level): late/
+// undertime on the genuinely-worked half must combine additively with unpaidLeaveDays, never be
+// suppressed by it.
+s = unpaidLeaveScenario('2026-08-18', 'half_am', '13:30', '18:00', 'present', 0.25, 0.25, 0);
+assert.equal(s.unpaidLeaveDays, 0.25, 'issue 14: partial unpaid + late work -> unpaidLeaveDays 0.25');
+assert.equal(s.lateMinutes, 30, 'issue 14: partial unpaid + late work -> lateMinutes 30 (measured against the PM segment, unaffected by the paid/unpaid split)');
+
+// Partial paid/unpaid + undertime worked half (issue 15).
+s = unpaidLeaveScenario('2026-08-19', 'half_am', '13:00', '17:00', 'present', 0.25, 0.25, 0);
+assert.equal(s.unpaidLeaveDays, 0.25, 'issue 15: partial unpaid + undertime work -> unpaidLeaveDays 0.25');
+assert.equal(s.undertimeMinutes, 60, 'issue 15: partial unpaid + undertime work -> undertimeMinutes 60');
+
+// Issue 26: a stale status:'absent' record with genuinely valid PM punches, once the segment
+// confirms valid other-half work, must be represented with absentWorkFraction:0 (as
+// markAttendanceForApprovedLeave now stamps it) -- periodSummary must then treat it exactly like
+// any other otherHalfWorked:true record, not as a full-day absence.
+s = unpaidLeaveScenario('2026-08-20', 'half_am', '13:00', '18:00', 'present', 0.5, 0, 0);
+assert.equal(s.absentDays, 0, "issue 26: a normalized (no-longer-'absent') half-day-leave record with valid other-half work never counts as a full-day absence");
+
 console.log('Timekeeping core tests passed.');
