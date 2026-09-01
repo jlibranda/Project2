@@ -2527,15 +2527,26 @@ async function testPayrollImmutability() {
   const passHash = p => bcrypt.hash(p, 10);
   const state = {
     schemaVersion: 1,
-    accessLevels: [{ id: 1, name: 'Super Admin', perms: {} }],
-    users: [{ id: 1, email: 'admin@pi.test', pass: await passHash('adminpipass1'), role: 'admin', accessLevelId: 1, name: 'Admin PI', eid: 'E-PIADMIN', active: true }],
+    accessLevels: [
+      { id: 1, name: 'Super Admin', perms: {} },
+      { id: 2, name: 'Payroll User', perms: { payroll: true } },
+      { id: 3, name: 'Employee', perms: {} }
+    ],
+    users: [
+      { id: 1, email: 'admin@pi.test', pass: await passHash('adminpipass1'), role: 'admin', accessLevelId: 1, name: 'Admin PI', eid: 'E-PIADMIN', active: true },
+      { id: 2, email: 'payroll@pi.test', pass: await passHash('payrollpipass1'), role: 'employee', accessLevelId: 2, name: 'Payroll User PI', eid: 'E-PIPAYROLL', active: true },
+      { id: 3, email: 'emp@pi.test', pass: await passHash('emppipass1'), role: 'employee', accessLevelId: 3, name: 'Emp PI', eid: 'E-PIEMP', active: true },
+      { id: 4, email: 'colleague@pi.test', pass: await passHash('colleaguepipass1'), role: 'employee', accessLevelId: 3, name: 'Colleague PI', eid: 'E-PICOLLEAGUE', active: true }
+    ],
     approvalConfig: { maxLayers: 4, defaultLayers: 1, perEmployee: {} },
     attendance: [], leaves: [], loans: [], payrollAdjustments: [], leaveRetroReconciliations: [],
     payPeriods: [
       // A CLOSED period linked to the locked run below.
       { id: 1, groupId: 1, from: '2026-09-01', to: '2026-09-15', attendanceFrom: '2026-09-01', attendanceTo: '2026-09-15', status: 'closed', runId: 900 },
       // A pending_approval run's own period stays open/unlinked -- normal in-flight payroll work.
-      { id: 2, groupId: 1, from: '2026-10-01', to: '2026-10-15', attendanceFrom: '2026-10-01', attendanceTo: '2026-10-15', status: 'open' }
+      { id: 2, groupId: 1, from: '2026-10-01', to: '2026-10-15', attendanceFrom: '2026-10-01', attendanceTo: '2026-10-15', status: 'open' },
+      // Genuinely open -- dedicated to the open->closed forgery test, untouched by anything else.
+      { id: 3, groupId: 1, from: '2026-11-01', to: '2026-11-15', attendanceFrom: '2026-11-01', attendanceTo: '2026-11-15', status: 'open' }
     ],
     payrolls: [
       {
@@ -2545,7 +2556,33 @@ async function testPayrollImmutability() {
         items: [{ empId: 1, baseBasic: 22000, net: 22000, gross: 22000, totalDed: 0, attendanceSummary: { absentDays: 0 }, rates: { daily: 1000, dailyDivisor: 22 } }]
       },
       // A still-in-flight, NOT locked run -- must remain fully editable through this same endpoint.
-      { id: 901, from: '2026-10-01', to: '2026-10-15', groupId: 1, periodId: 2, status: 'pending_approval', items: [{ empId: 1, baseBasic: 22000, net: 22000 }] }
+      { id: 901, from: '2026-10-01', to: '2026-10-15', groupId: 1, periodId: 2, status: 'pending_approval', approvalStage: 1, items: [{ empId: 1, baseBasic: 22000, net: 22000 }] },
+      // A VOIDED (finalized) run -- must remain just as immutable as a locked one (issue 4).
+      {
+        id: 902, from: '2026-08-01', to: '2026-08-15', groupId: 1, periodId: null, status: 'voided', lockedAt: '2026-08-16', approvedBy: 'Admin PI', voidedAt: '2026-08-20', voidedBy: 'Admin PI', voidReason: 'Test seed',
+        ruleSnapshot: [{ code: 'ABSENCE_DEDUCTION', version: 1, value: 1, priority: 300, coverage: {}, effectiveFrom: '2025-01-01' }],
+        workflow: [{ stage: 'maker', label: 'HR / Payroll Maker', by: 'Admin PI', at: '2026-08-16', status: 'completed' }],
+        items: [{ empId: 1, baseBasic: 22000, net: 22000, gross: 22000, totalDed: 0, attendanceSummary: { absentDays: 0 }, rates: { daily: 1000, dailyDivisor: 22 } }]
+      },
+      // A locked run carrying full historical-replay snapshot detail on emp (id 3)'s own item --
+      // dedicated to the employee-payslip-privacy tests (issue 3/L/M).
+      {
+        id: 903, from: '2026-07-01', to: '2026-07-15', groupId: 1, periodId: null, status: 'locked', lockedAt: '2026-07-16', approvedBy: 'Admin PI',
+        ruleSnapshot: [{ code: 'ABSENCE_DEDUCTION', version: 1, value: 1, priority: 300, coverage: {}, effectiveFrom: '2025-01-01' }],
+        workflow: [{ stage: 'maker', label: 'HR / Payroll Maker', by: 'Admin PI', at: '2026-07-16', status: 'completed' }],
+        items: [{
+          empId: 3, eid: 'E-PIEMP', name: 'Emp PI', pos: 'Analyst', payType: 'monthly',
+          pr: 10, absentDays: 0, lateMinutes: 0, undertimeMinutes: 0, otH: 0, ndH: 0,
+          basic: 22000, ot: 0, nd: 0, lded: 0, aded: 0, gross: 22000, sss: 500, ph: 400, pi: 200, tax: 1000, loan: 0, totalDed: 2100, net: 19900,
+          calculationTrace: [{ code: 'BASIC', name: 'Basic Pay', type: 'earning', amount: 22000, taxable: true, ruleCode: 'BASIC_PAY', ruleVersion: 1, legalSource: 'Employment contract', formula: 'internal formula detail' }],
+          attendanceSummary: { absentDays: 0, records: [{ eid: 3, date: '2026-07-05', tin: '09:00', tout: '18:00' }] },
+          attendanceInputSnapshot: [{ eid: 3, date: '2026-07-05', status: 'present', tin: '09:00', tout: '18:00' }],
+          scheduleSnapshot: { shiftId: 1, assignedShift: { id: 1, name: 'Mon-Fri' } },
+          periodDaysSnapshot: 22, absenceFallbackPolicySnapshot: { mode: 'off' },
+          compensationSnapshot: { id: 'COMP-3-1', monthlySalary: 22000 },
+          rates: { daily: 1000, dailyDivisor: 22, hourly: 125, minute: 125 / 60 }
+        }]
+      }
     ],
     org: [], lookups: {}, changeRequests: [], onboarding: [], candidates: [], performance: [], company: { name: 'Payroll Immutability Co', dailyDivisor: 22 }
   };
@@ -2667,15 +2704,23 @@ async function testPayrollImmutability() {
     assert(blockedAudits.rows.some(row => row.action === 'closed_period_mutation_blocked'), 'PI-9c. closed_period_mutation_blocked was logged');
     assert(!blockedAudits.rows.some(row => JSON.stringify(row.meta || {}).includes('99999')), 'PI-9d. the audit meta never carries the actual attempted (rejected) money value, only the field name and identifiers');
 
-    // 10 (issue 16/17): the dedicated reversal endpoint -- seeds a real applied reconciliation +
-    // adjustment directly (mirroring what the leave-decision flow itself would have created), then
-    // reverses it through POST /api/leave-retro-reconciliations/:id/reverse.
+    // 10 (issue 16/17, test I/J/K): the dedicated reversal endpoint -- seeds a REALISTIC applied
+    // original (status:'applied', processStatus:'applied', payrollRunId:900, appliedAt:<real
+    // timestamp>, payPeriodId/payPeriodLabel set, taxable:true -- exactly what a real adjustment
+    // looks like once it has actually gone through public/payroll-governance.js's runPayroll()/
+    // lockPayrollRun()), then reverses it through POST /api/leave-retro-reconciliations/:id/reverse.
     {
       const row = await pg.query('SELECT state, version FROM app_state WHERE tenant_key = $1', [tenantKey]);
       const st = row.rows[0].state;
       st.payrollAdjustments = st.payrollAdjustments || [];
       st.leaveRetroReconciliations = st.leaveRetroReconciliations || [];
-      st.payrollAdjustments.push({ id: 500, empId: 1, adjType: 'Leave Retro Correction', payItemCode: 'LEAVE_RETRO_EARNING', amount: 500, sourceType: 'leave_retro_reconciliation', sourceLeaveId: 700, sourcePayrollRunId: 900 });
+      st.payrollAdjustments.push({
+        id: 500, empId: 1, adjType: 'Leave Retro Correction', payItemCode: 'LEAVE_RETRO_EARNING',
+        category: 'earnings', direction: 'income', taxable: true, amount: 500,
+        sourceType: 'leave_retro_reconciliation', sourceLeaveId: 700, sourcePayrollRunId: 900, sourcePeriodId: 1,
+        status: 'applied', processStatus: 'applied', payrollRunId: 900, payPeriodId: 1, payPeriodLabel: 'Sept 1-15',
+        appliedAt: '2026-08-31T12:00:00.000Z', createdAt: '2026-08-20', addedBy: 'Admin PI'
+      });
       st.leaveRetroReconciliations.push({ id: 500, sourceType: 'leave_retro_reconciliation', sourceLeaveId: 700, sourcePayrollRunId: 900, sourcePeriodId: 1, empId: 1, status: 'adjustment_created', payrollAdjustmentId: 500, varianceNet: 500 });
       await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
 
@@ -2690,14 +2735,191 @@ async function testPayrollImmutability() {
       const afterReversal = await pg.query('SELECT state FROM app_state WHERE tenant_key = $1', [tenantKey]);
       const stAfter = afterReversal.rows[0].state;
       const originalAdj = stAfter.payrollAdjustments.find(a => a.id === 500);
+      // Test I: the original remains COMPLETELY unchanged -- status, processStatus, payrollRunId,
+      // appliedAt, payPeriodId/Label all still exactly what they were (issue 2B/19).
       assertEqual(originalAdj.amount, 500, 'PI-14 (issue 19). the ORIGINAL adjustment is completely untouched -- still +₱500');
-      assert(stAfter.payrollAdjustments.some(a => a.sourceType === 'leave_retro_reconciliation_reversal' && a.amount === -500), 'PI-15. a NEW, separate reversal adjustment exists');
+      assertEqual(originalAdj.status, 'applied', 'PI-14b. the original\'s status is still "applied"');
+      assertEqual(originalAdj.processStatus, 'applied', 'PI-14c. the original\'s processStatus is still "applied"');
+      assertEqual(originalAdj.payrollRunId, 900, 'PI-14d. the original is still attached to payroll run #900');
+      assertEqual(originalAdj.appliedAt, '2026-08-31T12:00:00.000Z', 'PI-14e. the original\'s appliedAt timestamp is untouched');
 
+      const reversalAdj = stAfter.payrollAdjustments.find(a => a.sourceType === 'leave_retro_reconciliation_reversal' && a.amount === -500);
+      assert(!!reversalAdj, 'PI-15. a NEW, separate reversal adjustment exists');
+      // Test I (issue 2/2A/2C): the reversal starts in the canonical UNPROCESSED state -- it has
+      // never actually been submitted into any payroll run, so it must never inherit the
+      // original's applied/submitted lifecycle state or its old payrollRunId/payPeriodId.
+      assertEqual(reversalAdj.status, 'ready', 'PI-15b (test I). the reversal\'s own status is "ready", never inherited "applied"');
+      assertEqual(reversalAdj.processStatus, 'ready', 'PI-15c (test I). the reversal\'s own processStatus is "ready"');
+      assert(reversalAdj.payrollRunId === undefined || reversalAdj.payrollRunId === null, 'PI-15d (test I). the reversal carries no old payrollRunId -- it enters the next eligible payroll\'s queue, never attached directly to the old run');
+      assert(reversalAdj.appliedAt === undefined || reversalAdj.appliedAt === null, 'PI-15e (test I). the reversal carries no old appliedAt timestamp');
+      assertEqual(reversalAdj.payPeriodId, null, 'PI-15f (test I). the reversal carries no old payPeriodId either');
+      // Test J: tax treatment is preserved from the ORIGINAL correction, never re-derived from the
+      // reversed (negative) amount's sign alone.
+      assertEqual(reversalAdj.taxable, true, 'PI-15g (test J). the reversal preserves the original correction\'s own taxable:true, even though its own amount is negative');
+      assertEqual(reversalAdj.reversalOfPayItemCode, 'LEAVE_RETRO_EARNING', 'PI-15h. the reversal records which original pay item it reverses');
+      assertEqual(reversalAdj.reversesAdjustmentId, 500, 'PI-15i. the reversal links back to the exact original adjustment id');
+      // Internally consistent sign/category/direction -- amount negative, category deductions,
+      // direction deduction, all derived from the same isEarning value, never contradictory.
+      assertEqual(reversalAdj.category, 'deductions', 'PI-15j. the reversal\'s own category matches its own (negative) amount sign');
+      assertEqual(reversalAdj.direction, 'deduction', 'PI-15k. the reversal\'s own direction matches its own (negative) amount sign');
+
+      // Test K: duplicate reversal is blocked, never creates a second reversal adjustment.
       const dup = await call('/api/leave-retro-reconciliations/500/reverse', { method: 'POST', body: JSON.stringify({ reason: 'Trying again' }) }, adminToken);
-      assertEqual(dup.status, 409, 'PI-16. reversing an already-reversed reconciliation a second time is rejected with 409, never silently doubled');
+      assertEqual(dup.status, 409, 'PI-16 (test K). reversing an already-reversed reconciliation a second time is rejected with 409, never silently doubled');
+      const afterDup = await pg.query('SELECT state FROM app_state WHERE tenant_key = $1', [tenantKey]);
+      assertEqual(afterDup.rows[0].state.payrollAdjustments.filter(a => a.sourceType === 'leave_retro_reconciliation_reversal').length, 1, 'PI-16b (test K). still only ONE reversal adjustment exists after the duplicate attempt');
 
       const reversalAudit = await pg.query("SELECT meta FROM security_audit_log WHERE tenant_key = $1 AND action = 'leave_retro_reversal_created' ORDER BY id DESC LIMIT 1", [tenantKey]);
       assertEqual(reversalAudit.rowCount, 1, 'PI-17. the reversal was audited');
+    }
+
+    // ── Test A (issue 1/1B): pending_approval -> locked forged directly through PUT /api/state.
+    // This is THE exploit example -- status, approvalStage, lockedAt, approvedBy all forged at
+    // once. Must be rejected with 409, never partially applied, state version unchanged.
+    {
+      const before = await getState();
+      const s = JSON.parse(JSON.stringify(before.body.state));
+      const run901 = s.payrolls.find(r => r.id === 901);
+      run901.status = 'locked'; run901.approvalStage = 999; run901.lockedAt = new Date().toISOString(); run901.approvedBy = 'Attacker';
+      const r = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s, version: before.body.version }) }, adminToken);
+      assertEqual(r.status, 409, 'A. forging pending_approval -> locked (plus approvalStage/lockedAt/approvedBy) through PUT /api/state is rejected with 409');
+      assertEqual(r.body.code, 'PAYROLL_STATUS_TRANSITION_BLOCKED', 'A2. the specific rejection code names the blocked lifecycle transition');
+      const after = await getState();
+      assertEqual(after.body.state.payrolls.find(x => x.id === 901).status, 'pending_approval', 'A3. the run is still pending_approval -- the forged lock never took effect');
+      assertEqual(after.body.version, before.body.version, 'A4. the state version did not advance -- nothing was persisted at all');
+    }
+
+    // ── Test B (issue 1/1C): open pay period -> closed forged directly through PUT /api/state.
+    {
+      const before = await getState();
+      const s = JSON.parse(JSON.stringify(before.body.state));
+      s.payPeriods.find(p => p.id === 3).status = 'closed';
+      const r = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s, version: before.body.version }) }, adminToken);
+      assertEqual(r.status, 409, 'B. forging open -> closed on a pay period through PUT /api/state is rejected with 409');
+      assertEqual(r.body.code, 'PAY_PERIOD_CLOSE_TRANSITION_BLOCKED', 'B2. the specific rejection code names the blocked transition');
+      const after = await getState();
+      assertEqual(after.body.state.payPeriods.find(p => p.id === 3).status, 'open', 'B3. the period is still open');
+    }
+
+    // ── Test C (issue 1G): approvalStage forgery WITHOUT changing status -- jumping straight past
+    // the remaining workflow stages so the NEXT legitimate approvePayroll() call would auto-lock.
+    {
+      const before = await getState();
+      const s = JSON.parse(JSON.stringify(before.body.state));
+      s.payrolls.find(r => r.id === 901).approvalStage = 999; // status stays 'pending_approval'
+      const r = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s, version: before.body.version }) }, adminToken);
+      assertEqual(r.status, 409, 'C. jumping approvalStage by more than one step (status unchanged) is rejected with 409');
+      assertEqual(r.body.code, 'PAYROLL_APPROVAL_STAGE_SKIPPED', 'C2. the specific rejection code names the blocked stage-skip');
+      const after = await getState();
+      assertEqual(after.body.state.payrolls.find(x => x.id === 901).approvalStage, 1, 'C3. approvalStage is still exactly 1 -- the forged jump never took effect');
+
+      // A genuinely ordinary, single-step edit to the SAME still-pending run (e.g. an item change)
+      // must still succeed normally -- this check must never block real draft editing.
+      const s2 = JSON.parse(JSON.stringify(after.body.state));
+      s2.payrolls.find(r => r.id === 901).items[0].net = 23500;
+      s2.payrolls.find(r => r.id === 901).approvalStage = 2; // exactly one step forward, like a real single approvePayroll() call
+      const r2 = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s2, version: after.body.version }) }, adminToken);
+      assertEqual(r2.status, 200, 'C4. an ordinary single-step approval stage advance (plus an unrelated item edit) still succeeds normally');
+    }
+
+    // ── Test H (issue 4C): locked -> voided forged directly through PUT /api/state. That
+    // transition must only ever happen through a future dedicated reversal/reopen endpoint.
+    {
+      const before = await getState();
+      const s = JSON.parse(JSON.stringify(before.body.state));
+      s.payrolls.find(r => r.id === 900).status = 'voided';
+      const r = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s, version: before.body.version }) }, adminToken);
+      assertEqual(r.status, 409, 'H. forging locked -> voided through PUT /api/state is rejected with 409');
+      const after = await getState();
+      assertEqual(after.body.state.payrolls.find(x => x.id === 900).status, 'locked', 'H2. the run is still locked -- the forged void never took effect');
+    }
+
+    // ── Test F/G (issue 4/4A/4B): a VOIDED run is just as immutable as a locked one.
+    {
+      const before = await getState();
+      let s = JSON.parse(JSON.stringify(before.body.state));
+      s.payrolls.find(r => r.id === 902).items[0].net = 88888;
+      let r = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s, version: before.body.version }) }, adminToken);
+      assertEqual(r.status, 409, 'F (issue 4A). editing a VOIDED run\'s item net through PUT /api/state is rejected with 409');
+      let after = await getState();
+      assertEqual(after.body.state.payrolls.find(x => x.id === 902).items[0].net, 22000, 'F2. the voided run\'s net is still the original value');
+
+      s = JSON.parse(JSON.stringify(after.body.state));
+      s.payrolls = s.payrolls.filter(x => x.id !== 902);
+      r = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s, version: after.body.version }) }, adminToken);
+      assertEqual(r.status, 409, 'G (issue 4B). deleting a VOIDED run through PUT /api/state is rejected with 409');
+      after = await getState();
+      assert(!!after.body.state.payrolls.find(x => x.id === 902), 'G2. the voided run still exists after the rejected delete attempt');
+
+      // Also reject the reverse direction: voided -> locked (issue 4D).
+      s = JSON.parse(JSON.stringify(after.body.state));
+      s.payrolls.find(x => x.id === 902).status = 'locked';
+      r = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s, version: after.body.version }) }, adminToken);
+      assertEqual(r.status, 409, 'G3 (issue 4D). forging voided -> locked through PUT /api/state is rejected with 409');
+    }
+
+    // ── Test L/M (issue 3): employee payslip privacy vs. payroll-user visibility.
+    {
+      const empToken = (await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'emp@pi.test', password: 'emppipass1' }) })).body.token;
+      const payrollToken = (await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ email: 'payroll@pi.test', password: 'payrollpipass1' }) })).body.token;
+
+      const empState = (await call('/api/state', { method: 'GET' }, empToken)).body.state;
+      const empRun903 = empState.payrolls.find(x => x.id === 903);
+      assert(!!empRun903, 'L. the non-payroll employee\'s own payslip run (#903) is present');
+      assertEqual(empRun903.items.length, 1, 'L2. only their own item is present, never a colleague\'s');
+      const empItem = empRun903.items[0];
+      assertEqual(empItem.net, 19900, 'L3. their own payslip figures (net, etc.) are still fully present');
+      assertEqual(empItem.gross, 22000, 'L3b. gross is present');
+      assert(empItem.attendanceInputSnapshot === undefined, 'L4 (issue 3D). attendanceInputSnapshot is stripped from a non-payroll employee\'s own payslip item');
+      assert(empItem.scheduleSnapshot === undefined, 'L5. scheduleSnapshot is stripped');
+      assert(empItem.periodDaysSnapshot === undefined, 'L6. periodDaysSnapshot is stripped');
+      assert(empItem.absenceFallbackPolicySnapshot === undefined, 'L7. absenceFallbackPolicySnapshot is stripped');
+      assert(empItem.compensationSnapshot === undefined, 'L8. compensationSnapshot is stripped');
+      assert(empItem.rates === undefined, 'L9. the internal rate snapshot is stripped');
+      assert(empItem.attendanceSummary === undefined, 'L10. the full attendanceSummary aggregate (with its own raw .records) is stripped');
+      // calculationTrace itself is kept (the payslip UI reads it), but only its display-safe
+      // subset -- never the internal rule/audit citation fields.
+      assert(Array.isArray(empItem.calculationTrace) && empItem.calculationTrace.length === 1, 'L11. calculationTrace itself is still present (the payslip UI needs it)');
+      assert(empItem.calculationTrace[0].ruleCode === undefined && empItem.calculationTrace[0].legalSource === undefined && empItem.calculationTrace[0].formula === undefined, 'L12. but its internal rule/audit metadata (ruleCode/legalSource/formula) is stripped');
+      // Colleague's payroll remains completely absent, not just filtered within.
+      const empRunsForRun900 = empState.payrolls.find(x => x.id === 900);
+      assert(!empRunsForRun900, 'L13. run #900 (belongs entirely to a different employee) does not appear at all for this employee');
+
+      const payrollState = (await call('/api/state', { method: 'GET' }, payrollToken)).body.state;
+      const payrollRun903 = payrollState.payrolls.find(x => x.id === 903);
+      const payrollItem = payrollRun903.items.find(i => i.empId === 3);
+      assert(Array.isArray(payrollItem.attendanceInputSnapshot) && payrollItem.attendanceInputSnapshot.length === 1, 'M (issue 3C/3E). a payroll-authorized session receives the FULL attendanceInputSnapshot, unmodified');
+      assert(!!payrollItem.scheduleSnapshot, 'M2. and scheduleSnapshot');
+      assertEqual(payrollItem.periodDaysSnapshot, 22, 'M3. and periodDaysSnapshot');
+      assert(!!payrollItem.absenceFallbackPolicySnapshot, 'M4. and absenceFallbackPolicySnapshot');
+      assert(!!payrollItem.compensationSnapshot, 'M5. and compensationSnapshot');
+      assert(payrollItem.calculationTrace[0].ruleCode === 'BASIC_PAY', 'M6. and the full calculationTrace including its internal rule/audit metadata');
+      // A payroll-authorized user also sees every OTHER employee's payroll, not just their own.
+      assert(!!payrollState.payrolls.find(x => x.id === 900), 'M7. a payroll-authorized session also sees run #900, which belongs to a different employee entirely');
+    }
+
+    // ── Direct unit coverage for the new pure-function modules (issue 1A/1D) -- no HTTP needed.
+    {
+      const PayrollImmutability = require('../server/payroll-immutability.js');
+      assertEqual(PayrollImmutability.isFinalizedPayrollRun({ status: 'locked' }), true, 'N-unit1 (issue 1A). isFinalizedPayrollRun(locked) is true');
+      assertEqual(PayrollImmutability.isFinalizedPayrollRun({ status: 'voided' }), true, 'N-unit2. isFinalizedPayrollRun(voided) is true');
+      assertEqual(PayrollImmutability.isFinalizedPayrollRun({ status: 'pending_approval' }), false, 'N-unit3. isFinalizedPayrollRun(pending_approval) is false');
+      assertEqual(PayrollImmutability.isFinalizedPayrollRun({ status: 'returned' }), false, 'N-unit4. isFinalizedPayrollRun(returned) is false');
+      assertEqual(PayrollImmutability.isProtectedPayrollRun({ status: 'voided' }), true, 'N-unit5. isProtectedPayrollRun(voided) is true');
+
+      const SnapshotValidation = require('../server/payroll-snapshot-validation.js');
+      const complete = SnapshotValidation.validatePayrollSnapshotCompleteness({
+        ruleSnapshot: [{ code: 'ABSENCE_DEDUCTION' }],
+        items: [{ eid: 1, attendanceInputSnapshot: [], scheduleSnapshot: {}, attendanceSummary: {}, rates: { daily: 1000 } }]
+      });
+      assertEqual(complete.ok, true, 'N-unit6 (issue 1D). a fully-complete run validates ok');
+      const incomplete = SnapshotValidation.validatePayrollSnapshotCompleteness({
+        ruleSnapshot: [],
+        items: [{ eid: 1, attendanceSummary: {}, rates: { daily: 1000 } }] // missing attendanceInputSnapshot + scheduleSnapshot
+      });
+      assertEqual(incomplete.ok, false, 'N-unit7. an incomplete run fails validation');
+      assertEqual(incomplete.code, 'PAYROLL_SNAPSHOT_INCOMPLETE', 'N-unit8. with the expected code');
+      assert(incomplete.missing.some(m => m.includes('attendanceInputSnapshot')) && incomplete.missing.some(m => m.includes('scheduleSnapshot')) && incomplete.missing.some(m => m.includes('ruleSnapshot')), 'N-unit9. and every specific missing field named');
     }
 
     console.log('Payroll immutability tests passed.');

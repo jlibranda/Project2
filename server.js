@@ -1256,13 +1256,14 @@ app.put('/api/state', requireAuth, async (req, res) => {
     // persisted (post employee-overlay too), never skipped for an admin/platform caller.
     const immutability = checkPayrollImmutability(current && current.state, stateToPersist);
     if (!immutability.ok) {
+      const isPeriodCode = /^(CLOSED_PERIOD_|PAY_PERIOD_)/.test(immutability.code || '');
       await auditLog(pool, {
         tenantKey, actor: req.session.sub,
-        action: immutability.code === 'CLOSED_PERIOD_DELETED' || immutability.code === 'CLOSED_PERIOD_REOPENED' || immutability.code === 'CLOSED_PERIOD_RELINKED' ? 'closed_period_mutation_blocked' : 'locked_payroll_mutation_blocked',
+        action: isPeriodCode ? 'closed_period_mutation_blocked' : 'locked_payroll_mutation_blocked',
         target: String(immutability.runId || immutability.periodId || ''),
         meta: { code: immutability.code, field: immutability.field || null }
       });
-      return res.status(409).json({ error: immutability.reason });
+      return res.status(409).json({ error: immutability.reason, code: immutability.code });
     }
     const { result, version } = await withTenantScope(tenantKey, async client => {
       const r = expectedVersion === 0

@@ -320,7 +320,11 @@
   // minimum snapshot a later replay needs -- an incomplete run that locks anyway just becomes
   // another old run permanently stuck at manual_review_required the moment anyone files a retro
   // leave against it, so the block happens here instead, before that ever becomes someone else's
-  // problem to notice.
+  // problem to notice. Mirrored field-for-field in server/payroll-snapshot-validation.js's
+  // validatePayrollSnapshotCompleteness() -- kept in sync manually since this file is browser-only
+  // (DOM/prompt/confirm dependencies) and can't be require()'d from Node; that server-side copy is
+  // what a future dedicated lock endpoint should call, since generic PUT /api/state can no longer
+  // perform a lock transition at all (server/payroll-immutability.js).
   function payrollSnapshotCompleteness(run){
     var missing=[];
     (run.items||[]).forEach(function(item){
