@@ -7,6 +7,7 @@ const { hashPassword, verifyPassword, looksLikeHash } = require('./server/passwo
 const { createAuthorization, hasPermission, resolveCaller, isAdminCaller } = require('./server/authorization.js');
 const { canActOnRecord, applyChainDecision, applyForceApprove } = require('./server/approval-chain.js');
 const { calculateLeaveRequest, finalizeLeaveApproval, projectLeaveDecisionEmployeeForSession, projectAttendancePatchForSession } = require('./server/leave-service.js');
+const { projectReconciliationForSession } = require('./server/leave-payroll-reconciliation.js');
 const { buildScopedStateForEmployee, applyEmployeeStateOverlay } = require('./server/state-serialization.js');
 const { ensureAuditTable, auditLog } = require('./server/audit.js');
 const { validateSessionSecret, validateGodAdminCredential, validateBootstrapCredential, KNOWN_DEFAULTS, isSafeReplacementCredential } = require('./server/secrets.js');
@@ -1477,7 +1478,8 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
     // for every caller, admin included); payroll adjustment DETAIL is included only for a caller
     // who already has payroll visibility, everyone else gets just a safe created/count indicator.
     let employeePatch, attendanceRecords, attendancePatches, attendanceUpdated = false, attendanceDates,
-      payrollAdjustmentCreated = false, payrollAdjustmentCount = 0, payrollAdjustments;
+      payrollAdjustmentCreated = false, payrollAdjustmentCount = 0, payrollAdjustments,
+      retroAdjustmentCreated = false, retroReconciliations;
     if (outcome.sideEffects) {
       const fx = outcome.sideEffects;
       await auditLog(pool, {
@@ -1513,6 +1515,32 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
           meta: fx.payrollAdjustments.map(a => ({ date: a.sourceDate, fraction: a.sourceFraction, amount: a.amount }))
         });
       }
+      // Locked-payroll retro reconciliation audit trail (issue 23) -- one event per outcome,
+      // never carrying salary/government-ID/bank/password-hash detail, only the identifiers and
+      // figures already scoped as safe for an audit record (leave/run/period ids, method, variance).
+      for (const recon of (fx.retroReconciliations || [])) {
+        if (recon.duplicate) {
+          await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_retro_duplicate_skipped', target: String(id), meta: { payrollRunId: recon.sourcePayrollRunId, periodId: recon.sourcePeriodId, empId: recon.empId } });
+          continue;
+        }
+        await auditLog(pool, {
+          tenantKey, actor: req.session.sub, action: 'leave_retro_reconciliation_started', target: String(id),
+          meta: { payrollRunId: recon.sourcePayrollRunId, periodId: recon.sourcePeriodId, empId: recon.empId, method: recon.method }
+        });
+        if (recon.status === 'adjustment_created') {
+          await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_retro_adjustment_created', target: String(id), meta: { payrollRunId: recon.sourcePayrollRunId, periodId: recon.sourcePeriodId, empId: recon.empId, method: recon.method, variance: recon.varianceNet } });
+        } else if (recon.status === 'no_adjustment_required') {
+          await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_retro_no_adjustment_required', target: String(id), meta: { payrollRunId: recon.sourcePayrollRunId, periodId: recon.sourcePeriodId, empId: recon.empId, method: recon.method } });
+        } else if (recon.status === 'manual_review_required') {
+          await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_retro_manual_review_required', target: String(id), meta: { payrollRunId: recon.sourcePayrollRunId, periodId: recon.sourcePeriodId, empId: recon.empId, reason: recon.reason } });
+          if (/manual override/i.test(recon.reason || '')) {
+            await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_retro_manual_override_detected', target: String(id), meta: { payrollRunId: recon.sourcePayrollRunId, periodId: recon.sourcePeriodId, empId: recon.empId } });
+          } else if (/snapshot/i.test(recon.reason || '')) {
+            await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_retro_missing_snapshot', target: String(id), meta: { payrollRunId: recon.sourcePayrollRunId, periodId: recon.sourcePeriodId, empId: recon.empId } });
+          }
+        }
+        await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_retro_reconciliation_completed', target: String(id), meta: { payrollRunId: recon.sourcePayrollRunId, periodId: recon.sourcePeriodId, empId: recon.empId, status: recon.status } });
+      }
       employeePatch = projectLeaveDecisionEmployeeForSession(fx.employee);
       attendanceUpdated = fx.attendanceRecords.length > 0;
       attendanceDates = fx.attendanceRecords.map(r => r.date);
@@ -1527,11 +1555,23 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
       if (payrollAdjustmentCreated && outcome.canSeePayrollAdjustments) {
         payrollAdjustments = fx.payrollAdjustments;
       }
+      // Issue 24/39: retroAdjustmentCreated/retroReconciliationStatus are safe for EVERY caller
+      // (leave-workflow status, not a payroll figure) -- original/corrected net, variance, rate,
+      // and any other payroll detail are only ever included for a caller who already has payroll
+      // visibility, exactly like payrollAdjustments above.
+      const retros = fx.retroReconciliations || [];
+      if (retros.length) {
+        retroAdjustmentCreated = retros.some(r => r.status === 'adjustment_created');
+        retroReconciliations = outcome.canSeePayrollAdjustments
+          ? retros.map(r => ({ sourceLeaveId: r.sourceLeaveId, sourcePayrollRunId: r.sourcePayrollRunId, sourcePeriodId: r.sourcePeriodId, retroReconciliationStatus: r.status, method: r.method, originalNet: r.originalNet, correctedNet: r.correctedNet, varianceNet: r.varianceNet, reason: r.reason }))
+          : retros.map(projectReconciliationForSession);
+      }
     }
     res.json({
       ok: true, record: outcome.record, message: outcome.decisionResult.message, final: outcome.decisionResult.final, version: result.version,
       employeePatch, attendanceRecords, attendanceUpdated, attendanceDates, attendancePatches,
-      payrollAdjustmentCreated, payrollAdjustmentCount, payrollAdjustments
+      payrollAdjustmentCreated, payrollAdjustmentCount, payrollAdjustments,
+      retroAdjustmentCreated, retroReconciliations
     });
   } catch (error) {
     res.status(500).json({ error: 'Unable to record the decision.', detail: error.message });

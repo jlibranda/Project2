@@ -1122,6 +1122,53 @@ async function testLeaveIntegrityAndFinalization() {
   };
   const login = async (email, password) => (await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) })).body.token;
 
+  // Seals a real, immutable locked-payroll-run snapshot for `empId` covering `periodFrom..periodTo`
+  // (period `periodId`, run `runId`, both created on first use and reused thereafter), computed
+  // from WHATEVER real attendance already exists for that employee in that range at the moment
+  // this is called (a virtual full-day-absence record is injected for any of `virtualAbsentDates`
+  // that has no real record yet, mirroring the real app's own unapprovedCoverageDates/
+  // approvedAttendanceSummary behavior for a scheduled workday nobody explained) -- exactly what a
+  // real payroll run would have computed for that date BEFORE the leave being tested existed. Lets
+  // every pre-existing closed-period leave-decision test in this fixture exercise the real
+  // locked-payroll-delta reconciliation (issues 1-44) instead of silently degrading to
+  // manual_review_required, while reproducing the exact same dollar figures those tests already
+  // asserted (hand-verified: a full-day virtual-absence baseline, or a real pre-existing punch
+  // pair interpreted the old non-half-day-aware way, both telescope to exactly the same numbers
+  // the pre-this-pass dailyRate×fraction guess happened to produce for these specific scenarios).
+  const sealHistoricalPayrollItem = async (runId, periodId, empId, periodFrom, periodTo, virtualAbsentDates) => {
+    const row = await pg.query('SELECT state FROM app_state WHERE tenant_key = $1', [tenantKey]);
+    const st = row.rows[0].state;
+    st.payPeriods = st.payPeriods || [];
+    let period = st.payPeriods.find(p => p.id === periodId);
+    if (!period) { period = { id: periodId, groupId: 1, status: 'closed', runId, attendanceFrom: periodFrom, attendanceTo: periodTo }; st.payPeriods.push(period); }
+    else { period.runId = runId; period.status = 'closed'; }
+    st.payrolls = st.payrolls || [];
+    let run = st.payrolls.find(x => x.id === runId);
+    if (!run) { run = { id: runId, status: 'locked', items: [], ruleSnapshot: [] }; st.payrolls.push(run); }
+    if (run.items.find(i => i.empId === empId)) { return; } // already sealed for this employee
+    const emp = st.users.find(u => u.id === empId);
+    const shifts = (st.company && st.company.shifts) || [];
+    st.attendance = st.attendance || [];
+    const covered = new Set(st.attendance.filter(a => a.eid === empId && a.date >= periodFrom && a.date <= periodTo).map(a => a.date));
+    // Virtual absence dates are written into REAL state.attendance (not just used locally to build
+    // the sealed snapshot) -- otherwise the corrected side's full-period recompute (issue 17) would
+    // find NO record at all for an untouched date and treat it as zero absence, fabricating a
+    // phantom variance for a date the leave being tested never touches. A later leave approval for
+    // one of these dates correctly overwrites this placeholder via TimekeepingCore.upsert (see
+    // markAttendanceForApprovedLeave), so only the actually-approved date's interpretation changes.
+    let nextAttId = st.attendance.reduce((max, r) => Math.max(max, Number(r && r.id) || 0), 0) + 1;
+    (virtualAbsentDates || []).filter(d => !covered.has(d)).forEach(d => {
+      st.attendance.push({ id: nextAttId++, eid: empId, date: d, status: 'absent', tin: '', tout: '', ot: 0, approvalStatus: 'approved' });
+    });
+    const existing = st.attendance.filter(a => a.eid === empId && a.date >= periodFrom && a.date <= periodTo);
+    const summary = TimekeepingCore.periodSummary(existing, emp, periodFrom, periodTo, shifts, [], 'mon');
+    const dailyDivisor = 22;
+    const salaryPM = Number(emp.salaryPM) || 22000;
+    const daily = salaryPM / dailyDivisor, hourly = daily / 8, minute = hourly / 60;
+    run.items.push({ empId, baseBasic: salaryPM, attendanceFrom: periodFrom, attendanceTo: periodTo, rates: { daily, dailyDivisor, hourly, minute, annualWorkdays: 264 }, attendanceSummary: summary });
+    await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
+  };
+
   try {
     const adminToken = await login('admin@lv.test', 'adminlvpass1');
     const empToken = await login('emp@lv.test', 'emplvpass1');
@@ -1186,6 +1233,11 @@ async function testLeaveIntegrityAndFinalization() {
       st.leaves.push({ id, eid, type: 'VL', s, e, reason: 'scenario', status: 'pending', filed: s, days, paidDays: days, unpaidDays: 0, dayType: 'whole', approvalLayer: 1 });
       await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
     };
+    // Seals a real locked payroll run (id 900) for period 1 (Sept 1-15, already closed in the
+    // fixture) covering emp's two closed-period leave dates below -- issues 1-44's exact
+    // locked-payroll-delta reconciliation now has a genuine historical snapshot to compare against,
+    // instead of degrading to manual_review_required.
+    await sealHistoricalPayrollItem(900, 1, 2, '2026-09-01', '2026-09-15', ['2026-09-05', '2026-09-06']);
     await seedLeave(100, 2, '2026-09-05', '2026-09-05', 1); // emp's leave, closed period
 
     r = await call('/api/leaves/100/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
@@ -1200,8 +1252,8 @@ async function testLeaveIntegrityAndFinalization() {
     const attForDate = after.rows[0].state.attendance.find(a => a.eid === 2 && a.date === '2026-09-05');
     assert(!!attForDate && attForDate.status === 'leave' && attForDate.approvalStatus === 'approved' && attForDate.source === 'leave-approval', '24. final leave approval creates the correct attendance record for the approved date');
 
-    const adjForDate = after.rows[0].state.payrollAdjustments.find(a => a.empId === 2 && a.effectiveDate === '2026-09-05');
-    assert(!!adjForDate && adjForDate.amount === 1000 && adjForDate.payItemCode === 'LEAVE_PAY', '25. final leave approval creates the expected late payroll adjustment for a date whose pay period already closed (₱22000/22 = ₱1000)');
+    const adjForDate = after.rows[0].state.payrollAdjustments.find(a => a.empId === 2 && a.sourceLeaveId === 100);
+    assert(!!adjForDate && adjForDate.amount === 1000 && adjForDate.payItemCode === 'LEAVE_RETRO_EARNING', '25. final leave approval creates the expected locked-payroll-delta retro adjustment for a date whose pay period already closed (full-day absence deduction reversed: ₱22000/22 = ₱1000)');
 
     assert(r.body.employeePatch && r.body.employeePatch.leaveBalances && r.body.employeePatch.pass === undefined, '26. the decision response hands back the authoritative employeePatch/attendance/payroll results together (and never a password hash)');
     assertEqual(Object.keys(r.body.employeePatch).sort().join(','), 'id,leaveBalances', '26d. employeePatch is minimal -- only id and leaveBalances, not the full employee record');
@@ -1214,13 +1266,20 @@ async function testLeaveIntegrityAndFinalization() {
     await seedLeave(101, 2, '2026-09-06', '2026-09-06', 1);
     const beforeFault = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
     const empBalanceBeforeFault = beforeFault.rows[0].state.users.find(u => u.id === 2).leaveBalances['1'].balance;
+    // 2026-09-06 already carries a sealed, pre-existing 'absent' baseline record (from
+    // sealHistoricalPayrollItem above, needed so leave 101's own later successful approval at 28b
+    // has a real locked-payroll snapshot to reconcile against) -- the rollback assertion below must
+    // therefore check that this pre-existing record is UNCHANGED by the failed attempt, not that no
+    // record exists at all for the date.
+    const sixthAttBefore = beforeFault.rows[0].state.attendance.find(a => a.eid === 2 && a.date === '2026-09-06');
     r = await call('/api/leaves/101/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved', __testForceFinalizationFailure: true }) }, adminToken);
     assertEqual(r.status, 500, '27. an artificial failure during side-effect processing surfaces as an error, not a silent partial success');
     const afterFault = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
     const leaveAfterFault = afterFault.rows[0].state.leaves.find(l => l.id === 101);
     assertEqual(leaveAfterFault.status, 'pending', '28. a failed finalization leaves the leave request in its original (pending) status -- the decision itself rolled back too');
     assertEqual(afterFault.rows[0].state.users.find(u => u.id === 2).leaveBalances['1'].balance, empBalanceBeforeFault, '27b. the leave balance is completely unaffected by the rolled-back transaction (no partial deduction survived)');
-    assert(!afterFault.rows[0].state.attendance.some(a => a.eid === 2 && a.date === '2026-09-06'), '27c. no attendance record survives from the rolled-back transaction either');
+    const sixthAttAfter = afterFault.rows[0].state.attendance.find(a => a.eid === 2 && a.date === '2026-09-06');
+    assertEqual(sixthAttAfter && sixthAttAfter.status, sixthAttBefore && sixthAttBefore.status, '27c. the rolled-back transaction leaves 2026-09-06\'s attendance record exactly as it was (still the sealed absence baseline, never flipped to leave)');
 
     // A genuinely retried approval of the SAME leave (without the fault flag) still works normally
     // afterward -- the rollback didn't corrupt the record for a real retry.
@@ -1229,6 +1288,7 @@ async function testLeaveIntegrityAndFinalization() {
 
     // 29: an employee-role MANAGER's approval produces the exact same complete side effects as
     // admin's did above -- mgr approves rep's leave (rep reports to mgr, single-layer chain).
+    await sealHistoricalPayrollItem(900, 1, 4, '2026-09-01', '2026-09-15', ['2026-09-07', '2026-09-08']);
     await seedLeave(102, 4, '2026-09-07', '2026-09-07', 1);
     r = await call('/api/leaves/102/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, mgrToken);
     assertEqual(r.status, 200, '29-setup. the designated (non-admin) manager can approve');
@@ -1238,8 +1298,8 @@ async function testLeaveIntegrityAndFinalization() {
     assertEqual(repAfter.leaveBalances['1'].balance, 9, '29. an employee-role manager\'s approval deducts the leave balance exactly like admin\'s does');
     const repAtt = after.rows[0].state.attendance.find(a => a.eid === 4 && a.date === '2026-09-07');
     assert(!!repAtt && repAtt.status === 'leave' && repAtt.approvalStatus === 'approved', '29b. and creates the attendance record exactly like admin\'s approval does');
-    const repAdj = after.rows[0].state.payrollAdjustments.find(a => a.empId === 4 && a.effectiveDate === '2026-09-07');
-    assert(!!repAdj && repAdj.amount === 1000, '29c. and creates the late-approval payroll adjustment exactly like admin\'s approval does');
+    const repAdj = after.rows[0].state.payrollAdjustments.find(a => a.empId === 4 && a.sourceType === 'leave_retro_reconciliation' && a.sourceLeaveId === 102);
+    assert(!!repAdj && repAdj.amount === 1000, '29c. and creates the locked-payroll retro adjustment exactly like admin\'s approval does (the sealed run had deducted a full-day absence for 09-07; now fully reversed)');
     assert(repAtt.reviewedBy === 'Mgr LV', '29d. the attendance record correctly attributes the manager as reviewer, not admin');
 
     // ── Issue 1/11: response authorization -- mgr (leave_approve only, no payroll permission)
@@ -1282,6 +1342,11 @@ async function testLeaveIntegrityAndFinalization() {
     // ── Eligible-date tests: shiftemp (Mon-Fri shift, real Sat/Sun rest days) files Friday
     // (2026-09-04) through Monday (2026-09-07) ─────────────────────────────────────────────────
     const LeaveService = require('../server/leave-service.js');
+    // Seals a real locked payroll run for shiftemp covering the same Sept period, with virtual
+    // absence baselines on both dates this Fri-Mon request will touch -- so the retro reconciliation
+    // (issues 1-44) has a genuine historical snapshot to compare against instead of degrading to
+    // manual_review_required.
+    await sealHistoricalPayrollItem(900, 1, 5, '2026-09-01', '2026-09-15', ['2026-09-04', '2026-09-07']);
     r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-04', endDate: '2026-09-07', reason: 'long weekend', dayType: 'whole' }) }, shiftEmpToken);
     assertEqual(r.status, 200, 'ED-setup. Friday-to-Monday request is accepted');
     assertEqual(r.body.record.days, 2, '10. server calculates 2 leave days for a Fri-Mon request when Sat/Sun are configured rest days');
@@ -1310,14 +1375,12 @@ async function testLeaveIntegrityAndFinalization() {
     assert(!satAtt, '16. no leave attendance is created for Saturday');
     assert(!sunAtt, '17. no leave attendance is created for Sunday');
 
-    const fridayAdj = afterEd.payrollAdjustments.find(a => a.empId === 5 && a.effectiveDate === '2026-09-04');
-    const mondayAdj = afterEd.payrollAdjustments.find(a => a.empId === 5 && a.effectiveDate === '2026-09-07');
-    const satAdj = afterEd.payrollAdjustments.find(a => a.empId === 5 && a.effectiveDate === '2026-09-05');
-    const sunAdj = afterEd.payrollAdjustments.find(a => a.empId === 5 && a.effectiveDate === '2026-09-06');
-    assert(!!fridayAdj, '18. late leave credit created for Friday');
-    assert(!!mondayAdj, '19. late leave credit created for Monday');
-    assert(!satAdj, '20. no adjustment for Saturday');
-    assert(!sunAdj, '21. no adjustment for Sunday');
+    // Issue 9: both dates (Friday + Monday) fall in the SAME locked payroll run, so they reconcile
+    // together into exactly ONE retro adjustment -- never one guessed per-date credit each.
+    const shiftEmpRunAdjs = afterEd.payrollAdjustments.filter(a => a.empId === 5 && a.sourceType === 'leave_retro_reconciliation' && a.sourcePayrollRunId === 900);
+    assertEqual(shiftEmpRunAdjs.length, 1, '18. exactly one locked-payroll retro adjustment is created for both Friday and Monday together (same run), never one per date');
+    assertEqual(shiftEmpRunAdjs[0].payItemCode, 'LEAVE_RETRO_EARNING', '18b. the adjustment is a positive earning (the sealed run had virtually deducted both dates as full-day absences)');
+    assertEqual(shiftEmpRunAdjs[0].amount, 2000, '19. the adjustment is exactly the full delta -- both sealed absence deductions (₱1000 each) fully reversed since both dates are now fully paid leave, not a hardcoded per-date guess');
 
     // ── Concurrent/pending balance tests: balanceemp (id 6) starts at 5 ───────────────────────
     // Leave A and Leave B both filed (via direct seed, mirroring what the server itself would
@@ -1478,6 +1541,12 @@ async function testLeaveIntegrityAndFinalization() {
       st.attendance.push({ id: 900, eid: 7, date: '2026-09-08', tin: '13:05', tout: '18:00', status: 'present', ot: 0, nd: 0, notes: '', punches: [], active: true });
       await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
     }
+    // Seals a locked payroll run from the REAL PM-only punches just seeded above (no leave has been
+    // approved yet, so the sealed snapshot reproduces the exact pre-existing bug this whole pass
+    // fixes: the punches get misread against the FULL shift, not the eventual half-day segment,
+    // producing a large bogus LATE deduction) -- an empty virtualAbsentDates array since real
+    // attendance already covers the date.
+    await sealHistoricalPayrollItem(900, 1, 7, '2026-09-01', '2026-09-15', []);
     r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-08', reason: 'half am, worked pm', dayType: 'half_am' }) }, halfWorkedToken);
     assertEqual(r.status, 200, '41-setup. half_am leave with pre-existing PM punches is accepted');
     assertEqual(r.body.record.days, 0.5, '41. half-day leave.days is 0.5, never converted to a full day');
@@ -1494,12 +1563,14 @@ async function testLeaveIntegrityAndFinalization() {
     assertEqual(hwAtt.leaveDayType, 'half_am', '46. attendance carries the half-day type');
     let hwEmp = afterHW.users.find(u => u.id === 7);
     assertEqual(hwEmp.leaveBalances['1'].balance, 9.5, '47. exactly 0.5 leave credit is deducted, not a full day');
-    let hwAdj = afterHW.payrollAdjustments.find(a => a.sourceType === 'leave' && a.sourceLeaveId === halfWorkedLeaveId && a.sourceDate === '2026-09-08');
-    assert(!!hwAdj, '48. a late-approval payroll adjustment is created for the leave portion (period already closed)');
-    assertEqual(hwAdj.amount, 500, '49. the adjustment credits exactly half the daily rate (₱500), never a full ₱1000 -- the worked half was already correctly paid by normal attendance payroll');
+    let hwAdj = afterHW.payrollAdjustments.find(a => a.sourceType === 'leave_retro_reconciliation' && a.sourceLeaveId === halfWorkedLeaveId);
+    assert(!!hwAdj, '48. a locked-payroll retro adjustment is created for the leave (period already closed)');
+    assertEqual(hwAdj.payItemCode, 'LEAVE_RETRO_EARNING', '48b. the adjustment is a positive earning');
+    assertEqual(hwAdj.amount, 500, '49. the adjustment is exactly the real delta -- the sealed run had misread the PM punches against the full shift (large bogus late deduction); the corrected recompute reads them against the half-day PM segment instead, recovering exactly the omitted AM half\'s worth of pay (₱500), never a full ₱1000 and never a naive dailyRate×fraction guess');
 
     // ── Issue 18: half-day paid leave WITHOUT valid other-half work -- only 0.5 is paid, no
     // automatic extra 0.5, whether the pay period is closed OR still open ─────────────────────────
+    await sealHistoricalPayrollItem(900, 1, 8, '2026-09-01', '2026-09-15', ['2026-09-09']);
     r = await call('/api/leaves', { method: 'POST', body: JSON.stringify({ type: 'VL', startDate: '2026-09-09', reason: 'half am, no pm work', dayType: 'half_am' }) }, halfNotWorkedToken);
     assertEqual(r.status, 200, '50-setup. half_am leave with no PM attendance at all is accepted');
     const halfNotWorkedLeaveId = r.body.record.id;
@@ -1511,9 +1582,9 @@ async function testLeaveIntegrityAndFinalization() {
     assertEqual(hnwAtt.leaveFraction, 0.5, '52. attendance still records the legitimate 0.5 leave via metadata');
     let hnwEmp = afterHNW.users.find(u => u.id === 8);
     assertEqual(hnwEmp.leaveBalances['1'].balance, 9.5, '53. exactly 0.5 leave credit is deducted, matching the leave portion actually granted');
-    let hnwAdj = afterHNW.payrollAdjustments.find(a => a.sourceType === 'leave' && a.sourceLeaveId === halfNotWorkedLeaveId && a.sourceDate === '2026-09-09');
-    assert(!!hnwAdj, '54. the 0.5 leave portion is still credited (closed period)');
-    assertEqual(hnwAdj.amount, 500, '55. only ₱500 (0.5 day) is credited, never a full ₱1000 -- the other half is not automatically paid');
+    let hnwAdj = afterHNW.payrollAdjustments.find(a => a.sourceType === 'leave_retro_reconciliation' && a.sourceLeaveId === halfNotWorkedLeaveId);
+    assert(!!hnwAdj, '54. the 0.5 leave portion is still credited via the locked-payroll retro adjustment (closed period)');
+    assertEqual(hnwAdj.amount, 500, '55. only ₱500 (0.5 day) is credited, never a full ₱1000 -- the sealed run had deducted a full-day absence (₱1000); the corrected recompute still deducts the uncovered PM half (absentWorkFraction 0.5, ₱500), so the exact delta recovered is ₱500, never the other half automatically paid');
 
     // Same shape, on a date whose pay period is still OPEN -- without a positive credit here, the
     // open period's own future run would deduct the WHOLE day (status:'absent') for what was
@@ -1549,65 +1620,83 @@ async function testLeaveIntegrityAndFinalization() {
         await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
       };
 
+      // Seals ONE locked payroll run covering every date this block's leaves will touch (including
+      // 09-12, used further below for the idempotency check) -- issue 9/10: multiple leaves against
+      // the SAME run must each reconcile against the SAME frozen original snapshot, netting out
+      // whatever a PRIOR leave already corrected (priorAppliedVarianceForRun), never re-deriving the
+      // full delta from scratch a second time.
+      await sealHistoricalPayrollItem(900, 1, 9, '2026-09-01', '2026-09-15', ['2026-09-05', '2026-09-10', '2026-09-11', '2026-09-12', '2026-09-14', '2026-09-15']);
+
       // 0.5 paid day (balance-limited) -> exactly ₱500, not ₱1000.
       await setFracBalance(0.5);
       await seedFracLeave(600, '2026-09-05', '2026-09-05', 1);
       r = await call('/api/leaves/600/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
       assertEqual(r.status, 200, '60-setup. 0.5-paid-day leave (balance-limited) approves successfully');
       let afterFrac = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
-      let fracAdjs = afterFrac.payrollAdjustments.filter(a => a.sourceLeaveId === 600);
-      assertEqual(fracAdjs.length, 1, '60. exactly one adjustment is created for a single 0.5-day date');
-      assertEqual(fracAdjs[0].amount, 500, '61. a 0.5 paid day credits exactly ₱500, not a full ₱1000');
+      let fracAdjs = afterFrac.payrollAdjustments.filter(a => a.sourceLeaveId === 600 && a.sourceType === 'leave_retro_reconciliation');
+      assertEqual(fracAdjs.length, 1, '60. exactly one locked-payroll retro adjustment is created for a single 0.5-day date');
+      assertEqual(fracAdjs[0].amount, 500, '61. a 0.5 paid day recovers exactly ₱500 of the sealed run\'s full-day absence deduction, not a full ₱1000 -- the exact delta, not a hardcoded fraction guess');
       const leave600 = afterFrac.leaves.find(l => l.id === 600);
       assertEqual(leave600.allocationDerivedAtApproval, true, '61b. the legacy record (no leaveAllocation at filing) had one derived and persisted at approval');
 
-      // 1.5 paid days across 2 eligible dates -> ₱1000 (day 1, full) + ₱500 (day 2, half) = ₱1500
-      // total, NOT ₱2000 (the old integer-counted bug credited a full daily rate to both dates).
+      // 1.5 paid days across 2 eligible dates, SAME locked run as leave 600 above -- issue 9: both
+      // dates reconcile together into ONE adjustment (never one per date), and issue 21's
+      // priorAppliedVarianceForRun nets out leave 600's already-applied +₱500 so this adjustment is
+      // exactly the REMAINING delta (+₱1500), not the full period-wide correction re-derived from
+      // scratch a second time.
       await setFracBalance(1.5);
       await seedFracLeave(601, '2026-09-10', '2026-09-11', 2);
       r = await call('/api/leaves/601/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
       assertEqual(r.status, 200, '62-setup. 1.5-paid-day leave across 2 dates approves successfully');
       afterFrac = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
-      fracAdjs = afterFrac.payrollAdjustments.filter(a => a.sourceLeaveId === 601).sort((a, b) => a.sourceDate.localeCompare(b.sourceDate));
-      assertEqual(fracAdjs.length, 2, '62. two adjustments are created, one per eligible date');
-      assertEqual(fracAdjs[0].amount, 1000, '63. the first date is credited a full day (₱1000)');
-      assertEqual(fracAdjs[1].amount, 500, '64. the second date is credited only the remaining half (₱500)');
-      assertEqual(fracAdjs.reduce((sum, a) => sum + a.amount, 0), 1500, '65. the total credited across both dates is exactly ₱1500, not ₱2000');
+      fracAdjs = afterFrac.payrollAdjustments.filter(a => a.sourceLeaveId === 601 && a.sourceType === 'leave_retro_reconciliation');
+      assertEqual(fracAdjs.length, 1, '62. exactly one adjustment covers BOTH dates together (same locked run), never one per date');
+      assertEqual(fracAdjs[0].amount, 1500, '63. the adjustment is exactly ₱1500 -- day 1\'s full ₱1000 plus day 2\'s remaining ₱500 credited, not a naive per-date guess, and not double-counting leave 600\'s already-applied correction against the same run');
 
-      // 2 full paid days -- whole-number behavior unchanged -- credits exactly ₱2000.
+      // 2 full paid days -- whole-number behavior unchanged -- SAME run again, remaining delta.
       await setFracBalance(2);
       await seedFracLeave(602, '2026-09-14', '2026-09-15', 2);
       r = await call('/api/leaves/602/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
       assertEqual(r.status, 200, '66-setup. 2 full paid days across 2 dates approves successfully');
       afterFrac = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
-      fracAdjs = afterFrac.payrollAdjustments.filter(a => a.sourceLeaveId === 602);
-      assertEqual(fracAdjs.reduce((sum, a) => sum + a.amount, 0), 2000, '66. 2 full paid days still credit exactly ₱2000 -- whole-day behavior is unchanged');
+      fracAdjs = afterFrac.payrollAdjustments.filter(a => a.sourceLeaveId === 602 && a.sourceType === 'leave_retro_reconciliation');
+      assertEqual(fracAdjs.length, 1, '66-setup2. exactly one adjustment covers both remaining dates together');
+      assertEqual(fracAdjs[0].amount, 2000, '66. 2 full paid days still recover exactly ₱2000 of sealed absence deduction -- whole-day behavior is unchanged, and this is still the exact remaining delta against the same run (₱6000 sealed total − ₱500 − ₱1500 already applied = ₱2000 left owed)');
 
-      // Issue 20: pre-seed a STALE full-day (₱1000) adjustment for a leave/date about to be
-      // finalized as a half-day (0.5 -> ₱500 expected) -- finalization must not blindly trust or
-      // duplicate it; it's left alone and flagged for review, never silently doubled or corrected.
+      // ── Issue 21/38: idempotency -- reconciling the SAME leave against the SAME locked run twice
+      // must create at most one reconciliation record and one adjustment; the second call returns
+      // the existing result untouched, never a duplicate. Exercised directly against the module
+      // (mirroring the existing direct creditLateApprovalDay/debitClosedPeriodUnpaidLeave unit tests
+      // above) using the SAME sealed run/state this block already built, on the still-untouched
+      // 2026-09-12 date -- this replaces the old, now architecturally obsolete "stale sourceType:
+      // 'leave' adjustment mismatch" test, since idempotency now lives in state.leaveRetroReconciliations
+      // keyed by (sourceType, sourceLeaveId, sourcePayrollRunId, empId), not the old payrollAdjustments
+      // sourceType:'leave' shape.
+      const LeavePayrollReconciliation = require('../server/leave-payroll-reconciliation.js');
       await setFracBalance(10);
       {
         const row = await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey]);
         const st = row.rows[0].state;
-        st.leaves.push({ id: 603, eid: 9, type: 'VL', s: '2026-09-12', e: '2026-09-12', reason: 'legacy mismatch test', status: 'pending', filed: '2026-09-12', days: 1, paidDays: 0.5, unpaidDays: 0.5, dayType: 'half_am', halfDayLabel: 'Half Day — First Half', approvalLayer: 1 });
-        st.payrollAdjustments = st.payrollAdjustments || [];
-        const staleId = st.payrollAdjustments.reduce((max, a) => Math.max(max, Number(a.id) || 0), 0) + 1;
-        st.payrollAdjustments.push({
-          id: staleId, empId: 9, adjType: 'Legacy Full Day', payItemCode: 'LEAVE_PAY', category: 'earnings', taxable: true, direction: 'income',
-          amount: 1000, reason: 'legacy pre-fraction-aware adjustment', effectiveDate: '2026-09-12', payPeriodId: null, payPeriodLabel: null,
-          addedBy: 'seed', status: 'ready', processStatus: 'ready', createdAt: '2026-09-01', sourceType: 'leave', sourceLeaveId: 603, sourceDate: '2026-09-12'
-        });
-        await pg.query('UPDATE app_state SET state = $1, version = version + 1 WHERE tenant_key = $2', [st, tenantKey]);
+        const emp9 = st.users.find(u => u.id === 9);
+        const leaveRecord = { id: 603, type: 'VL' };
+        // Mirrors what the real finalizeLeaveApproval flow does BEFORE ever calling the
+        // reconciliation module: markAttendanceForApprovedLeave already stamped this leave's final
+        // approved metadata onto state.attendance for 09-12 (fully paid whole day) -- reconciliation
+        // itself never touches attendance, only reads it, so this unit test stamps the exact same
+        // shape by hand rather than re-running the whole approval pipeline.
+        const virt912 = st.attendance.find(a => a.eid === 9 && a.date === '2026-09-12');
+        Object.assign(virt912, { status: 'leave', tin: '', tout: '', approvalStatus: 'approved', leaveFraction: 1, leaveDayType: 'whole', paidLeaveFraction: 1, unpaidLeaveFraction: 0, absentWorkFraction: 0 });
+        const first = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp9, leaveRecord, ['2026-09-12'], 'Tester');
+        assertEqual(first.reconciliations.length, 1, '67-setup. one reconciliation is produced for the one closed date');
+        assertEqual(first.reconciliations[0].status, 'adjustment_created', '67. a real adjustment is created (09-12 is still sealed as a full-day absence, no leave has touched it before)');
+        const adjCountAfterFirst = st.payrollAdjustments.filter(a => a.sourceLeaveId === 603).length;
+        assertEqual(adjCountAfterFirst, 1, '67b. exactly one payroll adjustment now exists for leave 603');
+        const second = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp9, leaveRecord, ['2026-09-12'], 'Tester');
+        assertEqual(second.reconciliations.length, 1, '68. a second reconciliation attempt for the exact same leave/run/employee returns the existing result, not a new one');
+        assert(second.reconciliations[0].duplicate === true, '68b. the second result is explicitly flagged as a duplicate');
+        assertEqual(second.reconciliations[0].id, first.reconciliations[0].id, '68c. it is the SAME reconciliation record (by id), not a freshly recomputed one');
+        assertEqual(st.payrollAdjustments.filter(a => a.sourceLeaveId === 603).length, 1, '69. still only one payroll adjustment exists after the duplicate attempt -- never silently doubled');
       }
-      r = await call('/api/leaves/603/decision', { method: 'POST', body: JSON.stringify({ decision: 'approved' }) }, adminToken);
-      assertEqual(r.status, 200, '67-setup. the half-day leave with a pre-existing stale full-day adjustment still approves');
-      afterFrac = (await pg.query("SELECT state FROM app_state WHERE tenant_key = $1", [tenantKey])).rows[0].state;
-      const mismatchAdjs = afterFrac.payrollAdjustments.filter(a => a.sourceLeaveId === 603);
-      assertEqual(mismatchAdjs.length, 1, '67. no second adjustment is created for the same leave/date -- the stale one is left alone, not duplicated');
-      assertEqual(mismatchAdjs[0].amount, 1000, '68. the pre-existing (stale, mismatched) adjustment amount is untouched, not silently corrected or doubled');
-      const mismatchAudit = await pg.query("SELECT meta FROM security_audit_log WHERE tenant_key = $1 AND action = 'duplicate_leave_payroll_adjustment_skipped' AND target = '603' ORDER BY id DESC LIMIT 1", [tenantKey]);
-      assert(mismatchAudit.rowCount === 1 && Number(mismatchAudit.rows[0].meta.legacyAdjustmentMismatches) >= 1, '69. the mismatch is flagged in the audit log for review (legacyAdjustmentMismatches >= 1)');
     }
 
     // ── Issue 21: attendance-response privacy scoping ─────────────────────────────────────────
@@ -1838,6 +1927,260 @@ async function testLeaveIntegrityAndFinalization() {
 
 // ── 30/31/32/33: bulk migration under REAL (non-bypassing) Row Level Security ───────────────
 // Everything above this point connects as `auratest`, which is a Postgres superuser -- and
+// ── Final Leave/Payroll reconciliation pass: precise, deterministic coverage of the exact
+// mandatory scenarios the locked-payroll-delta module must get right (retro = corrected payroll
+// result MINUS original locked payroll result, never a guessed dailyRate×fraction). Exercised
+// directly against LeavePayrollReconciliation as a pure function over hand-built state objects --
+// no server/DB round trip needed (the module reads/writes nothing but the state object it's
+// given), which lets every scenario assert an EXACT delta with no ambiguity about which real-world
+// attendance edge case produced it. The end-to-end HTTP/DB-backed equivalents of most of these
+// (real locked payroll runs, real approval flow, real audit events) are already covered by
+// testLeaveIntegrityAndFinalization's retrofitted TX-setup/ED-approve/halfworked/halfnotworked/
+// fractest scenarios above -- this function fills in the specific numeric/structural scenarios
+// (issues 26-38) that module wasn't built to exercise cleanly, plus the security/privacy
+// projection (issue 39).
+async function testLeaveRetroReconciliation() {
+  const LeavePayrollReconciliation = require('../server/leave-payroll-reconciliation.js');
+  const TimekeepingCoreLocal = require('../public/timekeeping-core.js');
+
+  // A locked run/item/period triple with a HAND-SPECIFIED original attendanceSummary (full control
+  // over absentDays/unpaidLeaveDays/lateMinutes/undertimeMinutes -- exactly what "the locked
+  // payroll already had" without needing to reverse-engineer real punch data for every scenario)
+  // and real rates (daily 1000, matching the rest of this fixture's ₱22,000/22 convention).
+  let nextRunId = 9000, nextPeriodId = 9000;
+  function sealSynthetic(state, empId, originalSummary, periodFrom, periodTo) {
+    const periodId = nextPeriodId++, runId = nextRunId++;
+    const period = { id: periodId, groupId: 1, status: 'closed', runId, attendanceFrom: periodFrom, attendanceTo: periodTo };
+    const item = {
+      empId, baseBasic: 22000, attendanceFrom: periodFrom, attendanceTo: periodTo,
+      rates: { daily: 1000, dailyDivisor: 22, hourly: 125, minute: 125 / 60, annualWorkdays: 264 },
+      attendanceSummary: Object.assign({ records: [], presentDays: 0, lateMinutes: 0, undertimeMinutes: 0, absentDays: 0, unpaidLeaveDays: 0, otHours: 0, ndHours: 0, restDayHolidayHours: 0, restDayHolidayHoursByCode: {} }, originalSummary)
+    };
+    const run = { id: runId, status: 'locked', items: [item], ruleSnapshot: [] };
+    state.payPeriods = (state.payPeriods || []).concat(period);
+    state.payrolls = (state.payrolls || []).concat(run);
+    return { period, run, item };
+  }
+  function freshState() {
+    return { users: [{ id: 1, payGroupId: 1 }], attendance: [], payrollAdjustments: [], leaveRetroReconciliations: [], company: { shifts: [] } };
+  }
+  const emp = { id: 1, payGroupId: 1 };
+  const leave = id => ({ id, type: 'VL' });
+
+  // 26: original ₱500 (half-day-unaware misread of a PM-worked date), later Half AM UNPAID leave
+  // -> corrected is ALSO exactly ₱500 (0.5 unpaid × ₱1000) -> retro delta ₱0, no adjustment at all
+  // (issue 13's explicit "do not fabricate a ₱0 adjustment").
+  {
+    const st = freshState();
+    const ctx = sealSynthetic(st, 1, { absentDays: 0.5 }, '2026-01-01', '2026-01-31');
+    st.attendance.push({ id: 1, eid: 1, date: '2026-01-05', status: 'present', tin: '13:00', tout: '18:00', approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_am', paidLeaveFraction: 0, unpaidLeaveFraction: 0.5, absentWorkFraction: 0 });
+    const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp, leave(2600), ['2026-01-05'], 'Tester');
+    assertEqual(out.reconciliations.length, 1, '26-setup. one reconciliation is produced');
+    assertEqual(out.reconciliations[0].status, 'no_adjustment_required', '26. original ₱500 and corrected ₱500 -> zero delta -> no_adjustment_required, never a fabricated ₱0 adjustment');
+    assertEqual(out.reconciliations[0].varianceNet, 0, '26b. the computed variance is exactly 0');
+    assertEqual(st.payrollAdjustments.length, 0, '26c. no payrollAdjustments entry was created for a zero-delta reconciliation');
+    const auditEvt = st.leaveRetroReconciliations.find(r => r.sourceLeaveId === 2600);
+    assert(!!auditEvt && auditEvt.status === 'no_adjustment_required', '26d. the reconciliation record itself is the auditable proof of "no adjustment needed", not silence');
+  }
+
+  // 27: original ₱250, corrected (Half AM fully UNPAID) ₱500 -> retro = -₱250, NOT -₱500 (a naive
+  // dailyRate×fraction guess would fabricate -₱500 here).
+  {
+    const st = freshState();
+    sealSynthetic(st, 1, { absentDays: 0.25 }, '2026-01-01', '2026-01-31');
+    st.attendance.push({ id: 1, eid: 1, date: '2026-01-05', status: 'present', tin: '13:00', tout: '18:00', approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_am', paidLeaveFraction: 0, unpaidLeaveFraction: 0.5, absentWorkFraction: 0 });
+    const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp, leave(2700), ['2026-01-05'], 'Tester');
+    assertEqual(out.reconciliations[0].status, 'adjustment_created', '27-setup. a real adjustment is created');
+    assertEqual(out.reconciliations[0].varianceNet, -250, '27. retro is exactly -₱250 (₱500 corrected minus ₱250 original), never the naive -₱500 dailyRate×0.5 guess');
+    const adj = st.payrollAdjustments.find(a => a.sourceLeaveId === 2700);
+    assertEqual(adj.payItemCode, 'LEAVE_RETRO_DEDUCTION', '27b. a negative variance is booked as a deduction pay item');
+    assertEqual(adj.amount, -250, '27c. the adjustment amount matches the variance exactly');
+  }
+
+  // 28: original ₱750, corrected (Half PM PAID, AM validly worked) ₱0 -> retro = +₱750, NOT the
+  // naive +₱500 a flat dailyRate×0.5 credit would produce.
+  {
+    const st = freshState();
+    sealSynthetic(st, 1, { absentDays: 0.75 }, '2026-01-01', '2026-01-31');
+    st.attendance.push({ id: 1, eid: 1, date: '2026-01-05', status: 'present', tin: '09:00', tout: '13:00', approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_pm', paidLeaveFraction: 0.5, unpaidLeaveFraction: 0, absentWorkFraction: 0 });
+    const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp, leave(2800), ['2026-01-05'], 'Tester');
+    assertEqual(out.reconciliations[0].varianceNet, 750, '28. retro is exactly +₱750 (₱0 corrected minus ₱750 original), never the naive +₱500 dailyRate×0.5 guess');
+    assertEqual(out.reconciliations[0].correctedAttendanceDeduction, 0, '28b. the corrected side has zero attendance deduction -- AM was validly worked and PM is fully paid leave');
+  }
+
+  // 29: original full-day-absence ₱1000, later Half AM PAID leave with NO PM work -> corrected
+  // final deduction ₱500 (the uncovered PM half only) -> retro = +₱500.
+  {
+    const st = freshState();
+    sealSynthetic(st, 1, { absentDays: 1 }, '2026-01-01', '2026-01-31');
+    st.attendance.push({ id: 1, eid: 1, date: '2026-01-05', status: 'absent', tin: '', tout: '', approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_am', paidLeaveFraction: 0.5, unpaidLeaveFraction: 0, absentWorkFraction: 0.5 });
+    const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp, leave(2900), ['2026-01-05'], 'Tester');
+    assertEqual(out.reconciliations[0].varianceNet, 500, '29. full-day-absence baseline corrected to a half-paid/half-still-absent day -> retro is exactly +₱500');
+  }
+
+  // 30: original payroll had NO leave approval at all (a normal, fully-present, zero-deduction
+  // date) -- final approval is 0.25 paid / 0.25 unpaid / 0.5 genuinely worked (0.75 total day
+  // entitlement). Asserts retro equals the module's own reported correctedNet-originalNet
+  // difference, not a value hardcoded independent of that arithmetic.
+  {
+    const st = freshState();
+    sealSynthetic(st, 1, { absentDays: 0, unpaidLeaveDays: 0 }, '2026-01-01', '2026-01-31');
+    st.attendance.push({ id: 1, eid: 1, date: '2026-01-05', status: 'present', tin: '13:00', tout: '18:00', approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_am', paidLeaveFraction: 0.25, unpaidLeaveFraction: 0.25, absentWorkFraction: 0 });
+    const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp, leave(3000), ['2026-01-05'], 'Tester');
+    const rec = out.reconciliations[0];
+    assertEqual(rec.varianceNet, +(rec.correctedNet - rec.originalNet).toFixed(2), '30. retro is exactly correctedNet-originalNet as reported, never a value independent of that arithmetic');
+    assertEqual(rec.varianceNet, -250, '30b. for this specific 0.25 unpaid portion (never accounted for in the original run at all), that arithmetic works out to exactly -₱250');
+  }
+
+  // 31: Half AM paid, actual PM punch-in at 13:30 (30 min late against the PM segment) -- the
+  // corrected recompute must RETAIN that late deduction, not zero it out just because the leave
+  // itself is paid. Needs a real shift/schedule for periodSummary's own late-minutes computation
+  // to run, unlike the hand-specified scenarios above.
+  {
+    const shift = { id: 1, name: 'Mon-Fri', schedule: {
+      mon: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+      tue: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+      wed: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+      thu: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+      fri: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+      sat: { restDay: true, start: '', end: '', breakStart: '', breakEnd: '' },
+      sun: { restDay: true, start: '', end: '', breakStart: '', breakEnd: '' }
+    } };
+    const st = freshState();
+    st.company.shifts = [shift];
+    const shiftEmp = { id: 1, payGroupId: 1, shiftId: 1 };
+    st.users = [shiftEmp];
+    sealSynthetic(st, 1, { absentDays: 1 }, '2026-01-01', '2026-01-31'); // baseline: no leave existed yet
+    // 2026-01-05 is a Monday -- a real workday under the shift above.
+    st.attendance.push({ id: 1, eid: 1, date: '2026-01-05', status: 'present', tin: '13:30', tout: '18:00', approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_am', paidLeaveFraction: 0.5, unpaidLeaveFraction: 0, absentWorkFraction: 0 });
+    const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, shiftEmp, leave(3100), ['2026-01-05'], 'Tester');
+    const rec = out.reconciliations[0];
+    assert(rec.correctedAttendanceDeduction > 0, '31. the corrected side still carries a nonzero deduction -- the genuine 30-minute PM lateness is NOT wiped out just because the AM half is paid leave');
+    assertEqual(rec.correctedAttendanceDeduction, 62.5, '31b. the retained late deduction is exactly 30 minutes × the minute rate (₱62.50), not the full ₱1000 absence and not zero');
+  }
+
+  // 32: Half AM, actual PM 13:00-17:00 (60 min undertime against the PM segment) -- same pattern,
+  // for undertime instead of late.
+  {
+    const shift = { id: 1, name: 'Mon-Fri', schedule: {
+      mon: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+      tue: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+      wed: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+      thu: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+      fri: { restDay: false, start: '09:00', end: '18:00', breakStart: '12:00', breakEnd: '13:00' },
+      sat: { restDay: true, start: '', end: '', breakStart: '', breakEnd: '' },
+      sun: { restDay: true, start: '', end: '', breakStart: '', breakEnd: '' }
+    } };
+    const st = freshState();
+    st.company.shifts = [shift];
+    const shiftEmp = { id: 1, payGroupId: 1, shiftId: 1 };
+    st.users = [shiftEmp];
+    sealSynthetic(st, 1, { absentDays: 1 }, '2026-01-01', '2026-01-31');
+    st.attendance.push({ id: 1, eid: 1, date: '2026-01-05', status: 'present', tin: '13:00', tout: '17:00', approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_am', paidLeaveFraction: 0.5, unpaidLeaveFraction: 0, absentWorkFraction: 0 });
+    const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, shiftEmp, leave(3200), ['2026-01-05'], 'Tester');
+    const rec = out.reconciliations[0];
+    assertEqual(rec.correctedAttendanceDeduction, 125, '32. the retained undertime deduction is exactly 60 minutes × the minute rate (₱125), the corrected half_am+undertime result, not a flat guess');
+  }
+
+  // 33: two newly-approved leave dates in the SAME locked run -> ONE reconciliation, ONE
+  // adjustment, never two independent per-date entries.
+  {
+    const st = freshState();
+    sealSynthetic(st, 1, { absentDays: 2 }, '2026-01-01', '2026-01-31');
+    st.attendance.push({ id: 1, eid: 1, date: '2026-01-05', status: 'leave', tin: '', tout: '', approvalStatus: 'approved', leaveFraction: 1, leaveDayType: 'whole', paidLeaveFraction: 1, unpaidLeaveFraction: 0, absentWorkFraction: 0 });
+    st.attendance.push({ id: 2, eid: 1, date: '2026-01-06', status: 'leave', tin: '', tout: '', approvalStatus: 'approved', leaveFraction: 1, leaveDayType: 'whole', paidLeaveFraction: 1, unpaidLeaveFraction: 0, absentWorkFraction: 0 });
+    const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp, leave(3300), ['2026-01-05', '2026-01-06'], 'Tester');
+    assertEqual(out.reconciliations.length, 1, '33. both dates (same locked run) reconcile together into exactly ONE reconciliation record');
+    assertEqual(st.payrollAdjustments.filter(a => a.sourceLeaveId === 3300).length, 1, '33b. and exactly ONE payroll adjustment, never one per date');
+    assertEqual(out.reconciliations[0].varianceNet, 2000, '33c. the single adjustment covers the full combined delta for both dates (₱1000 each)');
+  }
+
+  // 34: one leave spans TWO different locked pay periods -> two INDEPENDENT reconciliations, each
+  // against its own run snapshot.
+  {
+    const st = freshState();
+    sealSynthetic(st, 1, { absentDays: 1 }, '2026-01-01', '2026-01-31'); // run A, January
+    sealSynthetic(st, 1, { absentDays: 1 }, '2026-02-01', '2026-02-28'); // run B, February
+    st.attendance.push({ id: 1, eid: 1, date: '2026-01-30', status: 'leave', tin: '', tout: '', approvalStatus: 'approved', leaveFraction: 1, leaveDayType: 'whole', paidLeaveFraction: 1, unpaidLeaveFraction: 0, absentWorkFraction: 0 });
+    st.attendance.push({ id: 2, eid: 1, date: '2026-02-02', status: 'leave', tin: '', tout: '', approvalStatus: 'approved', leaveFraction: 1, leaveDayType: 'whole', paidLeaveFraction: 1, unpaidLeaveFraction: 0, absentWorkFraction: 0 });
+    const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp, leave(3400), ['2026-01-30', '2026-02-02'], 'Tester');
+    assertEqual(out.reconciliations.length, 2, '34. two dates in two different locked periods produce two independent reconciliations');
+    const runIds = out.reconciliations.map(r => r.sourcePayrollRunId).sort((a, b) => a - b);
+    assert(runIds[0] !== runIds[1], '34b. each reconciliation is keyed to its OWN payroll run, never merged into one');
+    assert(out.reconciliations.every(r => r.varianceNet === 1000), '34c. each period\'s adjustment is computed independently against its own ₱1000 sealed baseline');
+  }
+
+  // 35: original locked item carries manualOverride:true -> manual_review_required, never an
+  // automatic adjustment that could silently discard a human's deliberate correction.
+  {
+    const st = freshState();
+    const ctx = sealSynthetic(st, 1, { absentDays: 1 }, '2026-01-01', '2026-01-31');
+    ctx.item.manualOverride = true;
+    st.attendance.push({ id: 1, eid: 1, date: '2026-01-05', status: 'leave', tin: '', tout: '', approvalStatus: 'approved', leaveFraction: 1, leaveDayType: 'whole', paidLeaveFraction: 1, unpaidLeaveFraction: 0, absentWorkFraction: 0 });
+    const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp, leave(3500), ['2026-01-05'], 'Tester');
+    assertEqual(out.reconciliations[0].status, 'manual_review_required', '35. a manually-overridden locked payroll item routes to manual review, never an automatic guess');
+    assert(/manual override/i.test(out.reconciliations[0].reason || ''), '35b. the reason explains it is because of the manual override');
+    assertEqual(st.payrollAdjustments.length, 0, '35c. no adjustment was created');
+  }
+
+  // 36: period status:'closed' but runId missing entirely -> manual_review_required. Must NOT
+  // create a dailyRate×fraction adjustment (the exact defect this whole pass exists to remove).
+  {
+    const st = freshState();
+    st.payPeriods = [{ id: 1, groupId: 1, status: 'closed', attendanceFrom: '2026-01-01', attendanceTo: '2026-01-31' }];
+    st.attendance.push({ id: 1, eid: 1, date: '2026-01-05', status: 'leave', tin: '', tout: '', approvalStatus: 'approved', leaveFraction: 1, leaveDayType: 'whole', paidLeaveFraction: 1, unpaidLeaveFraction: 0, absentWorkFraction: 0 });
+    const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp, leave(3600), ['2026-01-05'], 'Tester');
+    assertEqual(out.reconciliations[0].status, 'manual_review_required', '36. a closed period with no linked payroll run at all routes to manual review');
+    assert(/no linked payroll run/i.test(out.reconciliations[0].reason || ''), '36b. the reason explains the period has no linked run');
+    assertEqual(st.payrollAdjustments.length, 0, '36c. critically, NO dailyRate×fraction adjustment was fabricated for this date');
+  }
+
+  // 37: the linked locked run exists, but this employee's own payroll item is missing from it ->
+  // manual_review_required.
+  {
+    const st = freshState();
+    const periodId = nextPeriodId++, runId = nextRunId++;
+    st.payPeriods = [{ id: periodId, groupId: 1, status: 'closed', runId, attendanceFrom: '2026-01-01', attendanceTo: '2026-01-31' }];
+    st.payrolls = [{ id: runId, status: 'locked', items: [], ruleSnapshot: [] }]; // no item for empId 1
+    st.attendance.push({ id: 1, eid: 1, date: '2026-01-05', status: 'leave', tin: '', tout: '', approvalStatus: 'approved', leaveFraction: 1, leaveDayType: 'whole', paidLeaveFraction: 1, unpaidLeaveFraction: 0, absentWorkFraction: 0 });
+    const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp, leave(3700), ['2026-01-05'], 'Tester');
+    assertEqual(out.reconciliations[0].status, 'manual_review_required', '37. a locked run missing this employee\'s own payroll item routes to manual review');
+    assert(/item not found/i.test(out.reconciliations[0].reason || ''), '37b. the reason explains the employee item is missing from the run');
+  }
+
+  // 43/44: pending_approval/returned/superseded/voided runs are all equally NOT eligible -- never
+  // just "locked" runs treated as valid.
+  {
+    for (const status of ['pending_approval', 'returned', 'superseded', 'voided']) {
+      const st = freshState();
+      const periodId = nextPeriodId++, runId = nextRunId++;
+      st.payPeriods = [{ id: periodId, groupId: 1, status: 'closed', runId, attendanceFrom: '2026-01-01', attendanceTo: '2026-01-31' }];
+      st.payrolls = [{ id: runId, status, items: [{ empId: 1, baseBasic: 22000, attendanceFrom: '2026-01-01', attendanceTo: '2026-01-31', rates: { daily: 1000, dailyDivisor: 22 }, attendanceSummary: { absentDays: 1 } }], ruleSnapshot: [] }];
+      st.attendance.push({ id: 1, eid: 1, date: '2026-01-05', status: 'leave', tin: '', tout: '', approvalStatus: 'approved', leaveFraction: 1, leaveDayType: 'whole', paidLeaveFraction: 1, unpaidLeaveFraction: 0, absentWorkFraction: 0 });
+      const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp, leave(3800), ['2026-01-05'], 'Tester');
+      assertEqual(out.reconciliations[0].status, 'manual_review_required', `43/44. a run with status '${status}' is never treated as a valid locked source -- manual review`);
+    }
+  }
+
+  // 39: response privacy -- the safe projection for a caller WITHOUT payroll visibility must NEVER
+  // leak originalNet/correctedNet/variance/amount/rate/tax/salary/govt-id detail, only the status.
+  {
+    const st = freshState();
+    sealSynthetic(st, 1, { absentDays: 0.75 }, '2026-01-01', '2026-01-31');
+    st.attendance.push({ id: 1, eid: 1, date: '2026-01-05', status: 'present', tin: '09:00', tout: '13:00', approvalStatus: 'approved', leaveFraction: 0.5, leaveDayType: 'half_pm', paidLeaveFraction: 0.5, unpaidLeaveFraction: 0, absentWorkFraction: 0 });
+    const out = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(st, emp, leave(3900), ['2026-01-05'], 'Tester');
+    const projected = LeavePayrollReconciliation.projectReconciliationForSession(out.reconciliations[0]);
+    assertEqual(Object.keys(projected).sort().join(','), 'retroReconciliationStatus,sourceLeaveId', '39. the privacy-safe projection contains ONLY sourceLeaveId and retroReconciliationStatus');
+    assertEqual(projected.retroReconciliationStatus, 'adjustment_created', '39b. the status itself is still visible (a leave-only approver DOES learn whether something happened)');
+    const raw = JSON.stringify(projected);
+    assert(!/750|originalNet|correctedNet|varianceNet|amount|22000|1000|salaryPM|sss|philhealth|pagibig|tax/i.test(raw),
+      '39c. the projected object never contains any amount, rate, salary, or statutory-detail field or value, however it was serialized');
+  }
+
+  console.log('Leave/Payroll reconciliation tests passed.');
+}
+
+// The role-of-superuser-vs-non-superuser distinction matters a great deal here: RLS PostgreSQL role
 // superusers bypass RLS entirely, FORCE ROW LEVEL SECURITY included. That means every migration
 // test so far proves the MIGRATION LOGIC is correct, but proves NOTHING about whether it survives
 // real RLS enforcement in production, where the app's DB role should not be a superuser. This test
@@ -2038,6 +2381,7 @@ main()
   .then(testDbAwareProductionSecrets)
   .then(testBulkPasswordMigration)
   .then(testLeaveIntegrityAndFinalization)
+  .then(testLeaveRetroReconciliation)
   .then(testRlsSafeMigration)
   .then(testLoginRateLimit)
   .then(() => {

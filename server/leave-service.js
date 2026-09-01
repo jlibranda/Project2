@@ -13,6 +13,7 @@
 // moving the actual computation here, callable from both the leave-filing endpoint and the
 // leave-decision endpoint's own mutateAppState transaction.
 const TimekeepingCore = require('../public/timekeeping-core.js');
+const LeavePayrollReconciliation = require('./leave-payroll-reconciliation.js');
 
 const DAY_TYPES = new Set(['whole', 'half_am', 'half_pm']);
 const HALF_DAY_LABELS = { half_am: 'Half Day — First Half', half_pm: 'Half Day — Second Half' };
@@ -277,6 +278,16 @@ function payrollAlreadyClosedFor(state, employee, date) {
 //     silently trusting or duplicating it, since blindly creating a second adjustment risks
 //     overpaying and silently accepting the mismatch risks underpaying.
 //   - all false -- no credit is due at all (period still open and requireClosedPeriod, or no daily rate).
+//
+// NON-AUTHORITATIVE for a genuinely CLOSED period as of the final Leave/Payroll reconciliation
+// pass: finalizeLeaveApproval no longer calls this with requireClosedPeriod:true (the closed-period
+// dailyRate×fraction guess this produced is exactly the correction LeavePayrollReconciliation
+// replaces with an exact locked-payroll delta). The ONE call site that remains -- the
+// requireClosedPeriod:false branch below, for a half-day date whose other half was NOT worked --
+// is a genuinely different, still-forward-looking correction for an OPEN period's own upcoming
+// payroll run, not a retroactive correction against an already-locked one, so it is unaffected and
+// still fires exactly as before. Kept exported for that call site, legacy data, and direct unit
+// testing (see scripts/test-security.js) -- not for new closed-period call sites.
 function creditLateApprovalDay(state, employee, leaveRecord, date, payItemCode, label, actorName, leaveFraction, requireClosedPeriod) {
   const fraction = Number.isFinite(Number(leaveFraction)) ? Number(leaveFraction) : 1;
   const gateOnClosedPeriod = requireClosedPeriod !== false;
@@ -306,19 +317,27 @@ function creditLateApprovalDay(state, employee, leaveRecord, date, payItemCode, 
   return { created: true, duplicate: false, adjustment };
 }
 
-// Issues 16-19: the deduction-side mirror of creditLateApprovalDay, for a half-day date whose
-// OTHER half WAS validly worked (a fully payable date from the attendance side) but carries a
-// genuine unpaidLeaveFraction, when that date's pay period has ALREADY CLOSED. An open period
-// needs no adjustment at all here -- TimekeepingCore.periodSummary()'s own unpaidLeaveDays
-// aggregate (fed straight into the payroll engine's UNPAID_LEAVE line) already deducts the correct
-// amount live, from the attendance record itself, the next time that period's payroll is computed.
-// Only a CLOSED period -- one whose payroll was already computed and paid before this unpaid
-// portion was known -- needs a correction injected as its own payroll adjustment. Idempotent on
-// the same (sourceType, sourceLeaveId, sourceDate, payItemCode) identity as every other
-// leave-sourced adjustment, so a retried finalization (or a duplicate call) never creates a second
-// deduction for the same date; a legacyMismatch flag (mirroring creditLateApprovalDay's own) is
-// still returned for a pre-existing adjustment whose amount doesn't match what this fraction would
-// produce, rather than silently trusting or duplicating it.
+// Issues 16-19 (superseded for closed periods -- see below): the deduction-side mirror of
+// creditLateApprovalDay, for a half-day date whose OTHER half WAS validly worked (a fully payable
+// date from the attendance side) but carries a genuine unpaidLeaveFraction, when that date's pay
+// period has ALREADY CLOSED. An open period needs no adjustment at all here -- TimekeepingCore.
+// periodSummary()'s own unpaidLeaveDays aggregate (fed straight into the payroll engine's
+// UNPAID_LEAVE line) already deducts the correct amount live, from the attendance record itself,
+// the next time that period's payroll is computed. Only a CLOSED period -- one whose payroll was
+// already computed and paid before this unpaid portion was known -- needs a correction injected as
+// its own payroll adjustment. Idempotent on the same (sourceType, sourceLeaveId, sourceDate,
+// payItemCode) identity as every other leave-sourced adjustment, so a retried finalization (or a
+// duplicate call) never creates a second deduction for the same date; a legacyMismatch flag
+// (mirroring creditLateApprovalDay's own) is still returned for a pre-existing adjustment whose
+// amount doesn't match what this fraction would produce.
+//
+// NON-AUTHORITATIVE for a genuinely CLOSED period as of the final Leave/Payroll reconciliation
+// pass: this always assumed dailyRate×unpaidFraction was the correct deduction, which is only true
+// when the locked payroll's original attendance-driven result happened to already equal exactly
+// that -- LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll (server/
+// leave-payroll-reconciliation.js) replaces this call site in finalizeLeaveApproval with an exact
+// original-vs-corrected locked-payroll delta instead. Kept exported for legacy data and direct
+// unit testing (see scripts/test-security.js) -- not for new closed-period call sites.
 function debitClosedPeriodUnpaidLeave(state, employee, leaveRecord, date, actorName, unpaidFraction) {
   const fraction = Number.isFinite(Number(unpaidFraction)) ? Number(unpaidFraction) : 0;
   if (!(fraction > 0 && fraction <= 1)) return { created: false, duplicate: false, adjustment: null };
@@ -428,8 +447,17 @@ function markAttendanceForApprovedLeave(state, leaveRecord, employee, actorName,
         }
         return;
       }
+      // paidLeaveFraction/unpaidLeaveFraction are stamped here too (never read by periodSummary's
+      // own live absence/unpaid-leave counting, which only ever looks at these fields on a HALF-day
+      // leave record -- a whole-day 'leave' status already excludes it from the ABSENT line
+      // entirely, so this is purely additive metadata) so the closed-period locked-payroll-delta
+      // reconciliation module can correctly recover a whole-day leave's own paid/unpaid split
+      // (issue 41: whole-day leave affecting a locked payroll routes through the same mechanism as
+      // half-day leave, which needs this same fractional data to compute the correct delta).
       touched.push(TimekeepingCore.upsert(state.attendance, employee.id, date, {
         status: 'leave', tin: '', tout: '',
+        leaveFraction: 1, leaveDayType: 'whole',
+        paidLeaveFraction: Number(entry.paidFraction) || 0, unpaidLeaveFraction: Number(entry.unpaidFraction) || 0, absentWorkFraction: 0,
         notes: 'Approved ' + leaveRecord.type + (leaveRecord.halfDayLabel ? ' — ' + leaveRecord.halfDayLabel : ''),
         source: 'leave-approval', approvalStatus: 'approved', reviewedBy: actorName, reviewedAt: now
       }, () => nextId++, actorName));
@@ -611,18 +639,32 @@ function finalizeLeaveApproval(state, leaveRecord, actorName) {
   const payrollAdjustments = [];
   let duplicateAdjustmentsSkipped = 0;
   let legacyAdjustmentMismatches = 0;
-  if (t && t.paid) {
-    for (const entry of paidAllocation) {
-      if (entry.paidFraction <= 0) continue;
-      const att = attendanceByDate.get(entry.date);
-      // A half-day date whose other half was NOT worked needs its 0.5 leave portion credited
-      // regardless of whether the pay period has closed yet -- see creditLateApprovalDay's own
-      // comment for why (its attendance was just marked 'absent', which an OPEN period's own
-      // future run would otherwise deduct in full). Every other case (whole-day dates, and a
-      // half-day date whose other half WAS worked -- already a fully payable day with no
-      // deduction to correct) keeps the original closed-period-only gate untouched.
-      const requireClosedPeriod = !(entry.dayType && att && att.otherHalfWorked === false);
-      const result = creditLateApprovalDay(state, employee, leaveRecord, entry.date, 'LEAVE_PAY', 'Approved Leave (' + leaveRecord.type + ')', actorName, entry.paidFraction, requireClosedPeriod);
+
+  // Final pass (issues 1-44): a date whose pay period is ALREADY CLOSED never uses the old
+  // dailyRate×fraction guess any more -- it routes through exact locked-payroll-run reconciliation
+  // (LeavePayrollReconciliation), which compares the immutable locked payroll result against a
+  // freshly recomputed corrected one and adjusts by the true delta, whatever it is. This applies
+  // uniformly to whole-day and half-day dates alike (issue 41: "ANY approved leave affecting a
+  // locked payroll -> exact locked payroll reconciliation") -- markAttendanceForApprovedLeave has
+  // already run above, so state.attendance already carries this leave's final approved metadata
+  // for every touched date, which is exactly what the corrected recompute needs to see.
+  //
+  // A date whose period is still OPEN never touches reconciliation at all (issue 40) -- open-period
+  // payroll is computed live from attendance/periodSummary every time it eventually runs, so there
+  // is nothing to retroactively correct EXCEPT the one pre-existing special case that predates this
+  // pass and stays completely unchanged here: a half-day date whose other half was NOT validly
+  // worked gets attendance status 'absent', which an open period's own future run would otherwise
+  // deduct as a FULL day -- creditLateApprovalDay's requireClosedPeriod:false branch corrects that
+  // specific, still-forward-looking case regardless of period status, exactly as it always has.
+  const closedDates = [];
+  for (const entry of paidAllocation) {
+    const att = attendanceByDate.get(entry.date);
+    if (payrollAlreadyClosedFor(state, employee, entry.date)) {
+      closedDates.push(entry.date);
+      continue;
+    }
+    if (t && t.paid && entry.paidFraction > 0 && entry.dayType && att && att.otherHalfWorked === false) {
+      const result = creditLateApprovalDay(state, employee, leaveRecord, entry.date, 'LEAVE_PAY', 'Approved Leave (' + leaveRecord.type + ')', actorName, entry.paidFraction, false);
       if (result.created) {
         payrollAdjustments.push(result.adjustment);
       } else if (result.duplicate) {
@@ -632,38 +674,22 @@ function finalizeLeaveApproval(state, leaveRecord, actorName) {
     }
   }
 
-  // Issues 16/17/18/19: retroactive UNPAID_LEAVE deduction. Unlike the paid-credit loop above,
-  // this is never gated on t.paid -- an inherently unpaid leave TYPE and a paid type reduced to
-  // partly/fully unpaid by balance revalidation both land here identically, since both simply mean
-  // "this date's leave half has an unpaidFraction > 0". Only ever runs for a half-day date whose
-  // OTHER half WAS validly worked (att.otherHalfWorked === true): that date's attendance is a fully
-  // payable present day with no absence deduction of its own, so TimekeepingCore.periodSummary()'s
-  // own unpaidLeaveDays aggregate is what deducts it correctly the next time an OPEN period's
-  // payroll is computed live from the attendance record -- no adjustment needed there at all. A
-  // date whose other half was NOT worked already has its unpaid portion fully covered by the
-  // single full-day absence deduction (see markAttendanceForApprovedLeave's own comment), for any
-  // paid/unpaid split, whether the period is open or closed -- so it's deliberately excluded here
-  // too. The only gap either of those leaves is a date whose other half WAS worked but whose pay
-  // period had ALREADY CLOSED before this unpaid portion was known -- debitClosedPeriodUnpaidLeave
-  // itself gates on exactly that (closed period only; a no-op otherwise) and is idempotent on the
-  // same (sourceType, sourceLeaveId, sourceDate, payItemCode) identity as every other leave-sourced
-  // adjustment, so a retried finalization never creates a second deduction for the same date.
-  for (const entry of paidAllocation) {
-    if (!(entry.unpaidFraction > 0)) continue;
-    const att = attendanceByDate.get(entry.date);
-    if (!(entry.dayType && att && att.otherHalfWorked === true)) continue;
-    const result = debitClosedPeriodUnpaidLeave(state, employee, leaveRecord, entry.date, actorName, entry.unpaidFraction);
-    if (result.created) {
-      payrollAdjustments.push(result.adjustment);
-    } else if (result.duplicate) {
-      duplicateAdjustmentsSkipped++;
-      if (result.legacyMismatch) legacyAdjustmentMismatches++;
-    }
+  let retroReconciliations = [];
+  if (closedDates.length) {
+    const outcome = LeavePayrollReconciliation.reconcileLeaveAgainstLockedPayroll(state, employee, leaveRecord, closedDates, actorName);
+    retroReconciliations = outcome.reconciliations;
+    retroReconciliations.forEach(record => {
+      if (record.duplicate) { duplicateAdjustmentsSkipped++; return; }
+      if (record.status === 'adjustment_created') {
+        const adjustment = (state.payrollAdjustments || []).find(a => a.id === record.payrollAdjustmentId);
+        if (adjustment) payrollAdjustments.push(adjustment);
+      }
+    });
   }
 
   return {
     balanceDeducted, employee, attendanceRecords, payrollAdjustments, balanceRecalculated, duplicateAdjustmentsSkipped,
-    allocationDerivedAtApproval, scheduleChangedSinceFiling, legacyAdjustmentMismatches
+    allocationDerivedAtApproval, scheduleChangedSinceFiling, legacyAdjustmentMismatches, retroReconciliations
   };
 }
 
