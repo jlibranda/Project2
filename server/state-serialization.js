@@ -120,10 +120,17 @@ function buildScopedStateForEmployee(state, session) {
     savedReports: has('reports') ? (state.savedReports || []) : [],
 
     // Payroll: my own payslip line items only, never another employee's, unless the caller holds
-    // the same broad 'payroll' permission that already gates the Payroll module admin-side.
+    // the same broad 'payroll' permission that already gates the Payroll module admin-side. A
+    // payroll item row identifies its employee two different ways depending on where it came from:
+    // a real governanceDraft()-built row (public/payroll-governance.js) carries `empId` (the
+    // numeric user id) AND `eid` (the employee's own STRING code, e.g. "E-001") -- while `eid` here
+    // means the CODE, matching only `i.empId` against this numeric session id ever worked for that
+    // shape (comparing `i.eid` to the numeric id here always silently failed, hiding a non-payroll
+    // employee's own payslip line items entirely). Matching EITHER field covers both that real
+    // shape and any older/hand-built row that used `eid` numerically instead.
     payrolls: canSeeAllPayroll ? (state.payrolls || []) : (state.payrolls || [])
-      .filter(r => (r.items || []).some(i => i.eid === meId))
-      .map(r => ({ ...r, items: (r.items || []).filter(i => i.eid === meId) })),
+      .filter(r => (r.items || []).some(i => i.empId === meId || i.eid === meId))
+      .map(r => ({ ...r, items: (r.items || []).filter(i => i.empId === meId || i.eid === meId) })),
     payrollAdjustments: canSeeAllPayroll ? (state.payrollAdjustments || []) : ownOnly(state.payrollAdjustments, 'empId'),
     finalPayList: canSeeAllPayroll ? (state.finalPayList || []) : ownOnly(state.finalPayList, 'empId'),
     // Operational/admin-only working state -- never needed for employee self-service.

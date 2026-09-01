@@ -167,22 +167,56 @@
     if(result.totalDed>Number(result.gross||0)+result.taxRefund)result.issues.push({severity:'blocker',code:'ANNUALIZED_TAX_EXCEEDS_PAY',message:'Annualized withholding exceeds available pay. Review YTD/previous-employer data and arrange compliant settlement.'});
     return result;
   }
+  // Freezes exactly the timekeeping configuration TimekeepingCore.scheduleForDate()/isRestDay()
+  // actually consult for this employee/period -- the assigned shift TEMPLATE (not just its id,
+  // since the template's own start/end/break times can be edited later, see issue 5/30's
+  // regression), personal schedule, approved schedule adjustments overlapping the period, and the
+  // company-level holidays/startOfWeek in range. A historical payroll replay must use THIS,
+  // never today's live COMPANY.shifts/holidays -- otherwise a schedule edit made after the payroll
+  // locked would silently rewrite what "late" or "absent" meant for a date that already got paid.
+  function buildScheduleSnapshot(emp,from,to){
+    var shifts=COMPANY.shifts||[];
+    var assignedShift=shifts.find(function(s){return emp&&s.id===emp.shiftId;});
+    return {
+      shiftId:emp&&emp.shiftId||null,
+      assignedShift:assignedShift?JSON.parse(JSON.stringify(assignedShift)):null,
+      personalSchedule:emp&&emp.personalSchedule?JSON.parse(JSON.stringify(emp.personalSchedule)):null,
+      scheduleAdjustments:((emp&&emp.scheduleAdjustments)||[]).filter(function(a){return a.status==='approved'&&a.from<=to&&a.to>=from;}).map(function(a){return JSON.parse(JSON.stringify(a));}),
+      holidays:(COMPANY.holidays||[]).filter(function(h){return h.date>=from&&h.date<=to;}).map(function(h){return JSON.parse(JSON.stringify(h));}),
+      startOfWeek:COMPANY.startOfWeek||'mon',
+      hoursPerDay:Number(emp&&emp.hoursPerDay||8),
+      scheduleType:emp&&emp.scheduleType||null
+    };
+  }
   function governanceDraft(emp,grp,period) {
     var p=periodForCalculation(period);
     var from=p.attendanceFrom||p.from,to=p.attendanceTo||p.to;
     var appliedEmp=effectiveEmployee(emp,p.to);
     var attendance=approvedAttendanceSummary(appliedEmp,from,to);
+    // Historical replay inputs (issue 1/2): a deep-cloned copy of the exact raw attendance records
+    // this calculation used (never a live reference -- a later edit to the live record must not be
+    // able to retroactively rewrite what this locked payroll is proven to have computed from), plus
+    // the schedule/timekeeping configuration active for this employee/period. Frozen once here, at
+    // draft-build time, and carried unchanged through submission and locking.
+    var attendanceInputSnapshot=(attendance.records||[]).map(function(r){return JSON.parse(JSON.stringify(r));});
+    var scheduleSnapshot=buildScheduleSnapshot(appliedEmp,from,to);
     var otOverrideAmount=appliedEmp.scheduleType!=='exempted'&&appliedEmp.otPayMethod==='fixed'?fixedTierOTPayAmount(appliedEmp,attendance,from,to):undefined;
     var baseBasic=computeBasicByPayType(appliedEmp,grp,p);
     var recurringAllowances=effectiveRecurringAllowances(emp,grp,p);
     var adjustments=effectiveAdjustments(emp,p),taxYear=Number(p.taxYear||String(p.bir1601CMonth||p.releaseDate||p.to).slice(0,4)),taxProfile=employeeTaxRecord(emp,taxYear,false)||{},benefitYtd=employeeYtdBenefitSnapshot(emp.id,taxYear,p.bir1601CMonth||String(taxYear)+'-12',p.id||null);
-    var result=PayrollRuleEngine.calculate({employee:appliedEmp,group:grp,period:p,attendance:attendance,rules:PAYROLL_RULEBOOK,baseBasic:baseBasic,defaultDivisor:COMPANY.dailyDivisor||22,periodDays:(typeof workingDaysInPeriod==='function'?workingDaysInPeriod(p):COMPANY.dailyDivisor||22),absenceFallbackPolicy:COMPANY.absenceFallbackPolicy,recurringAllowances:recurringAllowances,adjustments:adjustments,annualBenefitContext:{limit:90000,previousEmployerNonTaxable:Number(taxProfile.previousEmployerNonTaxableBenefits||0),currentEmployerYtdNonTaxable:benefitYtd.exempt},loans:LOANS.filter(function(loan){return loan.eid===emp.id;}),statutory:statutoryAmounts,tax:birTaxByFreq,otRates:(typeof OT_RATES==='undefined'?[]:OT_RATES),otOverrideAmount:otOverrideAmount});
+    // Frozen alongside the rest of the historical replay inputs (issue 6/9) -- absenceDeduction()'s
+    // switch-over math (public/payroll-rule-engine.js) depends on BOTH of these, and neither was
+    // preserved anywhere before this pass, so a later edit to Company Settings' absence-fallback
+    // policy could silently change what a locked payroll is replayed with.
+    var periodDaysSnapshot=(typeof workingDaysInPeriod==='function'?workingDaysInPeriod(p):COMPANY.dailyDivisor||22);
+    var absenceFallbackPolicySnapshot=COMPANY.absenceFallbackPolicy?JSON.parse(JSON.stringify(COMPANY.absenceFallbackPolicy)):null;
+    var result=PayrollRuleEngine.calculate({employee:appliedEmp,group:grp,period:p,attendance:attendance,rules:PAYROLL_RULEBOOK,baseBasic:baseBasic,defaultDivisor:COMPANY.dailyDivisor||22,periodDays:periodDaysSnapshot,absenceFallbackPolicy:absenceFallbackPolicySnapshot,recurringAllowances:recurringAllowances,adjustments:adjustments,annualBenefitContext:{limit:90000,previousEmployerNonTaxable:Number(taxProfile.previousEmployerNonTaxableBenefits||0),currentEmployerYtdNonTaxable:benefitYtd.exempt},loans:LOANS.filter(function(loan){return loan.eid===emp.id;}),statutory:statutoryAmounts,tax:birTaxByFreq,otRates:(typeof OT_RATES==='undefined'?[]:OT_RATES),otOverrideAmount:otOverrideAmount});
     result.birTaxTableVersion=birTaxVersionSnapshot(p.releaseDate||p.to);
     if(adjustments.some(function(a){return a.benefitTreatment==='annual-benefit-bucket';})){
       BIRAnnualizationCore.validateProfile(taxProfile,taxYear,COMPANY.taxPolicy.requireConfirmedTaxRecord!==false).concat(window.BIRTaxVersionCore?BIRTaxVersionCore.validatePreviousEmployer(taxProfile):[]).forEach(function(message){result.issues.push({severity:'blocker',code:'BENEFIT_PROFILE_INCOMPLETE',message:message});});
     }
     applyAnnualizedTax(result,emp,p);
-    return Object.assign({empId:emp.id,name:emp.name,eid:emp.eid,pos:emp.pos,payType:emp.payType,baseBasic:baseBasic,pr:attendance.presentDays,absentDays:attendance.absentDays,lateMinutes:attendance.lateMinutes,undertimeMinutes:attendance.undertimeMinutes,otH:attendance.otHours,ndH:attendance.ndHours,attendanceSummary:attendance,attendanceFrom:from,attendanceTo:to,attendanceApproved:attendance.records.length,applyStatutory:result.statutoryFactor>0,recurringAllowances:recurringAllowances,taxFreq:grp.taxMethod||grp.freq,ms:result.rates.monthly,calculationTrace:result.lines,validationIssues:result.issues,loanSchedule:result.loanSchedule,employerContributions:result.employerContributions,employerCost:result.employerCost,compensationSnapshot:appliedEmp.appliedCompensationRecord||null,_computed:{basic:result.basic,ot:result.ot,nd:result.nd,sss:result.sss,ph:result.ph,pi:result.pi,tax:result.tax,loan:result.loan},_nonEditableGross:PayrollRuleEngine.money(result.gross-result.basic-result.ot-result.nd),_edited:false},result);
+    return Object.assign({empId:emp.id,name:emp.name,eid:emp.eid,pos:emp.pos,payType:emp.payType,baseBasic:baseBasic,pr:attendance.presentDays,absentDays:attendance.absentDays,lateMinutes:attendance.lateMinutes,undertimeMinutes:attendance.undertimeMinutes,otH:attendance.otHours,ndH:attendance.ndHours,attendanceSummary:attendance,attendanceInputSnapshot:attendanceInputSnapshot,scheduleSnapshot:scheduleSnapshot,periodDaysSnapshot:periodDaysSnapshot,absenceFallbackPolicySnapshot:absenceFallbackPolicySnapshot,attendanceFrom:from,attendanceTo:to,attendanceApproved:attendance.records.length,applyStatutory:result.statutoryFactor>0,recurringAllowances:recurringAllowances,taxFreq:grp.taxMethod||grp.freq,ms:result.rates.monthly,calculationTrace:result.lines,validationIssues:result.issues,loanSchedule:result.loanSchedule,employerContributions:result.employerContributions,employerCost:result.employerCost,compensationSnapshot:appliedEmp.appliedCompensationRecord||null,_computed:{basic:result.basic,ot:result.ot,nd:result.nd,sss:result.sss,ph:result.ph,pi:result.pi,tax:result.tax,loan:result.loan},_nonEditableGross:PayrollRuleEngine.money(result.gross-result.basic-result.ot-result.nd),_edited:false},result);
   }
   window.buildDraftRow=buildDraftRow=governanceDraft;
   window.updateDraftNet=updateDraftNet=function(empId){
@@ -255,7 +289,7 @@
     var birReportingMonth=sourcePeriod&&sourcePeriod.bir1601CMonth;
     if(!birReportingMonth&&window._prPeriod==='custom')birReportingMonth=prompt('Enter the 1601-C reporting month for this custom payroll (YYYY-MM):','');
     if(!/^\d{4}-\d{2}$/.test(birReportingMonth||'')){toast('A valid manually selected 1601-C reporting month is required.','warning');return;}
-    var run={id:nPay++,from:from,to:to,items:items,on:today(),groupId:groupId,groupName:grp.name||'Standard',periodId:window._prPeriod!=='custom'?window._prPeriod:null,releaseDate:paymentDate,bir1601CMonth:birReportingMonth,includeIn1601C:true,taxEventType:(sourcePeriod&&sourcePeriod.taxEvent)||'regular',taxYear:Number(sourcePeriod&&sourcePeriod.taxYear||birReportingMonth.slice(0,4)),birTaxTableVersion:birTaxVersionSnapshot(paymentDate),status:'pending_approval',approvalStage:1,workflow:[{stage:'maker',label:'HR / Payroll Maker',by:user.name,at:now,status:'completed'}],preparedBy:user.name,preparedAt:now,ruleSnapshot:PAYROLL_RULEBOOK.filter(function(rule){return rule.status==='active';}).map(function(rule){return {id:rule.id,code:rule.code,version:rule.version,effectiveFrom:rule.effectiveFrom,value:rule.value};}),complianceVersion:'Versioned PH Payroll Rule Engine · '+today()};
+    var run={id:nPay++,from:from,to:to,items:items,on:today(),groupId:groupId,groupName:grp.name||'Standard',periodId:window._prPeriod!=='custom'?window._prPeriod:null,releaseDate:paymentDate,bir1601CMonth:birReportingMonth,includeIn1601C:true,taxEventType:(sourcePeriod&&sourcePeriod.taxEvent)||'regular',taxYear:Number(sourcePeriod&&sourcePeriod.taxYear||birReportingMonth.slice(0,4)),birTaxTableVersion:birTaxVersionSnapshot(paymentDate),status:'pending_approval',approvalStage:1,workflow:[{stage:'maker',label:'HR / Payroll Maker',by:user.name,at:now,status:'completed'}],preparedBy:user.name,preparedAt:now,ruleSnapshot:PAYROLL_RULEBOOK.filter(function(rule){return rule.status==='active';}).map(function(rule){return {id:rule.id,code:rule.code,version:rule.version,effectiveFrom:rule.effectiveFrom,effectiveTo:rule.effectiveTo||'',value:rule.value,priority:rule.priority,coverage:rule.coverage?JSON.parse(JSON.stringify(rule.coverage)):{},formula:rule.formula||'',rounding:rule.rounding||'',source:rule.source||'',category:rule.category||'',status:rule.status};}),complianceVersion:'Versioned PH Payroll Rule Engine · '+today()};
     PAYROLLS.push(run);PAYROLL_AUDIT.push({runId:run.id,action:'maker_submitted',stage:'maker',by:user.name,at:now});
     notifyPayrollSubmitted(run);
     items.forEach(function(item){(item.adjustmentIds||[]).forEach(function(id){var adjustment=PAYROLL_ADJ.find(function(a){return a.id===id;});if(adjustment){adjustment.processStatus='submitted_with_payroll';adjustment.payrollRunId=run.id;}});});
@@ -281,7 +315,30 @@
     if(run.approvalStage>=PAYROLL_WORKFLOW.length)lockPayrollRun(run);else{queueSync('Payroll_Runs','Payroll_Audit');toast(stage.label+' completed. Next: '+PAYROLL_WORKFLOW[run.approvalStage].label+'.','success');render();}
   };
   function numberOr(value,fallback){var parsed=Number(value);return Number.isFinite(parsed)?parsed:fallback;}
+  // Issue 27: a run must not become the authoritative historical source of truth for retro leave
+  // reconciliation (server/leave-payroll-reconciliation.js) unless every item actually carries the
+  // minimum snapshot a later replay needs -- an incomplete run that locks anyway just becomes
+  // another old run permanently stuck at manual_review_required the moment anyone files a retro
+  // leave against it, so the block happens here instead, before that ever becomes someone else's
+  // problem to notice.
+  function payrollSnapshotCompleteness(run){
+    var missing=[];
+    (run.items||[]).forEach(function(item){
+      if(!Array.isArray(item.attendanceInputSnapshot))missing.push(item.eid+': missing attendanceInputSnapshot');
+      if(!item.scheduleSnapshot||typeof item.scheduleSnapshot!=='object')missing.push(item.eid+': missing scheduleSnapshot');
+      if(!item.attendanceSummary||typeof item.attendanceSummary!=='object')missing.push(item.eid+': missing attendanceSummary');
+      if(!item.rates||!Number.isFinite(Number(item.rates.daily)))missing.push(item.eid+': missing rate snapshot');
+    });
+    if(!Array.isArray(run.ruleSnapshot)||!run.ruleSnapshot.length)missing.push('run: missing ruleSnapshot');
+    return {complete:!missing.length,missing:missing};
+  }
   function lockPayrollRun(run){
+    var completeness=payrollSnapshotCompleteness(run);
+    if(!completeness.complete){
+      toast('PAYROLL_SNAPSHOT_INCOMPLETE: cannot lock -- '+completeness.missing.slice(0,3).join('; ')+(completeness.missing.length>3?' (+'+(completeness.missing.length-3)+' more)':''),'error',8000);
+      PAYROLL_AUDIT.push({runId:run.id,action:'lock_blocked_incomplete_snapshot',by:user.name,at:new Date().toISOString(),notes:completeness.missing.join('; ')});
+      return;
+    }
     var at=new Date().toISOString();run.status='locked';run.approvedBy=user.name;run.approvedAt=at;run.lockedAt=at;run.immutable=true;
     run.items.forEach(function(item){(item.adjustmentIds||[]).forEach(function(id){var adjustment=PAYROLL_ADJ.find(function(a){return a.id===id;});if(adjustment){adjustment.status='applied';adjustment.processStatus='applied';adjustment.appliedAt=at;adjustment.payrollRunId=run.id;}});});
     var period=PAY_PERIODS.find(function(item){return item.id===run.periodId;});if(period){period.status='closed';period.runId=run.id;period.lockedBy=user.email||user.name;period.lockedAt=today();}

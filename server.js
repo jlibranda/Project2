@@ -7,7 +7,9 @@ const { hashPassword, verifyPassword, looksLikeHash } = require('./server/passwo
 const { createAuthorization, hasPermission, resolveCaller, isAdminCaller } = require('./server/authorization.js');
 const { canActOnRecord, applyChainDecision, applyForceApprove } = require('./server/approval-chain.js');
 const { calculateLeaveRequest, finalizeLeaveApproval, projectLeaveDecisionEmployeeForSession, projectAttendancePatchForSession } = require('./server/leave-service.js');
-const { projectReconciliationForSession } = require('./server/leave-payroll-reconciliation.js');
+const LeavePayrollReconciliation = require('./server/leave-payroll-reconciliation.js');
+const { projectReconciliationForSession } = LeavePayrollReconciliation;
+const { checkPayrollImmutability } = require('./server/payroll-immutability.js');
 const { buildScopedStateForEmployee, applyEmployeeStateOverlay } = require('./server/state-serialization.js');
 const { ensureAuditTable, auditLog } = require('./server/audit.js');
 const { validateSessionSecret, validateGodAdminCredential, validateBootstrapCredential, KNOWN_DEFAULTS, isSafeReplacementCredential } = require('./server/secrets.js');
@@ -1247,6 +1249,21 @@ app.put('/api/state', requireAuth, async (req, res) => {
     } else {
       await reconcileUserPasswords(stateToPersist, current?.state?.users);
     }
+    // Backend-authoritative locked-payroll/closed-period immutability (issue 14/15) -- this generic
+    // full-state endpoint is the ONE place a locked run or closed period could otherwise be
+    // silently edited, deleted, or reopened by any caller with write access to /api/state, no
+    // matter what the UI does or doesn't expose. Checked against whatever is ACTUALLY about to be
+    // persisted (post employee-overlay too), never skipped for an admin/platform caller.
+    const immutability = checkPayrollImmutability(current && current.state, stateToPersist);
+    if (!immutability.ok) {
+      await auditLog(pool, {
+        tenantKey, actor: req.session.sub,
+        action: immutability.code === 'CLOSED_PERIOD_DELETED' || immutability.code === 'CLOSED_PERIOD_REOPENED' || immutability.code === 'CLOSED_PERIOD_RELINKED' ? 'closed_period_mutation_blocked' : 'locked_payroll_mutation_blocked',
+        target: String(immutability.runId || immutability.periodId || ''),
+        meta: { code: immutability.code, field: immutability.field || null }
+      });
+      return res.status(409).json({ error: immutability.reason });
+    }
     const { result, version } = await withTenantScope(tenantKey, async client => {
       const r = expectedVersion === 0
         ? await client.query('INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3) ON CONFLICT DO NOTHING RETURNING version, updated_at', [tenantKey, stateToPersist, req.session.sub])
@@ -1529,6 +1546,9 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
         });
         if (recon.status === 'adjustment_created') {
           await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_retro_adjustment_created', target: String(id), meta: { payrollRunId: recon.sourcePayrollRunId, periodId: recon.sourcePeriodId, empId: recon.empId, method: recon.method, variance: recon.varianceNet } });
+          if (recon.supersedesReconciliationId) {
+            await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_retro_replacement_created', target: String(id), meta: { payrollRunId: recon.sourcePayrollRunId, periodId: recon.sourcePeriodId, empId: recon.empId, supersedesReconciliationId: recon.supersedesReconciliationId } });
+          }
         } else if (recon.status === 'no_adjustment_required') {
           await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'leave_retro_no_adjustment_required', target: String(id), meta: { payrollRunId: recon.sourcePayrollRunId, periodId: recon.sourcePeriodId, empId: recon.empId, method: recon.method } });
         } else if (recon.status === 'manual_review_required') {
@@ -1575,6 +1595,52 @@ app.post('/api/leaves/:id/decision', requireAuth, async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: 'Unable to record the decision.', detail: error.message });
+  }
+});
+
+// ── Leave retro reconciliation reversal (issue 16/17) -- dedicated, payroll-authorized-only
+// endpoint. Never edits the original applied adjustment (immutable once applied, issue 19);
+// books a new, equal-and-opposite reversal adjustment via the module's own
+// reverseReconciliation() and marks the reconciliation record 'reversed'. A fresh call to the
+// normal leave-decision flow for the same leave afterward is then free to create a genuine
+// replacement reconciliation (findExistingReconciliation ignores reversed records), which
+// automatically links back via supersedesReconciliationId -- full lineage, no separate
+// "replacement" endpoint needed.
+app.post('/api/leave-retro-reconciliations/:id/reverse', requireAuth, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const id = Number(req.params.id);
+  const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'A valid reconciliation id is required.' });
+  if (!reason) return res.status(400).json({ error: 'A reversal reason is required for the audit trail.' });
+  const tenantKey = req.session.tenantKey || TENANT_KEY;
+  try {
+    let outcome = null;
+    const result = await mutateAppState(state => {
+      const caller = resolveCaller(state, req.session);
+      if (!(isAdminCaller(req.session, caller) || hasPermission(state, req.session, 'payroll'))) {
+        outcome = { error: 403, message: 'You do not have payroll permission to reverse a retro adjustment.' };
+        return { changed: false };
+      }
+      const reversal = LeavePayrollReconciliation.reverseReconciliation(state, id, caller ? caller.name : (req.session.sub || 'Administrator'), reason);
+      if (!reversal.ok) { outcome = { error: 409, message: reversal.reason }; return { changed: false }; }
+      outcome = { reversal };
+      return { changed: true };
+    }, req.session.sub, tenantKey);
+    if (outcome && outcome.error) return res.status(outcome.error).json({ error: outcome.message });
+    await auditLog(pool, {
+      tenantKey, actor: req.session.sub, action: 'leave_retro_reversal_created', target: String(id),
+      meta: { reversalAdjustmentId: outcome.reversal.reversalAdjustment.id, reversedVariance: outcome.reversal.reversalAdjustment.amount }
+    });
+    res.json({
+      ok: true, version: result.version,
+      reconciliation: { sourceLeaveId: outcome.reversal.record.sourceLeaveId, retroReconciliationStatus: outcome.reversal.record.status },
+      // The caller only ever reaches this line already holding payroll permission (gated above) --
+      // safe to hand back the reversal's own figures, exactly like the full leave-decision response
+      // already does for a payroll-authorized caller.
+      reversalAdjustment: { id: outcome.reversal.reversalAdjustment.id, amount: outcome.reversal.reversalAdjustment.amount }
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to reverse the retro adjustment.', detail: error.message });
   }
 });
 
