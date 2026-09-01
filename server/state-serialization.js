@@ -53,6 +53,34 @@ function projectUsers(users, me) {
   return (users || []).map(u => (me && u.id === me.id) ? projectSelfUser(u) : projectDirectoryUser(u));
 }
 
+// Allowlist-based payslip projection for a non-payroll employee's OWN payroll item (issue 3 of the
+// payroll-integrity follow-up pass). governanceDraft() (public/payroll-governance.js) now freezes
+// internal historical-replay/reconciliation-engine state directly onto every item --
+// attendanceInputSnapshot (raw punch-level records), scheduleSnapshot, periodDaysSnapshot,
+// absenceFallbackPolicySnapshot, the full attendanceSummary aggregate (with its own raw .records),
+// compensationSnapshot, and the rate snapshot used for historical reconciliation replay. None of
+// that is payslip content -- it's the audit trail leave-payroll-reconciliation.js needs to safely
+// replay a LOCKED run later, and it was never meant to reach an ordinary employee looking at their
+// own pay. This keeps only the fields the self-service "View Payslip" modal (public/index.html's
+// modal.type==='slip') actually renders -- i/pr/basic/nd/ndH/lded/aded/gross/sss/ph/pi/tax/loan/
+// totalDed/net, plus the earning-line subset of calculationTrace it iterates -- and drops every
+// internal replay/audit field, including calculationTrace's own per-line rule/legal-citation
+// metadata (ruleCode/ruleVersion/legalSource/formula/sourceTransaction), which the payslip view
+// never reads. A caller with 'payroll' permission never goes through this -- see
+// buildScopedStateForEmployee's own canSeeAllPayroll branch, which hands back the item unmodified.
+function projectPayrollItemForEmployee(item) {
+  if (!item) return item;
+  return {
+    empId: item.empId, eid: item.eid, name: item.name, pos: item.pos, payType: item.payType,
+    pr: item.pr, absentDays: item.absentDays, lateMinutes: item.lateMinutes, undertimeMinutes: item.undertimeMinutes,
+    otH: item.otH, ndH: item.ndH,
+    basic: item.basic, ot: item.ot, nd: item.nd, lded: item.lded, aded: item.aded,
+    gross: item.gross, sss: item.sss, ph: item.ph, pi: item.pi, tax: item.tax, loan: item.loan,
+    totalDed: item.totalDed, net: item.net,
+    calculationTrace: (item.calculationTrace || []).map(l => ({ code: l.code, name: l.name, type: l.type, amount: l.amount, taxable: l.taxable }))
+  };
+}
+
 function buildScopedStateForEmployee(state, session) {
   const users = state.users || [];
   const me = users.find(u => String(u.email || '').toLowerCase() === String(session.sub || '').toLowerCase()) || null;
@@ -130,7 +158,7 @@ function buildScopedStateForEmployee(state, session) {
     // shape and any older/hand-built row that used `eid` numerically instead.
     payrolls: canSeeAllPayroll ? (state.payrolls || []) : (state.payrolls || [])
       .filter(r => (r.items || []).some(i => i.empId === meId || i.eid === meId))
-      .map(r => ({ ...r, items: (r.items || []).filter(i => i.empId === meId || i.eid === meId) })),
+      .map(r => ({ ...r, items: (r.items || []).filter(i => i.empId === meId || i.eid === meId).map(projectPayrollItemForEmployee) })),
     payrollAdjustments: canSeeAllPayroll ? (state.payrollAdjustments || []) : ownOnly(state.payrollAdjustments, 'empId'),
     finalPayList: canSeeAllPayroll ? (state.finalPayList || []) : ownOnly(state.finalPayList, 'empId'),
     // Operational/admin-only working state -- never needed for employee self-service.

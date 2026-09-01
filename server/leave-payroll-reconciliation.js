@@ -462,6 +462,29 @@ function reconcileLeaveAgainstLockedPayroll(state, employee, leaveRecord, closed
 // with a full audit trail. A fresh call to reconcileLeaveAgainstLockedPayroll for the same
 // (leave, run, employee) triple afterward is then free to create a genuine replacement (issue 17),
 // since findExistingReconciliation ignores reversed records.
+//
+// The reversal is built from an EXPLICIT ALLOWLIST, never Object.assign({}, original, {...}) --
+// the original adjustment may already carry real processing-lifecycle state from having gone
+// through an actual payroll run (status:'applied', processStatus:'applied', payrollRunId:<id>,
+// appliedAt:<timestamp>, payPeriodId/payPeriodLabel once it was actually included in one -- see
+// public/payroll-governance.js's runPayroll()/lockPayrollRun(), which are the only places that set
+// those fields). A reversal is a brand-new, entirely unprocessed adjustment -- it has never been
+// submitted into any payroll run, so it must start in the canonical unprocessed state
+// (status/processStatus:'ready', no payrollRunId/payPeriodId/payPeriodLabel/appliedAt at all) and
+// enter the normal adjustment queue to be picked up by the next eligible payroll, exactly like any
+// other freshly-created adjustment. Object.assign would have silently carried the OLD run's
+// processing state onto a brand-new entry that was never actually processed.
+//
+// Tax/pay-item treatment (taxable/payItemCode/category/direction) is inherited from the ORIGINAL
+// correction's own treatment, never re-derived from the reversed amount's sign alone: reversing a
+// taxable earning is still reversing a taxable earning. payItemCode/category/direction do still
+// track the reversal's OWN amount sign (the payroll engine itself classifies earning-vs-deduction
+// purely from amount sign -- public/payroll-rule-engine.js's `isDeduction = amount < 0` -- so
+// keeping these three mutually consistent with the reversal's own sign, by deriving all three from
+// the same `isEarning` value, is what avoids the contradictory-combination risk), while `taxable`
+// is the one field that deliberately does NOT follow that sign -- it preserves the original
+// correction's own tax character instead. `reversalOfPayItemCode` records which original pay item
+// this reverses, for audit trail, independent of the reversal's own (sign-derived) payItemCode.
 function reverseReconciliation(state, reconciliationId, actorName, reason) {
   state.leaveRetroReconciliations = Array.isArray(state.leaveRetroReconciliations) ? state.leaveRetroReconciliations : [];
   state.payrollAdjustments = Array.isArray(state.payrollAdjustments) ? state.payrollAdjustments : [];
@@ -475,15 +498,27 @@ function reverseReconciliation(state, reconciliationId, actorName, reason) {
   if (!reason || !String(reason).trim()) return { ok: false, reason: 'A reversal reason is required for the audit trail.' };
   const nowIso = new Date().toISOString();
   const reversedAmount = -Number(original.amount);
-  const reversal = Object.assign({}, original, {
-    id: nextAdjustmentId(state), amount: reversedAmount,
-    payItemCode: reversedAmount >= 0 ? 'LEAVE_RETRO_EARNING' : 'LEAVE_RETRO_DEDUCTION',
-    category: reversedAmount >= 0 ? 'earnings' : 'deductions', taxable: reversedAmount >= 0, direction: reversedAmount >= 0 ? 'income' : 'deduction',
+  const isEarning = reversedAmount >= 0;
+  const reversal = {
+    id: nextAdjustmentId(state),
+    empId: original.empId,
     adjType: 'Leave Retro Reversal',
+    payItemCode: isEarning ? 'LEAVE_RETRO_EARNING' : 'LEAVE_RETRO_DEDUCTION',
+    category: isEarning ? 'earnings' : 'deductions',
+    direction: isEarning ? 'income' : 'deduction',
+    // Preserves the ORIGINAL correction's own tax character -- never re-derived from the reversed
+    // amount's sign.
+    taxable: original.taxable,
+    amount: reversedAmount,
     reason: `Reversal of adjustment #${original.id} for leave #${record.sourceLeaveId}, payroll run #${record.sourcePayrollRunId}. Reason: ${reason}`,
-    createdAt: nowIso.slice(0, 10), addedBy: actorName, sourceType: REVERSAL_SOURCE_TYPE,
-    reversesAdjustmentId: original.id, reversesReconciliationId: record.id
-  });
+    effectiveDate: original.effectiveDate,
+    // Canonical unprocessed state -- this adjustment has never been submitted into any payroll
+    // run. No payrollRunId/appliedAt: it enters the normal queue for the next eligible payroll,
+    // never attached directly to the old (locked/voided) run it corrects.
+    payPeriodId: null, payPeriodLabel: null, addedBy: actorName, status: 'ready', processStatus: 'ready', createdAt: nowIso.slice(0, 10),
+    sourceType: REVERSAL_SOURCE_TYPE, sourceLeaveId: record.sourceLeaveId, sourcePayrollRunId: record.sourcePayrollRunId, sourcePeriodId: record.sourcePeriodId, sourceFraction: null,
+    reversesAdjustmentId: original.id, reversesReconciliationId: record.id, reversalOfPayItemCode: original.payItemCode
+  };
   state.payrollAdjustments.push(reversal);
   record.status = 'reversed';
   record.reversedBy = actorName;
