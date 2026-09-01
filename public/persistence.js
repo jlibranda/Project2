@@ -125,6 +125,11 @@
   // toast for something that isn't actually a conflict. Call this with the version such an
   // endpoint's response returns right after a successful call.
   window.syncStateVersion=function(v){if(typeof v==='number'&&v>stateVersion)stateVersion=v;};
+  // Read-only counterpart -- the payroll lifecycle endpoints (POST /api/payroll-runs/:id/approve
+  // etc.) accept an expectedVersion so the server can reject a call made against a state the
+  // caller's own session no longer has current, without requiring the client to duplicate this
+  // module's own private version tracking.
+  window.getStateVersion=function(){return stateVersion;};
 
   window.connectDatabaseAfterLogin=async function(email,password){
     var result=await request('/auth/login',{method:'POST',body:JSON.stringify({email:email,password:password})});

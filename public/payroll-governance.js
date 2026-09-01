@@ -255,21 +255,10 @@
       recipientEmails:recipients,period:run.from+' to '+run.to,submittedBy:user.name
     }})}).catch(function(){});
   }
-  // One individual email per employee (the backend loops server-side on a single request) --
-  // unlike the admin/HR-facing notifications above, batching every employee's address into one
-  // email's recipient list would expose the whole payroll roster's emails to each other, which
-  // is not something a "your payslip is ready" notice should ever do.
-  function notifyPayslipsReleased(run){
-    if(typeof window.apiRequest!=='function')return;
-    var employees=(run.items||[]).map(function(item){
-      var emp=USERS.find(function(u){return u.id===item.eid;});
-      return emp&&emp.email?{email:emp.email,name:emp.name}:null;
-    }).filter(Boolean);
-    if(!employees.length)return;
-    window.apiRequest('/notify',{method:'POST',body:JSON.stringify({type:'payslip-released',payload:{
-      employees:employees,period:run.from+' to '+run.to
-    }})}).catch(function(){});
-  }
+  // "Your payslip is ready" notifications now fire server-side, strictly after the final-approval
+  // lock transaction commits (server.js's notifyPayslipsReleasedServerSide(), called from POST
+  // /api/payroll-runs/:id/approve) -- there is no longer a client-side lock moment to fire this
+  // from at all (see approvePayroll() above).
   window.runPayroll=runPayroll=function(){
     var from=document.getElementById('pf')&&document.getElementById('pf').value;
     var to=document.getElementById('pt')&&document.getElementById('pt').value;
@@ -296,64 +285,85 @@
     PAYROLL_DRAFT={};window._prPreview=false;window._reprocessRunId=null;queueSync('Payroll_Runs','Payroll_Items','Payroll_Audit','Payroll_Adjustments');toast('Payroll submitted to the Timekeeping Reviewer.','success');tab=0;render();
   };
 
-  window.approvePayroll=function(runId){
+  // Server-authoritative (POST /api/payroll-runs/:id/approve) -- the backend alone decides the
+  // current/next stage, caller eligibility, segregation-of-duties, snapshot completeness, and
+  // whether this call finalizes the run. This function is now just a thin requester: it never
+  // mutates run.workflow/approvalStage/status/lockedAt/approvedBy or period.status/runId itself,
+  // it only renders whatever the server hands back. Generic PUT /api/state (the debounced
+  // autosave) is permanently forbidden from performing any of this (server/payroll-immutability.js)
+  // -- this is the ONE legitimate path a payroll run can actually advance through.
+  window.approvePayroll=async function(runId){
     var run=PAYROLLS.find(function(item){return item.id===runId;});
     if(!run||run.status!=='pending_approval')return;
     if(!(isAdminUser(user)||canAccess('payroll_approve'))){toast('You do not have payroll approval permission.','error');return;}
     var stageIndex=numberOr(run.approvalStage,1),stage=PAYROLL_WORKFLOW[stageIndex];
-    if(!stage){lockPayrollRun(run);return;}
-    var previous=(run.workflow||[])[run.workflow.length-1];
-    var override=false;
-    if(previous&&previous.by===user.name){
-      if(!isPlatformAdmin||!confirm('Segregation-of-duties warning: the same user handled the previous stage. Use emergency platform-admin override?')){toast('A different authorized user must complete '+stage.label+'.','warning');return;}
-      override=true;
-    }
-    var notes=prompt(stage.label+' review notes / basis:');if(notes===null)return;
+    var stageLabel=stage?stage.label:'this stage';
+    var notes=prompt(stageLabel+' review notes / basis:');if(notes===null)return;
     if(!notes.trim()){toast('Review notes are required for the audit trail.','warning');return;}
-    var at=new Date().toISOString();run.workflow=run.workflow||[];run.workflow.push({stage:stage.key,label:stage.label,by:user.name,at:at,status:'completed',notes:notes.trim(),segregationOverride:override});
-    PAYROLL_AUDIT.push({runId:run.id,action:'stage_approved',stage:stage.key,by:user.name,at:at,notes:notes.trim(),segregationOverride:override});run.approvalStage=stageIndex+1;
-    if(run.approvalStage>=PAYROLL_WORKFLOW.length)lockPayrollRun(run);else{queueSync('Payroll_Runs','Payroll_Audit');toast(stage.label+' completed. Next: '+PAYROLL_WORKFLOW[run.approvalStage].label+'.','success');render();}
-  };
-  function numberOr(value,fallback){var parsed=Number(value);return Number.isFinite(parsed)?parsed:fallback;}
-  // Issue 27: a run must not become the authoritative historical source of truth for retro leave
-  // reconciliation (server/leave-payroll-reconciliation.js) unless every item actually carries the
-  // minimum snapshot a later replay needs -- an incomplete run that locks anyway just becomes
-  // another old run permanently stuck at manual_review_required the moment anyone files a retro
-  // leave against it, so the block happens here instead, before that ever becomes someone else's
-  // problem to notice. Mirrored field-for-field in server/payroll-snapshot-validation.js's
-  // validatePayrollSnapshotCompleteness() -- kept in sync manually since this file is browser-only
-  // (DOM/prompt/confirm dependencies) and can't be require()'d from Node; that server-side copy is
-  // what a future dedicated lock endpoint should call, since generic PUT /api/state can no longer
-  // perform a lock transition at all (server/payroll-immutability.js).
-  function payrollSnapshotCompleteness(run){
-    var missing=[];
-    (run.items||[]).forEach(function(item){
-      if(!Array.isArray(item.attendanceInputSnapshot))missing.push(item.eid+': missing attendanceInputSnapshot');
-      if(!item.scheduleSnapshot||typeof item.scheduleSnapshot!=='object')missing.push(item.eid+': missing scheduleSnapshot');
-      if(!item.attendanceSummary||typeof item.attendanceSummary!=='object')missing.push(item.eid+': missing attendanceSummary');
-      if(!item.rates||!Number.isFinite(Number(item.rates.daily)))missing.push(item.eid+': missing rate snapshot');
-    });
-    if(!Array.isArray(run.ruleSnapshot)||!run.ruleSnapshot.length)missing.push('run: missing ruleSnapshot');
-    return {complete:!missing.length,missing:missing};
-  }
-  function lockPayrollRun(run){
-    var completeness=payrollSnapshotCompleteness(run);
-    if(!completeness.complete){
-      toast('PAYROLL_SNAPSHOT_INCOMPLETE: cannot lock -- '+completeness.missing.slice(0,3).join('; ')+(completeness.missing.length>3?' (+'+(completeness.missing.length-3)+' more)':''),'error',8000);
-      PAYROLL_AUDIT.push({runId:run.id,action:'lock_blocked_incomplete_snapshot',by:user.name,at:new Date().toISOString(),notes:completeness.missing.join('; ')});
-      return;
+    var body={notes:notes.trim(),expectedVersion:window.getStateVersion?window.getStateVersion():undefined};
+    try{
+      var res=await window.apiRequest('/payroll-runs/'+runId+'/approve',{method:'POST',body:JSON.stringify(body)});
+      applyServerPayrollResult(res);
+      if(res.locked)toast('Payroll approved, locked, and immutable. Corrections now require a retro adjustment or reversal.','success');
+      else toast(stageLabel+' completed.'+(res.run.approvalStage<PAYROLL_WORKFLOW.length?' Next: '+PAYROLL_WORKFLOW[res.run.approvalStage].label+'.':''),'success');
+      render();
+    }catch(error){
+      if(error&&error.body&&error.body.code==='PAYROLL_SEGREGATION_OF_DUTIES'){
+        if(isPlatformAdmin&&confirm('Segregation-of-duties warning: the same user handled the previous stage. Use emergency platform-admin override?')){
+          var overrideReason=prompt('Reason for the emergency segregation-of-duties override:');
+          if(overrideReason===null||!overrideReason.trim())return;
+          try{
+            var res2=await window.apiRequest('/payroll-runs/'+runId+'/approve',{method:'POST',body:JSON.stringify(Object.assign({},body,{emergencyOverride:true,overrideReason:overrideReason.trim()}))});
+            applyServerPayrollResult(res2);
+            toast(res2.locked?'Payroll approved, locked, and immutable (emergency override).':'Stage completed (emergency override).','success');render();
+          }catch(error2){toast(error2.message||'Unable to record the approval.','warning');}
+          return;
+        }
+        toast(error.message||'A different authorized user must complete this stage.','warning');return;
+      }
+      if(error&&error.body&&error.body.code==='PAYROLL_SNAPSHOT_INCOMPLETE'){
+        var missing=(error.body.missing||[]);
+        toast('PAYROLL_SNAPSHOT_INCOMPLETE: cannot lock -- '+missing.slice(0,3).join('; ')+(missing.length>3?' (+'+(missing.length-3)+' more)':''),'error',8000);
+        return;
+      }
+      toast(error.message||'Unable to record the approval.','warning');
     }
-    var at=new Date().toISOString();run.status='locked';run.approvedBy=user.name;run.approvedAt=at;run.lockedAt=at;run.immutable=true;
-    run.items.forEach(function(item){(item.adjustmentIds||[]).forEach(function(id){var adjustment=PAYROLL_ADJ.find(function(a){return a.id===id;});if(adjustment){adjustment.status='applied';adjustment.processStatus='applied';adjustment.appliedAt=at;adjustment.payrollRunId=run.id;}});});
-    var period=PAY_PERIODS.find(function(item){return item.id===run.periodId;});if(period){period.status='closed';period.runId=run.id;period.lockedBy=user.email||user.name;period.lockedAt=today();}
-    PAYROLL_AUDIT.push({runId:run.id,action:'approved_locked_immutable',stage:'authorized_approver',by:user.name,at:at});
-    notifyPayslipsReleased(run);
-    queueSync('Payroll_Runs','Payroll_Items','Payroll_Audit','Payroll_Adjustments','Payroll_Periods');toast('Payroll approved, locked, and immutable. Corrections now require a retro adjustment or reversal.','success');render();
+  };
+  // Merges the server-authoritative run/period back into the LOCAL objects in place (never
+  // replaces them wholesale, so any other in-memory references stay valid) and syncs the client's
+  // tracked state version so the next debounced autosave doesn't submit a stale version.
+  function applyServerPayrollResult(res){
+    var run=PAYROLLS.find(function(item){return item.id===res.run.id;});
+    if(run)Object.assign(run,res.run);else PAYROLLS.push(res.run);
+    if(res.period){
+      var period=PAY_PERIODS.find(function(item){return item.id===res.period.id;});
+      if(period)Object.assign(period,res.period);else PAY_PERIODS.push(res.period);
+    }
+    if(window.syncStateVersion)window.syncStateVersion(res.version);
   }
-  window.rejectPayroll=function(runId){
+  function numberOr(value,fallback){var parsed=Number(value);return Number.isFinite(parsed)?parsed:fallback;}
+  // Snapshot completeness and the actual lock (status/lockedAt/approvedBy/adjustment-application/
+  // period-close) are no longer decided or performed client-side at all -- POST
+  // /api/payroll-runs/:id/approve (server.js) enforces the identical rule
+  // (server/payroll-snapshot-validation.js's validatePayrollSnapshotCompleteness(), the same field
+  // list this used to check) and performs the lock/period-close atomically in one transaction.
+  // Browser JS changing a run object was never a safe place for "is this payroll allowed to
+  // become the immutable historical record" to be decided -- see approvePayroll() above, which
+  // now only requests the transition and renders whatever the server actually did.
+
+  // Server-authoritative (POST /api/payroll-runs/:id/return) -- same reasoning as approvePayroll
+  // above: this only requests the return, it never sets status/rejectedBy/rejectedAt/returnReason
+  // itself.
+  window.rejectPayroll=async function(runId){
     var run=PAYROLLS.find(function(item){return item.id===runId;});if(!run||run.status!=='pending_approval')return;
     var reason=prompt('Reason for returning this payroll:');if(reason===null)return;if(!reason.trim()){toast('A return reason is required.','warning');return;}
-    run.status='returned';run.rejectedBy=user.name;run.rejectedAt=new Date().toISOString();run.returnReason=reason.trim();PAYROLL_AUDIT.push({runId:run.id,action:'returned_for_correction',by:user.name,at:run.rejectedAt,notes:reason.trim()});queueSync('Payroll_Runs','Payroll_Audit');toast('Payroll returned to the maker.','warning');render();
+    try{
+      var res=await window.apiRequest('/payroll-runs/'+runId+'/return',{method:'POST',body:JSON.stringify({reason:reason.trim(),expectedVersion:window.getStateVersion?window.getStateVersion():undefined})});
+      applyServerPayrollResult(res);
+      toast('Payroll returned to the maker.','warning');render();
+    }catch(error){
+      toast(error.message||'Unable to return this payroll.','warning');
+    }
   };
   window.requestPayrollReopen=function(runId){
     var run=PAYROLLS.find(function(item){return item.id===runId;});if(!run||run.status!=='locked')return;
@@ -386,25 +396,27 @@
     periodAudit('pay_period_unlocked',period,reason.trim());
     queueSync('Payroll_Calendar','Payroll_Audit');toast('Payroll calendar unlocked. You may now edit or delete it.','info');render();
   };
-  window.reopenClosedPayPeriod=function(periodId){
+  // Server-authoritative (POST /api/payroll-runs/:id/reopen) -- the backend alone decides whether
+  // the run/period are in a consistent locked/closed+linked state and performs the void + reopen
+  // atomically in one transaction. This only requests it, never sets run.status/period.status
+  // itself, and only reflects whatever the server actually did.
+  window.reopenClosedPayPeriod=async function(periodId){
     var period=PAY_PERIODS.find(function(item){return item.id===periodId;});
     if(!period||period.status!=='closed')return;
     if(!canManagePayrollCalendar()){toast('Payroll approval permission is required to reopen a closed calendar.','error');return;}
+    var linkedRunId=period.runId;
+    if(!linkedRunId){toast('This closed period has no linked payroll run to void.','warning');return;}
     var reason=prompt('Reason for voiding the posted payroll and reopening this calendar:');
     if(reason===null)return;
     if(!reason.trim()){toast('A reason is required for the audit trail.','warning');return;}
     if(!confirm('Void the linked payroll and reopen "'+period.label+'"?\n\nThe original payroll will remain in the audit history as VOIDED. This action cannot silently erase posted results.'))return;
-    var linkedRunId=period.runId;
-    var run=PAYROLLS.find(function(item){return item.id===linkedRunId;});
-    var at=new Date().toISOString();
-    if(run){
-      run.status='voided';run.voidedBy=user.name;run.voidedAt=at;run.voidReason=reason.trim();run.immutable=true;
-      run.reopenRequest={status:'approved',reason:reason.trim(),requestedBy:user.name,requestedAt:at,approvedBy:user.name,approvedAt:at};
+    try{
+      var res=await window.apiRequest('/payroll-runs/'+linkedRunId+'/reopen',{method:'POST',body:JSON.stringify({reason:reason.trim(),expectedVersion:window.getStateVersion?window.getStateVersion():undefined})});
+      applyServerPayrollResult(res);
+      toast('Posted payroll voided and calendar reopened. The audit history was preserved.','success',5500);render();
+    }catch(error){
+      toast(error.message||'Unable to reopen this payroll calendar.','warning');
     }
-    period.status='open';period.runId=null;period.lockedBy=null;period.lockedAt=null;period.reopenedBy=user.name;period.reopenedAt=at;period.reopenReason=reason.trim();
-    periodAudit('payroll_voided_period_reopened',period,reason.trim(),linkedRunId);
-    queueSync('Payroll_Calendar','Payroll_Runs','Payroll_Items','Payroll_Audit');
-    toast('Posted payroll voided and calendar reopened. The audit history was preserved.','success',5500);render();
   };
   window.deletePayPeriod=function(periodId){
     var period=PAY_PERIODS.find(function(item){return item.id===periodId;});

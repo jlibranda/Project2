@@ -14,17 +14,38 @@
 //       protected 'locked'), even though the code's own comment claimed voided runs were "protected
 //       ... exactly like a locked one" -- they were not.
 //
-// FIX: every payroll lifecycle status that represents a FINALIZED, historically-immutable run
-// (FINALIZED_RUN_STATUSES below) is fully protected -- not just 'locked'. And a run that is NOT
-// currently finalized is now also checked for an unauthorized TRANSITION straight into a finalized
-// status, or between two different finalized statuses (locked<->voided), which generic
-// /api/state must never be allowed to perform on its own. The same two-sided check applies to a
-// pay period's 'closed' status. This module intentionally does not implement the actual lock/void/
-// reopen workflow -- it only draws the boundary generic /api/state may never cross; the real
-// workflow stays exactly where it already lives (public/payroll-governance.js's client-side
-// maker/checker/approver flow), which still autosaves through this same endpoint for every
-// non-lifecycle-crossing edit (ordinary item/adjustment edits, single-stage approvals that don't
-// yet reach the final stage, etc).
+// FIX (that pass): every payroll lifecycle status that represents a FINALIZED, historically-
+// immutable run (FINALIZED_RUN_STATUSES below) is fully protected -- not just 'locked'. And a run
+// that is NOT currently finalized is checked for an unauthorized TRANSITION straight into a
+// finalized status, or between two different finalized statuses (locked<->voided).
+//
+// THIS pass (server-authoritative payroll lifecycle): dedicated backend endpoints
+// (POST /api/payroll-runs/:id/approve, /return, /reopen -- server.js) are now the ONLY legitimate
+// way a run's lifecycle actually advances. That closed the "legitimate approval can no longer
+// happen at all" regression those endpoints fixed, but it also means generic PUT /api/state must
+// now be treated as ENTIRELY read-only for lifecycle fields, not just "can't jump straight to
+// locked" -- three more gaps closed here:
+//   (c) a BRAND-NEW submitted run with no corresponding CURRENT entry was never inspected at all
+//       (the loop below only ever iterated currentState.payrolls) -- an attacker could submit a
+//       wholly fabricated `{id:999999, status:'locked', approvedBy:'Attacker', net:999999}` and it
+//       would sail through untouched. Same gap for a brand-new pay period submitted pre-closed.
+//   (d) the one-step "approvalStage may advance by exactly +1" compatibility carve-out this module
+//       used to grant generic PUT (so the OLD client-side approvePayroll() could still work) is
+//       removed now that the real dedicated endpoint exists to do this properly (segregation-of-
+//       duties, required notes, snapshot-completeness gating, atomic lock) -- ANY approvalStage
+//       change through generic PUT is now rejected, full stop.
+//   (e) the run's `workflow` history array itself was never protected for a still-pending run (only
+//       once already finalized) -- a submission could silently rewrite/drop/relabel an earlier
+//       reviewer's entry without ever touching status or approvalStage. Now protected for every run
+//       once it exists, the same way LIFECYCLE_ONLY_RUN_FIELDS already is.
+// A transition straight into 'returned' (the dedicated POST /api/payroll-runs/:id/return's own
+// job) is blocked the same way a transition into a finalized status already was.
+//
+// This module intentionally does not implement the actual approve/reject/reopen workflow itself --
+// it only draws the boundary generic /api/state may never cross; the real workflow lives in the
+// dedicated endpoints in server.js. Ordinary in-flight payroll work (item edits, adjustment
+// attachment, a still-draft run's own non-lifecycle fields) continues to autosave through this same
+// endpoint exactly as before.
 'use strict';
 
 function deepEqual(a, b) {
@@ -51,19 +72,23 @@ function deepEqual(a, b) {
 // 'pending_approval' (maker submitted, awaiting maker/checker/approver stages) -> 'locked'
 // (approved through every stage, immutable) or 'returned' (rejected back to the maker) or
 // 'superseded' (replaced by a fresh submission before it ever locked); a 'locked' run can later
-// become 'voided' (payroll-governance.js's reopenClosedPayPeriod, the only place that transition
-// exists today) when its pay period is reopened. 'locked' and 'voided' are the only two statuses
-// that represent a FINALIZED, historically-immutable result -- 'returned'/'superseded' are dead
-// ends for that specific run object but were never a source of truth anything else depends on, so
-// they don't need protecting the same way. No 'posted'/'released' status is ever set on a
-// state.payrolls[] run in this codebase (a similarly-named 'released' status exists only on the
-// unrelated state.finalPayList[] records, out of scope for this module).
+// become 'voided' (the dedicated POST /api/payroll-runs/:id/reopen endpoint) when its pay period
+// is reopened. 'locked' and 'voided' are the only two statuses that represent a FINALIZED,
+// historically-immutable result -- 'returned'/'superseded' are dead ends for that specific run
+// object but were never a source of truth anything else depends on, so they don't need protecting
+// the same permanent way (they're still guarded against being reached BY FORGERY -- see
+// LIFECYCLE_TRANSITION_BLOCKED_STATUSES below -- just not frozen forever afterward).
 const FINALIZED_RUN_STATUSES = new Set(['locked', 'voided']);
 function isFinalizedPayrollRun(run) { return !!run && FINALIZED_RUN_STATUSES.has(run.status); }
 // Alias: "protected" and "finalized" are the same concept for a payroll run today -- kept as a
 // separate name since the two questions ("is this run done?" vs "must this run's fields never
 // move?") are conceptually distinct even though they currently have the same answer.
 function isProtectedPayrollRun(run) { return isFinalizedPayrollRun(run); }
+
+// Statuses a submitted run may never be forged INTO through generic PUT -- each one now has its
+// own dedicated, server-authoritative endpoint (approve -> locked, return -> returned,
+// reopen -> voided) that alone may perform the transition.
+const LIFECYCLE_TRANSITION_BLOCKED_STATUSES = new Set(['locked', 'voided', 'returned']);
 
 // Every field on a FINALIZED (locked or voided) run that must never move except through the
 // dedicated reversal/reopen workflow -- deliberately broader than just the money fields, since the
@@ -75,12 +100,19 @@ const PROTECTED_RUN_FIELDS = [
   'workflow', 'lockedAt', 'approvedBy', 'approvedAt', 'from', 'to', 'periodId', 'groupId'
 ];
 
-// Server-controlled lifecycle fields on a run that is NOT (yet) finalized -- these are only ever
-// set together, all at once, by the real lockPayrollRun() workflow. A submission that introduces
-// any of these on a still-pending run (without the run's own status actually becoming finalized,
-// which is caught separately below) is exactly the "forge the approval paperwork but leave status
-// alone so my earlier check doesn't fire" attempt issue 1G describes.
-const LOCK_ONLY_RUN_FIELDS = ['lockedAt', 'approvedBy', 'approvedAt', 'immutable'];
+// Server-controlled lifecycle fields on a run -- these are only ever set by a dedicated endpoint
+// (POST /api/payroll-runs/:id/approve|return|reopen), never by generic PUT /api/state, regardless
+// of whether the run is currently finalized. A submission that introduces any of these on a run
+// that doesn't already carry them (without the run's own status actually transitioning, which is
+// caught separately above) is exactly the "forge the approval/rejection/void paperwork but leave
+// status alone so the transition-check above doesn't fire" attempt this exists to catch.
+const LIFECYCLE_ONLY_RUN_FIELDS = [
+  'lockedAt', 'approvedBy', 'approvedAt', 'immutable',
+  'rejectedBy', 'rejectedAt', 'returnReason',
+  'voidedBy', 'voidedAt', 'voidReason'
+];
+// Kept as an alias of the (now broader) set above for anything still importing the old name.
+const LOCK_ONLY_RUN_FIELDS = LIFECYCLE_ONLY_RUN_FIELDS;
 
 // Compares `submittedState` against `currentState` (the last durably-saved state) and returns
 // { ok:true } if every payroll-lifecycle boundary is respected, or { ok:false, reason, code } for
@@ -89,6 +121,8 @@ const LOCK_ONLY_RUN_FIELDS = ['lockedAt', 'approvedBy', 'approvedAt', 'immutable
 function checkPayrollImmutability(currentState, submittedState) {
   const currentRuns = (currentState && currentState.payrolls) || [];
   const submittedRuns = (submittedState && submittedState.payrolls) || [];
+  const currentRunIds = new Set(currentRuns.map(r => r && r.id));
+
   for (const run of currentRuns) {
     const match = submittedRuns.find(r => r && r.id === run.id);
 
@@ -107,46 +141,77 @@ function checkPayrollImmutability(currentState, submittedState) {
     }
 
     // NOT currently finalized (draft/pending_approval/returned/superseded) -- ordinary payroll
-    // work (item edits, adjustment attachment, single-stage approvals) must keep behaving exactly
-    // as it always has. But the submission must not use this same freedom to jump straight into a
-    // finalized status, skipping the maker/checker/approver workflow entirely (issue 1/1B).
-    if (match && isFinalizedPayrollRun(match)) {
+    // work (item edits, adjustment attachment) must keep behaving exactly as it always has. But
+    // the submission must not use this same freedom to jump straight into a status that a
+    // dedicated endpoint alone may set (locked/voided/returned), skipping the real workflow
+    // entirely.
+    if (match && run.status !== match.status && LIFECYCLE_TRANSITION_BLOCKED_STATUSES.has(match.status)) {
       return {
-        ok: false, code: 'PAYROLL_STATUS_TRANSITION_BLOCKED',
+        ok: false,
+        code: isFinalizedPayrollRun(match) ? 'PAYROLL_STATUS_TRANSITION_BLOCKED' : 'PAYROLL_RETURN_TRANSITION_BLOCKED',
         reason: 'Payroll lifecycle transitions must use the server-authoritative payroll workflow.', runId: run.id
       };
     }
     if (match) {
-      // Approval stage may only ever advance by exactly one step per submission -- a normal single
-      // approvePayroll() call increments it by 1. A larger jump would let the run silently skip
-      // straight to auto-lock on the very NEXT legitimate approval call (approvePayroll treats an
-      // approvalStage past the end of the configured workflow as "fully approved, lock now"),
-      // which is the exact "forge approvalStage:999, leave status alone" variant of issue 1's
-      // exploit that the status-only check above can't see by itself (issue 1G).
-      const currentStage = Number(run.approvalStage) || 0;
-      const submittedStage = Number(match.approvalStage) || 0;
-      if (submittedStage > currentStage + 1) {
+      // The workflow history is exclusively server-written (the dedicated approve/return/reopen
+      // endpoints) -- a still-pending run's workflow array can never move through this generic
+      // endpoint, whether by adding, removing, or editing an entry, even without ever touching
+      // approvalStage/status themselves.
+      if (!deepEqual(run.workflow || [], match.workflow || [])) {
         return {
-          ok: false, code: 'PAYROLL_APPROVAL_STAGE_SKIPPED',
-          reason: 'Payroll approval stage cannot advance by more than one step through this endpoint. Use the server-authoritative payroll workflow.', runId: run.id
+          ok: false, code: 'PAYROLL_WORKFLOW_FORGERY_BLOCKED',
+          reason: `Payroll workflow history for run #${run.id} is server-authoritative and can only change through the dedicated payroll approval workflow.`, runId: run.id
         };
       }
-      // lockedAt/approvedBy/approvedAt/immutable are only ever set together, at the moment a run
-      // actually becomes 'locked' -- introducing any of them while status stays non-finalized is
-      // never a legitimate ordinary edit.
-      for (const field of LOCK_ONLY_RUN_FIELDS) {
+      // approvalStage now ONLY ever advances through the dedicated approval endpoint -- the
+      // one-step "compatibility" allowance this module used to grant generic PUT is removed now
+      // that a real server-authoritative endpoint exists to do this properly (segregation-of-
+      // duties, required notes, snapshot-completeness gating, atomic lock -- none of which this
+      // generic endpoint can enforce). ANY change, in either direction, is rejected.
+      const currentStage = Number(run.approvalStage) || 0;
+      const submittedStage = Number(match.approvalStage) || 0;
+      if (submittedStage !== currentStage) {
+        return {
+          ok: false, code: 'PAYROLL_APPROVAL_STAGE_CHANGE_BLOCKED',
+          reason: `Payroll approval stage for run #${run.id} can only change through the dedicated server-authoritative approval endpoint.`, runId: run.id
+        };
+      }
+      // lockedAt/approvedBy/approvedAt/immutable/rejected*/voided* are only ever set by a
+      // dedicated endpoint, at the moment a run actually transitions -- introducing any of them
+      // without that transition (caught above) is never a legitimate ordinary edit.
+      for (const field of LIFECYCLE_ONLY_RUN_FIELDS) {
         if (!run[field] && match[field]) {
           return {
             ok: false, code: 'PAYROLL_LIFECYCLE_FIELD_FORGED',
-            reason: `Field '${field}' on run #${run.id} is server-authoritative and cannot be set through this endpoint outside the normal approval workflow.`, runId: run.id, field
+            reason: `Field '${field}' on run #${run.id} is server-authoritative and cannot be set through this endpoint outside the dedicated payroll workflow.`, runId: run.id, field
           };
         }
       }
     }
   }
 
+  // A brand-new submitted run with NO corresponding current entry was never inspected by the loop
+  // above -- block one whose status is already a dedicated-endpoint-only status; only a genuinely
+  // fresh, non-finalized submission (e.g. a maker's own 'pending_approval' run) may be created
+  // directly through this endpoint.
+  const seenNewRunIds = new Set();
+  for (const run of submittedRuns) {
+    if (!run || currentRunIds.has(run.id)) continue;
+    if (seenNewRunIds.has(run.id)) {
+      return { ok: false, code: 'DUPLICATE_PAYROLL_RUN_ID', reason: `Two submitted payroll runs share id #${run.id}.`, runId: run.id };
+    }
+    seenNewRunIds.add(run.id);
+    if (LIFECYCLE_TRANSITION_BLOCKED_STATUSES.has(run.status)) {
+      return {
+        ok: false, code: 'NEW_FINALIZED_PAYROLL_BLOCKED',
+        reason: `A new payroll run cannot be created directly with status '${run.status}'. Use the server-authoritative payroll workflow.`, runId: run.id
+      };
+    }
+  }
+
   const currentPeriods = (currentState && currentState.payPeriods) || [];
   const submittedPeriods = (submittedState && submittedState.payPeriods) || [];
+  const currentPeriodIds = new Set(currentPeriods.map(p => p && p.id));
   for (const period of currentPeriods) {
     const match = submittedPeriods.find(p => p && p.id === period.id);
     if (period.status === 'closed') {
@@ -161,7 +226,7 @@ function checkPayrollImmutability(currentState, submittedState) {
       }
       continue;
     }
-    // NOT currently closed -- block a submission from directly closing it (issue 1C). Only the
+    // NOT currently closed -- block a submission from directly closing it. Only the
     // server-authoritative payroll locking workflow may close a pay period.
     if (match && match.status === 'closed') {
       return {
@@ -170,11 +235,22 @@ function checkPayrollImmutability(currentState, submittedState) {
       };
     }
   }
+  // Same brand-new-entry gap as runs above: a period submitted pre-closed with no current
+  // counterpart was never inspected at all.
+  for (const period of submittedPeriods) {
+    if (!period || currentPeriodIds.has(period.id)) continue;
+    if (period.status === 'closed') {
+      return {
+        ok: false, code: 'NEW_CLOSED_PAY_PERIOD_BLOCKED',
+        reason: `A new pay period cannot be created directly with status 'closed'. Use the server-authoritative payroll workflow.`, periodId: period.id
+      };
+    }
+  }
 
   return { ok: true };
 }
 
 module.exports = {
-  deepEqual, checkPayrollImmutability, PROTECTED_RUN_FIELDS, LOCK_ONLY_RUN_FIELDS,
-  FINALIZED_RUN_STATUSES, isFinalizedPayrollRun, isProtectedPayrollRun
+  deepEqual, checkPayrollImmutability, PROTECTED_RUN_FIELDS, LOCK_ONLY_RUN_FIELDS, LIFECYCLE_ONLY_RUN_FIELDS,
+  LIFECYCLE_TRANSITION_BLOCKED_STATUSES, FINALIZED_RUN_STATUSES, isFinalizedPayrollRun, isProtectedPayrollRun
 };
