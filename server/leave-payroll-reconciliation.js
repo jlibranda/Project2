@@ -1,31 +1,40 @@
 // Exact locked-payroll reconciliation for leave approved AFTER the affected pay period was
-// already locked -- the final, focused Leave/Payroll pass building on PR #311 (half-day-aware
-// timekeeping) and PR #312 (explicit paid/unpaid half-day accounting).
+// already locked. Builds on PR #313's locked-payroll-delta architecture (retro = corrected result
+// MINUS original locked result) and fixes the risks that pass left open:
 //
-// PROBLEM THIS REPLACES: the prior closed-period correction (creditLateApprovalDay /
-// debitClosedPeriodUnpaidLeave, still exported below for legacy/test/fallback use only) always
-// assumed the correct retro amount was `dailyRate × fraction` -- true only when that happens to
-// equal the actual difference between what the locked payroll ALREADY paid/deducted and what it
-// SHOULD have, once the newly-approved leave is taken into account. Example: a locked payroll
-// already deducted exactly the right ₱500 for a missing AM half (via a virtual-absence sweep);
-// the old logic would still fabricate a further -₱500 "unpaid leave" adjustment, overcorrecting.
+//   1. The "corrected" side used to be recomputed from the ENTIRE current state.attendance for the
+//      whole original period -- which meant an unrelated Time Correction, or a later schedule
+//      change, silently rode along inside a leave's own retro delta. Fixed by never touching
+//      state.attendance for any date except the ones THIS leave actually authorizes: the corrected
+//      side is now built by deep-cloning the run's own frozen item.attendanceInputSnapshot and
+//      patching in the CURRENT record for the leave's own dates only -- every other date is
+//      whatever the locked payroll already saw, untouched (issues 1-5/28/29/30).
+//   2. Historical schedule inputs (assigned shift, personal schedule, schedule adjustments,
+//      holidays, startOfWeek) are now read from the item's own frozen scheduleSnapshot, never
+//      today's live state.company.shifts -- a shift-template edit after lock can no longer
+//      retroactively change what "late" meant for an already-paid date (issue 2/5/30).
+//   3. The rule snapshot is validated against the specific rule codes the original calculation
+//      actually needed (issue 7), and reconstructed using its own complete fields (priority,
+//      coverage, rounding, source) rather than hardcoded defaults, when present (issue 8/35).
+//   4. absenceFallbackPolicy/periodDays are threaded through from the item's own frozen snapshot,
+//      so a switch-over policy change after lock can't alter historical replay (issue 9/31).
+//   5. An item carrying an attendance-dependent recurring allowance is not safely replayable by
+//      this isolated attendance-only calculation -- it routes to manual_review_required rather
+//      than silently omitting that allowance's own retro impact (issue 10/32).
+//   6. Reconciliations are never silently edited once applied. A correction to an applied
+//      ('adjustment_created') reconciliation goes through reverseReconciliation() (a new,
+//      immutable reversal adjustment, never a mutation of the original) before a fresh
+//      reconciliation can be created for the same (leave, run, employee) triple, which then
+//      supersedes the reversed one -- full lineage preserved (issue 17-19/36/37).
 //
-// APPROACH: locate the immutable locked payroll run and the employee's own frozen payroll item
-// (public/payroll-governance.js's lockPayrollRun never lets these mutate again), reconstruct an
-// "original, attendance-only" payroll figure from the item's own frozen attendanceSummary
-// aggregate and rates snapshot (both saved verbatim at lock time), reconstruct a "corrected"
-// attendance-only figure the exact same way but from a FRESH TimekeepingCore.periodSummary() over
-// the *current* state.attendance (which by now carries the final approved leave metadata for the
-// touched date(s)) -- everything else (rules, rates, baseBasic) held IDENTICAL between the two so
-// only the leave-driven attendance interpretation can move the number. The delta between them,
-// less whatever prior leave-retro variance has already been applied against this same run, is the
-// exact correction still owed. No second payroll formula engine: both figures are produced by the
-// exact same PayrollRuleEngine.calculate() the rest of the product already uses.
+// No second payroll formula engine anywhere in this file: every figure is produced by the exact
+// same PayrollRuleEngine.calculate() the rest of the product already uses.
 'use strict';
 const TimekeepingCore = require('../public/timekeeping-core.js');
 const PayrollRuleEngine = require('../public/payroll-rule-engine.js');
 
 const SOURCE_TYPE = 'leave_retro_reconciliation';
+const REVERSAL_SOURCE_TYPE = 'leave_retro_reconciliation_reversal';
 const METHOD = 'locked_payroll_delta';
 
 // A synthetic, single-day period/group -- only ever used to isolate the attendance-driven lines
@@ -37,39 +46,59 @@ const ISOLATION_PERIOD = { from: '1970-01-01', to: '1970-01-01', cutoff1: true, 
 const ZERO_STATUTORY = () => ({ sssEE: 0, sssER: 0, phEE: 0, phER: 0, piEE: 0, piER: 0 });
 const ZERO_TAX = () => 0;
 
+// Rule codes that PAYROLL_RULEBOOK actually defines and that isolatedAttendancePayroll's
+// attendance-only calculation can consult (public/payroll-governance.js's PAYROLL_RULEBOOK).
+const KNOWN_ATTENDANCE_RULE_CODES = new Set(['BASIC_PAY', 'OT_REGULAR_DAY', 'REST_HOLIDAY_WORK', 'NIGHT_DIFFERENTIAL', 'ABSENCE_DEDUCTION', 'LATE_ROUNDING_MINUTES']);
+
 // Locates the pay period covering `date` for this employee's pay group, then the immutable
-// locked payroll run it points to, then the employee's own frozen item within that run -- the
-// exact chain issue 1 specifies (payGroupId + date + period.attendanceFrom/To + period.runId +
-// run.items). Returns { ok:true, period, run, item } on success, or { ok:false, reason, period?,
-// run? } as soon as any link in the chain is missing, so the caller always has a concrete,
-// specific reason rather than a bare "not found".
+// locked payroll run it points to, then the employee's own frozen item within that run.
+// Returns { ok:true, period, run, item } on success, or { ok:false, reason, period?, run? } as
+// soon as any link in the chain is missing, so the caller always has a concrete, specific reason.
 function findLockedPayrollContext(state, employee, date) {
   const periods = state.payPeriods || [];
   const period = periods.find(p => p.groupId === employee.payGroupId && (p.attendanceFrom || p.from) <= date && (p.attendanceTo || p.to) >= date);
   if (!period) return { ok: false, reason: 'No pay period covers this date for the employee\'s pay group.' };
   if (period.status !== 'closed') return { ok: false, reason: 'Pay period is not closed.', period };
   // A closed period with no linked run at all is treated exactly like any other missing/broken
-  // snapshot -- manual review, never a guessed dailyRate×fraction correction (issues 2/8/36).
+  // snapshot -- manual review, never a guessed dailyRate×fraction correction.
   if (!period.runId) return { ok: false, reason: 'Closed period has no linked payroll run.', period };
   const runs = state.payrolls || [];
   const run = runs.find(r => r.id === period.runId);
   if (!run) return { ok: false, reason: 'The period\'s linked payroll run no longer exists.', period };
-  // Only a genuinely finalized/posted run is a valid historical source of truth (issues 2/43/44).
-  // pending_approval / returned / superseded / voided are all explicitly NOT eligible -- a voided
-  // or superseded run's replacement, if any, is reached by the period's OWN runId (updated
-  // whenever a replacement is actually locked), never by chasing the old run's own linkage, so no
-  // separate "find the replacement" step is needed here.
+  // Only a genuinely finalized/posted run is a valid historical source of truth. pending_approval /
+  // returned / superseded / voided are all explicitly NOT eligible -- a voided or superseded run's
+  // replacement, if any, is reached by the period's OWN runId (updated whenever a replacement is
+  // actually locked), never by chasing the old run's own linkage.
   if (run.status !== 'locked') return { ok: false, reason: `Linked payroll run status is '${run.status}', not locked.`, period, run };
   const item = (run.items || []).find(i => i.empId === employee.id);
   if (!item) return { ok: false, reason: 'Employee payroll item not found in the locked run.', period, run };
   return { ok: true, period, run, item };
 }
 
-// Whether the located locked context is actually safe to use for an AUTOMATIC delta calculation
-// (issues 19/20). A manual override on the item means a human already decided the system-computed
-// figure needed correcting for reasons this code has no way to know -- automatically recomputing
-// on top of that could silently discard their intent. A missing attendanceSummary/rates snapshot
-// or rule snapshot means there is nothing safe to reconstruct the "original" side from at all.
+// Derives which PAYROLL_RULEBOOK rule codes the item's own original calculation actually needed --
+// ABSENCE_DEDUCTION whenever the locked item ever charged an absence or unpaid-leave day (both
+// share that rule's multiplier), LATE_ROUNDING_MINUTES whenever it charged any late minutes, plus
+// anything else recognizable in the item's own calculationTrace (issue 7).
+function requiredAttendanceRuleCodes(item) {
+  const codes = new Set();
+  const summary = item.attendanceSummary || {};
+  if (Number(summary.absentDays) > 0 || Number(summary.unpaidLeaveDays) > 0) codes.add('ABSENCE_DEDUCTION');
+  if (Number(summary.lateMinutes) > 0) codes.add('LATE_ROUNDING_MINUTES');
+  (item.calculationTrace || []).forEach(line => {
+    if (line && KNOWN_ATTENDANCE_RULE_CODES.has(line.ruleCode)) codes.add(line.ruleCode);
+  });
+  return Array.from(codes);
+}
+
+// Whether the located locked context is actually safe to use for an AUTOMATIC delta calculation.
+// A manual override on the item means a human already decided the system-computed figure needed
+// correcting for reasons this code has no way to know. A missing attendanceSummary/rates/
+// attendanceInputSnapshot/scheduleSnapshot/ruleSnapshot means there is nothing safe to reconstruct
+// the original OR corrected side from at all -- including every OLD, pre-this-pass locked run that
+// predates these snapshot fields (issue 26: never fabricate them retroactively from current data).
+// An item carrying an attendance-dependent recurring allowance is excluded too -- this isolated,
+// attendance-only calculation has no safe way to reproduce that allowance's own historical
+// entitlement (issue 10).
 function checkReconciliationEligibility(ctx) {
   if (!ctx.ok) return { eligible: false, reason: ctx.reason };
   const { item, run } = ctx;
@@ -82,8 +111,21 @@ function checkReconciliationEligibility(ctx) {
   if (!item.rates || !Number.isFinite(Number(item.rates.daily))) {
     return { eligible: false, reason: 'Locked payroll item is missing its original rate snapshot.' };
   }
-  if (!Array.isArray(run.ruleSnapshot)) {
+  if (!Array.isArray(item.attendanceInputSnapshot)) {
+    return { eligible: false, reason: 'Locked payroll item is missing its historical attendance input snapshot (attendanceInputSnapshot) -- an old run predating this snapshot cannot be safely replayed for a leave-only correction.' };
+  }
+  if (!item.scheduleSnapshot || typeof item.scheduleSnapshot !== 'object') {
+    return { eligible: false, reason: 'Locked payroll item is missing its historical schedule snapshot (scheduleSnapshot) -- an old run predating this snapshot cannot be safely replayed for a leave-only correction.' };
+  }
+  if (!Array.isArray(run.ruleSnapshot) || !run.ruleSnapshot.length) {
     return { eligible: false, reason: 'Locked payroll run is missing its rule snapshot.' };
+  }
+  const missingRules = requiredAttendanceRuleCodes(item).filter(code => !run.ruleSnapshot.some(r => r.code === code));
+  if (missingRules.length) {
+    return { eligible: false, reason: `Locked payroll run's rule snapshot is missing rule(s) the original calculation required: ${missingRules.join(', ')}.` };
+  }
+  if ((item.recurringAllowances || []).some(a => a.attendanceBased)) {
+    return { eligible: false, reason: 'Locked payroll item includes an attendance-dependent recurring allowance; this isolated attendance-only reconciliation cannot safely reproduce its historical entitlement.' };
   }
   return { eligible: true };
 }
@@ -93,8 +135,7 @@ function checkReconciliationEligibility(ctx) {
 // rates.hourly -- rather than trying to locate and trust a compensation-history snapshot (which,
 // per the codebase's own effectiveEmployee(), is frequently absent even for correctly-computed
 // payrolls whenever an employee's salary simply never changed), this guarantees byte-for-byte
-// historical rate fidelity directly from the one number the original computation already froze
-// (issue 4: never let a since-changed salary/divisor/company setting leak into the correction).
+// historical rate fidelity directly from the one number the original computation already froze.
 function historicalRateEmployee(employee, item) {
   const rates = item.rates || {};
   const daily = Number(rates.daily) || 0;
@@ -109,46 +150,74 @@ function historicalRateEmployee(employee, item) {
   });
 }
 
-// Rebuilds PayrollRuleEngine-compatible rule objects from the run's own frozen ruleSnapshot
-// (id/code/version/effectiveFrom/value pairs, see payroll-governance.js's lockPayrollRun) -- the
-// exact ABSENCE_DEDUCTION/LATE_ROUNDING_MINUTES multipliers active when this run was computed,
-// never whatever PAYROLL_RULEBOOK looks like today.
+// Reconstructs the exact timekeeping configuration TimekeepingCore.scheduleForDate()/isRestDay()
+// need, entirely from the item's own frozen scheduleSnapshot (public/payroll-governance.js's
+// buildScheduleSnapshot) -- never today's live state.company.shifts/holidays, and never the
+// employee's own CURRENT shiftId/personalSchedule/scheduleAdjustments, any of which may have
+// changed since this payroll was locked (issue 2/5/30).
+function historicalScheduleContext(item, employee) {
+  const snap = item.scheduleSnapshot || {};
+  const historicalEmployee = Object.assign({}, employee, {
+    shiftId: snap.shiftId || null,
+    personalSchedule: snap.personalSchedule || null,
+    scheduleAdjustments: Array.isArray(snap.scheduleAdjustments) ? snap.scheduleAdjustments : [],
+    hoursPerDay: Number(snap.hoursPerDay) || employee.hoursPerDay,
+    scheduleType: snap.scheduleType || employee.scheduleType
+  });
+  const shifts = snap.assignedShift ? [snap.assignedShift] : [];
+  return { historicalEmployee, shifts, holidays: Array.isArray(snap.holidays) ? snap.holidays : [], startOfWeek: snap.startOfWeek || 'mon' };
+}
+
+// Merges the rate-fidelity reconstruction and the schedule reconstruction into one synthetic
+// historical employee, safe to pass to both isolatedAttendancePayroll (rates/divisor) and
+// reconciliationAttendanceSummary/periodSummary (schedule fields).
+function combinedHistoricalEmployee(employee, item) {
+  const scheduleCtx = historicalScheduleContext(item, employee);
+  return Object.assign({}, historicalRateEmployee(employee, item), {
+    shiftId: scheduleCtx.historicalEmployee.shiftId, personalSchedule: scheduleCtx.historicalEmployee.personalSchedule,
+    scheduleAdjustments: scheduleCtx.historicalEmployee.scheduleAdjustments, scheduleType: scheduleCtx.historicalEmployee.scheduleType
+  });
+}
+
+// Rebuilds PayrollRuleEngine-compatible rule objects from the run's own frozen ruleSnapshot,
+// preserving its own priority/coverage/rounding/formula/source EXACTLY when the snapshot carries
+// them (issue 8/35) -- only a pre-this-pass OLD snapshot (id/code/version/effectiveFrom/value only)
+// falls back to the old generic defaults.
 function reconstructHistoricalRules(run) {
   return (run.ruleSnapshot || []).map(r => ({
-    code: r.code, status: 'active', effectiveFrom: r.effectiveFrom || '', effectiveTo: '',
-    version: r.version, value: r.value, priority: 100, coverage: {}, source: 'Locked payroll run rule snapshot'
+    code: r.code, status: r.status || 'active',
+    effectiveFrom: r.effectiveFrom || '', effectiveTo: r.effectiveTo || '',
+    version: r.version, value: r.value,
+    priority: Number.isFinite(Number(r.priority)) ? Number(r.priority) : 100,
+    coverage: r.coverage && typeof r.coverage === 'object' ? r.coverage : {},
+    formula: r.formula || '', rounding: r.rounding || '',
+    source: r.source || 'Locked payroll run rule snapshot'
   }));
 }
 
 // Runs PayrollRuleEngine.calculate() with everything EXCEPT attendance held fixed and isolated --
-// no adjustments/loans/recurring allowances, statutory and tax zeroed out. This is deliberate
-// (issue 7): the underlying attendance-driven earning/deduction is what this module corrects;
-// statutory/tax consequences of THAT correction are left to the next normal payroll run's own
-// annualization, exactly like any other payroll adjustment already does, rather than computing
-// (and risking double-counting) a second, separate tax delta here.
-function isolatedAttendancePayroll(historicalEmployee, rules, baseBasic, attendanceSummary) {
+// no adjustments/loans/recurring allowances, statutory and tax zeroed out (issue 11: every
+// unrelated pay component -- loans, manual adjustments, bonuses, non-attendance allowances,
+// statutory, manual overrides, prior corrections -- is held constant by simply never being part of
+// this calculation at all). absenceFallbackPolicy/periodDays are threaded through from the item's
+// own frozen snapshot so a switch-over policy reproduces exactly (issue 9).
+function isolatedAttendancePayroll(historicalEmployee, rules, baseBasic, attendanceSummary, absenceFallbackPolicy, periodDays) {
   return PayrollRuleEngine.calculate({
     employee: historicalEmployee, group: ISOLATION_GROUP, period: ISOLATION_PERIOD,
     rules, baseBasic: Number(baseBasic) || 0, defaultDivisor: historicalEmployee.dailyDivisor,
     attendance: attendanceSummary, adjustments: [], loans: [],
+    absenceFallbackPolicy: absenceFallbackPolicy || undefined, periodDays: periodDays || undefined,
     statutory: ZERO_STATUTORY, tax: ZERO_TAX
   });
 }
 
 // The CORRECTED side needs a stricter, fully-fractional view of absentDays/unpaidLeaveDays than
-// TimekeepingCore.periodSummary() itself provides live. periodSummary deliberately keeps a flat
-// +1-per-'absent'-record count (and only ever adds unpaidLeaveDays when the work half was
-// genuinely worked) specifically so it never double-counts against the SEPARATE, still-unchanged
-// open-period credit-back mechanism (creditLateApprovalDay's requireClosedPeriod:false branch,
-// server/leave-service.js) that coexists with it for an OPEN period. That mechanism does not
-// exist for a locked/closed-period date -- this reconciliation module is the ONE AND ONLY
-// correction path there -- so it can and must be fully precise instead: a genuine (non-leave)
-// absence still contributes a full 1.0 day, but an approved half-day-leave record -- worked or
-// not -- contributes exactly absentWorkFraction (the uncovered work half's own loss, 0 if it WAS
-// worked) plus unpaidLeaveFraction (the leave half's own unpaid loss) and nothing else, so a PAID
-// leave half is correctly never counted as lost pay in either sub-case. late/undertime/OT/ND/
-// rest-day-holiday hours and presentDays are reused verbatim from periodSummary -- only its
-// absence/unpaid-leave semantics differ here.
+// TimekeepingCore.periodSummary() itself provides live (periodSummary deliberately keeps a flat
+// +1-per-'absent'-record count for the still-unchanged OPEN-period credit-back mechanism, which
+// doesn't apply here). An approved half-day-leave record -- worked or not -- contributes exactly
+// absentWorkFraction plus unpaidLeaveFraction; a whole-day approved leave record contributes only
+// its own unpaidLeaveFraction (never counted as an absence); a genuine (non-leave) absence still
+// contributes a full 1.0 day.
 function reconciliationAttendanceSummary(records, employee, from, to, shifts, holidays, startOfWeek) {
   const base = TimekeepingCore.periodSummary(records, employee, from, to, shifts, holidays, startOfWeek);
   const rows = TimekeepingCore.canonicalRecords(records).filter(r => r.eid === employee.id && r.date >= from && r.date <= to && r.approvalStatus !== 'rejected');
@@ -158,10 +227,6 @@ function reconciliationAttendanceSummary(records, employee, from, to, shifts, ho
       absentDays += Number(record.absentWorkFraction || 0);
       unpaidLeaveDays += Number(record.unpaidLeaveFraction || 0);
     } else if (record.status === 'leave' && record.approvalStatus === 'approved' && Number(record.leaveFraction) === 1) {
-      // A whole-day approved leave record: never contributes to absentDays (it isn't an absence),
-      // but a genuine unpaidLeaveFraction (a balance-limited whole day, only partly paid) is a real
-      // payroll loss the reconciliation must still recover -- markAttendanceForApprovedLeave stamps
-      // this fraction on whole-day records for exactly this reason.
       unpaidLeaveDays += Number(record.unpaidLeaveFraction || 0);
     } else if (record.status === 'absent') {
       absentDays += 1;
@@ -170,13 +235,30 @@ function reconciliationAttendanceSummary(records, employee, from, to, shifts, ho
   return Object.assign({}, base, { absentDays: Math.round(absentDays * 100) / 100, unpaidLeaveDays: Math.round(unpaidLeaveDays * 100) / 100 });
 }
 
-// Sum of already-applied leave-retro variance against this SAME locked run, from every OTHER
-// leave's reconciliation (never this one -- idempotency for THIS leave is handled by the caller
-// before this is ever reached). Without this, two different leaves both retroactively touching
-// the same locked run would each compare against the SAME frozen original snapshot and the
-// SECOND one would double-count the first's already-applied correction, since the "corrected"
-// side is always computed from the current, cumulative state.attendance.
-function priorAppliedVarianceForRun(state, runId, empId, excludeLeaveId) {
+// THE fix for issues 1-5/28/29: the corrected side is built from a deep clone of the locked item's
+// OWN frozen attendanceInputSnapshot, with ONLY the leave's own authorized dates replaced by the
+// CURRENT (final-approved) attendance record for that date. Every other date in the period --
+// including one touched by a later, entirely unrelated Time Correction, absence-status fix, or
+// late-approval correction -- is left EXACTLY as the locked payroll originally saw it. This is what
+// makes "start from the original locked attendance snapshot, overlay only the leave's own changes"
+// structurally impossible to violate: an unrelated date's current record is never even read.
+function buildLeaveCorrectedAttendanceRecords(item, employee, leaveDates, currentAttendance) {
+  const leaveDateSet = new Set(leaveDates);
+  const snapshotForEmployee = (item.attendanceInputSnapshot || []).filter(r => r && r.eid === employee.id);
+  const kept = snapshotForEmployee.filter(r => !leaveDateSet.has(r.date));
+  const patched = [];
+  leaveDateSet.forEach(date => {
+    const current = (currentAttendance || []).find(r => r.eid === employee.id && r.date === date && r.approvalStatus !== 'rejected');
+    if (current) patched.push(current);
+  });
+  return kept.concat(patched);
+}
+
+// Sum of already-EFFECTIVE (still-applied, never reversed or superseded) leave-retro variance
+// against this SAME locked run, from every OTHER leave's reconciliation. A reversed or superseded
+// reconciliation's variance no longer counts -- its own reversal adjustment already unwound it
+// (issue 18/36): only the net of what is genuinely still applied should offset a fresh delta.
+function effectivePriorRetroVarianceForRun(state, runId, empId, excludeLeaveId) {
   const records = (state.leaveRetroReconciliations || []).filter(r =>
     r.sourcePayrollRunId === runId && r.empId === empId && r.sourceLeaveId !== excludeLeaveId && r.status === 'adjustment_created'
   );
@@ -192,27 +274,68 @@ function nextAdjustmentId(state) {
   return list.reduce((max, r) => Math.max(max, Number(r && r.id) || 0), 0) + 1;
 }
 
-// The one reconciliation record for (leave, run, employee) -- issue 9's deterministic identity.
-// Idempotent: a second call for the SAME triple returns the SAME stored record untouched,
-// never recomputes, never creates a second adjustment (issues 21/38).
+// The one LIVE reconciliation record for (leave, run, employee) -- deliberately excludes a
+// 'reversed'/'superseded' record, since those are historical lineage, not the current answer.
+// Idempotent: a second call for the SAME triple while a live record exists returns that SAME
+// stored record untouched, never recomputes, never creates a second adjustment.
 function findExistingReconciliation(state, leaveId, runId, empId) {
   return (state.leaveRetroReconciliations || []).find(r =>
-    r.sourceType === SOURCE_TYPE && r.sourceLeaveId === leaveId && r.sourcePayrollRunId === runId && r.empId === empId
+    r.sourceType === SOURCE_TYPE && r.sourceLeaveId === leaveId && r.sourcePayrollRunId === runId && r.empId === empId &&
+    r.status !== 'reversed' && r.status !== 'superseded'
   ) || null;
 }
 
-// Reconciles ONE leave's effect against ONE locked payroll run in a single pass (issue 9: every
-// date this leave touches within this run is folded into one comparison, never one guessed
-// adjustment per date) using the ENTIRE original attendance period (issue 17: absence
-// fallback/switch-over and other period-total-dependent rules can only be correctly evaluated over
-// the full period, not a single isolated date).
+// The most recent reversed-but-not-yet-superseded reconciliation for this triple, if any -- used
+// to link a fresh replacement reconciliation back to what it supersedes (issue 17).
+function mostRecentlyReversedReconciliation(state, leaveId, runId, empId) {
+  const candidates = (state.leaveRetroReconciliations || []).filter(r =>
+    r.sourceType === SOURCE_TYPE && r.sourceLeaveId === leaveId && r.sourcePayrollRunId === runId && r.empId === empId &&
+    r.status === 'reversed' && !r.replacementReconciliationId
+  );
+  return candidates[candidates.length - 1] || null;
+}
+
+// Every date, across EVERY leave reconciled against this same run (not just the current one), that
+// a prior automatic reconciliation has already confirmed as leave-authorized and safe to read from
+// CURRENT attendance -- the authoritative rule's own "plus prior intentionally-applied leave retro
+// effects" clause. Without this, reconciling a SECOND leave against a run a first leave already
+// touched would reintroduce the FIRST leave's date from the stale original snapshot (still
+// 'absent') instead of its own already-correct 'leave' interpretation, silently re-charging an
+// absence that was already fixed. A 'manual_review_required' record's dates are deliberately
+// excluded -- nothing was ever safely computed for them, so there is nothing safe to carry forward.
+function allKnownLeaveDatesForRun(state, runId, empId) {
+  const dates = new Set();
+  (state.leaveRetroReconciliations || []).forEach(r => {
+    if (r.sourcePayrollRunId === runId && r.empId === empId && r.status !== 'manual_review_required' && Array.isArray(r.leaveDates)) {
+      r.leaveDates.forEach(d => dates.add(d));
+    }
+  });
+  return dates;
+}
+
+// A component-level breakdown of the isolated attendance-only lines (issue 12) -- {code: amount}
+// for both sides, so an auditor can see exactly which attendance-driven component moved, never
+// just a single collapsed gross-minus-deduction figure.
+function componentMap(isolatedResult) {
+  const map = {};
+  (isolatedResult.lines || []).forEach(line => { map[line.code] = (map[line.code] || 0) + Number(line.amount || 0); });
+  return map;
+}
+
+// Reconciles ONE leave's effect against ONE locked payroll run, for the specific subset of
+// `leaveDatesForThisRun` (issue 9: every one of THIS leave's dates that fall in THIS run is folded
+// into one comparison; issue 34: a leave spanning two runs reconciles independently against each,
+// via separate calls) using the ENTIRE original attendance period (absence fallback/switch-over and
+// other period-total-dependent rules can only be correctly evaluated over the full period, not a
+// single isolated date) -- but built exclusively from the locked snapshot plus this leave's own
+// patch, never the live, current, full-period attendance state.
 //
 // Preconditions the caller must guarantee: `state.attendance` already carries this leave's final,
 // approved leaveFraction/paidLeaveFraction/unpaidLeaveFraction/absentWorkFraction/leaveDayType
-// metadata for every date in `datesInThisRun` (i.e. this runs AFTER markAttendanceForApprovedLeave).
+// metadata for every date in `leaveDatesForThisRun` (i.e. this runs AFTER markAttendanceForApprovedLeave).
 //
-// Returns the reconciliation record (freshly created, or the pre-existing one on a duplicate call).
-function reconcileOneRun(state, employee, leaveRecord, ctx, actorName) {
+// Returns the reconciliation record (freshly created, or the pre-existing LIVE one on a duplicate call).
+function reconcileOneRun(state, employee, leaveRecord, ctx, leaveDatesForThisRun, actorName) {
   const { period, run, item } = ctx;
   state.leaveRetroReconciliations = Array.isArray(state.leaveRetroReconciliations) ? state.leaveRetroReconciliations : [];
   state.payrollAdjustments = Array.isArray(state.payrollAdjustments) ? state.payrollAdjustments : [];
@@ -230,29 +353,46 @@ function reconcileOneRun(state, employee, leaveRecord, ctx, actorName) {
     return record;
   }
 
-  const historicalEmployee = historicalRateEmployee(employee, item);
+  const historicalEmployee = combinedHistoricalEmployee(employee, item);
+  const scheduleCtx = historicalScheduleContext(item, employee);
   const rules = reconstructHistoricalRules(run);
+  const fallbackPolicy = item.absenceFallbackPolicySnapshot || null;
+  const periodDays = item.periodDaysSnapshot || null;
 
-  const originalIsolated = isolatedAttendancePayroll(historicalEmployee, rules, item.baseBasic, item.attendanceSummary);
-  const correctedSummary = reconciliationAttendanceSummary(state.attendance, employee, item.attendanceFrom, item.attendanceTo, state.company.shifts || [], (state.company && state.company.holidays) || [], state.company && state.company.startOfWeek);
-  const correctedIsolated = isolatedAttendancePayroll(historicalEmployee, rules, item.baseBasic, correctedSummary);
+  const originalIsolated = isolatedAttendancePayroll(historicalEmployee, rules, item.baseBasic, item.attendanceSummary, fallbackPolicy, periodDays);
+
+  // This leave's own dates, UNIONED with every other date already confirmed leave-authorized by a
+  // prior reconciliation against this same run -- never just this leave's dates alone, or a second
+  // leave against an already-touched run would reintroduce the first leave's date from the stale
+  // original snapshot instead of its own already-corrected 'leave' interpretation.
+  const patchDates = new Set(leaveDatesForThisRun);
+  allKnownLeaveDatesForRun(state, run.id, employee.id).forEach(d => patchDates.add(d));
+  const correctedRecords = buildLeaveCorrectedAttendanceRecords(item, employee, Array.from(patchDates), state.attendance);
+  const correctedSummary = reconciliationAttendanceSummary(correctedRecords, historicalEmployee, item.attendanceFrom, item.attendanceTo, scheduleCtx.shifts, scheduleCtx.holidays, scheduleCtx.startOfWeek);
+  const correctedIsolated = isolatedAttendancePayroll(historicalEmployee, rules, item.baseBasic, correctedSummary, fallbackPolicy, periodDays);
 
   const originalNet = +(originalIsolated.gross - originalIsolated.attendanceDeduction).toFixed(2);
   const correctedNet = +(correctedIsolated.gross - correctedIsolated.attendanceDeduction).toFixed(2);
-  const priorVariance = priorAppliedVarianceForRun(state, run.id, employee.id, leaveRecord.id);
-  // The delta still owed is the FULL correction less whatever a prior, independent leave already
-  // corrected against this same run -- never re-derived from the raw original a second time.
+  const priorVariance = effectivePriorRetroVarianceForRun(state, run.id, employee.id, leaveRecord.id);
+  // The delta still owed is the FULL correction less whatever a prior, still-EFFECTIVE, independent
+  // leave already corrected against this same run -- never re-derived from the raw original a
+  // second time, and never counting a reversed/superseded prior correction.
   const varianceNet = +((correctedNet - originalNet) - priorVariance).toFixed(2);
 
   const record = Object.assign({}, base, {
     method: METHOD,
+    leaveDates: leaveDatesForThisRun.slice(),
     originalNet, correctedNet, varianceNet,
     originalAttendanceDeduction: originalIsolated.attendanceDeduction,
     correctedAttendanceDeduction: correctedIsolated.attendanceDeduction,
-    originalGross: originalIsolated.gross, correctedGross: correctedIsolated.gross
+    originalGross: originalIsolated.gross, correctedGross: correctedIsolated.gross,
+    componentDelta: { original: componentMap(originalIsolated), corrected: componentMap(correctedIsolated) }
   });
 
-  // Zero delta -- issue 13's explicit "do not fabricate a ₱0 adjustment" requirement.
+  const priorReversed = mostRecentlyReversedReconciliation(state, leaveRecord.id, run.id, employee.id);
+  if (priorReversed) { record.supersedesReconciliationId = priorReversed.id; priorReversed.replacementReconciliationId = record.id; }
+
+  // Zero delta -- do not fabricate a ₱0 adjustment.
   if (Math.abs(varianceNet) < 0.005) {
     record.status = 'no_adjustment_required';
     state.leaveRetroReconciliations.push(record);
@@ -278,39 +418,31 @@ function reconcileOneRun(state, employee, leaveRecord, ctx, actorName) {
 }
 
 // Top-level entry point: given a set of dates this leave touches that fall in CLOSED pay periods,
-// groups them by locked payroll run (issue 9: same run -> one reconciliation; issue 10: different
-// runs -> independent reconciliations) and reconciles each run once. Dates whose period isn't
-// closed at all are simply skipped here (issue 40: open-period leave never routes through this
-// module) -- the caller is expected to have already filtered to closed-period dates only.
-//
-// Returns { reconciliations }: one entry per distinct locked run actually reconciled
-// (adjustment_created / no_adjustment_required), plus one per closed-period date with no usable
-// historical snapshot at all -- missing period linkage, missing/unlocked run, missing item,
-// manual override, or missing rate/rule snapshot are all, uniformly, manual_review_required
-// (issues 2/8/36: never a guessed dailyRate×fraction correction for ANY of these).
+// groups them by locked payroll run (issue 9: same run -> one reconciliation, using only THAT run's
+// own dates; issue 10/34: different runs -> independent reconciliations) and reconciles each run
+// once. Dates whose period isn't closed at all are simply skipped here -- the caller is expected to
+// have already filtered to closed-period dates only.
 function reconcileLeaveAgainstLockedPayroll(state, employee, leaveRecord, closedDates, actorName) {
   const contextsByRunId = new Map();
   const unresolvedByReason = new Map();
   closedDates.forEach(date => {
     const ctx = findLockedPayrollContext(state, employee, date);
     if (!ctx.ok) {
-      // A genuine data problem (period not found at all, no runId, run missing, run not locked) --
-      // still worth one manual-review record so the correction isn't silently lost, keyed by
-      // period rather than run since there IS no run to key by.
       const key = 'period:' + (ctx.period ? ctx.period.id : date);
       if (!unresolvedByReason.has(key)) unresolvedByReason.set(key, { period: ctx.period, reason: ctx.reason });
       return;
     }
-    if (!contextsByRunId.has(ctx.run.id)) contextsByRunId.set(ctx.run.id, ctx);
+    if (!contextsByRunId.has(ctx.run.id)) contextsByRunId.set(ctx.run.id, { ctx, dates: [] });
+    contextsByRunId.get(ctx.run.id).dates.push(date);
   });
 
   const reconciliations = [];
-  contextsByRunId.forEach(ctx => {
-    reconciliations.push(reconcileOneRun(state, employee, leaveRecord, ctx, actorName));
+  contextsByRunId.forEach(({ ctx, dates }) => {
+    reconciliations.push(reconcileOneRun(state, employee, leaveRecord, ctx, dates, actorName));
   });
   unresolvedByReason.forEach(({ period, reason }) => {
     state.leaveRetroReconciliations = Array.isArray(state.leaveRetroReconciliations) ? state.leaveRetroReconciliations : [];
-    const existing = period ? (state.leaveRetroReconciliations || []).find(r => r.sourceType === SOURCE_TYPE && r.sourceLeaveId === leaveRecord.id && r.sourcePeriodId === period.id && r.empId === employee.id) : null;
+    const existing = period ? (state.leaveRetroReconciliations || []).find(r => r.sourceType === SOURCE_TYPE && r.sourceLeaveId === leaveRecord.id && r.sourcePeriodId === period.id && r.empId === employee.id && r.status !== 'reversed' && r.status !== 'superseded') : null;
     if (existing) { reconciliations.push(Object.assign({}, existing, { duplicate: true })); return; }
     const record = {
       id: nextReconciliationId(state), sourceType: SOURCE_TYPE, sourceLeaveId: leaveRecord.id,
@@ -324,16 +456,55 @@ function reconcileLeaveAgainstLockedPayroll(state, employee, leaveRecord, closed
   return { reconciliations };
 }
 
-// The safe, minimal projection of a reconciliation result for a caller WITHOUT payroll visibility
-// (issue 24/39) -- status only, never any amount, rate, or payroll figure.
+// Reverses an applied ('adjustment_created') reconciliation -- NEVER edits or removes the original
+// payroll adjustment (issue 19: once applied, its amount/source metadata is immutable). Instead
+// books a new, equal-and-opposite adjustment and marks the reconciliation record itself 'reversed'
+// with a full audit trail. A fresh call to reconcileLeaveAgainstLockedPayroll for the same
+// (leave, run, employee) triple afterward is then free to create a genuine replacement (issue 17),
+// since findExistingReconciliation ignores reversed records.
+function reverseReconciliation(state, reconciliationId, actorName, reason) {
+  state.leaveRetroReconciliations = Array.isArray(state.leaveRetroReconciliations) ? state.leaveRetroReconciliations : [];
+  state.payrollAdjustments = Array.isArray(state.payrollAdjustments) ? state.payrollAdjustments : [];
+  const record = state.leaveRetroReconciliations.find(r => r.id === reconciliationId);
+  if (!record) return { ok: false, reason: 'Reconciliation not found.' };
+  if (record.status !== 'adjustment_created') {
+    return { ok: false, reason: `Only an applied ('adjustment_created') reconciliation can be reversed (current status: '${record.status}').` };
+  }
+  const original = state.payrollAdjustments.find(a => a.id === record.payrollAdjustmentId);
+  if (!original) return { ok: false, reason: 'Original payroll adjustment not found; cannot reverse safely.' };
+  if (!reason || !String(reason).trim()) return { ok: false, reason: 'A reversal reason is required for the audit trail.' };
+  const nowIso = new Date().toISOString();
+  const reversedAmount = -Number(original.amount);
+  const reversal = Object.assign({}, original, {
+    id: nextAdjustmentId(state), amount: reversedAmount,
+    payItemCode: reversedAmount >= 0 ? 'LEAVE_RETRO_EARNING' : 'LEAVE_RETRO_DEDUCTION',
+    category: reversedAmount >= 0 ? 'earnings' : 'deductions', taxable: reversedAmount >= 0, direction: reversedAmount >= 0 ? 'income' : 'deduction',
+    adjType: 'Leave Retro Reversal',
+    reason: `Reversal of adjustment #${original.id} for leave #${record.sourceLeaveId}, payroll run #${record.sourcePayrollRunId}. Reason: ${reason}`,
+    createdAt: nowIso.slice(0, 10), addedBy: actorName, sourceType: REVERSAL_SOURCE_TYPE,
+    reversesAdjustmentId: original.id, reversesReconciliationId: record.id
+  });
+  state.payrollAdjustments.push(reversal);
+  record.status = 'reversed';
+  record.reversedBy = actorName;
+  record.reversedAt = nowIso;
+  record.reversalReason = String(reason).trim();
+  record.reversalAdjustmentId = reversal.id;
+  return { ok: true, record, reversalAdjustment: reversal };
+}
+
+// The safe, minimal projection of a reconciliation result for a caller WITHOUT payroll visibility --
+// status only, never any amount, rate, or payroll figure.
 function projectReconciliationForSession(record) {
   if (!record) return null;
   return { sourceLeaveId: record.sourceLeaveId, retroReconciliationStatus: record.status };
 }
 
 module.exports = {
-  findLockedPayrollContext, checkReconciliationEligibility, historicalRateEmployee, reconstructHistoricalRules,
-  isolatedAttendancePayroll, reconciliationAttendanceSummary, priorAppliedVarianceForRun, findExistingReconciliation,
-  reconcileOneRun, reconcileLeaveAgainstLockedPayroll, projectReconciliationForSession,
-  SOURCE_TYPE, METHOD
+  findLockedPayrollContext, checkReconciliationEligibility, requiredAttendanceRuleCodes, historicalRateEmployee,
+  historicalScheduleContext, combinedHistoricalEmployee, reconstructHistoricalRules, isolatedAttendancePayroll,
+  reconciliationAttendanceSummary, buildLeaveCorrectedAttendanceRecords, effectivePriorRetroVarianceForRun,
+  findExistingReconciliation, mostRecentlyReversedReconciliation, reconcileOneRun, reconcileLeaveAgainstLockedPayroll,
+  reverseReconciliation, projectReconciliationForSession,
+  SOURCE_TYPE, REVERSAL_SOURCE_TYPE, METHOD
 };
