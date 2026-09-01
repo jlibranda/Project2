@@ -10,6 +10,7 @@ const { calculateLeaveRequest, finalizeLeaveApproval, projectLeaveDecisionEmploy
 const LeavePayrollReconciliation = require('./server/leave-payroll-reconciliation.js');
 const { projectReconciliationForSession } = LeavePayrollReconciliation;
 const { checkPayrollImmutability } = require('./server/payroll-immutability.js');
+const { validatePayrollSnapshotCompleteness } = require('./server/payroll-snapshot-validation.js');
 const { buildScopedStateForEmployee, applyEmployeeStateOverlay } = require('./server/state-serialization.js');
 const { ensureAuditTable, auditLog } = require('./server/audit.js');
 const { validateSessionSecret, validateGodAdminCredential, validateBootstrapCredential, KNOWN_DEFAULTS, isSafeReplacementCredential } = require('./server/secrets.js');
@@ -592,7 +593,8 @@ async function mutateAppState(mutator, actor, tenantKey = TENANT_KEY) {
     const existing = await client.query('SELECT state, version FROM app_state WHERE tenant_key = $1 FOR UPDATE', [tenantKey]);
     const row = existing.rows[0];
     const state = row ? row.state : {};
-    const outcome = mutator(state) || {};
+    const currentVersion = row ? Number(row.version) : 0;
+    const outcome = mutator(state, currentVersion) || {};
     if (!outcome.changed) { await client.query('ROLLBACK'); return { state, version: row ? Number(row.version) : 0, changed: false }; }
     let version;
     if (row) {
@@ -1256,12 +1258,27 @@ app.put('/api/state', requireAuth, async (req, res) => {
     // persisted (post employee-overlay too), never skipped for an admin/platform caller.
     const immutability = checkPayrollImmutability(current && current.state, stateToPersist);
     if (!immutability.ok) {
-      const isPeriodCode = /^(CLOSED_PERIOD_|PAY_PERIOD_)/.test(immutability.code || '');
+      // Classifies WHICH blocked action this was for the audit trail -- a brand-new fabricated
+      // run/period (NEW_FINALIZED_PAYROLL_BLOCKED/NEW_CLOSED_PAY_PERIOD_BLOCKED/
+      // DUPLICATE_PAYROLL_RUN_ID) and an attempt to forge lifecycle bookkeeping on an existing
+      // still-pending run (workflow array, approvalStage, lock-only fields, a forged transition
+      // straight into 'returned') are both distinct from editing/deleting an ALREADY-finalized
+      // run or an already-closed period, which the original #315 codes still cover.
+      const code = immutability.code || '';
+      let action;
+      if (code === 'NEW_FINALIZED_PAYROLL_BLOCKED' || code === 'NEW_CLOSED_PAY_PERIOD_BLOCKED' || code === 'DUPLICATE_PAYROLL_RUN_ID') {
+        action = 'new_finalized_payroll_blocked';
+      } else if (code === 'PAYROLL_WORKFLOW_FORGERY_BLOCKED' || code === 'PAYROLL_APPROVAL_STAGE_CHANGE_BLOCKED' || code === 'PAYROLL_LIFECYCLE_FIELD_FORGED' || code === 'PAYROLL_RETURN_TRANSITION_BLOCKED') {
+        action = 'payroll_lifecycle_forgery_blocked';
+      } else if (/^(CLOSED_PERIOD_|PAY_PERIOD_)/.test(code)) {
+        action = 'closed_period_mutation_blocked';
+      } else {
+        action = 'locked_payroll_mutation_blocked';
+      }
       await auditLog(pool, {
-        tenantKey, actor: req.session.sub,
-        action: isPeriodCode ? 'closed_period_mutation_blocked' : 'locked_payroll_mutation_blocked',
+        tenantKey, actor: req.session.sub, action,
         target: String(immutability.runId || immutability.periodId || ''),
-        meta: { code: immutability.code, field: immutability.field || null }
+        meta: { code, field: immutability.field || null }
       });
       return res.status(409).json({ error: immutability.reason, code: immutability.code });
     }
@@ -1642,6 +1659,260 @@ app.post('/api/leave-retro-reconciliations/:id/reverse', requireAuth, async (req
     });
   } catch (error) {
     res.status(500).json({ error: 'Unable to reverse the retro adjustment.', detail: error.message });
+  }
+});
+
+/* ── Server-authoritative payroll run lifecycle (approve / return / reopen) ──
+   PR #315 correctly made generic PUT /api/state reject pending_approval->locked, locked->voided,
+   and open->closed transitions outright (server/payroll-immutability.js) -- but the client-side
+   workflow (public/payroll-governance.js's approvePayroll()/lockPayrollRun()/rejectPayroll()/
+   reopenClosedPayPeriod()) still performed those EXACT transitions by mutating PAYROLLS/PAY_PERIODS
+   locally and relying on that same generic autosave to persist them, which #315 now (correctly)
+   rejects with 409 -- breaking real, legitimate final payroll approval and reopen/void in
+   production. These dedicated endpoints are the actual fix: the server alone decides the current
+   stage, the next stage, caller eligibility, segregation-of-duties, snapshot completeness, and
+   whether finalization should occur -- never the browser. The client becomes a thin requester that
+   renders whatever the server hands back (see the rewritten approvePayroll/rejectPayroll/
+   reopenClosedPayPeriod in public/payroll-governance.js). Generic PUT /api/state remains
+   permanently forbidden from performing any of this -- these endpoints supplement that boundary,
+   they never reopen it. */
+
+// Mirrors public/payroll-governance.js's PAYROLL_WORKFLOW array field-for-field -- kept in sync
+// manually, the same as this codebase's other browser-only mirrors (see
+// payroll-snapshot-validation.js's own comment), since there is no tenant-configurable version of
+// this list anywhere in the app today.
+const PAYROLL_WORKFLOW = [
+  { key: 'maker', label: 'HR / Payroll Maker' },
+  { key: 'timekeeping_reviewer', label: 'Timekeeping Reviewer' },
+  { key: 'hr_checker', label: 'HR Checker' },
+  { key: 'finance_checker', label: 'Finance Checker' },
+  { key: 'authorized_approver', label: 'Authorized Approver' }
+];
+
+async function notifyPayslipsReleasedServerSide(tenantKey, run, users) {
+  if (!pool) return;
+  const employees = (run.items || []).map(item => {
+    const emp = (users || []).find(u => u && (u.id === item.empId || u.id === item.eid));
+    return emp && emp.email ? { email: emp.email, name: emp.name } : null;
+  }).filter(Boolean);
+  const period = `${run.from} to ${run.to}`;
+  for (const entry of employees) {
+    try {
+      const { subject, html } = await composeEmail(tenantKey, 'payslip-released', { employeeName: entry.name || 'there', period });
+      await sendAppEmail(entry.email, subject, html);
+    } catch (error) {
+      // A failed send must never roll back an already-correctly-locked payroll (issue 5) -- this
+      // runs strictly after that transaction has already committed. Logged separately so a silent
+      // delivery failure is still discoverable, without ever affecting the payroll's own state.
+      try { await auditLog(pool, { tenantKey, actor: 'system:payroll-notify', action: 'payslip_notification_failed', target: entry.email, meta: { runId: run.id, error: error.message } }); } catch {}
+    }
+  }
+}
+
+app.post('/api/payroll-runs/:id/approve', requireAuth, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'A valid payroll run id is required.' });
+  const notes = typeof req.body.notes === 'string' ? req.body.notes.trim() : '';
+  const expectedVersion = req.body.expectedVersion != null ? Number(req.body.expectedVersion) : null;
+  const emergencyOverride = req.body.emergencyOverride === true;
+  const overrideReason = typeof req.body.overrideReason === 'string' ? req.body.overrideReason.trim() : '';
+  const tenantKey = req.session.tenantKey || TENANT_KEY;
+  try {
+    let outcome = null;
+    const result = await mutateAppState((state, version) => {
+      if (expectedVersion != null && version !== expectedVersion) {
+        outcome = { error: 409, message: 'Newer changes are available. Reload before approving.', code: 'STATE_VERSION_CONFLICT', version };
+        return { changed: false };
+      }
+      const caller = resolveCaller(state, req.session);
+      if (!(isAdminCaller(req.session, caller) || hasPermission(state, req.session, 'payroll_approve'))) {
+        outcome = { error: 403, message: 'You do not have payroll approval permission.' };
+        return { changed: false };
+      }
+      const run = loadTargetRecord(state, 'payrolls', id);
+      if (!run) { outcome = { error: 404, message: 'Payroll run not found.', code: 'PAYROLL_RUN_NOT_FOUND' }; return { changed: false }; }
+      if (run.status !== 'pending_approval') {
+        outcome = { error: 409, message: 'This payroll run is not awaiting approval.', code: 'PAYROLL_RUN_NOT_PENDING' };
+        return { changed: false };
+      }
+      const stageIndex = Number.isFinite(Number(run.approvalStage)) ? Number(run.approvalStage) : 1;
+      const stage = PAYROLL_WORKFLOW[stageIndex];
+      if (!stage) {
+        // Defensive only -- a still-pending run's approvalStage should never reach the end of the
+        // workflow without having already locked in the same call that got it there.
+        outcome = { error: 409, message: 'This payroll run has no remaining approval stage.', code: 'PAYROLL_RUN_NOT_PENDING' };
+        return { changed: false };
+      }
+      if (!notes) { outcome = { error: 400, message: 'Review notes are required for the audit trail.' }; return { changed: false }; }
+      const callerName = caller ? caller.name : (req.session.sub || 'Administrator');
+      const previous = (run.workflow || [])[run.workflow.length - 1];
+      let segregationOverride = false;
+      if (previous && previous.by === callerName) {
+        // Same person handled the immediately-preceding stage -- rejected for a normal admin/
+        // payroll approver. Only an actual platform-admin (God Admin) session may proceed, and
+        // only with an explicit, audited override -- never trusting a browser confirm() alone.
+        if (req.session.role !== 'platform' || !emergencyOverride || !overrideReason) {
+          outcome = { error: 403, message: `A different authorized user must complete ${stage.label}.`, code: 'PAYROLL_SEGREGATION_OF_DUTIES' };
+          return { changed: false };
+        }
+        segregationOverride = true;
+      }
+      const isFinalStage = stageIndex + 1 >= PAYROLL_WORKFLOW.length;
+      if (isFinalStage) {
+        // Checked BEFORE any mutation -- an incomplete snapshot must leave the run completely
+        // unchanged, not even the stage advance for this call (issue 3).
+        const completeness = validatePayrollSnapshotCompleteness(run);
+        if (!completeness.ok) {
+          outcome = { error: 409, message: 'This payroll run is missing required historical-replay data and cannot be locked.', code: completeness.code, missing: completeness.missing };
+          return { changed: false };
+        }
+      }
+      const at = new Date().toISOString();
+      run.workflow = run.workflow || [];
+      run.workflow.push({ stage: stage.key, label: stage.label, by: callerName, at, status: 'completed', notes, segregationOverride });
+      run.approvalStage = stageIndex + 1;
+      state.payrollAudit = Array.isArray(state.payrollAudit) ? state.payrollAudit : [];
+      state.payrollAudit.push({ runId: run.id, action: 'stage_approved', stage: stage.key, by: callerName, at, notes, segregationOverride });
+      if (!isFinalStage) { outcome = { run, locked: false, stage: stage.key, segregationOverride, overrideReason: segregationOverride ? overrideReason : null }; return { changed: true }; }
+
+      // Final stage -- lock the run and close its pay period ATOMICALLY, in the same transaction
+      // as the workflow entry above (issue 2H/4/18): the run is never saved locked while its period
+      // stays open, and the period is never saved closed if the run lock somehow fails.
+      run.status = 'locked'; run.approvedBy = callerName; run.approvedAt = at; run.lockedAt = at; run.immutable = true;
+      // Only adjustment ids actually frozen onto the run's OWN items are ever marked applied --
+      // never an arbitrary client-submitted list (issue 4).
+      (run.items || []).forEach(item => {
+        (item.adjustmentIds || []).forEach(adjId => {
+          const adjustment = (state.payrollAdjustments || []).find(a => a && a.id === adjId);
+          if (adjustment) { adjustment.status = 'applied'; adjustment.processStatus = 'applied'; adjustment.appliedAt = at; adjustment.payrollRunId = run.id; }
+        });
+      });
+      const period = (state.payPeriods || []).find(p => p && p.id === run.periodId);
+      if (period) { period.status = 'closed'; period.runId = run.id; period.lockedBy = callerName; period.lockedAt = at.slice(0, 10); }
+      state.payrollAudit.push({ runId: run.id, action: 'approved_locked_immutable', stage: 'authorized_approver', by: callerName, at });
+      outcome = { run, locked: true, period: period || null, stage: stage.key, segregationOverride, overrideReason: segregationOverride ? overrideReason : null };
+      return { changed: true };
+    }, req.session.sub, tenantKey);
+
+    if (outcome && outcome.error) {
+      if (outcome.code === 'PAYROLL_SNAPSHOT_INCOMPLETE') {
+        await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'payroll_snapshot_lock_blocked', target: String(id), meta: { missing: outcome.missing } });
+      }
+      return res.status(outcome.error).json(Object.assign({ error: outcome.message }, outcome.code ? { code: outcome.code } : {}, outcome.missing ? { missing: outcome.missing } : {}));
+    }
+    if (outcome.segregationOverride) {
+      // Deliberately no payroll amounts in this audit -- just who overrode, on which run/stage, and
+      // why (issue 20).
+      await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'payroll_segregation_override', target: String(id), meta: { stage: outcome.stage, reason: outcome.overrideReason } });
+    }
+    if (outcome.locked) {
+      await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'payroll_lock_started', target: String(id), meta: {} });
+      await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'payroll_locked', target: String(id), meta: { stage: 'authorized_approver' } });
+      await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'pay_period_closed', target: String(outcome.period ? outcome.period.id : ''), meta: { runId: id } });
+    } else {
+      await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'payroll_stage_approved', target: String(id), meta: { stage: outcome.stage } });
+    }
+    res.json({ ok: true, version: result.version, run: outcome.run, period: outcome.period || null, locked: !!outcome.locked });
+    // Notifications fire strictly AFTER commit + response -- never part of the lock transaction's
+    // own integrity (issue 5). Deliberately not awaited before responding.
+    if (outcome.locked) notifyPayslipsReleasedServerSide(tenantKey, outcome.run, result.state && result.state.users).catch(() => {});
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to process the payroll approval.', detail: error.message });
+  }
+});
+
+app.post('/api/payroll-runs/:id/return', requireAuth, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'A valid payroll run id is required.' });
+  const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
+  const expectedVersion = req.body.expectedVersion != null ? Number(req.body.expectedVersion) : null;
+  const tenantKey = req.session.tenantKey || TENANT_KEY;
+  try {
+    let outcome = null;
+    const result = await mutateAppState((state, version) => {
+      if (expectedVersion != null && version !== expectedVersion) {
+        outcome = { error: 409, message: 'Newer changes are available. Reload before returning this payroll.', code: 'STATE_VERSION_CONFLICT', version };
+        return { changed: false };
+      }
+      const caller = resolveCaller(state, req.session);
+      if (!(isAdminCaller(req.session, caller) || hasPermission(state, req.session, 'payroll_approve'))) {
+        outcome = { error: 403, message: 'You do not have payroll approval permission.' };
+        return { changed: false };
+      }
+      const run = loadTargetRecord(state, 'payrolls', id);
+      if (!run) { outcome = { error: 404, message: 'Payroll run not found.', code: 'PAYROLL_RUN_NOT_FOUND' }; return { changed: false }; }
+      if (run.status !== 'pending_approval') {
+        outcome = { error: 409, message: 'This payroll run is not awaiting approval.', code: 'PAYROLL_RUN_NOT_PENDING' };
+        return { changed: false };
+      }
+      if (!reason) { outcome = { error: 400, message: 'A return reason is required.' }; return { changed: false }; }
+      const callerName = caller ? caller.name : (req.session.sub || 'Administrator');
+      const at = new Date().toISOString();
+      run.status = 'returned'; run.rejectedBy = callerName; run.rejectedAt = at; run.returnReason = reason;
+      state.payrollAudit = Array.isArray(state.payrollAudit) ? state.payrollAudit : [];
+      state.payrollAudit.push({ runId: run.id, action: 'returned_for_correction', by: callerName, at, notes: reason });
+      outcome = { run };
+      return { changed: true };
+    }, req.session.sub, tenantKey);
+    if (outcome && outcome.error) return res.status(outcome.error).json(Object.assign({ error: outcome.message }, outcome.code ? { code: outcome.code } : {}));
+    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'payroll_stage_returned', target: String(id), meta: { reason } });
+    res.json({ ok: true, version: result.version, run: outcome.run });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to return the payroll run.', detail: error.message });
+  }
+});
+
+app.post('/api/payroll-runs/:id/reopen', requireAuth, async (req, res) => {
+  if (!pool) return res.status(503).json({ error: 'Database is not configured.' });
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'A valid payroll run id is required.' });
+  const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
+  const expectedVersion = req.body.expectedVersion != null ? Number(req.body.expectedVersion) : null;
+  const tenantKey = req.session.tenantKey || TENANT_KEY;
+  try {
+    let outcome = null;
+    const result = await mutateAppState((state, version) => {
+      if (expectedVersion != null && version !== expectedVersion) {
+        outcome = { error: 409, message: 'Newer changes are available. Reload before reopening this payroll.', code: 'STATE_VERSION_CONFLICT', version };
+        return { changed: false };
+      }
+      const caller = resolveCaller(state, req.session);
+      if (!(isAdminCaller(req.session, caller) || hasPermission(state, req.session, 'payroll_approve'))) {
+        outcome = { error: 403, message: 'Payroll approval permission is required to reopen a closed calendar.' };
+        return { changed: false };
+      }
+      if (!reason) { outcome = { error: 400, message: 'A reason is required for the audit trail.' }; return { changed: false }; }
+      const run = loadTargetRecord(state, 'payrolls', id);
+      if (!run) { outcome = { error: 404, message: 'Payroll run not found.', code: 'PAYROLL_RUN_NOT_FOUND' }; return { changed: false }; }
+      if (run.status !== 'locked') {
+        outcome = { error: 409, message: 'Only a locked payroll run can be voided and reopened.', code: 'PAYROLL_RUN_NOT_LOCKED' };
+        return { changed: false };
+      }
+      const period = (state.payPeriods || []).find(p => p && p.id === run.periodId);
+      if (!period || period.status !== 'closed' || (period.runId || null) !== run.id) {
+        outcome = { error: 409, message: "This payroll run's pay period is not in a consistent closed/linked state.", code: 'PAY_PERIOD_LINKAGE_INCONSISTENT' };
+        return { changed: false };
+      }
+      const callerName = caller ? caller.name : (req.session.sub || 'Administrator');
+      const at = new Date().toISOString();
+      run.status = 'voided'; run.voidedBy = callerName; run.voidedAt = at; run.voidReason = reason; run.immutable = true;
+      run.reopenRequest = { status: 'approved', reason, requestedBy: callerName, requestedAt: at, approvedBy: callerName, approvedAt: at };
+      period.status = 'open'; period.runId = null; period.lockedBy = null; period.lockedAt = null;
+      period.reopenedBy = callerName; period.reopenedAt = at; period.reopenReason = reason;
+      state.payrollAudit = Array.isArray(state.payrollAudit) ? state.payrollAudit : [];
+      state.payrollAudit.push({ runId: run.id, periodId: period.id, action: 'payroll_voided_period_reopened', by: callerName, at, notes: reason });
+      outcome = { run, period };
+      return { changed: true };
+    }, req.session.sub, tenantKey);
+    if (outcome && outcome.error) return res.status(outcome.error).json(Object.assign({ error: outcome.message }, outcome.code ? { code: outcome.code } : {}));
+    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'payroll_reopen_started', target: String(id), meta: { periodId: outcome.period.id } });
+    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'payroll_voided', target: String(id), meta: { reason, periodId: outcome.period.id } });
+    await auditLog(pool, { tenantKey, actor: req.session.sub, action: 'pay_period_reopened', target: String(outcome.period.id), meta: { runId: id, reason } });
+    res.json({ ok: true, version: result.version, run: outcome.run, period: outcome.period });
+  } catch (error) {
+    res.status(500).json({ error: 'Unable to reopen the payroll run.', detail: error.message });
   }
 });
 

@@ -2801,25 +2801,83 @@ async function testPayrollImmutability() {
       assertEqual(after.body.state.payPeriods.find(p => p.id === 3).status, 'open', 'B3. the period is still open');
     }
 
-    // ── Test C (issue 1G): approvalStage forgery WITHOUT changing status -- jumping straight past
-    // the remaining workflow stages so the NEXT legitimate approvePayroll() call would auto-lock.
+    // ── Test C (issue 1G, updated by the server-authoritative payroll lifecycle pass): approvalStage
+    // forgery WITHOUT changing status -- jumping straight past the remaining workflow stages so the
+    // NEXT legitimate approval call would auto-lock. Now that POST /api/payroll-runs/:id/approve is
+    // the ONLY legitimate way approvalStage ever moves, generic PUT /api/state blocks ANY change to
+    // it at all (not just a jump of more than one step -- the old +1 "compatibility" allowance for
+    // the client's own single-step approvePayroll() call is gone now that a real dedicated endpoint
+    // exists to do that properly).
     {
       const before = await getState();
       const s = JSON.parse(JSON.stringify(before.body.state));
       s.payrolls.find(r => r.id === 901).approvalStage = 999; // status stays 'pending_approval'
       const r = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s, version: before.body.version }) }, adminToken);
       assertEqual(r.status, 409, 'C. jumping approvalStage by more than one step (status unchanged) is rejected with 409');
-      assertEqual(r.body.code, 'PAYROLL_APPROVAL_STAGE_SKIPPED', 'C2. the specific rejection code names the blocked stage-skip');
+      assertEqual(r.body.code, 'PAYROLL_APPROVAL_STAGE_CHANGE_BLOCKED', 'C2. the specific rejection code names the blocked stage change');
       const after = await getState();
       assertEqual(after.body.state.payrolls.find(x => x.id === 901).approvalStage, 1, 'C3. approvalStage is still exactly 1 -- the forged jump never took effect');
 
-      // A genuinely ordinary, single-step edit to the SAME still-pending run (e.g. an item change)
-      // must still succeed normally -- this check must never block real draft editing.
+      // Even a single-step advance (exactly what the OLD client-side approvePayroll() used to do)
+      // is now rejected too -- that compatibility carve-out is gone; the dedicated approval
+      // endpoint is the only legitimate way this field ever moves.
       const s2 = JSON.parse(JSON.stringify(after.body.state));
-      s2.payrolls.find(r => r.id === 901).items[0].net = 23500;
-      s2.payrolls.find(r => r.id === 901).approvalStage = 2; // exactly one step forward, like a real single approvePayroll() call
+      s2.payrolls.find(r => r.id === 901).approvalStage = 2;
       const r2 = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s2, version: after.body.version }) }, adminToken);
-      assertEqual(r2.status, 200, 'C4. an ordinary single-step approval stage advance (plus an unrelated item edit) still succeeds normally');
+      assertEqual(r2.status, 409, 'C4. even a single-step approvalStage advance through PUT /api/state is now rejected (issue 13)');
+      assertEqual(r2.body.code, 'PAYROLL_APPROVAL_STAGE_CHANGE_BLOCKED', 'C5. with the same rejection code');
+
+      // A genuinely ordinary edit to the SAME still-pending run (an item change, approvalStage
+      // untouched) must still succeed normally -- this check must never block real draft editing.
+      const s3 = JSON.parse(JSON.stringify(after.body.state));
+      s3.payrolls.find(r => r.id === 901).items[0].net = 23500;
+      const r3 = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s3, version: after.body.version }) }, adminToken);
+      assertEqual(r3.status, 200, 'C6. an ordinary item edit (approvalStage untouched) still succeeds normally');
+
+      // Workflow-array forgery (issue 14): editing an existing entry's notes without touching
+      // status or approvalStage at all must also be rejected.
+      const after3 = await getState();
+      const s4 = JSON.parse(JSON.stringify(after3.body.state));
+      const run901_4 = s4.payrolls.find(r => r.id === 901);
+      run901_4.workflow = [{ stage: 'maker', label: 'HR / Payroll Maker', by: 'Forged Reviewer', at: new Date().toISOString(), status: 'completed' }];
+      const r4 = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s4, version: after3.body.version }) }, adminToken);
+      assertEqual(r4.status, 409, 'C7 (issue 14). forging/editing the workflow history array through PUT /api/state is rejected with 409');
+      assertEqual(r4.body.code, 'PAYROLL_WORKFLOW_FORGERY_BLOCKED', 'C8. with the specific workflow-forgery code');
+    }
+
+    // ── Test D/E (issue 11/12): a BRAND-NEW submitted run/period with NO corresponding CURRENT
+    // entry was never inspected at all by the original loop (it only ever iterated
+    // currentState.payrolls/payPeriods) -- a wholly fabricated finalized run/period could slip
+    // through untouched. Blocked now regardless of whether anything with that id existed before.
+    {
+      const before = await getState();
+      const s = JSON.parse(JSON.stringify(before.body.state));
+      s.payrolls.push({
+        id: 999999, from: '2026-12-01', to: '2026-12-15', groupId: 1, periodId: null, status: 'locked',
+        lockedAt: new Date().toISOString(), approvedBy: 'Attacker', immutable: true,
+        items: [{ empId: 1, baseBasic: 22000, net: 999999 }]
+      });
+      const r = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s, version: before.body.version }) }, adminToken);
+      assertEqual(r.status, 409, 'D (issue 11). inserting a brand-new payroll run pre-set to \'locked\' through PUT /api/state is rejected with 409');
+      assertEqual(r.body.code, 'NEW_FINALIZED_PAYROLL_BLOCKED', 'D2. with the specific new-finalized-run rejection code');
+      const after = await getState();
+      assert(!after.body.state.payrolls.find(x => x.id === 999999), 'D3. the fabricated run never made it into persisted state');
+      assertEqual(after.body.version, before.body.version, 'D4. the state version did not advance');
+
+      const s2 = JSON.parse(JSON.stringify(after.body.state));
+      s2.payPeriods.push({ id: 999998, groupId: 1, from: '2026-12-01', to: '2026-12-15', attendanceFrom: '2026-12-01', attendanceTo: '2026-12-15', status: 'closed', runId: 999999 });
+      const r2 = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s2, version: after.body.version }) }, adminToken);
+      assertEqual(r2.status, 409, 'E (issue 12). inserting a brand-new pay period pre-set to \'closed\' through PUT /api/state is rejected with 409');
+      assertEqual(r2.body.code, 'NEW_CLOSED_PAY_PERIOD_BLOCKED', 'E2. with the specific new-closed-period rejection code');
+      const after2 = await getState();
+      assert(!after2.body.state.payPeriods.find(x => x.id === 999998), 'E3. the fabricated period never made it into persisted state');
+
+      // A genuinely new, non-finalized run (exactly what a real maker submission looks like) must
+      // still be creatable through this same endpoint -- issue 15's "at minimum" fallback.
+      const s3 = JSON.parse(JSON.stringify(after2.body.state));
+      s3.payrolls.push({ id: 999997, from: '2026-12-01', to: '2026-12-15', groupId: 1, periodId: 3, status: 'pending_approval', approvalStage: 1, workflow: [{ stage: 'maker', label: 'HR / Payroll Maker', by: 'Admin PI', at: new Date().toISOString(), status: 'completed' }], items: [{ empId: 1, baseBasic: 22000, net: 22000 }] });
+      const r3 = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s3, version: after2.body.version }) }, adminToken);
+      assertEqual(r3.status, 200, 'D5 (issue 15 fallback). a genuinely new non-finalized (pending_approval) run can still be created through PUT /api/state');
     }
 
     // ── Test H (issue 4C): locked -> voided forged directly through PUT /api/state. That
@@ -2885,6 +2943,21 @@ async function testPayrollImmutability() {
       const empRunsForRun900 = empState.payrolls.find(x => x.id === 900);
       assert(!empRunsForRun900, 'L13. run #900 (belongs entirely to a different employee) does not appear at all for this employee');
 
+      // ── Issue 22-24: RUN-level privacy, not just item-level. Run #903 carries a real
+      // ruleSnapshot/workflow/approvedBy just like a genuine locked run would -- none of it is
+      // payslip content, and the self-service "My Payslips"/"View Payslip" UI never reads any of
+      // it off the run object (only id/from/to/status/lockedAt, all off the item instead).
+      assert(empRun903.ruleSnapshot === undefined, 'L14 (issue 22). run-level ruleSnapshot is stripped from a non-payroll employee\'s own payslip run');
+      assert(empRun903.workflow === undefined, 'L15. run-level workflow (reviewer names/notes) is stripped');
+      assert(empRun903.approvedBy === undefined, 'L16. run-level approvedBy is stripped');
+      assert(empRun903.groupId === undefined, 'L17. run-level groupId (internal payroll grouping) is stripped');
+      assert(empRun903.periodId === undefined, 'L18. run-level periodId is stripped');
+      // But the fields the payslip UI genuinely reads off the run itself are still present.
+      assertEqual(empRun903.id, 903, 'L19. run id is kept');
+      assertEqual(empRun903.from, '2026-07-01', 'L20. run from-date is kept');
+      assertEqual(empRun903.to, '2026-07-15', 'L21. run to-date is kept');
+      assertEqual(empRun903.status, 'locked', 'L22. run status is kept');
+
       const payrollState = (await call('/api/state', { method: 'GET' }, payrollToken)).body.state;
       const payrollRun903 = payrollState.payrolls.find(x => x.id === 903);
       const payrollItem = payrollRun903.items.find(i => i.empId === 3);
@@ -2894,8 +2967,13 @@ async function testPayrollImmutability() {
       assert(!!payrollItem.absenceFallbackPolicySnapshot, 'M4. and absenceFallbackPolicySnapshot');
       assert(!!payrollItem.compensationSnapshot, 'M5. and compensationSnapshot');
       assert(payrollItem.calculationTrace[0].ruleCode === 'BASIC_PAY', 'M6. and the full calculationTrace including its internal rule/audit metadata');
+      // Run-level fields are unmodified too (issue 44) -- a payroll-authorized user never goes
+      // through the employee projection at all.
+      assert(Array.isArray(payrollRun903.ruleSnapshot) && payrollRun903.ruleSnapshot.length === 1, 'M7 (issue 44). a payroll-authorized session receives the FULL run-level ruleSnapshot');
+      assert(Array.isArray(payrollRun903.workflow) && payrollRun903.workflow.length === 1, 'M8. and the full workflow history');
+      assertEqual(payrollRun903.approvedBy, 'Admin PI', 'M9. and approvedBy');
       // A payroll-authorized user also sees every OTHER employee's payroll, not just their own.
-      assert(!!payrollState.payrolls.find(x => x.id === 900), 'M7. a payroll-authorized session also sees run #900, which belongs to a different employee entirely');
+      assert(!!payrollState.payrolls.find(x => x.id === 900), 'M10. a payroll-authorized session also sees run #900, which belongs to a different employee entirely');
     }
 
     // ── Direct unit coverage for the new pure-function modules (issue 1A/1D) -- no HTTP needed.
@@ -2926,6 +3004,392 @@ async function testPayrollImmutability() {
   } finally {
     try { child.kill(); } catch {}
     await new Promise(r => setTimeout(r, 200));
+    await pg.end();
+  }
+}
+
+// ── Server-authoritative payroll RUN LIFECYCLE (approve/return/reopen) -- the pass that fixed the
+// #315-induced regression where the client-side approve/lock/reject/reopen flow could no longer
+// legitimately persist through generic PUT /api/state. Exercises the three dedicated endpoints
+// (POST /api/payroll-runs/:id/approve|return|reopen) end-to-end against a real server + real
+// Postgres, the same pattern testPayrollImmutability above already established.
+async function testPayrollLifecycle() {
+  const pg = new Client({ connectionString: DATABASE_URL });
+  await pg.connect();
+  const tenantKey = 'test-payroll-lifecycle-tenant';
+  const passHash = p => bcrypt.hash(p, 10);
+  const fullItem = (empId, adjustmentIds) => ({
+    empId, eid: 'E-PL2-' + empId, name: 'Employee ' + empId, pos: 'Staff', payType: 'monthly',
+    pr: 10, basic: 22000, net: 22000, gross: 22000, totalDed: 0,
+    attendanceInputSnapshot: [{ eid: empId, date: '2026-11-05', status: 'present', tin: '09:00', tout: '18:00' }],
+    scheduleSnapshot: { shiftId: 1, assignedShift: { id: 1, name: 'Mon-Fri' } },
+    attendanceSummary: { absentDays: 0 },
+    rates: { daily: 1000, dailyDivisor: 22 },
+    adjustmentIds: adjustmentIds || []
+  });
+  const ruleSnap = [{ code: 'ABSENCE_DEDUCTION', version: 1, value: 1, priority: 300, coverage: {}, effectiveFrom: '2025-01-01' }];
+  const state = {
+    schemaVersion: 1,
+    accessLevels: [
+      { id: 1, name: 'Super Admin', perms: {} },
+      { id: 2, name: 'Payroll Approver', perms: { payroll_approve: true } },
+      { id: 3, name: 'Employee', perms: {} }
+    ],
+    users: [
+      { id: 1, email: 'admin@pl2.test', pass: await passHash('adminpl2pass1'), role: 'admin', accessLevelId: 1, name: 'Admin PL2', eid: 'E-PL2ADMIN', active: true },
+      { id: 2, email: 'maker@pl2.test', pass: await passHash('makerpl2pass1'), role: 'employee', accessLevelId: 2, name: 'Maker User', eid: 'E-PL2MAKER', active: true },
+      { id: 3, email: 'reviewer@pl2.test', pass: await passHash('reviewerpl2pass1'), role: 'employee', accessLevelId: 2, name: 'Reviewer User', eid: 'E-PL2REVIEWER', active: true },
+      { id: 4, email: 'checker@pl2.test', pass: await passHash('checkerpl2pass1'), role: 'employee', accessLevelId: 2, name: 'HR Checker User', eid: 'E-PL2CHECKER', active: true },
+      { id: 5, email: 'finance@pl2.test', pass: await passHash('financepl2pass1'), role: 'employee', accessLevelId: 2, name: 'Finance Checker User', eid: 'E-PL2FINANCE', active: true },
+      { id: 6, email: 'approver@pl2.test', pass: await passHash('approverpl2pass1'), role: 'employee', accessLevelId: 2, name: 'Approver User', eid: 'E-PL2APPROVER', active: true }
+    ],
+    approvalConfig: { maxLayers: 4, defaultLayers: 1, perEmployee: {} },
+    attendance: [], leaves: [], loans: [], leaveRetroReconciliations: [],
+    payrollAdjustments: [
+      { id: 800, empId: 2, adjType: 'Bonus', payItemCode: 'BONUS', category: 'earnings', direction: 'income', taxable: true, amount: 1000, status: 'ready', processStatus: 'submitted_with_payroll', createdAt: '2026-11-01', addedBy: 'Maker User' }
+    ],
+    payPeriods: [
+      { id: 10, groupId: 1, from: '2026-11-01', to: '2026-11-15', attendanceFrom: '2026-11-01', attendanceTo: '2026-11-15', status: 'open' },
+      { id: 11, groupId: 1, from: '2026-11-16', to: '2026-11-30', attendanceFrom: '2026-11-16', attendanceTo: '2026-11-30', status: 'open' },
+      { id: 12, groupId: 1, from: '2026-10-01', to: '2026-10-15', attendanceFrom: '2026-10-01', attendanceTo: '2026-10-15', status: 'open' },
+      { id: 13, groupId: 1, from: '2026-10-16', to: '2026-10-31', attendanceFrom: '2026-10-16', attendanceTo: '2026-10-31', status: 'open' },
+      { id: 14, groupId: 1, from: '2026-09-01', to: '2026-09-15', attendanceFrom: '2026-09-01', attendanceTo: '2026-09-15', status: 'open' },
+      { id: 15, groupId: 1, from: '2026-08-01', to: '2026-08-15', attendanceFrom: '2026-08-01', attendanceTo: '2026-08-15', status: 'closed', runId: 920 },
+      { id: 16, groupId: 1, from: '2026-07-01', to: '2026-07-15', attendanceFrom: '2026-07-01', attendanceTo: '2026-07-15', status: 'open' },
+      { id: 17, groupId: 1, from: '2026-06-01', to: '2026-06-15', attendanceFrom: '2026-06-01', attendanceTo: '2026-06-15', status: 'closed', runId: 921 }
+    ],
+    payrolls: [
+      // runA (910/period10): full success path, including adjustment application.
+      {
+        id: 910, from: '2026-11-01', to: '2026-11-15', groupId: 1, periodId: 10, status: 'pending_approval', approvalStage: 4,
+        ruleSnapshot: ruleSnap,
+        workflow: [
+          { stage: 'maker', label: 'HR / Payroll Maker', by: 'Maker User', at: '2026-11-16T01:00:00.000Z', status: 'completed' },
+          { stage: 'timekeeping_reviewer', label: 'Timekeeping Reviewer', by: 'Reviewer User', at: '2026-11-16T02:00:00.000Z', status: 'completed', notes: 'ok' },
+          { stage: 'hr_checker', label: 'HR Checker', by: 'HR Checker User', at: '2026-11-16T03:00:00.000Z', status: 'completed', notes: 'ok' },
+          { stage: 'finance_checker', label: 'Finance Checker', by: 'Finance Checker User', at: '2026-11-16T04:00:00.000Z', status: 'completed', notes: 'ok' }
+        ],
+        items: [fullItem(2, [800])]
+      },
+      // runB (911/period11): normal-caller segregation-of-duties block, then recovery by a
+      // different (admin) caller.
+      {
+        id: 911, from: '2026-11-16', to: '2026-11-30', groupId: 1, periodId: 11, status: 'pending_approval', approvalStage: 4,
+        ruleSnapshot: ruleSnap,
+        workflow: [
+          { stage: 'maker', label: 'HR / Payroll Maker', by: 'Maker User', at: '2026-12-01T01:00:00.000Z', status: 'completed' },
+          { stage: 'timekeeping_reviewer', label: 'Timekeeping Reviewer', by: 'Reviewer User', at: '2026-12-01T02:00:00.000Z', status: 'completed' },
+          { stage: 'hr_checker', label: 'HR Checker', by: 'HR Checker User', at: '2026-12-01T03:00:00.000Z', status: 'completed' },
+          { stage: 'finance_checker', label: 'Finance Checker', by: 'Approver User', at: '2026-12-01T04:00:00.000Z', status: 'completed' }
+        ],
+        items: [fullItem(2, [])]
+      },
+      // runC (912/period12): platform emergency-override path -- last stage was completed by the
+      // God Admin identity itself.
+      {
+        id: 912, from: '2026-10-01', to: '2026-10-15', groupId: 1, periodId: 12, status: 'pending_approval', approvalStage: 4,
+        ruleSnapshot: ruleSnap,
+        workflow: [
+          { stage: 'maker', label: 'HR / Payroll Maker', by: 'Maker User', at: '2026-10-16T01:00:00.000Z', status: 'completed' },
+          { stage: 'timekeeping_reviewer', label: 'Timekeeping Reviewer', by: 'Reviewer User', at: '2026-10-16T02:00:00.000Z', status: 'completed' },
+          { stage: 'hr_checker', label: 'HR Checker', by: 'HR Checker User', at: '2026-10-16T03:00:00.000Z', status: 'completed' },
+          { stage: 'finance_checker', label: 'Finance Checker', by: 'god@sproutripple.com', at: '2026-10-16T04:00:00.000Z', status: 'completed' }
+        ],
+        items: [fullItem(2, [])]
+      },
+      // runD (913/period13): snapshot-incomplete -- no ruleSnapshot, item missing every replay field.
+      {
+        id: 913, from: '2026-10-16', to: '2026-10-31', groupId: 1, periodId: 13, status: 'pending_approval', approvalStage: 4,
+        workflow: [
+          { stage: 'maker', label: 'HR / Payroll Maker', by: 'Maker User', at: '2026-11-01T01:00:00.000Z', status: 'completed' },
+          { stage: 'timekeeping_reviewer', label: 'Timekeeping Reviewer', by: 'Reviewer User', at: '2026-11-01T02:00:00.000Z', status: 'completed' },
+          { stage: 'hr_checker', label: 'HR Checker', by: 'HR Checker User', at: '2026-11-01T03:00:00.000Z', status: 'completed' },
+          { stage: 'finance_checker', label: 'Finance Checker', by: 'Finance Checker User', at: '2026-11-01T04:00:00.000Z', status: 'completed' }
+        ],
+        items: [{ empId: 2, eid: 'E-PL2MAKER', name: 'Maker User', pos: 'Staff', basic: 22000, net: 22000, gross: 22000, totalDed: 0 }]
+      },
+      // runE (914/period14): non-final single-stage advance.
+      {
+        id: 914, from: '2026-09-01', to: '2026-09-15', groupId: 1, periodId: 14, status: 'pending_approval', approvalStage: 1,
+        ruleSnapshot: ruleSnap,
+        workflow: [{ stage: 'maker', label: 'HR / Payroll Maker', by: 'Maker User', at: '2026-09-16T01:00:00.000Z', status: 'completed' }],
+        items: [fullItem(2, [])]
+      },
+      // runF (920/period15): already locked + closed/linked -- reopen success path.
+      {
+        id: 920, from: '2026-08-01', to: '2026-08-15', groupId: 1, periodId: 15, status: 'locked',
+        approvedBy: 'Approver User', approvedAt: '2026-08-16T00:00:00.000Z', lockedAt: '2026-08-16T00:00:00.000Z', immutable: true,
+        ruleSnapshot: ruleSnap,
+        workflow: [{ stage: 'authorized_approver', label: 'Authorized Approver', by: 'Approver User', at: '2026-08-16T00:00:00.000Z', status: 'completed' }],
+        items: [fullItem(2, [])]
+      },
+      // runG (915/period16): return/reject path.
+      {
+        id: 915, from: '2026-07-01', to: '2026-07-15', groupId: 1, periodId: 16, status: 'pending_approval', approvalStage: 1,
+        ruleSnapshot: ruleSnap,
+        workflow: [{ stage: 'maker', label: 'HR / Payroll Maker', by: 'Maker User', at: '2026-07-16T01:00:00.000Z', status: 'completed' }],
+        items: [fullItem(2, [])]
+      },
+      // runH (921/period17): already locked + closed/linked -- reopen concurrency path.
+      {
+        id: 921, from: '2026-06-01', to: '2026-06-15', groupId: 1, periodId: 17, status: 'locked',
+        approvedBy: 'Approver User', approvedAt: '2026-06-16T00:00:00.000Z', lockedAt: '2026-06-16T00:00:00.000Z', immutable: true,
+        ruleSnapshot: ruleSnap,
+        workflow: [{ stage: 'authorized_approver', label: 'Authorized Approver', by: 'Approver User', at: '2026-06-16T00:00:00.000Z', status: 'completed' }],
+        items: [fullItem(2, [])]
+      }
+    ],
+    org: [], lookups: {}, changeRequests: [], onboarding: [], candidates: [], performance: [], company: { name: 'Payroll Lifecycle Co', dailyDivisor: 22 }
+  };
+  await pg.query('DELETE FROM app_state WHERE tenant_key = $1', [tenantKey]);
+  await pg.query('INSERT INTO app_state (tenant_key, state, version, updated_by) VALUES ($1, $2, 1, $3)', [tenantKey, state, 'seed']);
+  await pg.query('DELETE FROM platform_clients WHERE tenant_key = $1', [tenantKey]);
+  await pg.query('INSERT INTO platform_clients (tenant_key, name, admin_email, admin_pass) VALUES ($1, $2, $3, $4)', [tenantKey, 'Payroll Lifecycle Co', 'pl2compadmin@test.local', await passHash('x')]);
+  // The God Admin credential (platform_admin_credential) is a single GLOBAL row, not scoped to
+  // this tenant -- reset it so this test's platform-override scenario deterministically logs in
+  // with the well-known default password, regardless of what any earlier test left it as.
+  await pg.query('DELETE FROM platform_admin_credential WHERE id = 1');
+
+  const plPort = Number(PORT) + 24;
+  const env = { ...process.env, DATABASE_URL, API_SESSION_SECRET: SESSION_SECRET, PORT: String(plPort), APP_TENANT_KEY: tenantKey };
+  delete env.GOD_ADMIN_PASSWORD;
+  const child = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const base = `http://localhost:${plPort}`;
+  let ready = false;
+  for (let i = 0; i < 60 && !ready; i++) {
+    try { const res = await fetch(base + '/api/health'); if (res.ok) ready = true; } catch {}
+    if (!ready) await new Promise(r => setTimeout(r, 250));
+  }
+  const call = async (path, opts, token) => {
+    const res = await fetch(base + path, { ...opts, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(opts && opts.headers) } });
+    return { status: res.status, body: await res.json().catch(() => ({})) };
+  };
+
+  try {
+    const login = async (email, password) => (await call('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) })).body.token;
+    const adminToken = await login('admin@pl2.test', 'adminpl2pass1');
+    const makerToken = await login('maker@pl2.test', 'makerpl2pass1');
+    const reviewerToken = await login('reviewer@pl2.test', 'reviewerpl2pass1');
+    const financeToken = await login('finance@pl2.test', 'financepl2pass1');
+    const approverToken = await login('approver@pl2.test', 'approverpl2pass1');
+    const getState = async () => call('/api/state', { method: 'GET' }, adminToken);
+
+    // ── PL1-PL5: non-final approval (issue 2G) -- exactly one stage advance, exactly one new
+    // workflow entry, run stays pending, period stays open.
+    {
+      const before = await getState();
+      const beforeRun = before.body.state.payrolls.find(r => r.id === 914);
+      const r = await call('/api/payroll-runs/914/approve', { method: 'POST', body: JSON.stringify({ notes: 'Timekeeping looks correct.' }) }, reviewerToken);
+      assertEqual(r.status, 200, 'PL1. a non-final-stage approval succeeds (200)');
+      assertEqual(r.body.locked, false, 'PL2. the run does not lock -- more stages remain');
+      assertEqual(r.body.run.approvalStage, 2, 'PL3. approvalStage advanced by EXACTLY one step');
+      assertEqual(r.body.run.workflow.length, beforeRun.workflow.length + 1, 'PL4. exactly one new workflow entry was appended');
+      assertEqual(r.body.run.workflow[r.body.run.workflow.length - 1].by, 'Reviewer User', 'PL4b. the new entry records the real caller, not anything client-supplied');
+      assertEqual(r.body.run.status, 'pending_approval', 'PL5. the run status stays pending_approval');
+      const after = await getState();
+      assertEqual(after.body.state.payPeriods.find(p => p.id === 14).status, 'open', 'PL6. the run\'s pay period stays open -- only the FINAL stage may ever close it');
+      assertEqual(after.body.version, before.body.version + 1, 'PL7. the state version advanced by exactly one');
+    }
+
+    // ── PL8-PL10: required fields (issue 2D) -- empty notes rejected, unknown run 404s, a run
+    // that isn't pending_approval is rejected.
+    {
+      const r = await call('/api/payroll-runs/914/approve', { method: 'POST', body: JSON.stringify({ notes: '   ' }) }, reviewerToken);
+      assertEqual(r.status, 400, 'PL8. empty/whitespace-only review notes are rejected with 400');
+      const r2 = await call('/api/payroll-runs/8675309/approve', { method: 'POST', body: JSON.stringify({ notes: 'x' }) }, adminToken);
+      assertEqual(r2.status, 404, 'PL9. approving a nonexistent run 404s');
+      assertEqual(r2.body.code, 'PAYROLL_RUN_NOT_FOUND', 'PL9b. with the specific code');
+      const r3 = await call('/api/payroll-runs/920/approve', { method: 'POST', body: JSON.stringify({ notes: 'x' }) }, adminToken);
+      assertEqual(r3.status, 409, 'PL10. approving an already-LOCKED run is rejected with 409');
+      assertEqual(r3.body.code, 'PAYROLL_RUN_NOT_PENDING', 'PL10b. with the specific code');
+    }
+
+    // ── PL11-PL16: segregation-of-duties (issue 2E/19) for a NORMAL (non-platform) caller -- the
+    // emergencyOverride flag alone must never bypass it; only an actual platform session can.
+    {
+      const before = await getState();
+      const r = await call('/api/payroll-runs/911/approve', { method: 'POST', body: JSON.stringify({ notes: 'Final sign-off.' }) }, approverToken);
+      assertEqual(r.status, 403, 'PL11. the same user who completed the previous stage is blocked from completing the next one');
+      assertEqual(r.body.code, 'PAYROLL_SEGREGATION_OF_DUTIES', 'PL11b. with the specific code');
+      const r2 = await call('/api/payroll-runs/911/approve', { method: 'POST', body: JSON.stringify({ notes: 'Final sign-off.', emergencyOverride: true, overrideReason: 'Trying to bypass' }) }, approverToken);
+      assertEqual(r2.status, 403, 'PL12. emergencyOverride:true alone does NOT bypass segregation-of-duties for a non-platform caller');
+      const after = await getState();
+      const run911 = after.body.state.payrolls.find(r2 => r2.id === 911);
+      assertEqual(run911.approvalStage, 4, 'PL13. approvalStage on run #911 is unchanged after both blocked attempts');
+      assertEqual(run911.workflow.length, 4, 'PL14. no workflow entry was appended by either blocked attempt');
+      assertEqual(after.body.version, before.body.version, 'PL14b. neither blocked attempt advanced the state version');
+
+      // A genuinely different, authorized caller (here: an admin, covering issue 2A's "admin OR
+      // payroll_approve" authorization rule) completes it normally and locks it.
+      const r3 = await call('/api/payroll-runs/911/approve', { method: 'POST', body: JSON.stringify({ notes: 'Final sign-off by a different reviewer.' }) }, adminToken);
+      assertEqual(r3.status, 200, 'PL15. a genuinely different authorized caller (here: an admin) can complete the final stage normally');
+      assertEqual(r3.body.locked, true, 'PL16. and the run locks');
+    }
+
+    // ── PL17-PL22: platform emergency override (issue 2E/20) -- a real platform (God Admin)
+    // session, segregation-blocked the same way, may proceed ONLY with an explicit, audited
+    // override.
+    {
+      const platformToken = await login('god@sproutripple.com', 'godmode2026');
+      assert(!!platformToken, 'PL17. the platform (God Admin) session logs in successfully against this tenant');
+      const r = await call('/api/payroll-runs/912/approve', { method: 'POST', body: JSON.stringify({ notes: 'Final sign-off.' }) }, platformToken);
+      assertEqual(r.status, 403, 'PL18. a platform session is ALSO blocked by segregation-of-duties without an explicit override');
+      assertEqual(r.body.code, 'PAYROLL_SEGREGATION_OF_DUTIES', 'PL18b. with the specific code');
+      const r2 = await call('/api/payroll-runs/912/approve', { method: 'POST', body: JSON.stringify({ notes: 'Final sign-off.', emergencyOverride: true, overrideReason: '' }) }, platformToken);
+      assertEqual(r2.status, 403, 'PL19. an override with an EMPTY reason is still rejected -- a non-empty reason is required');
+      const r3 = await call('/api/payroll-runs/912/approve', { method: 'POST', body: JSON.stringify({ notes: 'Final sign-off.', emergencyOverride: true, overrideReason: 'Finance Checker is on leave; time-sensitive release.' }) }, platformToken);
+      assertEqual(r3.status, 200, 'PL20. a platform session WITH an explicit override + reason succeeds');
+      assertEqual(r3.body.locked, true, 'PL21. and the run locks');
+      assertEqual(r3.body.run.workflow[r3.body.run.workflow.length - 1].segregationOverride, true, 'PL22. the appended workflow entry records the override');
+      const overrideAudit = await pg.query("SELECT meta FROM security_audit_log WHERE tenant_key = $1 AND action = 'payroll_segregation_override' ORDER BY id DESC LIMIT 1", [tenantKey]);
+      assertEqual(overrideAudit.rowCount, 1, 'PL23 (issue 20/21). the override was audited under its own distinct action');
+      assert(!JSON.stringify(overrideAudit.rows[0].meta || {}).includes('22000'), 'PL23b. the override audit meta never carries payroll money figures');
+    }
+
+    // ── PL24-PL28: snapshot-incomplete final approval (issue 3) -- must NOT lock, must NOT even
+    // partially advance the stage, run left completely unchanged.
+    {
+      const before = await getState();
+      const beforeRun = before.body.state.payrolls.find(r => r.id === 913);
+      const r = await call('/api/payroll-runs/913/approve', { method: 'POST', body: JSON.stringify({ notes: 'Final sign-off.' }) }, approverToken);
+      assertEqual(r.status, 409, 'PL24. a final-stage approval on a run with an incomplete historical-replay snapshot is rejected with 409');
+      assertEqual(r.body.code, 'PAYROLL_SNAPSHOT_INCOMPLETE', 'PL25. with the specific code');
+      assert(Array.isArray(r.body.missing) && r.body.missing.length > 0, 'PL26. the response names what is missing');
+      const after = await getState();
+      const afterRun = after.body.state.payrolls.find(r2 => r2.id === 913);
+      assertEqual(afterRun.approvalStage, beforeRun.approvalStage, 'PL27. approvalStage did NOT advance even partially');
+      assertEqual(afterRun.workflow.length, beforeRun.workflow.length, 'PL27b. no workflow entry was appended');
+      assertEqual(afterRun.status, 'pending_approval', 'PL28. the run is still pending_approval, never locked');
+      assertEqual(after.body.state.payPeriods.find(p => p.id === 13).status, 'open', 'PL28b. its pay period is still open');
+      const blockedAudit = await pg.query("SELECT id FROM security_audit_log WHERE tenant_key = $1 AND action = 'payroll_snapshot_lock_blocked'", [tenantKey]);
+      assert(blockedAudit.rowCount >= 1, 'PL29 (issue 21). the blocked lock attempt was audited');
+    }
+
+    // ── PL30-PL41: full final-approval success -- atomic lock + period close + adjustment
+    // application, exactly-once, survives a reload, and a retry after success is idempotent.
+    {
+      const before = await getState();
+      const r = await call('/api/payroll-runs/910/approve', { method: 'POST', body: JSON.stringify({ notes: 'Final sign-off, all figures verified.' }) }, approverToken);
+      assertEqual(r.status, 200, 'PL30. the final-stage approval succeeds');
+      assertEqual(r.body.locked, true, 'PL31. locked:true in the response');
+      assertEqual(r.body.run.status, 'locked', 'PL32. run.status is now locked');
+      assertEqual(r.body.run.approvedBy, 'Approver User', 'PL33. approvedBy is server-derived from the real caller');
+      assert(!!r.body.run.lockedAt, 'PL34. lockedAt is set');
+      assertEqual(r.body.run.immutable, true, 'PL34b. immutable:true');
+      assertEqual(r.body.period.status, 'closed', 'PL35. the linked pay period is closed in the SAME response');
+      assertEqual(r.body.period.runId, 910, 'PL36. and relinked to this run');
+      assertEqual(r.body.version, before.body.version + 1, 'PL37. the state version advanced by EXACTLY one for this one atomic transaction');
+
+      const afterAdj = await pg.query('SELECT state FROM app_state WHERE tenant_key = $1', [tenantKey]);
+      const adj800 = afterAdj.rows[0].state.payrollAdjustments.find(a => a.id === 800);
+      assertEqual(adj800.status, 'applied', 'PL38 (issue 4). the referenced adjustment is marked applied, from the run\'s OWN item adjustmentIds, not a client-submitted list');
+      assertEqual(adj800.processStatus, 'applied', 'PL38b. and processStatus applied');
+      assertEqual(adj800.payrollRunId, 910, 'PL38c. and attached to this run');
+      assert(!!adj800.appliedAt, 'PL38d. and appliedAt stamped');
+
+      // Reload -- GET /api/state fresh, proving this wasn't just an in-memory response artifact.
+      const reloaded = await getState();
+      const reloadedRun = reloaded.body.state.payrolls.find(x => x.id === 910);
+      assertEqual(reloadedRun.status, 'locked', 'PL39 (issue 36 equivalent). the lock survives a fresh reload');
+      assertEqual(reloadedRun.approvedBy, 'Approver User', 'PL39b. approvedBy survives reload');
+      assertEqual(reloaded.body.state.payPeriods.find(p => p.id === 10).status, 'closed', 'PL40. the period-close survives reload too');
+
+      // Idempotency (issue 42) -- retrying the SAME approve call after success must never
+      // double-apply the adjustment or append a second workflow entry; it just 409s.
+      const retry = await call('/api/payroll-runs/910/approve', { method: 'POST', body: JSON.stringify({ notes: 'Final sign-off, all figures verified.' }) }, approverToken);
+      assertEqual(retry.status, 409, 'PL41. retrying the same approval after it already locked is rejected, never double-applied');
+      assertEqual(retry.body.code, 'PAYROLL_RUN_NOT_PENDING', 'PL41b. with the specific code');
+      const afterRetry = await pg.query('SELECT state FROM app_state WHERE tenant_key = $1', [tenantKey]);
+      const run910Retry = afterRetry.rows[0].state.payrolls.find(x => x.id === 910);
+      assertEqual(run910Retry.workflow.length, 5, 'PL41c. still exactly 5 workflow entries -- the retry appended nothing');
+      const adj800Retry = afterRetry.rows[0].state.payrollAdjustments.find(a => a.id === 800);
+      assertEqual(adj800Retry.appliedAt, adj800.appliedAt, 'PL41d. the adjustment\'s appliedAt timestamp is unchanged -- it was never re-applied');
+    }
+
+    // ── PL42-PL45: expectedVersion optimistic concurrency (issue 17).
+    {
+      const before = await getState();
+      const stale = before.body.version - 1;
+      const r = await call('/api/payroll-runs/915/return', { method: 'POST', body: JSON.stringify({ reason: 'x', expectedVersion: stale }) }, reviewerToken);
+      assertEqual(r.status, 409, 'PL42. a call made against a stale expectedVersion is rejected with 409');
+      assertEqual(r.body.code, 'STATE_VERSION_CONFLICT', 'PL43. with the specific code');
+      const after = await getState();
+      assertEqual(after.body.state.payrolls.find(x => x.id === 915).status, 'pending_approval', 'PL44. nothing was mutated by the rejected call');
+      const r2 = await call('/api/payroll-runs/915/return', { method: 'POST', body: JSON.stringify({ reason: 'Needs a correction to the OT hours.', expectedVersion: after.body.version }) }, reviewerToken);
+      assertEqual(r2.status, 200, 'PL45. the same call with the CURRENT expectedVersion succeeds');
+    }
+
+    // ── PL46-PL50: return/reject endpoint (issue 8) -- already exercised its success path above
+    // (PL45); covers the required-reason + response-shape assertions.
+    {
+      const r = await call('/api/payroll-runs/914/return', { method: 'POST', body: JSON.stringify({ reason: '' }) }, reviewerToken);
+      assertEqual(r.status, 400, 'PL46. an empty return reason is rejected with 400');
+      const before = await getState();
+      const r2 = await call('/api/payroll-runs/914/return', { method: 'POST', body: JSON.stringify({ reason: 'OT hours need re-verification.' }) }, reviewerToken);
+      assertEqual(r2.status, 200, 'PL47. a valid return succeeds');
+      assertEqual(r2.body.run.status, 'returned', 'PL48. run.status is returned');
+      assertEqual(r2.body.run.rejectedBy, 'Reviewer User', 'PL49. rejectedBy is server-derived from the real caller');
+      assertEqual(r2.body.run.returnReason, 'OT hours need re-verification.', 'PL50. returnReason matches');
+      const returnAudit = await pg.query("SELECT id FROM security_audit_log WHERE tenant_key = $1 AND action = 'payroll_stage_returned'", [tenantKey]);
+      assert(returnAudit.rowCount >= 1, 'PL50b (issue 21). the return was audited');
+    }
+
+    // ── PL51-PL60: reopen/void endpoint (issue 9) -- full success + reload persistence + item
+    // preservation.
+    {
+      const r = await call('/api/payroll-runs/920/reopen', { method: 'POST', body: JSON.stringify({ reason: '' }) }, approverToken);
+      assertEqual(r.status, 400, 'PL51. an empty reopen reason is rejected with 400');
+      // A run that is NOT locked (still pending_approval) can never be "reopened" -- issue 9C's
+      // consistent-state check.
+      const r2 = await call('/api/payroll-runs/915/reopen', { method: 'POST', body: JSON.stringify({ reason: 'test' }) }, approverToken);
+      assertEqual(r2.status, 409, 'PL51b. reopening a run that is not locked is rejected with 409');
+      assertEqual(r2.body.code, 'PAYROLL_RUN_NOT_LOCKED', 'PL51c. with the specific code');
+      const r3 = await call('/api/payroll-runs/920/reopen', { method: 'POST', body: JSON.stringify({ reason: 'Incorrect OT rate applied; must recompute.' }) }, approverToken);
+      assertEqual(r3.status, 200, 'PL52. a valid reopen on a locked run + consistently closed/linked period succeeds');
+      assertEqual(r3.body.run.status, 'voided', 'PL53. the run is voided, not deleted');
+      assertEqual(r3.body.run.voidedBy, 'Approver User', 'PL54. voidedBy is server-derived');
+      assertEqual(r3.body.run.immutable, true, 'PL54b. still immutable:true (issue 9E -- it stays protected going forward)');
+      assertEqual(r3.body.period.status, 'open', 'PL55. the linked period reopens to open');
+      assertEqual(r3.body.period.runId, null, 'PL56. and unlinks (runId:null)');
+      assertEqual(r3.body.run.items[0].basic, 22000, 'PL57. the original run\'s item figures are completely unchanged by the void');
+
+      const reloaded = await getState();
+      const reloadedRun = reloaded.body.state.payrolls.find(x => x.id === 920);
+      assertEqual(reloadedRun.status, 'voided', 'PL58. the void survives a fresh reload');
+      assertEqual(reloaded.body.state.payPeriods.find(p => p.id === 15).status, 'open', 'PL59. the reopen survives reload too');
+
+      // Regression of #315: generic PUT /api/state still cannot move this voided run back.
+      const s = JSON.parse(JSON.stringify(reloaded.body.state));
+      s.payrolls.find(x => x.id === 920).status = 'locked';
+      const r4 = await call('/api/state', { method: 'PUT', body: JSON.stringify({ state: s, version: reloaded.body.version }) }, adminToken);
+      assertEqual(r4.status, 409, 'PL60. forging voided -> locked on this SAME run through generic PUT /api/state is still rejected (issue 9E/25)');
+    }
+
+    // ── PL61-PL65: reopen concurrency/idempotency (issue 42) -- two simultaneous reopen attempts
+    // on the same run, only the first actually applies; no duplicate void/audit/period-change.
+    {
+      const reason = 'Concurrent reopen attempt -- payroll needs urgent correction.';
+      const [ra, rb] = await Promise.all([
+        call('/api/payroll-runs/921/reopen', { method: 'POST', body: JSON.stringify({ reason }) }, approverToken),
+        call('/api/payroll-runs/921/reopen', { method: 'POST', body: JSON.stringify({ reason }) }, adminToken)
+      ]);
+      const statuses = [ra.status, rb.status].sort();
+      assertEqual(statuses[0], 200, 'PL61. exactly one of the two simultaneous reopen attempts succeeds');
+      assertEqual(statuses[1], 409, 'PL62. and the other is rejected -- never both succeeding');
+      const after = await pg.query('SELECT state FROM app_state WHERE tenant_key = $1', [tenantKey]);
+      const run921 = after.rows[0].state.payrolls.find(x => x.id === 921);
+      assertEqual(run921.status, 'voided', 'PL63. the run ends up voided exactly once');
+      const period17 = after.rows[0].state.payPeriods.find(p => p.id === 17);
+      assertEqual(period17.status, 'open', 'PL64. and its period reopened exactly once');
+      const voidAudits = (after.rows[0].state.payrollAudit || []).filter(a => a.runId === 921 && a.action === 'payroll_voided_period_reopened');
+      assertEqual(voidAudits.length, 1, 'PL65. exactly one void/reopen bookkeeping entry exists -- no duplicate from the losing concurrent attempt');
+    }
+
+    console.log('Payroll lifecycle tests passed.');
+  } finally {
+    try { child.kill(); } catch {}
+    await new Promise(r => setTimeout(r, 200));
+    await pg.query('DELETE FROM platform_admin_credential WHERE id = 1').catch(() => {}); // leave global state clean for tests after this one
     await pg.end();
   }
 }
@@ -3134,6 +3598,7 @@ main()
   .then(testLeaveRetroReconciliation)
   .then(testHistoricalPayrollIntegrity)
   .then(testPayrollImmutability)
+  .then(testPayrollLifecycle)
   .then(testRlsSafeMigration)
   .then(testLoginRateLimit)
   .then(() => {

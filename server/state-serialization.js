@@ -81,6 +81,25 @@ function projectPayrollItemForEmployee(item) {
   };
 }
 
+// Allowlist-based RUN-level projection for a non-payroll employee's own payslip (issue 22-24 of
+// the server-authoritative payroll lifecycle pass). projectPayrollItemForEmployee above already
+// strips the internal replay/audit fields off each ITEM, but the run object it lives on was still
+// being spread wholesale (`{...run, items: ...}`) into the employee-scoped state -- exposing
+// run-level `ruleSnapshot` (every active payroll rule's formula/coverage), `workflow` (every
+// reviewer's name and internal notes), `preparedBy`/`preparedAt`, `approvedBy`/`approvedAt`,
+// `reopenRequest`, and any void/return metadata to an ordinary employee looking at their own pay.
+// None of that is payslip content -- public/index.html's self-service "My Payslips" list
+// (pgMySlips) and "View Payslip" modal (modal.type==='slip') only ever read `id`/`from`/`to` off
+// the run object itself (everything else they render comes off the employee's own item) -- so
+// only those, plus `status`/`lockedAt` (safe, non-sensitive, and the natural place a future
+// "released on" display would read from) are kept. A caller with 'payroll' permission never goes
+// through this -- see buildScopedStateForEmployee's canSeeAllPayroll branch below, which hands
+// back the run unmodified.
+function projectPayrollRunForEmployee(run) {
+  if (!run) return run;
+  return { id: run.id, from: run.from, to: run.to, status: run.status, lockedAt: run.lockedAt || null };
+}
+
 function buildScopedStateForEmployee(state, session) {
   const users = state.users || [];
   const me = users.find(u => String(u.email || '').toLowerCase() === String(session.sub || '').toLowerCase()) || null;
@@ -158,7 +177,10 @@ function buildScopedStateForEmployee(state, session) {
     // shape and any older/hand-built row that used `eid` numerically instead.
     payrolls: canSeeAllPayroll ? (state.payrolls || []) : (state.payrolls || [])
       .filter(r => (r.items || []).some(i => i.empId === meId || i.eid === meId))
-      .map(r => ({ ...r, items: (r.items || []).filter(i => i.empId === meId || i.eid === meId).map(projectPayrollItemForEmployee) })),
+      .map(r => ({
+        ...projectPayrollRunForEmployee(r),
+        items: (r.items || []).filter(i => i.empId === meId || i.eid === meId).map(projectPayrollItemForEmployee)
+      })),
     payrollAdjustments: canSeeAllPayroll ? (state.payrollAdjustments || []) : ownOnly(state.payrollAdjustments, 'empId'),
     finalPayList: canSeeAllPayroll ? (state.finalPayList || []) : ownOnly(state.finalPayList, 'empId'),
     // Operational/admin-only working state -- never needed for employee self-service.
@@ -355,5 +377,6 @@ function applyEmployeeStateOverlay(previousState, incomingState, session) {
 module.exports = {
   buildScopedStateForEmployee, applyEmployeeStateOverlay,
   sanitizeEmployeeLeaveRecord, sanitizeEmployeeAttendanceRecord, sanitizeEmployeeLoanRecord,
-  sanitizeEmployeeChangeRequest, sanitizeEmployeeOnboardingRecord
+  sanitizeEmployeeChangeRequest, sanitizeEmployeeOnboardingRecord,
+  projectPayrollItemForEmployee, projectPayrollRunForEmployee
 };
